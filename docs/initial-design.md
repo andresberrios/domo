@@ -790,9 +790,11 @@ Items deferred to the next working session, with enough context for the next ses
    - Mobile app auth: token storage, device approval, revocation.
    - This affects the data model (entity ACLs in Electric Agents, the durable streams, the events collection schema), so it's worth designing before adding heavy multi-user assumptions to code.
 
-3. (Carry-over) The smaller open questions still listed under *Decisions and open questions* in the env section — no-remote projects, concurrent-edit conflict surfacing, cross-env tool perm defaults — are not blocking and can be picked up opportunistically.
+3. **UI layout and screens.** The *Layout*, *Chat surface*, and *Workspace surface* sections describe the in-session two-pane shell, but we have not designed the surrounding navigation: the project picker / dashboard, the env list and per-env entry screen, the session list within an env, settings (workspace path, Claude auth, exposed services, deployment-mode-specific knobs), and the empty/onboarding states for solo-local vs. VPS. We need to enumerate the screens, decide the primary navigation model (sidebar, top-level routes, command palette), and lock how the Project → Environment → Session hierarchy maps onto URLs and breadcrumbs — including how the mobile app collapses this. Worth doing before we wire pages, since it affects route structure and which Nuxt UI primitives we lean on.
 
-When the next session starts, the natural order is **(1) → (2)**: settle ingress first because auth is layered on top of it (Caddy `forward_auth` is the integration point), then design auth on the now-concrete ingress.
+4. (Carry-over) The smaller open questions still listed under *Decisions and open questions* in the env section — no-remote projects, concurrent-edit conflict surfacing, cross-env tool perm defaults — are not blocking and can be picked up opportunistically.
+
+When the next session starts, the natural order is **(1) → (2)**: settle ingress first because auth is layered on top of it (Caddy `forward_auth` is the integration point), then design auth on the now-concrete ingress. (3) can slot in alongside or after, since UI design is largely independent of the ingress/auth internals.
 
 ## Open questions
 
