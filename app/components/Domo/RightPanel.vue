@@ -1,10 +1,12 @@
 <script setup lang="ts">
 const tab = ref<'files' | 'git'>('files')
-
+// Nuxt UI `UTabs` keys its v-model off each item's `value`.
 const tabs = [
-  { id: 'files', label: 'Files', icon: 'i-lucide-folder-tree' },
-  { id: 'git', label: 'Git', icon: 'i-lucide-git-branch' },
+  { value: 'files', label: 'Files', icon: 'i-lucide-folder-tree' },
+  { value: 'git', label: 'Git', icon: 'i-lucide-git-branch' },
 ]
+
+const { envId, projectName, envName } = useSelectedEnv()
 </script>
 
 <template>
@@ -14,12 +16,27 @@ const tabs = [
     </template>
   </UDashboardToolbar>
 
-  <div class="flex-1 min-h-0 overflow-auto p-3 text-sm text-muted">
-    <template v-if="tab === 'files'">
-      File tree — wired in Phase 2 via coastd `/files/tree`.
-    </template>
-    <template v-else>
-      Git changes — wired in Phase 2 against the worktree on the host.
-    </template>
+  <div
+    v-if="!envId"
+    class="flex-1 min-h-0 overflow-auto p-3 text-sm text-muted"
+  >
+    Select an environment to browse its worktree.
+  </div>
+
+  <div v-else class="flex-1 min-h-0 overflow-auto">
+    <DomoFileTree
+      v-show="tab === 'files'"
+      :env-id="envId"
+      :project-name="projectName!"
+      :env-name="envName!"
+      class="p-2"
+    />
+    <DomoGitChanges
+      v-if="tab === 'git'"
+      :env-id="envId"
+      :project-name="projectName!"
+      :env-name="envName!"
+      class="h-full"
+    />
   </div>
 </template>

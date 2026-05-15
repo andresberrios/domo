@@ -16,4 +16,4 @@ The left-rail tree comes to life: users can add a project (with git-init / Coast
 - [x] `POST /api/envs/run` SSE proxy → coastd `/stream/run`; env row status flips to `provisioning`, then settled via coastd events
 - [x] Env overview screen (`/p/:project/e/:env`): header (status badge, checkout indicator), services table (`coast ps`), ports table with clickable dynamic URLs, worktree info, lifecycle buttons (stop/start/restart/checkout/release/delete)
 - [x] Cached `coast ls` + live coastd events — `/api/coast-events` WS pass-through; `useCoastEvents` composable triggers `envs.list` / `envs.overview` refreshes
-- [ ] Logs preview tiles with "follow" deep link — deferred to Phase 2 alongside the terminal pane
+- [ ] Logs preview tiles with "follow" deep link — deferred to a later polish pass (not Phase 2; `WS /api/logs` proxy + env-screen tiles land then)

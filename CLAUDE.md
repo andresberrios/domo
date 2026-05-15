@@ -18,8 +18,10 @@ Coast environments. Three documents define it:
 
 ## Where we are
 
-Phase 0 + Phase 1 done. Phase 2 (`docs/tasks/phase-2-workspace.md`) is next:
-file tree + editor, terminal pane, git changes pane.
+Phase 0 + 1 + 2 done. Phase 3 (`docs/tasks/phase-3-sessions.md`) is next:
+Electric Agents bring-up, the `claude-code-cli` entity, chat surface,
+session lifecycle, diff approval. Phase 3's agent-diff approval card
+reuses the workspace surface's `DomoDiffView` (`@codemirror/merge`).
 
 ## Running it
 
@@ -48,6 +50,13 @@ a new env):
 - `coastSmoke` — coastd reachability + Zod-validated `/ls`
 
 Call from the browser console: `await apiClient.health.call()`.
+
+Workspace + git are host-side, so you can exercise the file tree / editor
+/ git pane **without provisioning a Coast container**: seed a `projects`
+row + an `envs` row whose `worktree_path` points at any on-disk git repo
+(set `status='running'`), then visit `/p/<proj>/e/<env>`. Only the
+terminal needs a live container (it degrades gracefully otherwise).
+Clean up seeded rows afterward — they pollute the real `~/.domo/state.db`.
 
 `DOMO_HOME` env var overrides the data dir (default `~/.domo`, XDG-aware
 fallback to `$XDG_DATA_HOME/domo` when set).
@@ -84,6 +93,32 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   - `projects.ts` — git/Coastfile detection + DB CRUD
   - `envs.ts` — env DB CRUD + `coast ls` reconciliation
   - `schemas.ts` — shared Zod schemas (Project, Env, FsEntry)
+  - `workspace.ts` — `resolveEnvWorktree()` + `safeResolve()` (the single
+    path-safety chokepoint), language-by-extension, binary/size sniff
+  - `git.ts` — injection-safe `execFile git` helpers (status parse,
+    show, stage/unstage/commit/push, check-ignore)
+  - `settings.ts` — `settings` table get/set (panel state, etc.)
+- **Workspace + git are host-side.** Under Option A (host-side `claude`)
+  the worktree is a host dir, so `workspace.{tree,read,write}` use
+  `node:fs` directly and `git.*` shells `git -C <worktree>` on the host —
+  *not* coastd `/files/*`. Every path is worktree-relative and must pass
+  `safeResolve` (rejects `..`, abs-outside, symlink-out). The terminal is
+  the only workspace surface that crosses into the container.
+- **Terminal** = `WS /api/terminal?envId=…` (`server/api/terminal.ts`),
+  a dumb pass-through to coastd `WS /api/v1/exec/interactive`. The client
+  (`DomoTerminal`, xterm + `@xterm/addon-fit`) speaks coastd's frame
+  protocol directly: first frame is a `{session_id}` JSON handshake
+  (swallowed), resize is `\x01`+JSON, clear is `\x02clear`.
+- **CodeMirror/xterm/Comark are client-only**; dynamic-import inside
+  `onMounted` and keep grammars lazy (`app/utils/language.ts` maps a
+  language id → `@codemirror/lang-*`). `DomoCodeEditor` (view/edit),
+  `DomoDiffView` (`@codemirror/merge`), `DomoMarkdownView` (`<Comark>`).
+- **`useSelectedEnv()`** resolves `{project,env,envId,...}` from the route
+  for the workspace panels (`nuxt-procedures` `useCall` is keyed on its
+  serialized input, so it does *not* refetch on reactive arg changes —
+  re-`call()` inside a `watch` when you need that).
+- **Panel state persists server-side** via `usePanelState(key, def)`
+  (`settings` table), not ephemeral `useState`.
 - **Coast contract is the daemon's HTTP API**, not the CLI. Talk to coastd
   via `coast()` from `server/lib/coast`. CLI is only for `--version` / `doctor`.
 - **Coast types** are currently modeled as Zod schemas in `server/lib/coast/types.ts`
@@ -108,7 +143,12 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   `@`-mention UI patterns. See `src/utils/slash-commands.ts` and
   `src/service/customCommandService.ts`.
 
-## Gotchas (Phase 0 findings)
+## Gotchas
+
+- **Nuxt UI v4 `UTabs` keys its `v-model` off each item's `value`**, not
+  `id`. Items with only `{ id }` leave the model stuck — give them
+  `{ value, label, icon }` (bit `DomoRightPanel` in Phase 2: Git tab
+  silently rendered nothing until items got `value`).
 
 - **IDE bridge connection didn't fire from a nested `claude` process** in the
   Phase 0 smoke. Stream-json itself works fine; the bridge attaches when we

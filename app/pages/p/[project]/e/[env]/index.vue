@@ -228,7 +228,8 @@ function serviceUrl(port: number): string {
         <code>{{ env.worktreePath ?? '—' }}</code>
       </p>
       <p class="text-xs text-muted mt-1">
-        File browser wires up in Phase 2.
+        Browse and edit files in the right-panel <strong>Files</strong> tab;
+        the bottom <strong>Terminal</strong> opens a shell inside this env.
       </p>
     </section>
 
@@ -237,7 +238,7 @@ function serviceUrl(port: number): string {
         Logs
       </h3>
       <p class="text-sm text-muted">
-        Logs preview wires up in Phase 2 alongside the terminal pane.
+        Logs preview / follow is deferred to a later polish pass.
       </p>
     </section>
   </div>

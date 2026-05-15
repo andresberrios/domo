@@ -2,7 +2,9 @@
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
-  modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-procedures'],
+  modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-procedures', '@comark/nuxt'],
+
+  css: ['@xterm/xterm/css/xterm.css'],
 
   // SPA-style rendering everywhere. Domo is self-hosted, single-user, and
   // the workspace is intrinsically client-side (xterm.js, CodeMirror, WS

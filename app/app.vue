@@ -1,6 +1,6 @@
 <script setup lang="ts">
-const rightOpen = useState('panel:right', () => true)
-const bottomOpen = useState('panel:bottom', () => false)
+const rightOpen = usePanelState('right', true)
+const bottomOpen = usePanelState('bottom', false)
 </script>
 
 <template>
