@@ -34,6 +34,39 @@ export const Env = z.object({
 })
 export type Env = z.infer<typeof Env>
 
+/**
+ * UX-shaped session metadata mirrored in Domo's SQLite. The full event log
+ * lives in the Electric Agents durable stream (`durableStreamUrl`); this row
+ * just points at it and owns Domo concepts (title override, `done` flag,
+ * per-device viewed-at) plus a cached status for fast first render. Status
+ * is reconciled against the stream's `sessionMeta` client-side (Phase 9/10).
+ */
+export const SessionStatus = z.enum([
+  'waiting',
+  'active',
+  'pending-approval',
+  'error',
+])
+export type SessionStatus = z.infer<typeof SessionStatus>
+
+export const Session = z.object({
+  id: z.string(),
+  envId: z.string(),
+  title: z.string().nullable(),
+  status: SessionStatus,
+  done: z.boolean(),
+  /** Electric Agents entity url, e.g. `/claude-code-cli/<id>`. */
+  entityId: z.string().nullable(),
+  /** Absolute URL the chat surface subscribes to (Phase 9). */
+  durableStreamUrl: z.string().nullable(),
+  nativeClaudeSessionId: z.string().nullable(),
+  createdAt: z.number().int(),
+  lastEventAt: z.number().int().nullable(),
+  /** deviceId → epoch ms last viewed (drives the new-output dot, Phase 10). */
+  viewedAtPerDevice: z.record(z.string(), z.number()),
+})
+export type Session = z.infer<typeof Session>
+
 export const FsEntry = z.object({
   name: z.string(),
   path: z.string(),

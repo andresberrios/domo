@@ -24,21 +24,37 @@ up` → agents-server healthy; `electricSmoke` → runner `liveness: online`):
 Electric Agents control plane wired (docker-compose Postgres + agents-server,
 durable streams embedded), `claude-code-cli` entity registered with locked
 row schemas, in-process runtime connected via **pull-wake** (not the push
-webhook — see `initial-design.md` Decided #11–14). Step **8b landed**
-(typecheck clean; live check rides on 8d): real host-side `claude`
-stream-json spawn in `server/lib/electric/claude.ts` (ANTHROPIC_API_KEY
-+ nested-claude vars scrubbed, `session_id` captured for `--resume`),
-wired into the entity. Step **8c landed** (typecheck + lint clean;
-codec/MCP smoke-verified incl. 70 KB reassembly; live claude-connect
-check rides on 8d): standalone per-session IDE-bridge WS server
+webhook — see `initial-design.md` Decided #11–14). Step **8b landed**:
+real host-side `claude` stream-json spawn in
+`server/lib/electric/claude.ts` (ANTHROPIC_API_KEY + nested-claude vars
+scrubbed, `session_id` captured for `--resume`), wired into the entity.
+Step **8c landed**: standalone per-session IDE-bridge WS server
 (`server/lib/electric/bridge.ts`, hand-rolled RFC 6455 — design Decided
 #15), 8 tools + `getDiagnostics`, `~/.claude/ide/<port>.lock` lifecycle,
 booted per turn with `CLAUDE_CODE_SSE_PORT`/`ENABLE_IDE_INTEGRATION` set;
 `openDiff` uses an interim resolver (persist + log) — the durable
-park/inbox approval round-trip is **step 11**. **Next: 8d** sessions
-procedures, then 9 chat surface, 10 lifecycle UI, 11 diff approval.
-Phase 3's agent-diff approval card reuses the workspace surface's
-`DomoDiffView` (`@codemirror/merge`).
+park/inbox approval round-trip is **step 11**. Step **8d landed &
+verified live end-to-end**: `sessions.*` procedures
+(`create`/`list`/`get`/`prompt`/`diffDecision`/`abort`/`rename`/`done`/
+`delete`) over `server/lib/sessions.ts` (DB) + `server/lib/electric/
+client.ts` (the *driver* side — `createRuntimeServerClient`
+spawn/send/delete). **Key fix:** `startElectricRuntime()` now calls
+`runtime.registerTypes()` on boot (was missing — `registry.define` is
+in-process only; without the control-plane POST `spawnEntity` 404s, so
+8a's "entity registered" was local-only). Sessions spawn with an
+**explicit per-entity runner dispatch policy** (design Decided #16). The
+bundled live check (carried since 8b/8c) **passed** against live
+agents-server (isolated `DOMO_HOME`, throwaway worktree, no Coast
+container needed): `sessions.create` → entity on agents-server carries
+`dispatch_policy {runner: domo-runtime}`; `sessions.prompt` → wake →
+pull-wake runner → handler → host `claude` → `system`/`assistant`/
+`result` mirrored into the durable stream; `apiKeySource: none`
+(subscription billing), `session_id` captured into
+`sessionMeta.nativeSessionId`, IDE bridge booted (`bridgePort`),
+`assistant: "PONG"`; `delete` → entity `stopped` on agents-server + DB
+row gone. **Next: 9** chat surface, 10 lifecycle UI, 11 diff approval. Phase 3's agent-diff
+approval card reuses the workspace surface's `DomoDiffView`
+(`@codemirror/merge`).
 
 ## Running it
 
@@ -113,7 +129,9 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   - `coast/{client,types,index}.ts` — typed coastd client
   - `projects.ts` — git/Coastfile detection + DB CRUD
   - `envs.ts` — env DB CRUD + `coast ls` reconciliation
-  - `schemas.ts` — shared Zod schemas (Project, Env, FsEntry)
+  - `schemas.ts` — shared Zod schemas (Project, Env, Session, FsEntry)
+  - `sessions.ts` — `sessions` table CRUD (Domo-side session pointer:
+    title override, `done`, `viewed_at_per_device`, cached status)
   - `workspace.ts` — `resolveEnvWorktree()` + `safeResolve()` (the single
     path-safety chokepoint), language-by-extension, binary/size sniff
   - `git.ts` — injection-safe `execFile git` helpers (status parse,
@@ -127,8 +145,12 @@ fallback to `$XDG_DATA_HOME/domo` when set).
     handshake/auth + MCP dispatch + 8 tools + lock-file lifecycle),
     `entity.ts` (`registerClaudeCodeCli` + handler + `executeClaudeTurn`
     → boots `createIdeBridge` then `runClaudeTurn`), `runtime.ts`
-    (`startElectricRuntime` singleton: registry + `createRuntimeHandler` +
-    pull-wake runner, non-fatal). Booted by `server/plugins/electric.ts`.
+    (`startElectricRuntime` singleton: registry + `createRuntimeHandler`
+    + `runtime.registerTypes()` + pull-wake runner, non-fatal — the
+    *worker* side), `client.ts` (the *driver* side: memoized
+    `createRuntimeServerClient` + `ensureRuntimeReady` +
+    `runnerDispatchPolicy` + `durableStreamUrl` + `deleteEntityBestEffort`,
+    used by `sessions.*`). Booted by `server/plugins/electric.ts`.
     Dev-only `app/plugins/dev-api-client.client.ts` exposes `apiClient` on
     `window` so smoke procedures are callable from the browser console.
 - **Workspace + git are host-side.** Under Option A (host-side `claude`)
@@ -184,14 +206,16 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   silently rendered nothing until items got `value`).
 
 - **IDE bridge connection didn't fire from a nested `claude` process** in the
-  Phase 0 smoke. Stream-json itself works fine; the bridge should attach when
-  we spawn from the standalone Nuxt process. The bridge server is now
-  implemented (`bridge.ts`) and its RFC 6455 codec + MCP dispatch are
-  smoke-verified in isolation, but **the real claude→bridge connect is still
-  unvalidated end-to-end** — it rides on 8d's `sessions.create`/`prompt`
-  (same deferral as 8b's spawn). Whether the CLI routes Edit/Write through
-  `openDiff` under `--permission-mode acceptEdits` (vs auto-applying) is the
-  load-bearing unknown to confirm there.
+  Phase 0 smoke. Resolved in the standalone Nuxt process: the 8d live smoke
+  spawned host `claude` per turn and `sessionMeta.bridgePort` was populated
+  for the duration (the bridge booted + the lock file was written under
+  `~/.claude/ide/`). The spawn → stream-json → wake → handler → mirrored
+  events path is fully validated. **Still unconfirmed:** whether the CLI
+  routes Edit/Write through the bridge's `openDiff` under
+  `--permission-mode acceptEdits` (vs auto-applying) — the 8d smoke used a
+  no-tool prompt to keep the throwaway worktree clean, so the actual
+  `openDiff` invocation is exercised for the first time in **step 11**
+  (the durable park/inbox approval round-trip), where it is load-bearing.
 - **IDE bridge ≠ Nitro WS.** Browser↔Domo channels use
   `defineWebSocketHandler` (one app listener); the IDE bridge needs a
   *per-session ephemeral-port localhost* listener the `claude` child
@@ -224,6 +248,26 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   via `ctx.db.collections.<c>.get/.toArray` + `ctx.db.actions.<c>_insert/_update`.
   `event.payload` schema must be `z.looseObject({})` (`z.record` emits
   JSON-Schema `propertyNames`, which agents-server's validator rejects).
+- **`registry.define` ≠ control-plane registration.** It only registers
+  the entity in-process. `spawnEntity('claude-code-cli', …)` 404s ("entity
+  type not found") until the type is POSTed to agents-server via
+  `runtime.registerTypes()` — `startElectricRuntime()` now does this on
+  boot (after `createRuntimeHandler`, before runner start), mirroring
+  electric-source `agents/src/server.ts → registerBuiltinAgentTypes`.
+  Idempotent (upsert). A dev server started *before* this call was added
+  won't have it active until restarted (the plugin's start is memoized).
+- **No type-default dispatch policy — spawn with an explicit runner
+  target.** agents-server resolves effective dispatch as
+  per-entity ?? parent ?? entity-type-default; there is **no** implicit
+  "route to any enabled local runner" fallback (verified in
+  `agents-server/src/routing/dispatch-policy.ts`). We deliberately do not
+  register a type default (matches electric-source builtin-agents — keeps
+  the type servable by other runtimes), so `sessions.create` passes
+  `dispatch_policy: { targets: [{ type:'runner', runnerId }] }` per spawn
+  (design Decided #16). Recipe proven by
+  `agents-server/test/horton-pull-wake-e2e.test.ts`. agents-server stores
+  the `/send` body's `type` as the inbox row's `message_type` (so the
+  entity's `prompt`/`diff_decision`/`abort` branch keys line up).
 
 ## Updating this file
 

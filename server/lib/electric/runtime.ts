@@ -66,6 +66,14 @@ export async function startElectricRuntime(): Promise<ElectricRuntime | null> {
     })
 
     try {
+      // Push the entity-type definition to agents-server's control plane.
+      // `registry.define` only registers it in-process; without this
+      // POST /_electric/entity-types, `spawnEntity('claude-code-cli', …)`
+      // from `sessions.create` 404s ("entity type not found"). The
+      // reference builtin-agents server does the same on boot
+      // (electric-source agents/src/server.ts → registerBuiltinAgentTypes).
+      // Idempotent (upsert), so safe on every (re)start.
+      await runtime.registerTypes()
       const { wake_stream_offset } = await registerRunner(serverUrl, runnerId)
       const runner = createPullWakeRunner({
         baseUrl: serverUrl,
