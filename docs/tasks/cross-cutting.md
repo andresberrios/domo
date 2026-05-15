@@ -1,0 +1,33 @@
+# Cross-cutting work
+
+Items that don't belong to any single phase: open decisions, pending discussions, and docs we owe alongside implementation.
+
+## Pending decisions
+
+- [ ] **1. Where `claude` runs — host-side vs in-coast.** Recommendation: host-side for v1. Revisit after first real users. Smoke tests in Phase 0 inform.
+- [ ] **2. Auto-install of Domo-flavored Coast skill into each env's worktree.** If host-side: yes — decide files (`CLAUDE.md` vs `.claude/skills/coasts/SKILL.md`), merge policy, opt-out.
+- [ ] **3. Coastfile-init heuristics.** Exact contents the "init Coastfile" button writes; whether to surface `coast installation-prompt` as a handoff to the user's agent.
+- [ ] **4. Coast version pinning / version check.** Which versions we test against; behavior when too old.
+- [ ] **5. Wire-level schema for `events` and `pendingDiffs` rows.** Need before the Phase 3 entity build.
+- [x] **6. Caching strategy: `coast ls` polling vs coastd events.** **Settled**: subscribe to coastd's `WS /api/v1/events` (typed `CoastEvent` enum) and use REST `/ls`+`/ports`+`/ps` for snapshots. No polling needed. Implemented in `server/lib/coast/`.
+- [ ] **7. Multi-user / auth design.** Deferred from v1.
+- [ ] **8. Mobile app (Capacitor wrapper).** Post-v1.
+- [ ] **9. No-remote projects (clone-from-remote inside Domo).** Post-v1.
+- [ ] **10. Concurrent-edit conflict surfacing within an env.** Lightweight badge in v1; soft locks later if needed.
+
+## Pending discussions (carried from `initial-design.md`)
+
+- [ ] Wire-level shape for the `claude-code-cli` entity rows (events / pendingDiffs / inbox messages)
+- [x] Domo data-dir conventions — **settled**: default `~/.domo/`, override via `DOMO_HOME` env var, XDG-aware fallback to `$XDG_DATA_HOME/domo` when set. State DB at `<domo-home>/state.db`. See `server/lib/paths.ts`.
+- [ ] Service-URL UX (where the clickable env-service URL surfaces; new tab vs proxied)
+
+## Docs we still owe
+
+- [ ] `docs/site/getting-started.md` (VPS five-minute path)
+- [ ] `docs/site/concepts.md` (Project / Env / Session, Coast relationship)
+- [ ] `docs/site/projects.md`, `envs.md`, `sessions.md`
+- [ ] `docs/site/securing-your-install.md` (Tailscale, Tunnel, Caddy front-proxy; explicit "no auth in v1")
+- [ ] `docs/site/billing-and-credentials.md` (subscription auth, `~/.claude` keychain, `ANTHROPIC_API_KEY` scrubbing)
+- [ ] `docs/site/exposing-dev-servers.md` (dynamic vs canonical ports; Tailscale/Tunnel routing)
+- [ ] `docs/site/troubleshooting.md`
+- [ ] `docs/site/reference.md` (Coastfile minimum, env vars, `.worktrees` gitignore convention, Coast version)

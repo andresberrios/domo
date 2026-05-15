@@ -1,0 +1,154 @@
+<script setup lang="ts">
+import type { Env } from '~~/server/lib/schemas'
+
+const props = defineProps<{ projectId: string; defaultBranch: string | null }>()
+const open = defineModel<boolean>('open', { required: true })
+const emit = defineEmits<{ created: [env: Env] }>()
+
+const name = ref('')
+const baseBranch = ref('')
+const pending = ref(false)
+const errMsg = ref<string | null>(null)
+const streaming = ref(false)
+const lines = ref<string[]>([])
+const createdEnv = ref<Env | null>(null)
+
+watch(open, (v) => {
+  if (v) {
+    name.value = ''
+    baseBranch.value = props.defaultBranch ?? ''
+    pending.value = false
+    errMsg.value = null
+    streaming.value = false
+    lines.value = []
+    createdEnv.value = null
+  }
+})
+
+let abort: AbortController | null = null
+
+async function streamRun(envId: string): Promise<void> {
+  abort = new AbortController()
+  const res = await fetch('/api/envs/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ envId }),
+    signal: abort.signal,
+  })
+  if (!res.ok || !res.body) {
+    errMsg.value = `coast run failed (${res.status})`
+    streaming.value = false
+    return
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let currentEvent: string | null = null
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const partials = buf.split('\n')
+    buf = partials.pop() ?? ''
+    for (const line of partials) {
+      if (line.startsWith('event: ')) currentEvent = line.slice(7).trim()
+      else if (line.startsWith('data: ') && currentEvent) {
+        const payload = line.slice(6)
+        if (currentEvent === 'progress') {
+          try {
+            const p = JSON.parse(payload)
+            lines.value.push(typeof p === 'string' ? p : (p.message ?? p.step ?? JSON.stringify(p)))
+          } catch { lines.value.push(payload) }
+        } else if (currentEvent === 'error') {
+          try { errMsg.value = JSON.parse(payload).error ?? payload } catch { errMsg.value = payload }
+        }
+        currentEvent = null
+      } else if (line === '') currentEvent = null
+    }
+  }
+  streaming.value = false
+}
+
+async function submit() {
+  if (!name.value.trim()) return
+  pending.value = true
+  errMsg.value = null
+  try {
+    const env = await apiClient.envs.create.call({
+      projectId: props.projectId,
+      name: name.value.trim(),
+      baseBranch: baseBranch.value.trim() || undefined,
+    })
+    createdEnv.value = env
+    emit('created', env)
+    streaming.value = true
+    await streamRun(env.id)
+  } catch (e) {
+    errMsg.value = (e as Error).message
+  } finally {
+    pending.value = false
+  }
+}
+
+onBeforeUnmount(() => { abort?.abort() })
+
+function close() { open.value = false }
+</script>
+
+<template>
+  <UModal v-model:open="open" title="Create environment" :ui="{ content: 'max-w-xl' }">
+    <template #body>
+      <div v-if="!createdEnv" class="space-y-3">
+        <UFormField label="Name" hint="Used as branch, worktree, and coast instance name">
+          <UInput v-model="name" size="sm" placeholder="feature-x" />
+        </UFormField>
+        <UFormField label="Base branch" :hint="defaultBranch ? `Default: ${defaultBranch}` : ''">
+          <UInput v-model="baseBranch" size="sm" :placeholder="defaultBranch ?? 'main'" />
+        </UFormField>
+
+        <p v-if="errMsg" class="text-sm text-error">
+          {{ errMsg }}
+        </p>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <UButton size="sm" variant="ghost" :disabled="pending" @click="close">
+            Cancel
+          </UButton>
+          <UButton size="sm" color="primary" :loading="pending" @click="submit">
+            Create
+          </UButton>
+        </div>
+      </div>
+
+      <div v-else class="space-y-3">
+        <p class="text-sm">
+          <UIcon
+            v-if="streaming"
+            name="i-lucide-loader-circle"
+            class="size-3.5 animate-spin inline mr-1.5"
+          />
+          <UIcon v-else name="i-lucide-check" class="size-3.5 inline mr-1.5 text-success" />
+          {{ streaming ? `Provisioning ${createdEnv.name}…` : `${createdEnv.name} is ready.` }}
+        </p>
+        <div
+          class="rounded-md bg-elevated/40 font-mono text-xs p-2 max-h-72 overflow-auto border border-default"
+        >
+          <div v-for="(l, i) in lines" :key="i" class="whitespace-pre-wrap">
+            {{ l }}
+          </div>
+          <div v-if="lines.length === 0" class="text-muted">
+            Waiting for coastd…
+          </div>
+        </div>
+        <p v-if="errMsg" class="text-sm text-error">
+          {{ errMsg }}
+        </p>
+        <div class="flex justify-end">
+          <UButton size="sm" :variant="streaming ? 'ghost' : 'solid'" @click="close">
+            {{ streaming ? 'Run in background' : 'Close' }}
+          </UButton>
+        </div>
+      </div>
+    </template>
+  </UModal>
+</template>

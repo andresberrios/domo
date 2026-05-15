@@ -1,0 +1,244 @@
+<script setup lang="ts">
+type Overview = Awaited<ReturnType<typeof apiClient.envs.overview.call>>
+
+const route = useRoute()
+const projectName = computed(() => route.params.project as string)
+const envName = computed(() => route.params.env as string)
+
+const { data: projects, refresh: refreshProjects } = await apiClient.projects.list.useCall()
+const project = computed(() => projects.value?.find((p) => p.name === projectName.value) ?? null)
+
+const projectId = computed(() => project.value?.id ?? '')
+const { data: envs, refresh: refreshEnvs } = await apiClient.envs.list.useCall({ projectId: projectId.value })
+const env = computed(() => envs.value?.find((e) => e.name === envName.value) ?? null)
+
+const overview = ref<Overview | null>(null)
+async function refreshOverview() {
+  if (!env.value) { overview.value = null; return }
+  overview.value = await apiClient.envs.overview.call({ id: env.value.id })
+}
+await refreshOverview()
+watch(env, () => refreshOverview())
+
+useCoastEvents((e) => {
+  if (e.event.startsWith('instance.') || e.event.startsWith('service.') || e.event.startsWith('port.')) {
+    refreshOverview()
+    refreshEnvs()
+    refreshProjects()
+  }
+})
+
+const busy = ref<null | 'stop' | 'start' | 'restart' | 'checkout' | 'release' | 'delete'>(null)
+const errMsg = ref<string | null>(null)
+const router = useRouter()
+
+async function action(kind: NonNullable<typeof busy.value>) {
+  if (!env.value || !project.value) return
+  busy.value = kind
+  errMsg.value = null
+  try {
+    switch (kind) {
+      case 'stop': await apiClient.envs.stop.call({ id: env.value.id }); break
+      case 'start': await apiClient.envs.start.call({ id: env.value.id }); break
+      case 'restart': await apiClient.envs.restart.call({ id: env.value.id }); break
+      case 'checkout': await apiClient.envs.checkout.call({ id: env.value.id }); break
+      case 'release': await apiClient.envs.checkout.call({ id: null, projectId: project.value.id }); break
+      case 'delete':
+        if (!confirm(`Delete env "${env.value.name}"? Coast instance and worktree will be removed.`)) {
+          busy.value = null
+          return
+        }
+        await apiClient.envs.delete.call({ id: env.value.id })
+        await router.push(`/p/${project.value.name}`)
+        return
+    }
+    await refreshOverview()
+    await refreshEnvs()
+  } catch (e) {
+    errMsg.value = (e as Error).message
+  } finally {
+    busy.value = null
+  }
+}
+
+function badgeColor(status: string | null | undefined): 'neutral' | 'success' | 'warning' | 'error' | 'primary' {
+  if (!status) return 'neutral'
+  switch (status) {
+    case 'running': case 'checked_out': return 'success'
+    case 'provisioning': case 'starting': case 'stopping': case 'assigning': case 'unassigning': return 'warning'
+    case 'stopped': case 'idle': case 'enqueued': return 'neutral'
+    default: return 'primary'
+  }
+}
+
+function serviceUrl(port: number): string {
+  return `${location.protocol}//${location.hostname}:${port}`
+}
+</script>
+
+<template>
+  <div v-if="!project || !env" class="p-6 text-muted">
+    Environment <code>{{ envName }}</code> not found in project <code>{{ projectName }}</code>.
+  </div>
+
+  <div v-else-if="overview" class="p-6 space-y-6 max-w-5xl">
+    <header class="space-y-1">
+      <h2 class="text-xl font-semibold flex items-center gap-2">
+        {{ env.name }}
+        <UIcon
+          v-if="overview.env.checkedOut"
+          name="i-lucide-star"
+          class="size-4 text-warning"
+          title="Checked out (canonical ports)"
+        />
+        <UBadge :color="badgeColor(overview.env.liveStatus ?? overview.env.status)" variant="subtle" size="sm">
+          {{ overview.env.liveStatus ?? overview.env.status ?? 'unknown' }}
+        </UBadge>
+      </h2>
+      <p class="text-sm text-muted">
+        <span v-if="env.branch">branch <code>{{ env.branch }}</code> · </span>
+        <span v-if="env.worktreePath">worktree <code>{{ env.worktreePath }}</code></span>
+      </p>
+      <p v-if="overview.coastUnreachable" class="text-xs text-error">
+        coastd is unreachable — showing cached data only.
+      </p>
+      <p v-else-if="overview.coastUnknown" class="text-xs text-warning">
+        Coast doesn't know about this instance yet. Run it (Start) to provision.
+      </p>
+
+      <div class="flex flex-wrap gap-2 pt-2">
+        <UButton size="xs" icon="i-lucide-square" variant="ghost" :loading="busy === 'stop'" :disabled="!!busy" @click="action('stop')">
+          Stop
+        </UButton>
+        <UButton size="xs" icon="i-lucide-play" variant="ghost" :loading="busy === 'start'" :disabled="!!busy" @click="action('start')">
+          Start
+        </UButton>
+        <UButton size="xs" icon="i-lucide-rotate-cw" variant="ghost" :loading="busy === 'restart'" :disabled="!!busy" @click="action('restart')">
+          Restart
+        </UButton>
+        <UButton v-if="!overview.env.checkedOut" size="xs" icon="i-lucide-star" variant="ghost" :loading="busy === 'checkout'" :disabled="!!busy" @click="action('checkout')">
+          Check out
+        </UButton>
+        <UButton v-else size="xs" icon="i-lucide-star-off" variant="ghost" :loading="busy === 'release'" :disabled="!!busy" @click="action('release')">
+          Release checkout
+        </UButton>
+        <UButton size="xs" icon="i-lucide-trash-2" variant="ghost" color="error" :loading="busy === 'delete'" :disabled="!!busy" @click="action('delete')">
+          Delete
+        </UButton>
+      </div>
+      <p v-if="errMsg" class="text-sm text-error">
+        {{ errMsg }}
+      </p>
+    </header>
+
+    <section v-if="overview.services.length > 0">
+      <h3 class="text-sm font-semibold mb-2">
+        Services
+      </h3>
+      <table class="w-full text-sm border border-default rounded overflow-hidden">
+        <thead class="bg-elevated/50">
+          <tr>
+            <th class="text-left px-3 py-2 font-medium">
+              Name
+            </th>
+            <th class="text-left px-3 py-2 font-medium">
+              Status
+            </th>
+            <th class="text-left px-3 py-2 font-medium">
+              Image
+            </th>
+            <th class="text-left px-3 py-2 font-medium">
+              Ports
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="s in overview.services" :key="s.name" class="border-t border-default">
+            <td class="px-3 py-2">
+              {{ s.name }}
+            </td>
+            <td class="px-3 py-2">
+              {{ s.status }}
+            </td>
+            <td class="px-3 py-2 font-mono text-xs">
+              {{ s.image }}
+            </td>
+            <td class="px-3 py-2 font-mono text-xs">
+              {{ s.ports }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section v-if="overview.ports.length > 0">
+      <h3 class="text-sm font-semibold mb-2">
+        Ports
+      </h3>
+      <table class="w-full text-sm border border-default rounded overflow-hidden">
+        <thead class="bg-elevated/50">
+          <tr>
+            <th class="text-left px-3 py-2 font-medium">
+              Logical
+            </th>
+            <th class="text-left px-3 py-2 font-medium">
+              Canonical
+            </th>
+            <th class="text-left px-3 py-2 font-medium">
+              Dynamic
+            </th>
+            <th class="text-left px-3 py-2 font-medium">
+              Open
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="p in overview.ports" :key="p.logicalName" class="border-t border-default">
+            <td class="px-3 py-2">
+              {{ p.logicalName }}
+              <UIcon v-if="p.isPrimary" name="i-lucide-star" class="size-3 inline ml-1 text-warning" title="Primary port" />
+            </td>
+            <td class="px-3 py-2 font-mono text-xs">
+              {{ p.canonicalPort }}
+            </td>
+            <td class="px-3 py-2 font-mono text-xs">
+              {{ p.dynamicPort }}
+            </td>
+            <td class="px-3 py-2">
+              <a
+                :href="serviceUrl(p.dynamicPort)"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-primary hover:underline inline-flex items-center gap-1"
+              >
+                {{ p.dynamicPort }}
+                <UIcon name="i-lucide-external-link" class="size-3" />
+              </a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h3 class="text-sm font-semibold mb-2">
+        Worktree
+      </h3>
+      <p class="text-sm text-muted">
+        <code>{{ env.worktreePath ?? '—' }}</code>
+      </p>
+      <p class="text-xs text-muted mt-1">
+        File browser wires up in Phase 2.
+      </p>
+    </section>
+
+    <section>
+      <h3 class="text-sm font-semibold mb-2">
+        Logs
+      </h3>
+      <p class="text-sm text-muted">
+        Logs preview wires up in Phase 2 alongside the terminal pane.
+      </p>
+    </section>
+  </div>
+</template>
