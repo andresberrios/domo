@@ -18,6 +18,9 @@ logs
 .fleet
 .idea
 
+# Playwright MCP scratch (snapshots / console logs)
+.playwright-mcp
+
 # Local env files
 .env
 .env.*

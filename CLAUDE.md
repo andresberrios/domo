@@ -18,18 +18,37 @@ Coast environments. Three documents define it:
 
 ## Where we are
 
-Phase 0 + 1 + 2 done. Phase 3 (`docs/tasks/phase-3-sessions.md`) is next:
-Electric Agents bring-up, the `claude-code-cli` entity, chat surface,
-session lifecycle, diff approval. Phase 3's agent-diff approval card
-reuses the workspace surface's `DomoDiffView` (`@codemirror/merge`).
+Phase 0 + 1 + 2 done. **Phase 3 in progress** (`docs/tasks/phase-3-sessions.md`).
+Step **8a landed & verified end-to-end** (typecheck clean; `docker compose
+up` → agents-server healthy; `electricSmoke` → runner `liveness: online`):
+Electric Agents control plane wired (docker-compose Postgres + agents-server,
+durable streams embedded), `claude-code-cli` entity registered with locked
+row schemas, in-process runtime connected via **pull-wake** (not the push
+webhook — see `initial-design.md` Decided #11–14). Step **8b landed**
+(typecheck clean; live check rides on 8d): real host-side `claude`
+stream-json spawn in `server/lib/electric/claude.ts` (ANTHROPIC_API_KEY
++ nested-claude vars scrubbed, `session_id` captured for `--resume`),
+wired into the entity. Step **8c landed** (typecheck + lint clean;
+codec/MCP smoke-verified incl. 70 KB reassembly; live claude-connect
+check rides on 8d): standalone per-session IDE-bridge WS server
+(`server/lib/electric/bridge.ts`, hand-rolled RFC 6455 — design Decided
+#15), 8 tools + `getDiagnostics`, `~/.claude/ide/<port>.lock` lifecycle,
+booted per turn with `CLAUDE_CODE_SSE_PORT`/`ENABLE_IDE_INTEGRATION` set;
+`openDiff` uses an interim resolver (persist + log) — the durable
+park/inbox approval round-trip is **step 11**. **Next: 8d** sessions
+procedures, then 9 chat surface, 10 lifecycle UI, 11 diff approval.
+Phase 3's agent-diff approval card reuses the workspace surface's
+`DomoDiffView` (`@codemirror/merge`).
 
 ## Running it
 
 ```bash
-pnpm install     # uses pnpm 11, native modules approved via pnpm-workspace.yaml
-pnpm dev         # http://localhost:3000
-pnpm typecheck   # vue-tsc
-pnpm lint        # eslint
+pnpm install        # pnpm 11; native builds in pnpm-workspace.yaml; @durable-streams/*
+                    # pinned to pkg.pr.new build 350 in package.json (deps + pnpm.overrides)
+docker compose up -d  # Postgres + agents-server (Phase 3 session runtime; not needed for P0–2)
+pnpm dev            # http://localhost:3000
+pnpm typecheck      # vue-tsc
+pnpm lint           # eslint
 ```
 
 ## Browser testing
@@ -48,6 +67,8 @@ a new env):
 
 - `health` — SQLite + `DOMO_HOME` resolution
 - `coastSmoke` — coastd reachability + Zod-validated `/ls`
+- `electricSmoke` — agents-server reachability + pull-wake runner state
+  (also lazily (re)starts the runtime, so call it after `docker compose up -d`)
 
 Call from the browser console: `await apiClient.health.call()`.
 
@@ -98,6 +119,18 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   - `git.ts` — injection-safe `execFile git` helpers (status parse,
     show, stage/unstage/commit/push, check-ignore)
   - `settings.ts` — `settings` table get/set (panel state, etc.)
+  - `electric/` — Electric Agents session runtime: `config.ts` (URLs/ids),
+    `schemas.ts` (locked `claude-code-cli` row/inbox Zod schemas),
+    `claude.ts` (`runClaudeTurn`: host-side `claude` stream-json spawn,
+    env scrub, `session_id` capture, bridge env wiring), `bridge.ts`
+    (`createIdeBridge`: hand-rolled per-session RFC 6455 WS server +
+    handshake/auth + MCP dispatch + 8 tools + lock-file lifecycle),
+    `entity.ts` (`registerClaudeCodeCli` + handler + `executeClaudeTurn`
+    → boots `createIdeBridge` then `runClaudeTurn`), `runtime.ts`
+    (`startElectricRuntime` singleton: registry + `createRuntimeHandler` +
+    pull-wake runner, non-fatal). Booted by `server/plugins/electric.ts`.
+    Dev-only `app/plugins/dev-api-client.client.ts` exposes `apiClient` on
+    `window` so smoke procedures are callable from the browser console.
 - **Workspace + git are host-side.** Under Option A (host-side `claude`)
   the worktree is a host dir, so `workspace.{tree,read,write}` use
   `node:fs` directly and `git.*` shells `git -C <worktree>` on the host —
@@ -151,8 +184,20 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   silently rendered nothing until items got `value`).
 
 - **IDE bridge connection didn't fire from a nested `claude` process** in the
-  Phase 0 smoke. Stream-json itself works fine; the bridge attaches when we
-  spawn from a standalone Nuxt process. Validate end-to-end in Phase 3.
+  Phase 0 smoke. Stream-json itself works fine; the bridge should attach when
+  we spawn from the standalone Nuxt process. The bridge server is now
+  implemented (`bridge.ts`) and its RFC 6455 codec + MCP dispatch are
+  smoke-verified in isolation, but **the real claude→bridge connect is still
+  unvalidated end-to-end** — it rides on 8d's `sessions.create`/`prompt`
+  (same deferral as 8b's spawn). Whether the CLI routes Edit/Write through
+  `openDiff` under `--permission-mode acceptEdits` (vs auto-applying) is the
+  load-bearing unknown to confirm there.
+- **IDE bridge ≠ Nitro WS.** Browser↔Domo channels use
+  `defineWebSocketHandler` (one app listener); the IDE bridge needs a
+  *per-session ephemeral-port localhost* listener the `claude` child
+  discovers via its own lock file, so it's a standalone hand-rolled
+  `node:http` RFC 6455 server (design Decided #15). Don't "consolidate" it
+  onto a Nitro route — the lock-file→port→`/` model can't multiplex.
 - **Subscription billing confirmed** via `apiKeySource: "none"` in the
   `system` init event when `ANTHROPIC_API_KEY` is scrubbed.
 - **Native modules** (`better-sqlite3`, `@parcel/watcher`, `esbuild`,
@@ -160,6 +205,25 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   pnpm 11 won't run install scripts otherwise.
 - **Coast version pinning is still open** (cross-cutting decision 4). Tested
   against 0.1.53. The daemon API is at `/api/v1/`.
+- **`@durable-streams/*` are pkg.pr.new URL deps, pinned to build 350.**
+  `@electric-ax/agents-*` pull `@durable-streams/{client,server,state}` from
+  `pkg.pr.new` URLs. pnpm 11 blocks URL *subdeps*; we hoist them to top-level
+  `dependencies` + `pnpm.overrides` (build 350) so the global
+  `block-exotic-subdeps` guard stays ON for everything else. Don't "fix" the
+  lint by deleting these — bumping Electric means re-pinning all three URLs.
+- **agents-server requires Postgres** (`DATABASE_URL`, throws without it) —
+  hence `docker-compose.yml`. Durable streams run embedded (no Electric sync
+  service). agents-server auto-migrates Postgres on boot.
+- **Runtime boot is non-fatal & pull-wake.** `server/plugins/electric.ts`
+  fire-and-forgets `startElectricRuntime()`; if agents-server is down Domo
+  still serves P0–2 surfaces. Wake delivery is a long-lived **pull-wake**
+  stream, *not* the `/_electric/builtin-agent-handler` push webhook (design
+  Decided #13). `createRuntimeHandler.onEnter` keeps the webhook a drop-in.
+- **Entity handler model.** One `handler(ctx, wake)` per wake; drain
+  `ctx.db.collections.inbox` past `inboxState.lastProcessedInboxKey`. State
+  via `ctx.db.collections.<c>.get/.toArray` + `ctx.db.actions.<c>_insert/_update`.
+  `event.payload` schema must be `z.looseObject({})` (`z.record` emits
+  JSON-Schema `propertyNames`, which agents-server's validator rejects).
 
 ## Updating this file
 

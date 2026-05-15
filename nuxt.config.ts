@@ -28,6 +28,8 @@ export default defineNuxtConfig({
     // Server-side only. Override via DOMO_HOME (data dir for SQLite + state).
     domoHome: process.env.DOMO_HOME || '',
     coastApiUrl: process.env.DOMO_COAST_API_URL || 'http://127.0.0.1:31415',
+    // Electric Agents control plane (docker-compose). Session runtime only.
+    agentsServerUrl: process.env.DOMO_AGENTS_SERVER_URL || 'http://127.0.0.1:4437',
   },
 
   // SQLite native binding can't be bundled.

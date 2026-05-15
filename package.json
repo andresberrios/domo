@@ -35,10 +35,18 @@
     "@codemirror/view": "^6.42.1",
     "@comark/nuxt": "^0.3.1",
     "@comark/vue": "^0.3.1",
+    "@durable-streams/client": "https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/client@350",
+    "@durable-streams/server": "https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/server@350",
+    "@durable-streams/state": "https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/state@350",
+    "@electric-ax/agents-runtime": "0.2.1",
+    "@electric-ax/agents-server": "0.4.2",
+    "@electric-ax/durable-streams-state-beta": "0.3.1",
     "@nuxt/ui": "^4.0.0",
+    "@tanstack/db": "^0.6.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
+    "agent-session-protocol": "^0.0.8",
     "better-sqlite3": "^11.7.0",
     "codemirror": "^6.0.2",
     "comark": "^0.3.2",
@@ -65,6 +73,11 @@
       "esbuild",
       "unrs-resolver",
       "vue-demi"
-    ]
+    ],
+    "overrides": {
+      "@durable-streams/client": "https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/client@350",
+      "@durable-streams/server": "https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/server@350",
+      "@durable-streams/state": "https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/state@350"
+    }
   }
 }

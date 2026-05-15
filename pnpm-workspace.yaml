@@ -1,6 +1,24 @@
+# @electric-ax/agents-* depend on @durable-streams/{client,server,state} via
+# pkg.pr.new tarball URLs. pnpm 11 blocks URL-resolved *subdeps* with one
+# global boolean (no per-package allowlist) and fires on the subdep edge even
+# when those packages are also top-level deps + overrides — so this
+# project-wide relaxation is mechanically required to install the Electric
+# Agents stack at all. pnpm 11 reads this from pnpm-workspace.yaml (camelCase),
+# NOT from .npmrc.
+#
+# The real trust control is the PINNING, not this flag: package.json pins all
+# three to pkg.pr.new build 350 as top-level `dependencies` AND in
+# `pnpm.overrides`, so resolution is deterministic and auditable in the
+# lockfile even with the guard off. Bumping Electric = re-pin all three URLs.
+blockExoticSubdeps: false
+
 allowBuilds:
+  '@google/genai': true
   '@parcel/watcher': true
   better-sqlite3: true
   esbuild: true
+  lmdb: true
+  msgpackr-extract: true
+  protobufjs: true
   unrs-resolver: true
   vue-demi: true

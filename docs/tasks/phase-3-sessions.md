@@ -2,16 +2,23 @@
 
 The chat surface comes online: Electric Agents host the `claude-code-cli` entity, the IDE bridge handles approvals, and the diff-approval round-trip ties chat to the workspace.
 
+> **Architecture resolved in Step 8a** (see `initial-design.md` Decided #11–14):
+> agents-server + Postgres run via `docker-compose.yml` (durable streams
+> embedded); the runtime is hosted in-process in Nuxt and connects out via
+> **pull-wake** (not the push webhook); `claude` runs host-side (Option A);
+> Domo metadata stays in SQLite. Pending-decision references live in
+> `../../initial-design.md` (there is no `tasks/README.md`).
+
 ## 8. Electric Agents bring-up
 
-- [ ] Run `@electric-ax/agents-server` as a sidecar process; healthcheck in Domo
-- [ ] Mount `/_electric/builtin-agent-handler` Nitro route delegating to `runtime.onEnter`
-- [ ] Define `claude-code-cli` entity (host-side spawn variant for v1 — see Pending Decision 1 in [`README.md`](README.md))
-- [ ] Implement the 8 required IDE bridge tools (`openDiff`, `openFile`, `getCurrentSelection`, `getLatestSelection`, `getOpenEditors`, `getWorkspaceFolders`, `checkDocumentDirty`, `saveDocument`, `closeAllDiffTabs`)
-- [ ] Lock-file lifecycle at `~/.claude/ide/<port>.lock` (create on entity boot, clean on shutdown)
-- [ ] Always strip `ANTHROPIC_API_KEY` from spawn env
-- [ ] Lock down `events` row schema and `pendingDiffs` row schema (see Pending Decision 5)
-- [ ] Capture `session_id` from the first `system` event into `sessionMeta.nativeSessionId`; use `--resume <id>` thereafter
+- [x] Run `@electric-ax/agents-server` as a sidecar (docker-compose: Postgres + agents-server); healthcheck via `electricSmoke` procedure
+- [x] ~~Mount `/_electric/builtin-agent-handler` Nitro route~~ → **pull-wake runner** instead (`createPullWakeRunner`, `server/lib/electric/runtime.ts`); push webhook remains a drop-in via `createRuntimeHandler.onEnter`
+- [x] Define `claude-code-cli` entity, host-side spawn variant (`server/lib/electric/entity.ts` + `claude.ts`) — registration, handler, and the real host-side `claude` stream-json spawn (8b seam filled; reuses the Phase 0 smoke's proven invocation)
+- [x] Implement the 8 required IDE bridge tools (`openDiff`, `openFile`, `getCurrentSelection`, `getLatestSelection`, `getOpenEditors`, `getWorkspaceFolders`, `checkDocumentDirty`, `saveDocument`, `closeAllDiffTabs`) — **8c** (`server/lib/electric/bridge.ts`: standalone per-session RFC 6455 WS server, hand-rolled — design Decided #15; `getDiagnostics` also stubbed to `[]`. `openDiff` delegates to an injected resolver; the durable approval round-trip is step 11. Codec + MCP dispatch smoke-verified incl. 70 KB-payload reassembly; live claude-connect check rides on 8d like 8b)
+- [x] Lock-file lifecycle at `~/.claude/ide/<port>.lock` (create on bridge boot, clean on `close()`; honors `CLAUDE_CONFIG_DIR`) — **8c**
+- [x] Always strip `ANTHROPIC_API_KEY` (+ nested-claude session vars) from spawn env; set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` (`server/lib/electric/claude.ts`)
+- [x] Lock down `events` / `pendingDiffs` / `sessionMeta` / `inboxState` row schemas (`server/lib/electric/schemas.ts`; resolves design Pending Discussion 1)
+- [x] Capture `session_id` from the first `system` event into `sessionMeta.nativeSessionId`; `--resume <id>` thereafter (live end-to-end check rides on 8d's `sessions.create`/`prompt`)
 
 ## 9. Chat surface
 

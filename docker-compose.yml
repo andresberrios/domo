@@ -1,0 +1,70 @@
+# Electric Agents control plane for Domo's session runtime (Phase 3).
+#
+# Two services, decoupled from Nuxt's process lifecycle (so HMR restarts
+# don't tear down durable streams / Postgres):
+#
+#   postgres       — agents-server's control-plane store ONLY (durable-stream
+#                     metadata, entity/wake registry, scheduler). Domo's own
+#                     project/env/session metadata stays in SQLite at
+#                     $DOMO_HOME/state.db — see initial-design.md "Top-level
+#                     metadata DB" (decided: not consolidated onto Postgres).
+#   agents-server  — @electric-ax/agents-server. Durable streams run EMBEDDED
+#                     (no separate Electric sync service); state lands in the
+#                     streams volume. agents-server auto-runs its Postgres
+#                     migrations on boot.
+#
+# Domo's Nuxt process hosts the `claude-code-cli` entity runtime in-process
+# and connects OUT to agents-server (pull-wake) — agents-server never needs
+# to reach back into Nuxt.
+#
+# The agents-server container reuses the host's installed node_modules via
+# the bind mount (the @durable-streams/* deps are pinned pkg.pr.new builds —
+# see package.json). Same-arch Linux host ↔ container keeps native modules
+# (lmdb) ABI-compatible. If that ever bites, run the bin on the host instead:
+#   node node_modules/@electric-ax/agents-server/dist/entrypoint.js
+name: domo-electric
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: electric_agents
+      POSTGRES_USER: electric_agents
+      POSTGRES_PASSWORD: electric_agents
+    ports:
+      - '${DOMO_PG_PORT:-54329}:5432'
+    volumes:
+      - domo-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U electric_agents -d electric_agents']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  agents-server:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    # pnpm symlinks the package into .pnpm; agents-server's entrypoint only
+    # runs main() when import.meta.url === argv[1], so it must be invoked via
+    # its real (symlink-resolved) path or it silently exits 0 doing nothing.
+    command: sh -c 'exec node "$$(readlink -f node_modules/@electric-ax/agents-server/dist/entrypoint.js)"'
+    environment:
+      ELECTRIC_AGENTS_DATABASE_URL: postgresql://electric_agents:electric_agents@postgres:5432/electric_agents
+      ELECTRIC_AGENTS_HOST: 0.0.0.0
+      ELECTRIC_AGENTS_PORT: '4437'
+      ELECTRIC_AGENTS_STREAMS_HOST: 0.0.0.0
+      ELECTRIC_AGENTS_STREAMS_PORT: '4438'
+      ELECTRIC_AGENTS_STREAMS_DATA_DIR: /streams-data
+    ports:
+      - '${DOMO_AGENTS_PORT:-4437}:4437'
+      - '${DOMO_AGENTS_STREAMS_PORT:-4438}:4438'
+    volumes:
+      - .:/app
+      - domo-streams:/streams-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  domo-pg:
+  domo-streams:
