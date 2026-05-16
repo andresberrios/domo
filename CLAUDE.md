@@ -52,9 +52,20 @@ pull-wake runner → handler → host `claude` → `system`/`assistant`/
 (subscription billing), `session_id` captured into
 `sessionMeta.nativeSessionId`, IDE bridge booted (`bridgePort`),
 `assistant: "PONG"`; `delete` → entity `stopped` on agents-server + DB
-row gone. **Next: 9** chat surface, 10 lifecycle UI, 11 diff approval. Phase 3's agent-diff
-approval card reuses the workspace surface's `DomoDiffView`
-(`@codemirror/merge`).
+row gone. Step **9 core landed & verified live end-to-end**: the chat
+surface is online — browser subscribes to the entity's durable stream
+through the same-origin `/_agents` reverse proxy, projects it to AI SDK
+`UIMessage[]` (**Decided #17**: UI transcript standardized on
+`UIMessage`; each backend is an adapter; `ai` is a types-only devDep)
+and renders with `UChatMessages` + per-tool cards. Step-9 smoke (isolated
+`DOMO_HOME`, throwaway worktree, no Coast container): created a session
+from the left rail, sent a prompt, browser rendered *user prompt →
+`Read` tool card → assistant "PONG"*, 0 console errors. **Deferred to
+the next group:** slash-command popup, `@`-mention popup,
+edit-and-regenerate, and left-rail "New session" auto-navigate (create
+works; direct URL works). **Next: 10** lifecycle UI, **11** diff
+approval. Phase 3's agent-diff approval card reuses the workspace
+surface's `DomoDiffView` (`@codemirror/merge`).
 
 ## Running it
 
@@ -153,6 +164,25 @@ fallback to `$XDG_DATA_HOME/domo` when set).
     used by `sessions.*`). Booted by `server/plugins/electric.ts`.
     Dev-only `app/plugins/dev-api-client.client.ts` exposes `apiClient` on
     `window` so smoke procedures are callable from the browser console.
+- **Chat surface = browser-direct durable subscription, adapter to
+  `UIMessage`.** The browser subscribes to the entity stream itself (not
+  a procedure) but through the same-origin `/_agents/**` transparent
+  reverse proxy (`server/routes/_agents/[...].ts` → agents-server; h3
+  `proxyRequest`, streaming-safe) so it works over Tailscale/Tunnel with
+  no auth. `useSessionStream(entityId)` wraps the framework-agnostic
+  agents-runtime core (no Vue binding ships): `createRuntimeServerClient`
+  → `getEntityInfo` → `createEntityStreamDB(url, customState)` →
+  `preload` → mirror each TanStack DB collection into a `shallowRef` on
+  change (client-only, dynamic import — CodeMirror/xterm pattern).
+  `app/utils/sessionMessages.ts` is the claude-cli **adapter**: folds the
+  native stream-json `events` + inbox prompts → AI SDK `UIMessage[]`
+  (Decided #17). Render path mirrors the chat template: `DomoChat`
+  (`UChatMessages` + sticky `UChatPrompt`/`UChatPromptSubmit`) →
+  `DomoChatMessageContent` (switch on part `type`) → `DomoChatToolCard`
+  (per-tool cards, reuses `DomoDiffView`) / `DomoComark` (markdown,
+  `defineComarkComponent`, on-demand shiki langs — no `@shikijs/langs`
+  imports). Client row mirrors of the locked entity schemas live in
+  `app/utils/sessionStreamTypes.ts` (server `schemas.ts` is server-only).
 - **Workspace + git are host-side.** Under Option A (host-side `claude`)
   the worktree is a host dir, so `workspace.{tree,read,write}` use
   `node:fs` directly and `git.*` shells `git -C <worktree>` on the host —
@@ -268,6 +298,21 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   `agents-server/test/horton-pull-wake-e2e.test.ts`. agents-server stores
   the `/send` body's `type` as the inbox row's `message_type` (so the
   entity's `prompt`/`diff_decision`/`abort` branch keys line up).
+- **`ai` is a types-only devDependency.** `@nuxt/ui`'s
+  `UChatMessages`/`UChatMessage`/`UChatPromptSubmit` `.d.ts` do
+  `import type … from 'ai'`, but `ai` is only a *devDependency of
+  `@nuxt/ui`* (not installed for consumers) — so using those components
+  needs `ai` present for vue-tsc. We install it `-D` for **types only**
+  (Decided #17). Don't `import` runtime values from `ai` in app code
+  *for now* — the claude-cli adapter doesn't use the AI SDK runtime (a
+  future `ai`-based backend may; not a permanent ban). Switch on the part
+  `type` string instead of `ai`'s `isToolUIPart` guards.
+  `import type { UIMessage, ChatStatus } from 'ai'` is fine (erased).
+- **vue-tsc rejects inline `as` casts with type literals in template
+  bindings.** `:x="(p as { t: string }).t"` / `:x="(p as any)"` →
+  `TS1005 ',' expected`. Do the narrowing in `<script>` (a typed
+  `computed`) and keep template expressions cast-free — see
+  `DomoChatMessageContent`.
 
 ## Updating this file
 

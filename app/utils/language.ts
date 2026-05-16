@@ -36,6 +36,54 @@ export function languageLabel(id: string): string {
   return LABELS[id] ?? 'Plain text'
 }
 
+const EXT_TO_ID: Record<string, string> = {
+  ts: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  tsx: 'typescript',
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  jsx: 'javascript',
+  json: 'json',
+  jsonc: 'json',
+  md: 'markdown',
+  markdown: 'markdown',
+  html: 'html',
+  htm: 'html',
+  vue: 'vue',
+  css: 'css',
+  scss: 'css',
+  less: 'css',
+  py: 'python',
+  rs: 'rust',
+  go: 'go',
+  c: 'cpp',
+  h: 'cpp',
+  cc: 'cpp',
+  cpp: 'cpp',
+  hpp: 'cpp',
+  java: 'java',
+  php: 'php',
+  sql: 'sql',
+  yaml: 'yaml',
+  yml: 'yaml',
+  xml: 'xml',
+  toml: 'toml',
+  sh: 'shell',
+  bash: 'shell',
+  zsh: 'shell',
+}
+
+/** Best-effort language id from a file path, for diff/tool rendering. */
+export function languageFromPath(path: string): string {
+  const base = path.split('/').pop() ?? path
+  if (base === 'Dockerfile') return 'dockerfile'
+  if (base === 'Makefile') return 'makefile'
+  const ext = base.includes('.') ? base.split('.').pop()!.toLowerCase() : ''
+  return EXT_TO_ID[ext] ?? 'text'
+}
+
 export async function languageExtension(id: string): Promise<Extension[]> {
   switch (id) {
     case 'typescript': {

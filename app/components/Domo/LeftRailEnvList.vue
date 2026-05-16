@@ -51,6 +51,14 @@ function badgeColor(status: string | null | undefined): 'neutral' | 'success' | 
           title="Checked out (canonical ports)"
         />
       </NuxtLink>
+
+      <DomoLeftRailSessionList
+        :project-name="projectName"
+        :env-name="e.name"
+        :env-id="e.id"
+        :show-done="showDone"
+        :refresh-key="refreshKey"
+      />
     </li>
   </ul>
 </template>

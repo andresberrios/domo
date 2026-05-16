@@ -23,14 +23,108 @@ The chat surface comes online: Electric Agents host the `claude-code-cli` entity
 
 ## 9. Chat surface
 
-- [ ] Subscribe to the entity's durable stream via the Electric runtime client + TanStack DB
-- [ ] Project `events` rows into `UIMessage.parts` for `UChatMessages`
-- [ ] Reuse `MessageContent.vue` pattern (text / reasoning / tool parts)
-- [ ] Tool renderers: Read, Glob, Grep, Edit, Write, Bash, TodoWrite, generic fallback
-- [ ] Audit 2–3 open-source Claude Code VS Code wrappers for tool-card UX
-- [ ] Prompt input with abort, edit-and-regenerate
-- [ ] Slash-command popup (`/`-triggered): built-in commands + custom commands scanned from `<worktree>/.claude/commands/*.md` and `~/.claude/commands/*.md` with `$ARGUMENTS` substitution — see [Chat input affordances](../initial-design.md#chat-input-affordances)
-- [ ] `@`-mention popup: file/folder/git-changes/commit-sha/url; inline chip rendering; server-side expansion before send
+> **Core landed & verified live end-to-end** (step-9 smoke: isolated `DOMO_HOME`,
+> throwaway worktree, no Coast container — created a session from the left rail,
+> sent a prompt, the browser rendered *user prompt → `Read` tool card →
+> assistant "PONG"* through the `/_agents` proxy + durable subscription +
+> `UIMessage` projection; typecheck + lint clean, 0 console errors). The
+> AI-SDK-`UIMessage` standardization is design **Decided #17**.
+
+- [x] Subscribe to the entity's durable stream via the Electric runtime client + TanStack DB (`app/composables/useSessionStream.ts` — wraps the framework-agnostic core through the same-origin `/_agents` reverse proxy, `server/routes/_agents/[...].ts`)
+- [x] Project `events` rows into `UIMessage.parts` for `UChatMessages` (`app/utils/sessionMessages.ts` — per-adapter client-side projection; tool_use↔tool_result correlated by id; inbox prompts interleaved as user messages)
+- [x] Reuse `MessageContent.vue` pattern (text / reasoning / tool parts) — `DomoChatMessageContent` switches on the AI SDK part `type` (no `ai` runtime import; `ai` is a types-only devDep)
+- [x] Tool renderers: Read, Glob, Grep, Edit, Write, Bash, TodoWrite, generic fallback (`DomoChatToolCard` — collapsed chip / inline `DomoDiffView` / bash block / todo checklist, per the audited VS Code patterns)
+- [x] Audit 2–3 open-source Claude Code VS Code wrappers for tool-card UX (andrepimenta + codeflow-studio `claude-code-chat`; findings drove `DomoChatToolCard`, also informing the deferred slash/`@` work below)
+- [~] Prompt input with abort — **abort done** (`UChatPromptSubmit` stop → `sessions.abort`); **edit-and-regenerate deferred** to the next group
+- [ ] Slash-command popup (`/`-triggered): built-in commands + custom commands scanned from `<worktree>/.claude/commands/*.md` and `~/.claude/commands/*.md` with `$ARGUMENTS` substitution — see [Chat input affordances](../initial-design.md#chat-input-affordances) — **next group**
+- [ ] `@`-mention popup: file/folder/git-changes/commit-sha/url; inline chip rendering; server-side expansion before send — **next group**
+
+### Step 9 remainder — next-session pickup notes
+
+Everything below is enough to resume cold. Step 9 **core is landed,
+typecheck/lint clean, and verified live**; what remains is the input
+affordances + a couple of polish items.
+
+**Architecture recap (how the chat surface is wired):**
+
+- Browser subscribes to the entity's durable stream **directly**, but
+  through the same-origin transparent proxy `server/routes/_agents/[...].ts`
+  (`/_agents/**` → agents-server; h3 `proxyRequest`, streaming-safe).
+  The agents-runtime client resolves everything as `baseUrl + path`, so
+  that one catch-all covers the `_electric` control GETs *and* the
+  long-poll/SSE stream. `baseUrl` used client-side = `location.origin + '/_agents'`.
+- `app/composables/useSessionStream.ts` — wraps the framework-agnostic
+  agents-runtime core (no Vue binding ships): `createRuntimeServerClient`
+  → `getEntityInfo(entityId)` → `createEntityStreamDB(url, customState)`
+  → `preload()` → mirrors each TanStack DB collection into a `shallowRef`
+  on every change. Custom collections passed explicitly (`events`,
+  `sessionMeta`, `pendingDiffs` pk `callId`, `inboxState`) — without
+  `customState` the client only materializes built-ins and our rows are
+  dropped. Client row mirrors: `app/utils/sessionStreamTypes.ts` (server
+  `schemas.ts` is server-only — keep these structurally in sync).
+- `app/utils/sessionMessages.ts` — the **claude-cli adapter**
+  (Decided #17): folds native stream-json `events` + `inbox` prompts →
+  AI SDK `UIMessage[]`. Render: `DomoChat` (`UChatMessages` +
+  `UChatPrompt`/`UChatPromptSubmit`) → `DomoChatMessageContent` →
+  `DomoChatToolCard` / `DomoComark`. Status comes from `sessionMeta`
+  (`running`/`pending-approval` → `streaming`), not the transcript.
+- Procedures: `sessions.prompt` / `sessions.abort` already wired to the
+  prompt box. `sessions.diffDecision` exists (used by step 11).
+
+**Deferred — concrete starting points:**
+
+- [ ] **Left-rail "New session" auto-navigate.** `LeftRailSessionList.vue`
+  `createSession()` does `apiClient.sessions.create` (works, verified) +
+  `router.push(...)` but the smoke showed it not navigating (direct URL
+  works fine). Likely the async-setup component + `useRouter()` timing or
+  the project tree collapsing on refresh. Start by reproducing with the
+  Playwright smoke below and checking whether `router.push` resolves /
+  whether `errMsg` is set. Small, isolated.
+- [ ] **Edit-and-regenerate** (chat template pattern; pairs with the
+  session-fork model on the durable stream). `UChatPromptSubmit` already
+  emits `@reload`; needs a "fork from message N" story — likely a new
+  `sessions.regenerate`-ish procedure + the entity forking the claude
+  session (`--resume` + branch the stream). Non-trivial; design it before
+  building (see initial-design.md "edit-and-regenerate" + "Reconciling
+  Claude's session file with the durable stream").
+- [ ] **Slash-command popup** — built-ins list + custom commands scanned
+  from `<worktree>/.claude/commands/*.md` (project) and
+  `~/.claude/commands/*.md` (user); filename→name, first `#`→description,
+  `$ARGUMENTS` substitution, project precedence. Reference impl audited:
+  `claude-code-chat-codeflow/src/utils/slash-commands.ts` and
+  `src/service/customCommandService.ts`; UI nav from
+  `claude-code-chat-codeflow/media/input.js:209-354`. Needs a small
+  server procedure to scan/merge the command files (host-side fs).
+- [ ] **`@`-mention popup** — file/folder (worktree index)/`@git-changes`/
+  `@<sha>`/`@url`; inline chips; **server-side expansion before send**
+  (resolve to file contents / diff text in `sessions.prompt`, or a
+  dedicated expand step). Reference: codeflow
+  `src/utils/context-mentions.ts` + `src/ui/components/ContextMenu.ts`.
+- [ ] **Tool-card polish (optional):** long-output truncation +
+  "show more" (audit notes — currently a max-h scroll), token/cost
+  footer, copy-message. Not blocking.
+
+**Gotchas that will bite a fresh session (also in CLAUDE.md):**
+
+- `ai` is a **types-only devDep**; never import its runtime in app code
+  yet (claude-cli adapter doesn't need it). Type-only `import type` ok.
+- vue-tsc rejects inline `as` casts with type literals in template
+  bindings — narrow in `<script>` (see `DomoChatMessageContent`).
+- `pkill -f`/`pgrep -f` patterns that contain "nuxt"/"dev" match the
+  command's own shell → exit 144 and the cleanup half-runs. Kill dev
+  servers by explicit PID (iterate `/proc/*/cmdline`, match
+  `projects/domo` + `nuxt.mjs dev`).
+
+**Live smoke recipe (isolated; never touches `~/.domo`):** agents-server
+must be up (`docker compose up -d`). Make a throwaway git worktree, start
+`DOMO_HOME=/tmp/xxx NUXT_IGNORE_LOCK=1 pnpm dev` **from the repo root**
+(not `cd`-ed into the worktree — no package.json there), seed a
+`projects` + `envs` row (better-sqlite3, `worktree_path` → the throwaway
+repo, env `status='running'`), then drive `http://localhost:3000` with
+the Playwright MCP: expand the project in the left rail → New session →
+type a prompt that reads a file → assert *user prompt → tool card →
+assistant text* render with 0 console errors. Tear down by PID + `rm -rf`
+the temp `DOMO_HOME`.
 
 ## 10. Session lifecycle UI
 

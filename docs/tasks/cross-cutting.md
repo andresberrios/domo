@@ -4,11 +4,11 @@ Items that don't belong to any single phase: open decisions, pending discussions
 
 ## Pending decisions
 
-- [ ] **1. Where `claude` runs — host-side vs in-coast.** Recommendation: host-side for v1. Revisit after first real users. Smoke tests in Phase 0 inform.
+- [x] **1. Where `claude` runs — host-side vs in-coast.** **Settled → host-side (Option A)**, `initial-design.md` Decided #11. In-coast revisit path retained for after first real users.
 - [ ] **2. Auto-install of Domo-flavored Coast skill into each env's worktree.** If host-side: yes — decide files (`CLAUDE.md` vs `.claude/skills/coasts/SKILL.md`), merge policy, opt-out.
 - [ ] **3. Coastfile-init heuristics.** Exact contents the "init Coastfile" button writes; whether to surface `coast installation-prompt` as a handoff to the user's agent.
 - [ ] **4. Coast version pinning / version check.** Which versions we test against; behavior when too old.
-- [ ] **5. Wire-level schema for `events` and `pendingDiffs` rows.** Need before the Phase 3 entity build.
+- [x] **5. Wire-level schema for `events` and `pendingDiffs` rows.** **Settled** (Phase 3 step 8) — locked in `server/lib/electric/schemas.ts`; client mirror in `app/utils/sessionStreamTypes.ts`. See `initial-design.md` Pending-discussion 1 (resolved).
 - [x] **6. Caching strategy: `coast ls` polling vs coastd events.** **Settled**: subscribe to coastd's `WS /api/v1/events` (typed `CoastEvent` enum) and use REST `/ls`+`/ports`+`/ps` for snapshots. No polling needed. Implemented in `server/lib/coast/`.
 - [ ] **7. Multi-user / auth design.** Deferred from v1.
 - [ ] **8. Mobile app (Capacitor wrapper).** Post-v1.
@@ -17,7 +17,7 @@ Items that don't belong to any single phase: open decisions, pending discussions
 
 ## Pending discussions (carried from `initial-design.md`)
 
-- [ ] Wire-level shape for the `claude-code-cli` entity rows (events / pendingDiffs / inbox messages)
+- [x] Wire-level shape for the `claude-code-cli` entity rows (events / pendingDiffs / inbox messages) — **settled** Phase 3 step 8 (`server/lib/electric/schemas.ts`)
 - [x] Domo data-dir conventions — **settled**: default `~/.domo/`, override via `DOMO_HOME` env var, XDG-aware fallback to `$XDG_DATA_HOME/domo` when set. State DB at `<domo-home>/state.db`. See `server/lib/paths.ts`.
 - [ ] Service-URL UX (where the clickable env-service URL surfaces; new tab vs proxied)
 
