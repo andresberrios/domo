@@ -17,6 +17,9 @@ import {
 import { CLAUDE_CODE_CLI_ENTITY } from './config'
 import { runClaudeTurn } from './claude'
 import { createIdeBridge } from './bridge'
+import { updateSession } from '../sessions'
+import { expandInWorktree } from '../promptExpand'
+import type { SessionStatus as DomoSessionStatus } from '../schemas'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -75,6 +78,44 @@ interface EntityCtx {
   }
 }
 
+/** Map the entity's lifecycle status onto Domo's left-rail vocabulary. */
+function domoStatus(s: SessionMetaRow['status']): DomoSessionStatus {
+  switch (s) {
+    case 'running':
+      return 'active'
+    case 'pending-approval':
+      return 'pending-approval'
+    case 'error':
+      return 'error'
+    default:
+      return 'waiting'
+  }
+}
+
+/**
+ * Best-effort mirror of live entity state into Domo's SQLite `sessions`
+ * row — the cached `status` + `lastEventAt` the left rail renders and the
+ * new-output dot is computed from. The durable stream stays authoritative;
+ * this is the fast-first-render cache. The pull-wake runtime is in-process
+ * (design Decided #11–14) so the `db()` singleton is available; a failure
+ * here (DB gone, row deleted mid-turn) must never break the turn.
+ */
+function mirrorToDb(
+  ctx: EntityCtx,
+  patch: { status?: SessionMetaRow['status']; lastEventAt?: number },
+): void {
+  const sessionId = ctx.db.collections.sessionMeta.get('current')?.sessionId
+  if (!sessionId) return
+  try {
+    updateSession(sessionId, {
+      ...(patch.status ? { status: domoStatus(patch.status) } : {}),
+      ...(patch.lastEventAt ? { lastEventAt: patch.lastEventAt } : {}),
+    })
+  } catch {
+    /* DB unavailable / row gone — cached status is non-authoritative */
+  }
+}
+
 function appendEvent(
   ctx: EntityCtx,
   type: string,
@@ -91,6 +132,8 @@ function appendEvent(
   }
   if (ctx.db.collections.events.get(row.key) !== undefined) return
   ctx.db.actions.events_insert({ row })
+  // Any mirrored envelope is "activity" → powers the per-device dot.
+  mirrorToDb(ctx, { lastEventAt: ts })
 }
 
 /**
@@ -129,9 +172,12 @@ async function executeClaudeTurn(
     },
   })
   try {
+    // Resolve custom slash commands + @-mentions now (the CLI doesn't in
+    // stream-json mode); the inbox/transcript keeps the raw user text.
+    const resolved = await expandInWorktree(meta.cwd, prompt)
     await runClaudeTurn({
       cwd: meta.cwd,
-      prompt,
+      prompt: resolved,
       resumeSessionId: meta.nativeSessionId,
       bridgePort: bridge.port,
       onEvent: (type, envelope) => appendEvent(ctx, type, envelope),
@@ -167,6 +213,7 @@ function seedStateIfNeeded(ctx: EntityCtx): {
     const args = creationArgsSchema.parse(ctx.args)
     meta = {
       key: 'current',
+      sessionId: args.sessionId,
       envId: args.envId,
       coastInstance: args.coastInstance,
       cwd: args.cwd,
@@ -190,6 +237,7 @@ function setStatus(ctx: EntityCtx, patch: Partial<SessionMetaRow>): void {
       if (patch.error === undefined && 'error' in patch) delete d.error
     },
   })
+  if (patch.status) mirrorToDb(ctx, { status: patch.status })
 }
 
 function advanceInbox(ctx: EntityCtx, key: string): void {

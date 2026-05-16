@@ -16,6 +16,9 @@ import { z } from 'zod'
  */
 
 export const creationArgsSchema = z.object({
+  /** Domo's `sessions` row id (== entity id) — lets the in-process entity
+   *  mirror live status/activity back into SQLite for the left rail. */
+  sessionId: z.string(),
   envId: z.string(),
   coastInstance: z.string(),
   cwd: z.string(),
@@ -46,6 +49,8 @@ export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
 export const sessionMetaRowSchema = z.object({
   key: z.literal('current'),
+  /** Domo `sessions` row id (== entity id); see creationArgsSchema. */
+  sessionId: z.string(),
   envId: z.string(),
   coastInstance: z.string(),
   cwd: z.string(),

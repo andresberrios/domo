@@ -142,6 +142,27 @@ const outputText = computed(() => {
   if (o == null) return ''
   return typeof o === 'object' ? JSON.stringify(o, null, 2) : String(o)
 })
+
+// Long tool output is collapsed to a head slice with a show-more toggle
+// (audited pattern) so a 5k-line file Read doesn't swamp the transcript.
+const OUTPUT_CHAR_LIMIT = 2000
+const expanded = ref(false)
+const isLong = computed(() => outputText.value.length > OUTPUT_CHAR_LIMIT)
+const shownOutput = computed(() =>
+  expanded.value || !isLong.value
+    ? outputText.value
+    : `${outputText.value.slice(0, OUTPUT_CHAR_LIMIT)}\n…`,
+)
+const copied = ref(false)
+async function copyOutput() {
+  try {
+    await navigator.clipboard.writeText(outputText.value)
+    copied.value = true
+    setTimeout(() => (copied.value = false), 1200)
+  } catch {
+    /* clipboard blocked — no-op */
+  }
+}
 </script>
 
 <template>
@@ -172,7 +193,27 @@ const outputText = computed(() => {
         <pre
           v-if="outputText"
           class="mt-1 text-xs bg-elevated/30 rounded p-2 max-h-80 overflow-auto whitespace-pre-wrap"
-        >{{ outputText }}</pre>
+        >{{ shownOutput }}</pre>
+        <div
+          v-if="outputText"
+          class="flex gap-3 mt-1 text-xs text-muted"
+        >
+          <button
+            v-if="isLong"
+            type="button"
+            class="hover:text-default"
+            @click="expanded = !expanded"
+          >
+            {{ expanded ? 'Show less' : 'Show more' }}
+          </button>
+          <button
+            type="button"
+            class="hover:text-default"
+            @click="copyOutput"
+          >
+            {{ copied ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
       </div>
 
       <ul v-else-if="family === 'todo'" class="space-y-1">
@@ -195,7 +236,27 @@ const outputText = computed(() => {
         <pre
           v-if="outputText"
           class="text-xs bg-elevated/30 rounded p-2 max-h-80 overflow-auto whitespace-pre-wrap"
-        >{{ outputText }}</pre>
+        >{{ shownOutput }}</pre>
+        <div
+          v-if="outputText"
+          class="flex gap-3 mt-1 text-xs text-muted"
+        >
+          <button
+            v-if="isLong"
+            type="button"
+            class="hover:text-default"
+            @click="expanded = !expanded"
+          >
+            {{ expanded ? 'Show less' : 'Show more' }}
+          </button>
+          <button
+            type="button"
+            class="hover:text-default"
+            @click="copyOutput"
+          >
+            {{ copied ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
         <pre
           v-else-if="running"
           class="text-xs text-muted"

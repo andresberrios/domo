@@ -10,7 +10,7 @@
  * flows back in via the durable stream (no optimistic echo needed — the
  * inbox prompt and assistant turn both arrive on the stream).
  */
-import type { ChatStatus } from 'ai'
+import type { ChatStatus, UIMessage } from 'ai'
 import { projectSessionMessages } from '~/utils/sessionMessages'
 
 const props = defineProps<{
@@ -21,6 +21,30 @@ const props = defineProps<{
 const entityRef = computed(() => props.entityId)
 const { events, sessionMeta, inbox, ready, error } =
   useSessionStream(entityRef)
+
+// While this session is the focused one, keep stamping the per-device
+// viewed-at forward so its left-rail new-output dot stays cleared; once
+// the user navigates away, later agent output advances `lastEventAt` past
+// the stamp and the dot appears. Debounced — a turn emits many envelopes.
+const deviceId = useDeviceId()
+let viewedTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleMarkViewed() {
+  if (!import.meta.client) return
+  if (viewedTimer) clearTimeout(viewedTimer)
+  viewedTimer = setTimeout(() => {
+    void apiClient.sessions.markViewed
+      .call({ id: props.sessionId, deviceId })
+      .catch(() => {})
+  }, 600)
+}
+onMounted(scheduleMarkViewed)
+watch(
+  [() => events.value.length, () => sessionMeta.value?.status],
+  scheduleMarkViewed,
+)
+onBeforeUnmount(() => {
+  if (viewedTimer) clearTimeout(viewedTimer)
+})
 
 const messages = computed(() =>
   projectSessionMessages(events.value, inbox.value),
@@ -36,9 +60,29 @@ const status = computed<ChatStatus>(() => {
 const input = ref('')
 const sending = ref(false)
 const actionError = ref<string | null>(null)
+const inputRef = useTemplateRef<{ focus: () => void }>('inputRef')
 
-async function onSubmit(e: Event) {
-  e.preventDefault()
+/**
+ * Edit-and-regenerate, pragmatic scope: pull a past user message back into
+ * the prompt so the user can refine and resend. This continues the *same*
+ * session (claude `--resume` keeps prior context), which matches how a
+ * correction is normally issued. True edit-and-*fork* — branching the
+ * durable stream + forking the native claude session at message N — is
+ * deferred (see docs/initial-design.md "Reconciling Claude's session
+ * file with the durable stream"): it needs durable-stream branch +
+ * arbitrary-offset claude rewind primitives we haven't validated.
+ */
+function editMessage(message: UIMessage) {
+  const text = message.parts
+    .filter((p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('')
+  if (!text) return
+  input.value = text
+  nextTick(() => inputRef.value?.focus())
+}
+
+async function onSubmit() {
   const text = input.value.trim()
   if (!text || sending.value) return
   sending.value = true
@@ -85,6 +129,21 @@ async function onStop() {
         <template #content="{ message }">
           <DomoChatMessageContent :message="message" />
         </template>
+        <template #actions="{ message }">
+          <UTooltip
+            v-if="message.role === 'user'"
+            text="Edit & resend"
+          >
+            <UButton
+              icon="i-lucide-pencil"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              aria-label="Edit & resend"
+              @click="editMessage(message)"
+            />
+          </UTooltip>
+        </template>
       </UChatMessages>
 
       <div
@@ -99,26 +158,14 @@ async function onStop() {
       <p v-if="actionError" class="text-xs text-error mb-2">
         {{ actionError }}
       </p>
-      <UChatPrompt
+      <DomoChatInput
+        ref="inputRef"
         v-model="input"
-        :placeholder="
-          status === 'streaming'
-            ? 'Agent is working — send to queue, or stop'
-            : 'Message the agent…'
-        "
-        variant="subtle"
+        :session-id="sessionId"
+        :status="status"
         @submit="onSubmit"
-      >
-        <template #footer>
-          <div class="flex-1" />
-          <UChatPromptSubmit
-            :status="status"
-            color="neutral"
-            size="sm"
-            @stop="onStop"
-          />
-        </template>
-      </UChatPrompt>
+        @stop="onStop"
+      />
     </div>
   </div>
 </template>

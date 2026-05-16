@@ -44,6 +44,7 @@ export default defineProcedure({
       type: CLAUDE_CODE_CLI_ENTITY,
       id,
       args: {
+        sessionId: id,
         envId: env.id,
         coastInstance: env.coastInstanceName,
         cwd: env.worktreePath,

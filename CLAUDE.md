@@ -60,12 +60,38 @@ through the same-origin `/_agents` reverse proxy, projects it to AI SDK
 and renders with `UChatMessages` + per-tool cards. Step-9 smoke (isolated
 `DOMO_HOME`, throwaway worktree, no Coast container): created a session
 from the left rail, sent a prompt, browser rendered *user prompt →
-`Read` tool card → assistant "PONG"*, 0 console errors. **Deferred to
-the next group:** slash-command popup, `@`-mention popup,
-edit-and-regenerate, and left-rail "New session" auto-navigate (create
-works; direct URL works). **Next: 10** lifecycle UI, **11** diff
-approval. Phase 3's agent-diff approval card reuses the workspace
-surface's `DomoDiffView` (`@codemirror/merge`).
+`Read` tool card → assistant "PONG"*, 0 console errors. **Step 9
+remainder + Step 10 landed & verified live end-to-end** (isolated
+`DOMO_HOME`, throwaway worktree, no Coast container; 0 console errors):
+left-rail **New session auto-navigate** fixed (`navigateTo`, navigate
+before refresh — a `useRouter()` captured after an async-setup `await`
+no-ops); **slash-command popup** (16 builtins ∪ custom commands scanned
+host-side from `<worktree>/.claude/commands/*.md` + user
+`<claudeConfigDir>/commands/*.md`, project precedence,
+`# heading`→description) and **`@`-mention popup** (worktree file/folder
+index via `git ls-files`, `@git-changes`, recent commits) with shared
+keyboard-nav `DomoChatAutocomplete` (Arrow/Tab/Enter/Esc intercepted at
+keydown-**capture** so they never reach `UChatPrompt`'s own
+Enter→submit/Esc→blur); **server-side expansion at execution time** —
+`expandInWorktree` (custom-command `$ARGUMENTS` substitution + `@`-token
+→ file/dir/diff/commit content) runs in the *entity*, not
+`sessions.prompt`, so the durable inbox/transcript keeps the **raw**
+text the user typed (smoke: typed `/greet Bob`, transcript showed
+`/greet Bob`, assistant greeted "Bob"); **tool-card** long-output
+show-more + copy; **edit-and-resend** (pragmatic — pulls a past user
+message back into the prompt; same session, claude `--resume` keeps
+context — true durable-stream *fork* deferred, see `initial-design.md`
+"Reconciling Claude's session file with the durable stream"). **Step 10
+session-lifecycle UI:** the in-process entity mirrors live status +
+`lastEventAt` into the Domo `sessions` row (`creationArgsSchema` /
+`sessionMetaRowSchema` now carry `sessionId`), so the rail status dot is
+live; per-device new-output dot (`useDeviceId` + `sessions.markViewed`,
+suppressed for the open session); per-row kebab (rename inline / mark
+done / delete); show-done toggle (pre-existing). Rail liveness is a
+single 4 s tick in `DomoLeftRailTree` (paused when the tab is hidden) —
+sessions have no coast-style browser event channel. **Next: 11** diff
+approval round-trip. Phase 3's agent-diff approval card reuses the
+workspace surface's `DomoDiffView` (`@codemirror/merge`).
 
 ## Running it
 
@@ -142,11 +168,24 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   - `envs.ts` — env DB CRUD + `coast ls` reconciliation
   - `schemas.ts` — shared Zod schemas (Project, Env, Session, FsEntry)
   - `sessions.ts` — `sessions` table CRUD (Domo-side session pointer:
-    title override, `done`, `viewed_at_per_device`, cached status)
+    title override, `done`, `viewed_at_per_device`, cached status) +
+    `markSessionViewed` (per-device read-modify-write for the new-output dot)
+  - `claudeCommands.ts` — builtin ∪ custom slash-command discovery
+    (`<worktree>/.claude/commands/*.md` + user `<claudeConfigDir>/
+    commands/*.md`, project precedence) + `expandSlashCommand`
+    (`$ARGUMENTS` substitution); `mentions.ts` — `@`-mention index
+    (`searchMentions`) + `expandMentions` (file/dir/`@git-changes`/
+    `@<sha>`/`@url` → inline content); `promptExpand.ts` —
+    `expandInWorktree` orchestrates both. **Expansion runs in the
+    *entity* at execution time** (`executeClaudeTurn`), not in
+    `sessions.prompt`, so the durable inbox / transcript keeps the raw
+    text the user typed.
   - `workspace.ts` — `resolveEnvWorktree()` + `safeResolve()` (the single
     path-safety chokepoint), language-by-extension, binary/size sniff
   - `git.ts` — injection-safe `execFile git` helpers (status parse,
-    show, stage/unstage/commit/push, check-ignore)
+    show, stage/unstage/commit/push, check-ignore, plus
+    `gitListPaths`/`gitRecentCommits`/`gitDiffWorking`/`gitShowCommit`
+    for `@`-mention indexing/expansion)
   - `settings.ts` — `settings` table get/set (panel state, etc.)
   - `electric/` — Electric Agents session runtime: `config.ts` (URLs/ids),
     `schemas.ts` (locked `claude-code-cli` row/inbox Zod schemas),
@@ -155,7 +194,10 @@ fallback to `$XDG_DATA_HOME/domo` when set).
     (`createIdeBridge`: hand-rolled per-session RFC 6455 WS server +
     handshake/auth + MCP dispatch + 8 tools + lock-file lifecycle),
     `entity.ts` (`registerClaudeCodeCli` + handler + `executeClaudeTurn`
-    → boots `createIdeBridge` then `runClaudeTurn`), `runtime.ts`
+    → `expandInWorktree` then boots `createIdeBridge` then `runClaudeTurn`;
+    also `mirrorToDb` — best-effort mirror of live status + `lastEventAt`
+    into the Domo `sessions` row, the in-process runtime being the single
+    writer), `runtime.ts`
     (`startElectricRuntime` singleton: registry + `createRuntimeHandler`
     + `runtime.registerTypes()` + pull-wake runner, non-fatal — the
     *worker* side), `client.ts` (the *driver* side: memoized
@@ -181,7 +223,14 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   `DomoChatMessageContent` (switch on part `type`) → `DomoChatToolCard`
   (per-tool cards, reuses `DomoDiffView`) / `DomoComark` (markdown,
   `defineComarkComponent`, on-demand shiki langs — no `@shikijs/langs`
-  imports). Client row mirrors of the locked entity schemas live in
+  imports). Prompt input is `DomoChatInput` (wraps `UChatPrompt`/
+  `UChatPromptSubmit` + the shared keyboard-nav `DomoChatAutocomplete`
+  popup; owns `/` + `@` trigger detection off the textarea value/caret;
+  nav keys intercepted at keydown-**capture** on the wrapper so they
+  never reach `UChatPrompt`'s own Enter→submit / Esc→blur).
+  `useDeviceId` (localStorage uuid) keys the per-device new-output dot;
+  the transcript `#actions` slot hosts the edit-and-resend pencil.
+  Client row mirrors of the locked entity schemas live in
   `app/utils/sessionStreamTypes.ts` (server `schemas.ts` is server-only).
 - **Workspace + git are host-side.** Under Option A (host-side `claude`)
   the worktree is a host dir, so `workspace.{tree,read,write}` use
@@ -254,6 +303,32 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   onto a Nitro route — the lock-file→port→`/` model can't multiplex.
 - **Subscription billing confirmed** via `apiKeySource: "none"` in the
   `system` init event when `ANTHROPIC_API_KEY` is scrubbed.
+- **Prompt expansion happens in the entity, not the procedure.** Custom
+  slash-command + `@`-mention resolution runs in `executeClaudeTurn`
+  (`expandInWorktree`), so `sessions.prompt`'s inbox payload — and thus
+  the durable transcript — stays the *raw* text the user typed. Don't
+  "optimize" by expanding in `sessions.prompt`: the transcript would then
+  show a 60 KB file dump instead of `@file`. The CLI doesn't resolve
+  either custom commands or `@`-mentions in `-p` stream-json mode, so the
+  host must.
+- **`creationArgsSchema` now requires `sessionId`** (== entity id; lets
+  the in-process entity `mirrorToDb` live status/`lastEventAt` into the
+  Domo `sessions` row for the rail). An entity persisted in agents-server
+  Postgres *before* this change will fail `creationArgsSchema.parse` on
+  resume — fine in dev (sessions are throwaway; restart/reset), but a
+  reason not to treat dev streams as durable across schema bumps.
+- **Autocomplete nav keys are intercepted at keydown-capture.**
+  `UChatPrompt` binds its own Enter→submit / Esc→blur on the inner
+  textarea. `DomoChatInput`'s wrapper `@keydown.capture` handles
+  Arrow/Tab/Enter/Esc *and* `stopPropagation()` while the popup is open,
+  so the event never reaches the textarea's bubble-phase handlers. Don't
+  move this to a bubble listener — both fire on the same element and the
+  submit would race the selection.
+- **`@`-mentions are plain text tokens, not rich contenteditable chips.**
+  The design mentions "inline chips"; we ship textarea `@token` text with
+  server-side expansion (functionally equivalent, no contenteditable
+  complexity). A future chip UI can layer on without changing the
+  expansion contract.
 - **Native modules** (`better-sqlite3`, `@parcel/watcher`, `esbuild`,
   `unrs-resolver`, `vue-demi`) require `allowBuilds:` in `pnpm-workspace.yaml` —
   pnpm 11 won't run install scripts otherwise.

@@ -22,6 +22,9 @@ export default defineProcedure({
         statusMessage: 'session has no entity',
       })
     }
+    // Raw text only — the entity expands custom slash commands +
+    // @-mentions at execution time, so the durable inbox / transcript
+    // keeps exactly what the user typed.
     const client = await ensureRuntimeReady()
     await client.sendEntityMessage({
       targetUrl: session.entityId,

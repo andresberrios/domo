@@ -262,9 +262,9 @@ Mined from the two cloned VS Code extensions. Phase 3 chat-prompt component shou
   - **Git** — `@git-changes` (current uncommitted diff) and `@<short-sha>` (specific commit).
   - **URL** — `@https://...` passes the URL through.
   - **Problems** — surface env service errors / build diagnostics if we have any to surface. (Skip for v1 if not trivially available.)
-- **At-mentions become inline chips** in the rendered prompt and are re-expanded server-side into actual file contents / diff text before being shipped to the CLI.
+- **At-mentions become inline chips** in the rendered prompt and are re-expanded server-side into actual file contents / diff text before being shipped to the CLI. *(Phase 3 ships these as plain-text `@token`s in the textarea, not contenteditable chips — functionally equivalent given the server-side expansion contract; a chip UI can layer on later without changing it. Expansion runs in the **entity** at execution time, not in `sessions.prompt`, so the durable transcript keeps the raw text the user typed.)*
 - **Drag-and-drop** files from the right-panel file tree into the prompt (Nuxt chat template already has this pattern).
-- **Edit-and-regenerate** on past user messages (Nuxt chat template pattern; pairs with our session-fork model on the durable stream).
+- **Edit-and-regenerate** on past user messages (Nuxt chat template pattern; pairs with our session-fork model on the durable stream). **Shipped as edit-and-*resend*** (Phase 3): the transcript's per-message pencil pulls the text back into the prompt for refinement; resending continues the *same* session (claude `--resume` keeps prior context — the normal way a correction is issued). True edit-and-*fork* — branching the durable stream and forking the native claude session at message N — stays deferred: it needs a durable-stream branch primitive and arbitrary-offset claude rewind we have not validated (see [Reconciling Claude's session file with the durable stream](#reconciling-claudes-session-file-with-the-durable-stream)).
 - **Abort** button while a turn is in flight — sends inbox `abort`.
 
 These are Phase 3 work; itemized in [`tasks/phase-3-sessions.md`](../docs/tasks/phase-3-sessions.md).

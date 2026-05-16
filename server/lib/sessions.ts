@@ -149,6 +149,25 @@ export function updateSession(
     .run(params)
 }
 
+/**
+ * Stamp one device's last-viewed time (read-modify-write the JSON map so
+ * parallel devices don't clobber each other's entries). Drives the
+ * left-rail new-output dot: a session shows the dot when its
+ * `lastEventAt` is newer than this device's stamp. No-op if the row is
+ * gone. Returns the updated row (null if missing).
+ */
+export function markSessionViewed(
+  id: string,
+  deviceId: string,
+  ts: number,
+): SessionRow | null {
+  const session = getSession(id)
+  if (!session) return null
+  const viewedAtPerDevice = { ...session.viewedAtPerDevice, [deviceId]: ts }
+  updateSession(id, { viewedAtPerDevice })
+  return { ...session, viewedAtPerDevice }
+}
+
 export function deleteSession(id: string): void {
   db().prepare(`DELETE FROM sessions WHERE id = ?`).run(id)
 }

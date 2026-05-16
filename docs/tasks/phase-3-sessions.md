@@ -35,15 +35,16 @@ The chat surface comes online: Electric Agents host the `claude-code-cli` entity
 - [x] Reuse `MessageContent.vue` pattern (text / reasoning / tool parts) — `DomoChatMessageContent` switches on the AI SDK part `type` (no `ai` runtime import; `ai` is a types-only devDep)
 - [x] Tool renderers: Read, Glob, Grep, Edit, Write, Bash, TodoWrite, generic fallback (`DomoChatToolCard` — collapsed chip / inline `DomoDiffView` / bash block / todo checklist, per the audited VS Code patterns)
 - [x] Audit 2–3 open-source Claude Code VS Code wrappers for tool-card UX (andrepimenta + codeflow-studio `claude-code-chat`; findings drove `DomoChatToolCard`, also informing the deferred slash/`@` work below)
-- [~] Prompt input with abort — **abort done** (`UChatPromptSubmit` stop → `sessions.abort`); **edit-and-regenerate deferred** to the next group
-- [ ] Slash-command popup (`/`-triggered): built-in commands + custom commands scanned from `<worktree>/.claude/commands/*.md` and `~/.claude/commands/*.md` with `$ARGUMENTS` substitution — see [Chat input affordances](../initial-design.md#chat-input-affordances) — **next group**
-- [ ] `@`-mention popup: file/folder/git-changes/commit-sha/url; inline chip rendering; server-side expansion before send — **next group**
+- [x] Prompt input with abort — **abort done** (`UChatPromptSubmit` stop → `sessions.abort`); **edit-and-resend done** (pragmatic: `#actions` pencil pulls a past user message back into the prompt; same session, claude `--resume` keeps context). True edit-and-**fork** (branch the durable stream + fork the native claude session at message N) stays deferred — needs durable-stream branch + arbitrary-offset claude rewind primitives we haven't validated; see [Reconciling Claude's session file with the durable stream](../initial-design.md#reconciling-claudes-session-file-with-the-durable-stream)
+- [x] Slash-command popup (`/`-triggered): built-in commands + custom commands scanned from `<worktree>/.claude/commands/*.md` and user `<claudeConfigDir>/commands/*.md` with `$ARGUMENTS` substitution — `server/lib/claudeCommands.ts` + `sessions.commands`; popup `DomoChatAutocomplete` via `DomoChatInput`. **Verified live** (16 builtins ∪ custom `/greet` tagged "project"; `/greet Bob` → transcript shows raw `/greet Bob`, assistant greeted "Bob")
+- [x] `@`-mention popup: file/folder/`@git-changes`/commit-sha/url; **server-side expansion at execution time** (entity, not `sessions.prompt`, so the transcript stays raw) — `server/lib/mentions.ts` + `sessions.mentions`. Plain-text tokens, not rich contenteditable chips (functionally equivalent; chips can layer on later). **Verified live** (popup filtered to `hello.txt`, Tab-accept inserted `@hello.txt `)
 
-### Step 9 remainder — next-session pickup notes
+### Step 9 — fully landed (core + remainder)
 
-Everything below is enough to resume cold. Step 9 **core is landed,
-typecheck/lint clean, and verified live**; what remains is the input
-affordances + a couple of polish items.
+Step 9 core **and** the deferred remainder (input affordances + polish +
+auto-navigate + edit-and-resend) are landed, typecheck/lint clean, and
+verified live. The architecture recap + gotchas + smoke recipe below are
+kept for step 11.
 
 **Architecture recap (how the chat surface is wired):**
 
@@ -71,38 +72,33 @@ affordances + a couple of polish items.
 - Procedures: `sessions.prompt` / `sessions.abort` already wired to the
   prompt box. `sessions.diffDecision` exists (used by step 11).
 
-**Deferred — concrete starting points:**
+**Landed (this group), verified live:**
 
-- [ ] **Left-rail "New session" auto-navigate.** `LeftRailSessionList.vue`
-  `createSession()` does `apiClient.sessions.create` (works, verified) +
-  `router.push(...)` but the smoke showed it not navigating (direct URL
-  works fine). Likely the async-setup component + `useRouter()` timing or
-  the project tree collapsing on refresh. Start by reproducing with the
-  Playwright smoke below and checking whether `router.push` resolves /
-  whether `errMsg` is set. Small, isolated.
-- [ ] **Edit-and-regenerate** (chat template pattern; pairs with the
-  session-fork model on the durable stream). `UChatPromptSubmit` already
-  emits `@reload`; needs a "fork from message N" story — likely a new
-  `sessions.regenerate`-ish procedure + the entity forking the claude
-  session (`--resume` + branch the stream). Non-trivial; design it before
-  building (see initial-design.md "edit-and-regenerate" + "Reconciling
-  Claude's session file with the durable stream").
-- [ ] **Slash-command popup** — built-ins list + custom commands scanned
-  from `<worktree>/.claude/commands/*.md` (project) and
-  `~/.claude/commands/*.md` (user); filename→name, first `#`→description,
-  `$ARGUMENTS` substitution, project precedence. Reference impl audited:
-  `claude-code-chat-codeflow/src/utils/slash-commands.ts` and
-  `src/service/customCommandService.ts`; UI nav from
-  `claude-code-chat-codeflow/media/input.js:209-354`. Needs a small
-  server procedure to scan/merge the command files (host-side fs).
-- [ ] **`@`-mention popup** — file/folder (worktree index)/`@git-changes`/
-  `@<sha>`/`@url`; inline chips; **server-side expansion before send**
-  (resolve to file contents / diff text in `sessions.prompt`, or a
-  dedicated expand step). Reference: codeflow
-  `src/utils/context-mentions.ts` + `src/ui/components/ContextMenu.ts`.
-- [ ] **Tool-card polish (optional):** long-output truncation +
-  "show more" (audit notes — currently a max-h scroll), token/cost
-  footer, copy-message. Not blocking.
+- [x] **Left-rail "New session" auto-navigate** — root cause: `useRouter()`
+  captured after the top-level `await` in the async-setup component runs
+  outside the instance context, so its `push` silently no-ops. Fixed with
+  `navigateTo`, navigating *before* the list `refresh()` (the chat page
+  resolves the session itself). Smoke: New session → URL becomes
+  `/p/.../s/<id>`, chat renders.
+- [x] **Edit-and-resend** — `#actions` pencil on past user messages pulls
+  the text back into the prompt (`DomoChatInput` exposes `focus()`). Same
+  session (claude `--resume` keeps context). True edit-and-**fork**
+  (durable-stream branch + native claude rewind at message N) deferred —
+  primitives unvalidated; design pointer in `initial-design.md`.
+- [x] **Slash-command popup** — `server/lib/claudeCommands.ts`
+  (`BUILTIN_SLASH_COMMANDS` ∪ project `<worktree>/.claude/commands/*.md`
+  ∪ user `<claudeConfigDir>/commands/*.md`, project precedence,
+  `# heading`→description, `$ARGUMENTS` substitution) + `sessions.commands`
+  procedure + `DomoChatAutocomplete`/`DomoChatInput`.
+- [x] **`@`-mention popup** — `server/lib/mentions.ts` (`searchMentions`
+  over `git ls-files` + dirs + recent commits + `@git-changes`;
+  `expandMentions` → file/dir/diff/commit content) + `sessions.mentions`.
+  Plain-text tokens (not contenteditable chips — functionally equivalent).
+- [x] **Expansion runs in the entity** (`expandInWorktree` in
+  `executeClaudeTurn`), not `sessions.prompt`, so the durable inbox /
+  transcript keeps the raw text the user typed.
+- [x] **Tool-card polish** — long-output show-more + copy in
+  `DomoChatToolCard`.
 
 **Gotchas that will bite a fresh session (also in CLAUDE.md):**
 
@@ -126,12 +122,12 @@ type a prompt that reads a file → assert *user prompt → tool card →
 assistant text* render with 0 console errors. Tear down by PID + `rm -rf`
 the temp `DOMO_HOME`.
 
-## 10. Session lifecycle UI
+## 10. Session lifecycle UI — landed & verified live
 
-- [ ] Status indicators per session row: `active` / `waiting` / `pending-approval` / `error`
-- [ ] New-output dot (per-device viewed-at tracking)
-- [ ] Mark-done action + done state in DB
-- [ ] "Show done" toggle at top of left panel
+- [x] Status indicators per session row: `active` / `waiting` / `pending-approval` / `error` — the in-process entity `mirrorToDb`'s its live status (mapped from `sessionMeta.status`) + `lastEventAt` into the Domo `sessions` row; the rail dot reads the cached value, kept fresh by a single 4 s tick in `DomoLeftRailTree` (paused when the tab is hidden — sessions have no coast-style browser event channel). `creationArgsSchema`/`sessionMetaRowSchema` now carry `sessionId` (== entity id) so the entity can address the row.
+- [x] New-output dot (per-device viewed-at tracking) — `useDeviceId` (localStorage uuid) + `sessions.markViewed` (read-modify-write of `viewed_at_per_device`); `DomoChat` stamps it debounced while focused, so the dot only shows for *other* devices / background sessions. Smoke confirmed: device stamp newer than `lastEventAt` after a turn ⇒ no false dot on the open session.
+- [x] Mark-done action + done state in DB — per-row kebab (`UDropdownMenu`) in `DomoLeftRailSessionList`: Rename (inline), Mark done / not done (`sessions.done`), Delete (`sessions.delete`, confirms; navigates away if the open session). Smoke: Mark done → row hidden (show-done off).
+- [x] "Show done" toggle at top of left panel — pre-existing `DomoLeftRailFooter` switch (`useState('leftRail:showDone')`); smoke confirmed it reveals/hides done rows.
 
 ## 11. Diff approval round-trip
 

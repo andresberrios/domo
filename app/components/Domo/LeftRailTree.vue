@@ -30,6 +30,23 @@ useCoastEvents((e: CoastEvent) => {
 
 // Bumping this counter triggers DomoLeftRailEnvList children to refetch.
 const envRefreshTick = useState('leftRail:envRefreshTick', () => 0)
+
+// Sessions have no coast-style event channel to the browser, so the rail
+// can't be notified when a background session produces output / changes
+// status. A single low-frequency tick (paused when the tab is hidden)
+// drives DomoLeftRailSessionList.refresh() — bounded and rail-scoped.
+const sessionTick = useState('leftRail:sessionTick', () => 0)
+if (import.meta.client) {
+  let timer: ReturnType<typeof setInterval> | null = null
+  onMounted(() => {
+    timer = setInterval(() => {
+      if (document.visibilityState === 'visible') sessionTick.value++
+    }, 4000)
+  })
+  onBeforeUnmount(() => {
+    if (timer) clearInterval(timer)
+  })
+}
 </script>
 
 <template>

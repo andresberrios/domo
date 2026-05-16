@@ -21,6 +21,8 @@ export interface EventRow {
 
 export interface SessionMetaRow {
   key: 'current'
+  /** Domo `sessions` row id (== entity id). */
+  sessionId: string
   envId: string
   coastInstance: string
   cwd: string

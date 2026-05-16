@@ -140,6 +140,95 @@ export async function gitShow(
 }
 
 /**
+ * Worktree-relative paths git considers relevant: tracked files plus
+ * untracked-but-not-ignored files (`.gitignore` honored, same set the
+ * file tree shows). Powers the `@`-mention file/folder index. Empty on a
+ * non-repo / error rather than throwing.
+ */
+export async function gitListPaths(worktree: string): Promise<string[]> {
+  try {
+    const out = await git(worktree, [
+      'ls-files',
+      '-z',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+    ])
+    const seen = new Set<string>()
+    for (const p of out.split('\0')) {
+      if (p) seen.add(p)
+    }
+    return [...seen]
+  } catch {
+    return []
+  }
+}
+
+/** Recent commits (newest first) for the `@`-mention picker. */
+export async function gitRecentCommits(
+  worktree: string,
+  limit: number,
+): Promise<Array<{ sha: string; subject: string }>> {
+  try {
+    const out = await git(worktree, [
+      'log',
+      `-n${Math.max(1, Math.min(limit, 100))}`,
+      '--no-color',
+      '--pretty=format:%h%x00%s',
+    ])
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [sha, subject] = line.split('\0')
+        return { sha: sha ?? '', subject: subject ?? '' }
+      })
+      .filter((c) => c.sha)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Combined uncommitted diff vs HEAD (staged + unstaged). Falls back to a
+ * plain `git diff` on a repo with no commits yet. Used by `@git-changes`
+ * prompt-mention expansion.
+ */
+export async function gitDiffWorking(worktree: string): Promise<string> {
+  try {
+    return await git(worktree, ['diff', '--no-color', 'HEAD'])
+  } catch {
+    try {
+      return await git(worktree, ['diff', '--no-color'])
+    } catch {
+      return ''
+    }
+  }
+}
+
+/**
+ * `git show` for a commit-ish (message + stat + patch, no color). `null`
+ * if the ref doesn't resolve. Used by `@<sha>` prompt-mention expansion.
+ * `sha` is passed as a single argv token (no shell), so it's safe.
+ */
+export async function gitShowCommit(
+  worktree: string,
+  sha: string,
+): Promise<string | null> {
+  try {
+    return await git(worktree, [
+      'show',
+      '--no-color',
+      '--stat',
+      '--patch',
+      sha,
+    ])
+  } catch {
+    return null
+  }
+}
+
+/**
  * Of `relPaths` (worktree-relative), return the set that `.gitignore` (or
  * any standard exclude) ignores. `git check-ignore` exits 1 when nothing
  * matched — that's success with an empty set, not an error.
