@@ -395,6 +395,16 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   `streamPath` through the `sessions.streamInfo` procedure. `pnpm build`
   now passes; keep it green (don't reintroduce a full-entry client
   import).
+- **Always pass `title` AND `description` to every `UModal`/`USlideover`
+  /`UDrawer`.** Reka UI dialogs need an accessible name *and* description
+  (missing description → console warning). Separately, Nuxt UI 4.7.1's
+  `UDashboardSidebar` mobile slideover renders the **literal i18n path**
+  `dashboardSidebar.title`/`.description` — its `DashboardSidebar.vue`
+  calls `t('dashboardSidebar.*')` but the bundled `en` locale only ships
+  `dashboardSidebarCollapse`/`...Toggle`, no `dashboardSidebar` key. Fix:
+  pass `:menu="{ title, description }"` (forwarded to the slideover;
+  `v-bind="menu"` is applied *after* the broken `:title`, so it wins).
+  See `app.vue`.
 - **`defineShortcuts` disables a shortcut while an INPUT/TEXTAREA/
   contenteditable is focused** unless `usingInput: true`. ⌘S (save in
   the editor) and ⌘↵ (commit from the message textarea) *must* set
