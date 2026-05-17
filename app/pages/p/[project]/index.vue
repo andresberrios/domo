@@ -106,7 +106,12 @@ function badgeColor(status: string | null | undefined) {
       @cancelled="refreshEnvs()"
     />
 
-    <UModal v-model:open="showBuild" title="Rebuild project" :ui="{ content: 'max-w-2xl' }">
+    <UModal
+      v-model:open="showBuild"
+      title="Rebuild project"
+      description="Re-run the project's Coast build."
+      :ui="{ content: 'max-w-2xl' }"
+    >
       <template #body>
         <DomoBuildProgress
           v-if="showBuild"

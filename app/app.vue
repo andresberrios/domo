@@ -39,6 +39,14 @@ defineShortcuts({
   <UApp>
     <NuxtLoadingIndicator color="var(--ui-primary)" />
     <UDashboardGroup storage-key="domo">
+      <!--
+        `menu` forwards to the sidebar's mobile slideover. We set
+        title/description explicitly because Nuxt UI 4.7.1 calls
+        `t('dashboardSidebar.title'|'.description')` but ships no
+        `dashboardSidebar` locale key (only ...Collapse/...Toggle), so
+        the defaults render as the literal i18n path. `v-bind="menu"` is
+        applied after the broken `:title`, so this wins.
+      -->
       <UDashboardSidebar
         id="left-rail"
         resizable
@@ -46,6 +54,10 @@ defineShortcuts({
         :default-size="18"
         :min-size="12"
         :max-size="28"
+        :menu="{
+          title: 'Navigation',
+          description: 'Projects, environments, and sessions.',
+        }"
       >
         <template #header>
           <DomoLeftRailHeader />
@@ -117,6 +129,7 @@ defineShortcuts({
         v-model:open="rightDrawerOpen"
         side="right"
         title="Workspace"
+        description="Files and git changes for the selected environment."
       >
         <template #body>
           <DomoRightPanel />

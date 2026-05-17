@@ -87,7 +87,12 @@ function cancelFlow() {
 </script>
 
 <template>
-  <UModal v-model:open="open" :ui="{ content: 'max-w-2xl' }" title="Add project">
+  <UModal
+    v-model:open="open"
+    :ui="{ content: 'max-w-2xl' }"
+    title="Add project"
+    description="Register a git repo with a Coastfile as a Domo project."
+  >
     <template #body>
       <!-- Step 1: pick directory -->
       <DomoDirectoryPicker

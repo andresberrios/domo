@@ -116,7 +116,12 @@ async function cancelProvisioning() {
 </script>
 
 <template>
-  <UModal v-model:open="open" title="Create environment" :ui="{ content: 'max-w-xl' }">
+  <UModal
+    v-model:open="open"
+    title="Create environment"
+    description="Provision a new Coast environment and git worktree."
+    :ui="{ content: 'max-w-xl' }"
+  >
     <template #body>
       <div v-if="!createdEnv" class="space-y-3">
         <UFormField label="Name" hint="Used as branch, worktree, and coast instance name">
