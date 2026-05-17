@@ -21,6 +21,14 @@ export default defineNuxtConfig({
     '/**': { ssr: false },
   },
 
+  // Domo's canonical port. Dev uses this directly; the built node-server
+  // is launched by the `domo` CLI / systemd unit with `PORT=7575` (Nitro
+  // has no config-baked listen port — it's runtime env). See
+  // initial-design.md "Distribution & release".
+  devServer: {
+    port: Number(process.env.PORT) || 7575,
+  },
+
   nitro: {
     experimental: {
       websocket: true,

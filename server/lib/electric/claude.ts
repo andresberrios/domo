@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import { delimiter as pathDelimiter } from 'node:path'
+import { loadDomoConfig } from '../config'
 
 /**
  * Host-side `claude` one-turn runner (Option A — design Decided #11).
@@ -78,6 +80,26 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
   const env: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(process.env)) {
     if (!SCRUB_ENV.has(k)) env[k] = v
+  }
+
+  // Operator's declarative env extension (`<domoHome>/config.json`,
+  // Decided #19). The host install means `claude` already inherits the
+  // service env; this is the no-restart, survives-update knob for extra
+  // vars / PATH (e.g. a runtime an MCP server needs). Scrubbed keys are
+  // skipped here, not deleted later — `env` was built *without* them
+  // above, so refusing to set them keeps the scrub the final word
+  // (Decided #9: the knob can't reintroduce e.g. ANTHROPIC_API_KEY and
+  // silently flip subscription→API billing). `PATH` isn't scrubbed.
+  const claudeCfg = loadDomoConfig().claude
+  if (claudeCfg?.env) {
+    for (const [k, v] of Object.entries(claudeCfg.env)) {
+      if (!SCRUB_ENV.has(k)) env[k] = v
+    }
+  }
+  if (claudeCfg?.extraPath?.length) {
+    env.PATH = [...claudeCfg.extraPath, env.PATH]
+      .filter(Boolean)
+      .join(pathDelimiter)
   }
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1'
 

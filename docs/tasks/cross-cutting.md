@@ -24,7 +24,7 @@ Items that don't belong to any single phase: open decisions, pending discussions
 
 ## Docs we still owe
 
-- [ ] `docs/site/getting-started.md` (VPS five-minute path)
+- [x] `docs/site/getting-started.md` (VPS five-minute path) — **drafted** against the distribution model (`initial-design.md` Decided #19): host-installed app + compose'd infra, prereqs, the `<domoHome>/config.json` `claude.env` knob. Installer/`domo` CLI/CI are still specced-not-built.
 - [ ] `docs/site/concepts.md` (Project / Env / Session, Coast relationship)
 - [ ] `docs/site/projects.md`, `envs.md`, `sessions.md`
 - [ ] `docs/site/securing-your-install.md` (Tailscale, Tunnel, Caddy front-proxy; explicit "no auth in v1")

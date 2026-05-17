@@ -154,7 +154,7 @@ expanded in v1. Spike kept at `smoke/steering-spike.mjs`.
 pnpm install        # pnpm 11; native builds in pnpm-workspace.yaml; @durable-streams/*
                     # pinned to pkg.pr.new build 350 in package.json (deps + pnpm.overrides)
 docker compose up -d  # Postgres + agents-server (Phase 3 session runtime; not needed for P0–2)
-pnpm dev            # http://localhost:3000
+pnpm dev            # http://localhost:7575
 pnpm typecheck      # vue-tsc
 pnpm lint           # eslint
 pnpm build          # production build (works since cross-cutting #11 fix)
@@ -163,13 +163,13 @@ pnpm build          # production build (works since cross-cutting #11 fix)
 ## Browser testing
 
 The **Playwright MCP** is available — use `mcp__playwright__browser_*`
-tools to drive http://localhost:3000 in a real browser (snapshot the
+tools to drive http://localhost:7575 in a real browser (snapshot the
 DOM, click, type, evaluate JS, watch console / network). Prefer this
 over curl when validating UI flows: the project-add wizard, env
 lifecycle buttons, build/run SSE streams, and `apiClient.*` calls
 all execute client-side, so an SPA mode app needs a browser context
 to exercise end-to-end. Start `pnpm dev` first, then navigate the
-browser at `http://localhost:3000/`.
+browser at `http://localhost:7575/`.
 
 Smoke procedures (kept for the lifetime of the project — useful when wiring
 a new env):
@@ -243,6 +243,12 @@ fallback to `$XDG_DATA_HOME/domo` when set).
     `gitListPaths`/`gitRecentCommits`/`gitDiffWorking`/`gitShowCommit`
     for `@`-mention indexing/expansion)
   - `settings.ts` — `settings` table get/set (panel state, etc.)
+  - `config.ts` — operator host config `<domoHome>/config.json`
+    (`loadDomoConfig`, Zod, read fresh per use, defaults on missing/bad).
+    Distinct from `settings.ts` (SQLite UX prefs): deploy-level, survives
+    app updates. Today: `claude.env` / `claude.extraPath` merged into the
+    `claude` spawn **before** `SCRUB_ENV` re-applies (scrub wins —
+    Decided #9). See design Decided #19 (distribution).
   - `electric/` — Electric Agents session runtime: `config.ts` (URLs/ids),
     `schemas.ts` (locked `claude-code-cli` row/inbox Zod schemas),
     `claude.ts` (`runClaudeTurn`: host-side `claude` stream-json spawn,
