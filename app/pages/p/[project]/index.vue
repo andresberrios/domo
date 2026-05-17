@@ -5,9 +5,16 @@ const projectName = computed(() => route.params.project as string)
 const { data: projects } = await apiClient.projects.list.useCall()
 const project = computed(() => projects.value?.find((p) => p.name === projectName.value) ?? null)
 
-const envsCall = computed(() => project.value?.id ? { projectId: project.value.id } : null)
-const { data: envs, refresh: refreshEnvs } = await apiClient.envs.list.useCall(envsCall.value as { projectId: string })
-watch(() => project.value?.id, () => refreshEnvs())
+// Guarded fetch — `envs.list` rejects an empty projectId with a 400, so
+// don't call it until the project resolves (e.g. on a not-found URL).
+type EnvList = Awaited<ReturnType<typeof apiClient.envs.list.call>>
+const envs = ref<EnvList>([])
+async function refreshEnvs() {
+  const pid = project.value?.id
+  envs.value = pid ? await apiClient.envs.list.call({ projectId: pid }) : []
+}
+await refreshEnvs()
+watch(() => project.value?.id, refreshEnvs)
 
 const showAddEnv = useState('project:showAddEnv', () => false)
 const showBuild = ref(false)
@@ -24,9 +31,16 @@ function badgeColor(status: string | null | undefined) {
 </script>
 
 <template>
-  <div v-if="!project" class="p-6 text-muted">
-    Project <code>{{ projectName }}</code> not found.
-  </div>
+  <DomoEmptyState
+    v-if="!project"
+    icon="i-lucide-compass"
+    title="Project not found"
+    :description="`No project named “${projectName}”. It may have been removed.`"
+  >
+    <UButton to="/" color="primary" icon="i-lucide-home">
+      Back home
+    </UButton>
+  </DomoEmptyState>
 
   <div v-else class="p-6 space-y-6 max-w-4xl">
     <header class="space-y-1">

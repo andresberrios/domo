@@ -5,6 +5,7 @@ const bottomOpen = usePanelState('bottom', false)
 
 <template>
   <UApp>
+    <NuxtLoadingIndicator color="var(--ui-primary)" />
     <UDashboardGroup storage-key="domo">
       <UDashboardSidebar
         id="left-rail"
@@ -35,7 +36,24 @@ const bottomOpen = usePanelState('bottom', false)
 
         <template #body>
           <div class="flex-1 min-h-0 overflow-auto">
-            <NuxtPage />
+            <NuxtErrorBoundary>
+              <NuxtPage />
+              <template #error="{ error, clearError }">
+                <DomoEmptyState
+                  icon="i-lucide-triangle-alert"
+                  title="This view crashed"
+                  :description="error.message"
+                >
+                  <UButton
+                    color="primary"
+                    icon="i-lucide-rotate-cw"
+                    @click="clearError()"
+                  >
+                    Retry
+                  </UButton>
+                </DomoEmptyState>
+              </template>
+            </NuxtErrorBoundary>
           </div>
           <DomoBottomTerminal v-if="bottomOpen" @close="bottomOpen = false" />
         </template>

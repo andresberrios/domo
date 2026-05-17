@@ -120,6 +120,15 @@ re-proposed card → file written, turn continued. `DomoDiffApprovalCard`
 workspace surface's `DomoDiffView` (`@codemirror/merge`). **Phase 3
 complete.**
 
+**Phase 4 (polish) — first half landed** (`docs/tasks/phase-4-polish.md`):
+dark-mode toggle (`UColorModeButton` in `DomoCenterNavbar`), global
+error/loading scaffolding (`app/error.vue`, `<NuxtErrorBoundary>` +
+`<NuxtLoadingIndicator>` in `app.vue`, reusable `DomoEmptyState`,
+`USkeleton` on the env page, `UAlert` for env-action errors), and the
+first-run onboarding (`app/pages/index.vue` rewrite + `DomoEmptyState`
+for project/env not-found). **Next half:** aborts everywhere (env
+ops/build), keyboard shortcuts, responsive mobile layout.
+
 ## Running it
 
 ```bash
@@ -281,6 +290,13 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   for the workspace panels (`nuxt-procedures` `useCall` is keyed on its
   serialized input, so it does *not* refetch on reactive arg changes —
   re-`call()` inside a `watch` when you need that).
+- **Procedure inputs reject empty strings** (Zod `z.string()` is
+  non-empty-validated server-side → HTTP 400). Don't fire a `useCall`/
+  `.call` with an id that may be `''`/undefined on a not-found URL or
+  before a parent query resolves (it spams console 400s). Guard with a
+  manual `ref` + `async refreshX()` that no-ops when the id is falsy and
+  re-runs in a `watch` — see `p/[project]/index.vue` &
+  `p/[project]/e/[env]/index.vue` `refreshEnvs`.
 - **Panel state persists server-side** via `usePanelState(key, def)`
   (`settings` table), not ephemeral `useState`.
 - **Coast contract is the daemon's HTTP API**, not the CLI. Talk to coastd

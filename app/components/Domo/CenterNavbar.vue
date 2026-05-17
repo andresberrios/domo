@@ -14,6 +14,7 @@ const title = computed(() =>
 <template>
   <UDashboardNavbar :title="title">
     <template #right>
+      <UColorModeButton size="xs" />
       <UButton
         size="xs"
         variant="ghost"

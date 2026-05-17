@@ -8,8 +8,16 @@ const envName = computed(() => route.params.env as string)
 const { data: projects, refresh: refreshProjects } = await apiClient.projects.list.useCall()
 const project = computed(() => projects.value?.find((p) => p.name === projectName.value) ?? null)
 
-const projectId = computed(() => project.value?.id ?? '')
-const { data: envs, refresh: refreshEnvs } = await apiClient.envs.list.useCall({ projectId: projectId.value })
+// Guarded — `envs.list` 400s on an empty projectId (not-found URL / before
+// projects resolve), so only call once the project is known.
+type EnvList = Awaited<ReturnType<typeof apiClient.envs.list.call>>
+const envs = ref<EnvList>([])
+async function refreshEnvs() {
+  const pid = project.value?.id
+  envs.value = pid ? await apiClient.envs.list.call({ projectId: pid }) : []
+}
+await refreshEnvs()
+watch(() => project.value?.id, refreshEnvs)
 const env = computed(() => envs.value?.find((e) => e.name === envName.value) ?? null)
 
 const overview = ref<Overview | null>(null)
@@ -77,9 +85,16 @@ function serviceUrl(port: number): string {
 </script>
 
 <template>
-  <div v-if="!project || !env" class="p-6 text-muted">
-    Environment <code>{{ envName }}</code> not found in project <code>{{ projectName }}</code>.
-  </div>
+  <DomoEmptyState
+    v-if="!project || !env"
+    icon="i-lucide-compass"
+    title="Environment not found"
+    :description="`No environment “${envName}” in project “${projectName}”.`"
+  >
+    <UButton :to="`/p/${projectName}`" color="primary" icon="i-lucide-arrow-left">
+      Back to project
+    </UButton>
+  </DomoEmptyState>
 
   <div v-else-if="overview" class="p-6 space-y-6 max-w-5xl">
     <header class="space-y-1">
@@ -126,9 +141,16 @@ function serviceUrl(port: number): string {
           Delete
         </UButton>
       </div>
-      <p v-if="errMsg" class="text-sm text-error">
-        {{ errMsg }}
-      </p>
+      <UAlert
+        v-if="errMsg"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        :description="errMsg"
+        close
+        class="mt-2"
+        @update:open="errMsg = null"
+      />
     </header>
 
     <section v-if="overview.services.length > 0">
@@ -241,5 +263,14 @@ function serviceUrl(port: number): string {
         Logs preview / follow is deferred to a later polish pass.
       </p>
     </section>
+  </div>
+
+  <div v-else class="p-6 space-y-4 max-w-5xl">
+    <USkeleton class="h-7 w-48" />
+    <USkeleton class="h-4 w-80" />
+    <div class="flex gap-2 pt-2">
+      <USkeleton v-for="i in 5" :key="i" class="h-7 w-20" />
+    </div>
+    <USkeleton class="h-32 w-full" />
   </div>
 </template>
