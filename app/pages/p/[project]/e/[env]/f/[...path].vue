@@ -107,6 +107,15 @@ function toggleMode() {
   }
 }
 
+// ⌘S saves (usingInput: the editor textarea/contenteditable is focused
+// while editing; defineShortcuts preventDefaults the browser save dialog).
+defineShortcuts({
+  meta_s: {
+    usingInput: true,
+    handler: () => { if (dirty.value && !saving.value) void save() },
+  },
+})
+
 async function save() {
   if (!envId.value || !dirty.value) return
   saving.value = true
@@ -147,16 +156,18 @@ async function save() {
               ? (mode === 'preview' ? 'Edit source' : 'Preview')
               : (mode === 'view' ? 'Edit' : 'View') }}
           </UButton>
-          <UButton
-            size="xs"
-            color="primary"
-            icon="i-lucide-save"
-            :disabled="!dirty"
-            :loading="saving"
-            @click="save"
-          >
-            Save
-          </UButton>
+          <UTooltip text="Save file" :kbds="['meta', 'S']">
+            <UButton
+              size="xs"
+              color="primary"
+              icon="i-lucide-save"
+              :disabled="!dirty"
+              :loading="saving"
+              @click="save"
+            >
+              Save
+            </UButton>
+          </UTooltip>
         </template>
 
         <UTooltip text="Open in chat — Phase 3">

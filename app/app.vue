@@ -1,6 +1,38 @@
 <script setup lang="ts">
+import { useBreakpoints, breakpointsTailwind } from '@vueuse/core'
+
+// SPA app, so window-based breakpoints are safe (no SSR hydration gap).
+const isDesktop = useBreakpoints(breakpointsTailwind).greaterOrEqual('lg')
+
+// Desktop inline-panel visibility — persisted, defaults open.
 const rightOpen = usePanelState('right', true)
-const bottomOpen = usePanelState('bottom', false)
+// Mobile drawer — ephemeral and independent of the persisted desktop
+// preference (a persisted `true` must NOT auto-open a full-screen drawer
+// over the chat on every mobile load). Defaults closed.
+const rightDrawerOpen = ref(false)
+// Whichever surface is live at the current breakpoint.
+const workspaceOpen = computed({
+  get: () => (isDesktop.value ? rightOpen.value : rightDrawerOpen.value),
+  set: (v: boolean) => {
+    if (isDesktop.value) rightOpen.value = v
+    else rightDrawerOpen.value = v
+  },
+})
+function toggleWorkspace() { workspaceOpen.value = !workspaceOpen.value }
+
+// Shared so the workspace tab can be driven by a global shortcut as well
+// as RightPanel's own UTabs (Nuxt `useState` is the codebase's cross-
+// component channel — same pattern as `leftRail:*`).
+const workspaceTab = useState<'files' | 'git'>('workspace:tab', () => 'files')
+
+// Global shortcuts. `meta` auto-maps to Ctrl off macOS (defineShortcuts).
+// ⌘B toggles the workspace panel (drawer on mobile, inline on desktop);
+// ⌘1/⌘2 jump to its Files/Git tabs.
+defineShortcuts({
+  meta_b: toggleWorkspace,
+  meta_1: () => { workspaceOpen.value = true; workspaceTab.value = 'files' },
+  meta_2: () => { workspaceOpen.value = true; workspaceTab.value = 'git' },
+})
 </script>
 
 <template>
@@ -28,10 +60,7 @@ const bottomOpen = usePanelState('bottom', false)
 
       <UDashboardPanel id="center" :default-size="rightOpen ? 58 : 82">
         <template #header>
-          <DomoCenterNavbar
-            @toggle-right="rightOpen = !rightOpen"
-            @toggle-bottom="bottomOpen = !bottomOpen"
-          />
+          <DomoCenterNavbar @toggle-right="toggleWorkspace" />
         </template>
 
         <template #body>
@@ -55,12 +84,20 @@ const bottomOpen = usePanelState('bottom', false)
               </template>
             </NuxtErrorBoundary>
           </div>
-          <DomoBottomTerminal v-if="bottomOpen" @close="bottomOpen = false" />
         </template>
       </UDashboardPanel>
 
+      <!--
+        Responsive component swap (the dashboard group is a non-wrapping
+        flex row, so a second full-width inline panel can't stack on
+        phones). `useBreakpoints` mounts exactly one: desktop ≥lg an
+        inline resizable `UDashboardPanel` (persisted `rightOpen`);
+        mobile <lg the same `DomoRightPanel` in a `USlideover` drawer
+        (ephemeral `rightDrawerOpen`, default closed) — the model the
+        left rail already uses.
+      -->
       <UDashboardPanel
-        v-if="rightOpen"
+        v-if="isDesktop && rightOpen"
         id="right"
         resizable
         :default-size="24"
@@ -74,6 +111,17 @@ const bottomOpen = usePanelState('bottom', false)
           <DomoRightPanel />
         </template>
       </UDashboardPanel>
+
+      <USlideover
+        v-if="!isDesktop"
+        v-model:open="rightDrawerOpen"
+        side="right"
+        title="Workspace"
+      >
+        <template #body>
+          <DomoRightPanel />
+        </template>
+      </USlideover>
     </UDashboardGroup>
   </UApp>
 </template>

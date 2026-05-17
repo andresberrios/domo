@@ -66,6 +66,15 @@ const stage = (p: string) =>
 const unstage = (p: string) =>
   act(() => apiClient.git.unstage.call({ envId: props.envId, path: p }))
 
+// ⌘↵ commits from the message textarea (usingInput) — matches the
+// VS Code SCM input gesture.
+defineShortcuts({
+  meta_enter: {
+    usingInput: true,
+    handler: () => { if (canCommit.value && !busy.value) void commit() },
+  },
+})
+
 async function commit() {
   if (!canCommit.value) return
   await act(async () => {
@@ -188,21 +197,23 @@ async function push() {
       <UTextarea
         v-model="message"
         :rows="2"
-        placeholder="Commit message"
+        placeholder="Commit message (⌘↵ to commit)"
         size="sm"
         class="w-full"
       />
       <div class="flex items-center gap-2">
-        <UButton
-          size="xs"
-          color="primary"
-          icon="i-lucide-check"
-          :disabled="!canCommit || busy"
-          :loading="busy"
-          @click="commit"
-        >
-          Commit
-        </UButton>
+        <UTooltip text="Commit staged changes" :kbds="['meta', 'enter']">
+          <UButton
+            size="xs"
+            color="primary"
+            icon="i-lucide-check"
+            :disabled="!canCommit || busy"
+            :loading="busy"
+            @click="commit"
+          >
+            Commit
+          </UButton>
+        </UTooltip>
         <span v-if="notice" class="text-xs text-muted truncate">{{ notice }}</span>
       </div>
     </div>

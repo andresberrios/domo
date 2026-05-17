@@ -2,7 +2,7 @@
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
-  modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-procedures', '@comark/nuxt'],
+  modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-procedures', '@comark/nuxt', '@vueuse/nuxt'],
 
   // `main.css` is the Nuxt UI v4 entry (@import tailwindcss + @nuxt/ui) —
   // mandatory; without it Tailwind never runs and the whole app renders

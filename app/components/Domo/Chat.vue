@@ -70,6 +70,12 @@ const sending = ref(false)
 const actionError = ref<string | null>(null)
 const inputRef = useTemplateRef<{ focus: () => void }>('inputRef')
 
+// ⌘I focuses the prompt from anywhere in the session view (incl. while
+// the editor/terminal has focus — hence usingInput).
+defineShortcuts({
+  meta_i: { usingInput: true, handler: () => inputRef.value?.focus() },
+})
+
 /**
  * Edit-and-regenerate, pragmatic scope: pull a past user message back into
  * the prompt so the user can refine and resend. This continues the *same*

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-const tab = ref<'files' | 'git'>('files')
+// Shared with app.vue's ⌘1/⌘2 shortcuts (see workspace:tab there).
+const tab = useState<'files' | 'git'>('workspace:tab', () => 'files')
 // Nuxt UI `UTabs` keys its v-model off each item's `value`.
 const tabs = [
   { value: 'files', label: 'Files', icon: 'i-lucide-folder-tree' },

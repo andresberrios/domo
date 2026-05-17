@@ -3,13 +3,14 @@ import type { Env } from '~~/server/lib/schemas'
 
 const props = defineProps<{ projectId: string; defaultBranch: string | null }>()
 const open = defineModel<boolean>('open', { required: true })
-const emit = defineEmits<{ created: [env: Env] }>()
+const emit = defineEmits<{ created: [env: Env]; cancelled: [] }>()
 
 const name = ref('')
 const baseBranch = ref('')
 const pending = ref(false)
 const errMsg = ref<string | null>(null)
 const streaming = ref(false)
+const cancelling = ref(false)
 const lines = ref<string[]>([])
 const createdEnv = ref<Env | null>(null)
 
@@ -20,6 +21,7 @@ watch(open, (v) => {
     pending.value = false
     errMsg.value = null
     streaming.value = false
+    cancelling.value = false
     lines.value = []
     createdEnv.value = null
   }
@@ -93,6 +95,24 @@ async function submit() {
 onBeforeUnmount(() => { abort?.abort() })
 
 function close() { open.value = false }
+
+/**
+ * Abort an in-flight provisioning: stop reading the stream *and* tear the
+ * half-provisioned env back down (coastd `rm`), distinct from "Run in
+ * background" which deliberately keeps it provisioning. Best-effort —
+ * coastd may already be mid-teardown; the row is removed regardless.
+ */
+async function cancelProvisioning() {
+  if (!createdEnv.value || cancelling.value) return
+  cancelling.value = true
+  abort?.abort()
+  try {
+    await apiClient.envs.delete.call({ id: createdEnv.value.id })
+  } catch { /* coastd unreachable / already gone — row drop still happens */ }
+  cancelling.value = false
+  emit('cancelled')
+  open.value = false
+}
 </script>
 
 <template>
@@ -143,8 +163,24 @@ function close() { open.value = false }
         <p v-if="errMsg" class="text-sm text-error">
           {{ errMsg }}
         </p>
-        <div class="flex justify-end">
-          <UButton size="sm" :variant="streaming ? 'ghost' : 'solid'" @click="close">
+        <div class="flex justify-end gap-2">
+          <UButton
+            v-if="streaming"
+            size="sm"
+            color="error"
+            variant="ghost"
+            icon="i-lucide-x"
+            :loading="cancelling"
+            @click="cancelProvisioning"
+          >
+            Cancel
+          </UButton>
+          <UButton
+            size="sm"
+            :variant="streaming ? 'ghost' : 'solid'"
+            :disabled="cancelling"
+            @click="close"
+          >
             {{ streaming ? 'Run in background' : 'Close' }}
           </UButton>
         </div>

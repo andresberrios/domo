@@ -250,8 +250,15 @@ function serviceUrl(port: number): string {
         <code>{{ env.worktreePath ?? '—' }}</code>
       </p>
       <p class="text-xs text-muted mt-1">
-        Browse and edit files in the right-panel <strong>Files</strong> tab;
-        the bottom <strong>Terminal</strong> opens a shell inside this env.
+        Browse and edit files in the workspace panel's
+        <strong>Files</strong> tab; the
+        <NuxtLink
+          :to="`/p/${projectName}/e/${envName}/terminal`"
+          class="text-primary hover:underline"
+        >
+          <strong>Terminal</strong>
+        </NuxtLink>
+        view opens a shell inside this env.
       </p>
     </section>
 

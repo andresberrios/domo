@@ -18,7 +18,9 @@ Coast environments. Three documents define it:
 
 ## Where we are
 
-Phase 0 + 1 + 2 done. **Phase 3 in progress** (`docs/tasks/phase-3-sessions.md`).
+Phase 0 + 1 + 2 + 3 done. **Phase 4 (polish) complete — both halves**
+(`docs/tasks/phase-4-polish.md`); production `pnpm build` fixed
+(cross-cutting #11). Phase 3 narrative below is kept as history.
 Step **8a landed & verified end-to-end** (typecheck clean; `docker compose
 up` → agents-server healthy; `electricSmoke` → runner `liveness: online`):
 Electric Agents control plane wired (docker-compose Postgres + agents-server,
@@ -120,14 +122,18 @@ re-proposed card → file written, turn continued. `DomoDiffApprovalCard`
 workspace surface's `DomoDiffView` (`@codemirror/merge`). **Phase 3
 complete.**
 
-**Phase 4 (polish) — first half landed** (`docs/tasks/phase-4-polish.md`):
-dark-mode toggle (`UColorModeButton` in `DomoCenterNavbar`), global
-error/loading scaffolding (`app/error.vue`, `<NuxtErrorBoundary>` +
-`<NuxtLoadingIndicator>` in `app.vue`, reusable `DomoEmptyState`,
-`USkeleton` on the env page, `UAlert` for env-action errors), and the
-first-run onboarding (`app/pages/index.vue` rewrite + `DomoEmptyState`
-for project/env not-found). **Next half:** aborts everywhere (env
-ops/build), keyboard shortcuts, responsive mobile layout.
+**Phase 4 (polish) — COMPLETE** (`docs/tasks/phase-4-polish.md`).
+*First half:* dark-mode toggle, global error/loading scaffolding
+(`app/error.vue`, `<NuxtErrorBoundary>` + `<NuxtLoadingIndicator>`,
+`DomoEmptyState`, `USkeleton`, `UAlert`), first-run onboarding.
+*Second half:* **aborts** (build Cancel pre-existed; `DomoAddEnvModal`
+gained a real Cancel = abort stream + `envs.delete`, vs "Run in
+background"; short coastd RPCs intentionally have none); **keyboard
+shortcuts** via `defineShortcuts` (⌘B workspace, ⌘1/⌘2 tabs, ⌘I focus
+prompt, ⌘S save, ⌘↵ commit); **responsive** — terminal moved off a
+"bottom panel" to a center route, workspace panel does an inline-panel
+↔ slideover swap via `useBreakpoints`, left rail is the Nuxt UI
+built-in mobile drawer. Verified live desktop + mobile.
 
 ## Running it
 
@@ -289,7 +295,12 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   a dumb pass-through to coastd `WS /api/v1/exec/interactive`. The client
   (`DomoTerminal`, xterm + `@xterm/addon-fit`) speaks coastd's frame
   protocol directly: first frame is a `{session_id}` JSON handshake
-  (swallowed), resize is `\x01`+JSON, clear is `\x02clear`.
+  (swallowed), resize is `\x01`+JSON, clear is `\x02clear`. **It's a
+  center route** `…/e/:env/terminal` (Phase 4) — a peer of chat
+  (`s/:session`) and file (`f/:path`), *not* a bottom panel: the
+  `UDashboardGroup` is a non-wrapping flex row with no vertical
+  stacking, so "bottom panel" never fit the primitive. `DomoCenterNavbar`
+  links to it.
 - **CodeMirror/xterm/Comark are client-only**; dynamic-import inside
   `onMounted` and keep grammars lazy (`app/utils/language.ts` maps a
   language id → `@codemirror/lang-*`). `DomoCodeEditor` (view/edit),
@@ -306,7 +317,21 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   re-runs in a `watch` — see `p/[project]/index.vue` &
   `p/[project]/e/[env]/index.vue` `refreshEnvs`.
 - **Panel state persists server-side** via `usePanelState(key, def)`
-  (`settings` table), not ephemeral `useState`.
+  (`settings` table), not ephemeral `useState`. **But the mobile
+  workspace drawer is deliberately *ephemeral* (`ref(false)`)** — the
+  persisted desktop `rightOpen:true` must not auto-open a full-screen
+  slideover over the chat on every phone load. `app.vue` keeps both and
+  routes the toggle/⌘B through a `workspaceOpen` computed keyed on
+  `isDesktop` (`useBreakpoints`).
+- **Responsive panels = component swap, not CSS hiding.** The dashboard
+  group can't stack, so secondary surfaces swap component by breakpoint:
+  the workspace panel is an inline resizable `UDashboardPanel` at ≥lg and
+  a `USlideover` at <lg (`useBreakpoints(breakpointsTailwind)` mounts
+  exactly one); the left rail uses Nuxt UI's built-in
+  `UDashboardSidebar` mobile drawer (+ `UDashboardNavbar`'s auto
+  `UDashboardSidebarToggle`). `@vueuse/nuxt` is a Nuxt module;
+  `@vueuse/core` is a **direct** dependency (was only transitive via
+  `@nuxt/ui` — don't let a lint "unused" sweep drop it).
 - **Coast contract is the daemon's HTTP API**, not the CLI. Talk to coastd
   via `coast()` from `server/lib/coast`. CLI is only for `--version` / `doctor`.
 - **Coast types** are currently modeled as Zod schemas in `server/lib/coast/types.ts`
@@ -370,6 +395,14 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   `streamPath` through the `sessions.streamInfo` procedure. `pnpm build`
   now passes; keep it green (don't reintroduce a full-entry client
   import).
+- **`defineShortcuts` disables a shortcut while an INPUT/TEXTAREA/
+  contenteditable is focused** unless `usingInput: true`. ⌘S (save in
+  the editor) and ⌘↵ (commit from the message textarea) *must* set
+  `usingInput: true` or they no-op exactly when you'd use them. It also
+  `preventDefault()`s on match (so ⌘S won't open the browser save
+  dialog). `meta_*` auto-maps to Ctrl off macOS — don't add a separate
+  `ctrl_*`.
+
 - **Nuxt UI v4 `UTabs` keys its `v-model` off each item's `value`**, not
   `id`. Items with only `{ id }` leave the model stuck — give them
   `{ value, label, icon }` (bit `DomoRightPanel` in Phase 2: Git tab

@@ -103,6 +103,7 @@ function badgeColor(status: string | null | undefined) {
       :project-id="project.id"
       :default-branch="project.defaultBranch"
       @created="refreshEnvs()"
+      @cancelled="refreshEnvs()"
     />
 
     <UModal v-model:open="showBuild" title="Rebuild project" :ui="{ content: 'max-w-2xl' }">
