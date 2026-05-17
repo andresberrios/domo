@@ -15,12 +15,11 @@ import { projectSessionMessages } from '~/utils/sessionMessages'
 
 const props = defineProps<{
   sessionId: string
-  entityId: string | null
 }>()
 
-const entityRef = computed(() => props.entityId)
+const sessionRef = computed(() => props.sessionId)
 const { events, sessionMeta, inbox, pendingDiffs, ready, error } =
-  useSessionStream(entityRef)
+  useSessionStream(sessionRef)
 
 // Parked agent edits awaiting the user, oldest first. Read off the durable
 // collection, so they survive client/server restart and show on any

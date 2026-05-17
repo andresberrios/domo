@@ -68,6 +68,22 @@ export function durableStreamUrl(streamPath: string): string {
 }
 
 /**
+ * Resolve an entity's durable-stream *path* (control-plane lookup), for
+ * the browser chat subscription. Done **server-side** on purpose: the
+ * client must not import the full `@electric-ax/agents-runtime` entry
+ * (its `createRuntimeServerClient` drags in `model-runner`, which imports
+ * `node:os/path/fs` and breaks the browser/production build). The browser
+ * then builds `appendPathToUrl(location.origin + '/_agents', streamPath)`
+ * and subscribes via the browser-safe `@electric-ax/agents-runtime/client`
+ * entry only.
+ */
+export async function entityStreamPath(entityUrl: string): Promise<string> {
+  const client = await ensureRuntimeReady()
+  const info = await client.getEntityInfo(entityUrl)
+  return info.streamPath
+}
+
+/**
  * Tear down the entity, best-effort. Deleting a Domo session is a local
  * concept (the design keeps the durable stream around — sessions can be
  * "un-done"); a missing/unreachable agents-server must not strand the DB

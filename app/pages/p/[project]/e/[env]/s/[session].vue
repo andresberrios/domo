@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
  * Center-area chat session. The route param is the Domo session id; we
- * resolve its row (for the entity URL the durable-stream client needs)
- * and hand off to `<DomoChat>`. Live transcript + sending are the
+ * resolve its row to confirm it exists (and render not-found / error
+ * states) and hand off to `<DomoChat>`, which subscribes to the durable
+ * stream keyed by the session id. Live transcript + sending are the
  * component's job.
  */
 type Session = Awaited<ReturnType<typeof apiClient.sessions.get.call>>
@@ -45,7 +46,6 @@ watch(sessionId, load, { immediate: true })
       v-else
       :key="session.id"
       :session-id="session.id"
-      :entity-id="session.entityId"
     />
   </div>
 </template>

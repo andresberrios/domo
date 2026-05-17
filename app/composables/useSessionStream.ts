@@ -14,6 +14,13 @@
  * change (sessions are small; re-reading `.toArray` is simpler and less
  * bug-prone than hand-reconciling change batches). Client-only + dynamic
  * import, same pattern as CodeMirror/xterm.
+ *
+ * **Browser-safe import boundary.** We import only from
+ * `@electric-ax/agents-runtime/client` (no `node:` deps). The full entry's
+ * `createRuntimeServerClient` (used for `getEntityInfo`) pulls
+ * `model-runner` → `node:os/path/fs`, which fails the client/production
+ * build — so the stream *path* is resolved server-side via the
+ * `sessions.streamInfo` procedure instead, keyed by the Domo session id.
  */
 import { shallowRef, watch, onScopeDispose, type Ref } from 'vue'
 import type {
@@ -46,7 +53,7 @@ interface MinimalDb {
 }
 
 export function useSessionStream(
-  entityId: Ref<string | null | undefined>,
+  sessionId: Ref<string | null | undefined>,
 ): SessionStream {
   const events = shallowRef<EventRow[]>([])
   const sessionMeta = shallowRef<SessionMetaRow | null>(null)
@@ -72,18 +79,23 @@ export function useSessionStream(
   async function connect(id: string) {
     if (!import.meta.client) return
     try {
-      const { createRuntimeServerClient, createEntityStreamDB, appendPathToUrl } =
-        await import('@electric-ax/agents-runtime')
-      if (disposed || entityId.value !== id) return
+      // Browser-safe entry only — the full `@electric-ax/agents-runtime`
+      // entry's `createRuntimeServerClient` pulls `model-runner` →
+      // `node:os/path/fs` and breaks the client/production build. The
+      // stream *path* is resolved server-side instead.
+      const { createEntityStreamDB, appendPathToUrl } = await import(
+        '@electric-ax/agents-runtime/client'
+      )
+      if (disposed || sessionId.value !== id) return
+
+      const { streamPath } = await apiClient.sessions.streamInfo.call({ id })
+      if (disposed || sessionId.value !== id) return
 
       const baseUrl = `${window.location.origin}/_agents`
-      const server = createRuntimeServerClient({ baseUrl })
-      const info = await server.getEntityInfo(id)
-      if (disposed || entityId.value !== id) return
 
       // Custom `state:` collections (defaults: pk `key`, type `state:<name>`).
       const db = createEntityStreamDB(
-        appendPathToUrl(baseUrl, info.streamPath),
+        appendPathToUrl(baseUrl, streamPath),
         {
           events: {},
           sessionMeta: {},
@@ -92,7 +104,7 @@ export function useSessionStream(
         },
       ) as unknown as MinimalDb
       await db.preload()
-      if (disposed || entityId.value !== id) {
+      if (disposed || sessionId.value !== id) {
         db.close()
         return
       }
@@ -143,7 +155,7 @@ export function useSessionStream(
   }
 
   watch(
-    entityId,
+    sessionId,
     (id) => {
       reset()
       if (id) void connect(id)

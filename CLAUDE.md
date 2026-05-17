@@ -138,6 +138,7 @@ docker compose up -d  # Postgres + agents-server (Phase 3 session runtime; not n
 pnpm dev            # http://localhost:3000
 pnpm typecheck      # vue-tsc
 pnpm lint           # eslint
+pnpm build          # production build (works since cross-cutting #11 fix)
 ```
 
 ## Browser testing
@@ -250,11 +251,18 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   a procedure) but through the same-origin `/_agents/**` transparent
   reverse proxy (`server/routes/_agents/[...].ts` → agents-server; h3
   `proxyRequest`, streaming-safe) so it works over Tailscale/Tunnel with
-  no auth. `useSessionStream(entityId)` wraps the framework-agnostic
-  agents-runtime core (no Vue binding ships): `createRuntimeServerClient`
-  → `getEntityInfo` → `createEntityStreamDB(url, customState)` →
-  `preload` → mirror each TanStack DB collection into a `shallowRef` on
-  change (client-only, dynamic import — CodeMirror/xterm pattern).
+  no auth. `useSessionStream(sessionId)` wraps the framework-agnostic
+  agents-runtime core (no Vue binding ships): resolve the stream *path*
+  server-side via the `sessions.streamInfo` procedure (keyed by the Domo
+  session id), then — importing **only** the browser-safe
+  `@electric-ax/agents-runtime/client` entry —
+  `createEntityStreamDB(appendPathToUrl(origin+'/_agents', streamPath),
+  customState)` → `preload` → mirror each TanStack DB collection into a
+  `shallowRef` on change (client-only, dynamic import — CodeMirror/xterm
+  pattern). The full `@electric-ax/agents-runtime` entry is **never**
+  imported client-side (its `createRuntimeServerClient`/`getEntityInfo`
+  drag in `model-runner` → `node:os/path/fs` and break the production
+  build — cross-cutting #11, now fixed this way).
   `app/utils/sessionMessages.ts` is the claude-cli **adapter**: folds the
   native stream-json `events` + inbox prompts → AI SDK `UIMessage[]`
   (Decided #17). Render path mirrors the chat template: `DomoChat`
@@ -349,15 +357,19 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   confirmed with a real rendered check** — screenshot AND/OR
   `getComputedStyle` on a known element (e.g. a primary `UButton` bg must
   be an `oklch(...)`, not `rgb(239, 239, 239)`), not just the snapshot.
-- **`pnpm build` (production) is currently broken** (pre-existing,
-  unrelated to styling): `@electric-ax/agents-runtime`'s `model-runner`
-  imports `node:os/path/fs`; the client bundle (it's dynamically imported
-  by `useSessionStream`) can't externalize them → Rollup
-  `"join" is not exported by "__vite-browser-external"`. The project has
-  only ever run via `pnpm dev` (all docs say so). Production build is a
-  cross-cutting follow-up (split the agents-runtime client surface from
-  its Node `model-runner`, or alias it browser-side). Until then, verify
-  via `pnpm dev` only.
+- **Never import the full `@electric-ax/agents-runtime` entry into client
+  code.** It pulls `model-runner` → `node:os/path/fs`; the client bundle
+  can't externalize them → Rollup `"join" is not exported by
+  "__vite-browser-external"` (this broke `pnpm build` until the
+  cross-cutting #11 fix). The browser must use **only** the browser-safe
+  `@electric-ax/agents-runtime/client` entry (`createEntityStreamDB`,
+  `appendPathToUrl` — no `node:` deps). Anything that needs the full
+  entry's `createRuntimeServerClient`/`getEntityInfo` (e.g. resolving an
+  entity's durable-stream path) must run **server-side** — that's why
+  `useSessionStream` is keyed by the Domo session id and resolves the
+  `streamPath` through the `sessions.streamInfo` procedure. `pnpm build`
+  now passes; keep it green (don't reintroduce a full-entry client
+  import).
 - **Nuxt UI v4 `UTabs` keys its `v-model` off each item's `value`**, not
   `id`. Items with only `{ id }` leave the model stuck — give them
   `{ value, label, icon }` (bit `DomoRightPanel` in Phase 2: Git tab
