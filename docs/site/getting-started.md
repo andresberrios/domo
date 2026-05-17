@@ -20,19 +20,34 @@ On the host (your VPS or workstation):
 
 ## Install & run
 
-> The `curl … | sh` installer and the `domo` CLI (`domo up` / `update` / `logs` / `status`) are the intended one-command path and are **specced but not yet built** (`initial-design.md` → Distribution & release). Until then, run from a checkout:
-
 ```bash
-git clone <repo> domo && cd domo
-pnpm install
-docker compose up -d        # Postgres + agents-server (infra)
-pnpm build                  # production build (Nitro node-server)
-PORT=7575 node .output/server/index.mjs
+curl -fsSL https://github.com/andresberrios/domo/releases/latest/download/install.sh | sh
+domo up
 ```
 
-Domo listens on **http://localhost:7575** (its canonical port; `pnpm dev` also uses 7575). Expose it over Tailscale / Cloudflare Tunnel / a front proxy — see [Securing your install](./securing-your-install.md). Do **not** put it on a public interface unauthenticated.
+`install.sh` checks prerequisites, downloads the release for your platform (linux-x64), verifies its checksum, installs to `~/.domo/app/<version>`, and drops a `domo` CLI on your PATH. `domo up` then builds + starts the infra (Docker) and the app:
 
-For development, replace the last two lines with `pnpm dev`.
+| command | does |
+|---|---|
+| `domo up` | start infra + app → **http://localhost:7575** |
+| `domo down` | stop app + infra (volumes kept) |
+| `domo status` | app + infra state |
+| `domo logs` | tail the app log (`domo logs infra` → compose logs) |
+| `domo update` | fetch + install the latest release, restart if running |
+| `domo version` | installed version |
+
+The first `domo up` builds the agents-server image from a pinned Dockerfile (one-time, ~1–2 min). Expose `:7575` over Tailscale / Cloudflare Tunnel / a front proxy — see [Securing your install](./securing-your-install.md). Do **not** put it on a public interface unauthenticated.
+
+Pin a version with `DOMO_VERSION=0.1.1 sh install.sh`; install offline with `DOMO_LOCAL_TARBALL=/path/to/domo-linux-x64.tar.gz`.
+
+### From source (development)
+
+```bash
+git clone https://github.com/andresberrios/domo && cd domo
+pnpm install
+docker compose up -d        # dev infra (Postgres + agents-server)
+pnpm dev                    # http://localhost:7575
+```
 
 ## First project, env, session
 
@@ -57,7 +72,7 @@ It's read fresh per turn (no restart needed). The security scrub still wins: thi
 
 ## Updating
 
-Intended: `domo update` — verify the release, atomically swap the app dir, `docker compose pull && up -d` the pinned infra, restart. App version, infra image tags, and the `@durable-streams` build are pinned together in a release manifest. Until the CLI exists: `git pull`, `pnpm install`, `docker compose pull && up -d`, rebuild, restart.
+`domo update` fetches + verifies the latest release, atomically swaps the app dir (`~/.domo/app/<version>` + a `current` symlink), and restarts if it was running. Versions are pinned together in the release `manifest.json` (app, Postgres image, `@electric-ax/agents-server`, the `@durable-streams` build).
 
 ## Where state lives
 

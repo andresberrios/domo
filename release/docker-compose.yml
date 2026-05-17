@@ -1,0 +1,59 @@
+# Domo infra stack for a host install (initial-design.md Decided #19).
+#
+# Only the session-runtime infra is containerised — the Domo app itself
+# runs on the host (it orchestrates host-side `claude` / git / Coast;
+# Decided #11). The `domo` CLI manages this stack for you (`domo up`).
+#
+#   postgres       — agents-server's control-plane store ONLY. Domo's own
+#                    project/env/session metadata is host SQLite at
+#                    $DOMO_HOME/state.db.
+#   agents-server  — @electric-ax/agents-server, built from a pinned
+#                    Dockerfile (no repo bind mount, unlike the dev compose).
+#                    Durable streams run EMBEDDED; state in the named volume.
+#
+# Ports bind to localhost only — the app connects out to 127.0.0.1:4437.
+name: domo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: electric_agents
+      POSTGRES_USER: electric_agents
+      POSTGRES_PASSWORD: electric_agents
+    ports:
+      - '127.0.0.1:${DOMO_PG_PORT:-54329}:5432'
+    volumes:
+      - domo-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U electric_agents -d electric_agents']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  agents-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.agents-server
+    image: domo-agents-server:local
+    environment:
+      ELECTRIC_AGENTS_DATABASE_URL: postgresql://electric_agents:electric_agents@postgres:5432/electric_agents
+      ELECTRIC_AGENTS_HOST: 0.0.0.0
+      ELECTRIC_AGENTS_PORT: '4437'
+      ELECTRIC_AGENTS_STREAMS_HOST: 0.0.0.0
+      ELECTRIC_AGENTS_STREAMS_PORT: '4438'
+      ELECTRIC_AGENTS_STREAMS_DATA_DIR: /streams-data
+    ports:
+      - '127.0.0.1:${DOMO_AGENTS_PORT:-4437}:4437'
+      - '127.0.0.1:${DOMO_AGENTS_STREAMS_PORT:-4438}:4438'
+    volumes:
+      - domo-streams:/streams-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  domo-pg:
+  domo-streams:

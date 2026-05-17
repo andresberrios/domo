@@ -1,0 +1,134 @@
+#!/bin/sh
+# Domo host CLI — manages the compose'd infra + the host Nitro app.
+# Shipped inside the release tarball; the installer drops a PATH shim that
+# execs this. See initial-design.md "Distribution & release" (Decided #19).
+set -eu
+
+# Release root = parent of this script's dir (tarball: <root>/{bin,.output,release}).
+SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$SELF/.." && pwd)
+COMPOSE="$ROOT/release/docker-compose.yml"
+ENTRY="$ROOT/.output/server/index.mjs"
+
+# Match server/lib/paths.ts: DOMO_HOME > $XDG_DATA_HOME/domo > ~/.domo
+if [ -n "${DOMO_HOME:-}" ]; then HOME_DIR="$DOMO_HOME";
+elif [ -n "${XDG_DATA_HOME:-}" ]; then HOME_DIR="$XDG_DATA_HOME/domo";
+else HOME_DIR="$HOME/.domo"; fi
+RUN_DIR="$HOME_DIR/run"
+PIDFILE="$RUN_DIR/domo.pid"
+LOGFILE="$RUN_DIR/domo.log"
+PORT="${PORT:-7575}"
+INSTALL_URL="${DOMO_INSTALL_URL:-https://github.com/andresberrios/domo/releases/latest/download/install.sh}"
+
+mkdir -p "$RUN_DIR"
+
+err() { echo "domo: $*" >&2; }
+die() { err "$*"; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+dc() { docker compose -f "$COMPOSE" "$@"; }
+
+app_running() {
+  [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+wait_agents() {
+  # agents-server up == the port answers HTTP (any status, incl. 404).
+  i=0
+  while [ "$i" -lt 60 ]; do
+    if curl -s -o /dev/null "http://127.0.0.1:${DOMO_AGENTS_PORT:-4437}/" 2>/dev/null; then
+      return 0
+    fi
+    i=$((i + 1)); sleep 1
+  done
+  return 1
+}
+
+cmd_up() {
+  have docker || die "Docker is required (https://docs.docker.com/engine/install/)."
+  have node || die "Node 22+ is required."
+  have coast || err "warning: 'coast' not found — projects/envs need the Coast daemon."
+  have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
+
+  echo "domo: starting infra (postgres + agents-server)…"
+  dc up -d --build
+  echo "domo: waiting for agents-server…"
+  wait_agents || die "agents-server did not come up — see: domo logs infra"
+
+  if app_running; then
+    echo "domo: app already running (pid $(cat "$PIDFILE")) at http://localhost:${PORT}"
+    return 0
+  fi
+  echo "domo: starting app on :${PORT}…"
+  DOMO_HOME="$HOME_DIR" PORT="$PORT" nohup node "$ENTRY" >"$LOGFILE" 2>&1 &
+  echo $! >"$PIDFILE"
+  sleep 1
+  app_running || die "app failed to start — see: domo logs"
+  echo "domo: up → http://localhost:${PORT}  (logs: domo logs)"
+}
+
+cmd_down() {
+  if app_running; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null || true
+    echo "domo: app stopped"
+  fi
+  rm -f "$PIDFILE"
+  if have docker; then dc down; echo "domo: infra stopped (volumes kept)"; fi
+}
+
+cmd_status() {
+  if app_running; then echo "app:   running (pid $(cat "$PIDFILE")) http://localhost:${PORT}"
+  else echo "app:   stopped"; fi
+  if have docker; then echo "infra:"; dc ps 2>/dev/null || echo "  (compose not up)"; fi
+  echo "version: $(cmd_version)"
+  echo "home:    $HOME_DIR"
+}
+
+cmd_logs() {
+  if [ "${1:-}" = "infra" ]; then dc logs -f; return; fi
+  [ -f "$LOGFILE" ] || die "no app log yet ($LOGFILE)"
+  tail -n 200 -f "$LOGFILE"
+}
+
+cmd_version() {
+  if [ -f "$ROOT/VERSION" ]; then cat "$ROOT/VERSION"; else echo "unknown"; fi
+}
+
+cmd_update() {
+  have curl || die "curl is required to update."
+  was_running=no
+  app_running && was_running=yes
+  echo "domo: fetching latest release…"
+  curl -fsSL "$INSTALL_URL" | sh
+  if [ "$was_running" = yes ]; then
+    echo "domo: restarting…"
+    "$HOME_DIR/app/current/bin/domo" up
+  else
+    echo "domo: updated. Run: domo up"
+  fi
+}
+
+case "${1:-}" in
+  up)      cmd_up ;;
+  down)    cmd_down ;;
+  restart) cmd_down; cmd_up ;;
+  status)  cmd_status ;;
+  logs)    shift; cmd_logs "${1:-}" ;;
+  update)  cmd_update ;;
+  version) cmd_version ;;
+  *)
+    cat >&2 <<EOF
+domo — run parallel Claude Code agents over Coast environments
+
+usage: domo <command>
+  up         start infra (docker) + the app on :${PORT}
+  down       stop the app and infra (volumes kept)
+  restart    down then up
+  status     show app + infra state
+  logs       tail the app log   (logs infra → compose logs)
+  update     fetch + install the latest release, then restart if running
+  version    print the installed version
+EOF
+    [ "${1:-}" = "help" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "" ] && exit 0
+    exit 2 ;;
+esac

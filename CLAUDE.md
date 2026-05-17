@@ -158,7 +158,22 @@ pnpm dev            # http://localhost:7575
 pnpm typecheck      # vue-tsc
 pnpm lint           # eslint
 pnpm build          # production build (works since cross-cutting #11 fix)
+bash scripts/build-release.sh [ver]   # → dist/ tarball + install.sh + SHA256SUMS
 ```
+
+**Distribution (Decided #19, built v0.1.1).** Domo ships as a
+host-installed app + compose'd infra, NOT docker-compose-only (the app
+is a host-side orchestrator). Pieces: `scripts/install.sh` (curl|sh,
+checksum-verified, `DOMO_LOCAL_TARBALL` for offline/test), `bin/domo`
+(CLI: `up`/`down`/`status`/`logs`/`update`/`version`),
+`release/docker-compose.yml` + `release/Dockerfile.agents-server`
+(Postgres + an agents-server image **built at first `domo up`** from
+pinned versions — no registry; the dev `docker-compose.yml` still
+bind-mounts the repo and is dev-only), `scripts/build-release.sh`,
+`.github/workflows/release.yml` (tag `v*` → build + attach). Tarball is
+**linux-x64/node22-specific** (native `better-sqlite3` bundled into
+`.output`). Canonical port **7575**. Keep pins in
+`release/Dockerfile.agents-server` in sync with `package.json`.
 
 ## Browser testing
 

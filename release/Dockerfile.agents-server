@@ -1,0 +1,27 @@
+# Self-contained Electric Agents control-plane server for a Domo install.
+#
+# The dev `docker-compose.yml` reuses the repo's host node_modules via a
+# bind mount — fine for development, wrong for distribution. This image
+# installs the *pinned* agents-server + the pkg.pr.new @durable-streams
+# builds itself (the exact pins from the repo's package.json), so a Domo
+# install has no dependency on a source checkout.
+#
+# Built at first `domo up` (no container registry needed for now —
+# initial-design.md Decided #19; a pre-published GHCR image is a later
+# optimization). pkg.pr.new URL deps install fine here: pnpm's
+# block-exotic-subdeps guard is pnpm-specific; we use npm and pin them as
+# direct deps. Native `lmdb` compiles for this linux image.
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+
+# Pins MUST match package.json (deps + pnpm.overrides). Bump together.
+RUN npm install --no-audit --no-fund \
+      @electric-ax/agents-server@0.4.2 \
+      "@durable-streams/client@https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/client@350" \
+      "@durable-streams/server@https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/server@350" \
+      "@durable-streams/state@https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/state@350"
+
+# agents-server's entrypoint only runs main() when import.meta.url ===
+# argv[1], so invoke it via its real (symlink-resolved) path.
+CMD ["sh", "-c", "exec node \"$(readlink -f node_modules/@electric-ax/agents-server/dist/entrypoint.js)\""]

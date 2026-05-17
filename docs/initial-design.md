@@ -669,7 +669,7 @@ The `domo` CLI manages the infra for the user (`domo up` → `docker compose up 
 
 Read fresh per turn (edits apply without restart), merged into the spawn **before** the `SCRUB_ENV` re-applies — so Decided #9 stays the final word (the knob cannot reintroduce a stripped `ANTHROPIC_API_KEY` and silently flip subscription→API billing). Most of "claude's environment" is already the user's host env + `~/.claude` (MCP/auth) with per-project runtime delegated to the Coast container via `coast exec`; this knob just covers extra-PATH / extra-env edge cases (e.g. a runtime an MCP server needs on the host).
 
-The installer / `domo` CLI / CI release pipeline are **not yet built** — this section is the spec; the config knob (`server/lib/config.ts`) is the only piece implemented so far.
+**Status: built (v0.1.1).** `scripts/install.sh` (curl|sh, checksum-verified, `DOMO_LOCAL_TARBALL` for offline), `bin/domo` (the CLI: `up`/`down`/`status`/`logs`/`update`/`version`), `release/docker-compose.yml` + `release/Dockerfile.agents-server`, `scripts/build-release.sh` (→ `dist/` tarball + installer + `SHA256SUMS` + `manifest.json`), and `.github/workflows/release.yml` (tag `v*` → build + attach to the GitHub release). One refinement vs. the original sketch: agents-server is **not** a pre-published registry image — `release/docker-compose.yml` builds it from a pinned Dockerfile on the first `domo up` (one-time, ~1–2 min; reproducible from the `package.json` pins, no registry/CI-auth needed). Pre-publishing that image to GHCR stays a later optimization. Tarball is **linux-x64 / node22-specific** (native `better-sqlite3` is bundled into `.output`); the installer enforces the platform.
 
 ## Public documentation (deliverable)
 
