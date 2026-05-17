@@ -14,6 +14,7 @@ Items that don't belong to any single phase: open decisions, pending discussions
 - [ ] **8. Mobile app (Capacitor wrapper).** Post-v1.
 - [ ] **9. No-remote projects (clone-from-remote inside Domo).** Post-v1.
 - [ ] **10. Concurrent-edit conflict surfacing within an env.** Lightweight badge in v1; soft locks later if needed.
+- [ ] **11. `pnpm build` (production) is broken.** `@electric-ax/agents-runtime`'s `model-runner` imports `node:os/path/fs`; it's dynamically imported client-side by `useSessionStream`, so the client bundle fails to externalize (`RollupError: "join" is not exported by "__vite-browser-external"`). Project has only ever run via `pnpm dev`. Fix before any production/deploy story: split the agents-runtime browser surface from its Node `model-runner`, browser-alias it, or move the durable-stream subscription behind a server proxy. Surfaced during Phase 4 first-half visual verification.
 
 ## Pending discussions (carried from `initial-design.md`)
 

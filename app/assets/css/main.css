@@ -1,0 +1,7 @@
+/* Nuxt UI v4 entry — REQUIRED. Without this the Tailwind v4 utility layer
+ * and the Nuxt UI theme/components layer are never generated, so every
+ * component renders with native browser styles (Preflight off, no
+ * `bg-*`/`flex`/`rounded`/… utilities). Order matters: Tailwind first,
+ * then Nuxt UI. Referenced from `nuxt.config.ts` `css`. */
+@import "tailwindcss";
+@import "@nuxt/ui";

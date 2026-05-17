@@ -4,7 +4,10 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
   modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-procedures', '@comark/nuxt'],
 
-  css: ['@xterm/xterm/css/xterm.css'],
+  // `main.css` is the Nuxt UI v4 entry (@import tailwindcss + @nuxt/ui) —
+  // mandatory; without it Tailwind never runs and the whole app renders
+  // unstyled. Keep it first so xterm's CSS layers on top.
+  css: ['~/assets/css/main.css', '@xterm/xterm/css/xterm.css'],
 
   // SPA-style rendering everywhere. Domo is self-hosted, single-user, and
   // the workspace is intrinsically client-side (xterm.js, CodeMirror, WS

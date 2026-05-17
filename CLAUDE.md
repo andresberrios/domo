@@ -335,6 +335,29 @@ fallback to `$XDG_DATA_HOME/domo` when set).
 
 ## Gotchas
 
+- **Nuxt UI v4 needs an app CSS entry — without it the WHOLE app is
+  unstyled.** `app/assets/css/main.css` must contain `@import
+  "tailwindcss"; @import "@nuxt/ui";` and be listed in `nuxt.config.ts`
+  `css`. The `@nuxt/ui` module only injects theme color *variables*
+  (`<style id="nuxt-ui-colors">` → `--ui-*`) and component runtime; it
+  does **not** run Tailwind. Missing the entry = no Preflight + zero
+  utility classes (`bg-*`/`flex`/`rounded`/…) → everything renders with
+  native browser styles. This was missing project-wide through Phases
+  0–4-firsthalf and went unnoticed because **every prior "verified live"
+  used the Playwright accessibility tree only** — the a11y tree is
+  identical whether or not CSS applies. **Lesson: visual/UI work MUST be
+  confirmed with a real rendered check** — screenshot AND/OR
+  `getComputedStyle` on a known element (e.g. a primary `UButton` bg must
+  be an `oklch(...)`, not `rgb(239, 239, 239)`), not just the snapshot.
+- **`pnpm build` (production) is currently broken** (pre-existing,
+  unrelated to styling): `@electric-ax/agents-runtime`'s `model-runner`
+  imports `node:os/path/fs`; the client bundle (it's dynamically imported
+  by `useSessionStream`) can't externalize them → Rollup
+  `"join" is not exported by "__vite-browser-external"`. The project has
+  only ever run via `pnpm dev` (all docs say so). Production build is a
+  cross-cutting follow-up (split the agents-runtime client surface from
+  its Node `model-runner`, or alias it browser-side). Until then, verify
+  via `pnpm dev` only.
 - **Nuxt UI v4 `UTabs` keys its `v-model` off each item's `value`**, not
   `id`. Items with only `{ id }` leave the model stuck — give them
   `{ value, label, icon }` (bit `DomoRightPanel` in Phase 2: Git tab
