@@ -258,7 +258,7 @@ function onSubmit() {
 
 const placeholder = computed(() =>
   props.status === 'streaming'
-    ? 'Agent is working — send to queue, or stop'
+    ? 'Agent is working — send to steer it (picked up next step), or stop'
     : 'Message the agent…  ( / commands · @ context )',
 )
 

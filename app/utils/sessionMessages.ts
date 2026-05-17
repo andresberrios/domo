@@ -14,6 +14,12 @@
  *      tool_use → `dynamic-tool` part (state `input-available`)
  *  - `user` (tool_result) → patches the matching `dynamic-tool` part by
  *      `tool_use_id` to `output-available` / `output-error`
+ *  - `steer_sent` (Domo-synthesized, Decided #18) → a user message
+ *      bubble at send time; flips queued→delivered when the CLI's
+ *      `isReplay` echo with the same `uuid` arrives
+ *  - `user` with `isReplay` → NOT a bubble; only its `uuid` is harvested
+ *      to mark the matching `steer_sent` delivered (the first prompt's
+ *      own replay is thus ignored — its bubble comes from the inbox)
  *  - `system` (init) / `result` / `rate_limit_event` → not rendered
  *      (status comes from `sessionMeta`, not the transcript)
  *  - inbox `prompt` sends → user messages, interleaved chronologically
@@ -98,8 +104,35 @@ export function projectSessionMessages(
     a.ts !== b.ts ? a.ts - b.ts : a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
   )
 
+  // The CLI's `--replay-user-messages` echo is the consumption ack: a
+  // `user` envelope with `isReplay` and the `uuid` we sent. Harvest those
+  // uuids so a `steer_sent` bubble can show queued→delivered.
+  const deliveredSteerUuids = new Set<string>()
   for (const evt of ordered) {
-    if (evt.type === 'assistant') {
+    if (evt.type !== 'user') continue
+    const p = evt.payload as { isReplay?: unknown; uuid?: unknown }
+    if (p.isReplay === true && typeof p.uuid === 'string') {
+      deliveredSteerUuids.add(p.uuid)
+    }
+  }
+
+  for (const evt of ordered) {
+    if (evt.type === 'steer_sent') {
+      const p = evt.payload as { text?: unknown; uuid?: unknown }
+      if (typeof p.text !== 'string') continue
+      const delivered =
+        typeof p.uuid === 'string' && deliveredSteerUuids.has(p.uuid)
+      timeline.push({
+        ts: evt.ts,
+        ord: `e:${evt.key}`,
+        message: {
+          id: `steer-${evt.key}`,
+          role: 'user',
+          metadata: { steer: true, delivered },
+          parts: [{ type: 'text', text: p.text, state: 'done' }],
+        },
+      })
+    } else if (evt.type === 'assistant') {
       const message = (evt.payload as { message?: { content?: unknown } })
         .message
       const blocks = asBlocks(message?.content)

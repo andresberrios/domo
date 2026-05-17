@@ -18,7 +18,13 @@ import { CLAUDE_CODE_CLI_ENTITY } from './config'
 import { runClaudeTurn, type PermissionDecision } from './claude'
 import { updateSession } from '../sessions'
 import { expandInWorktree } from '../promptExpand'
-import { beginTurn, endTurn, parkDiff, resolveDiff } from './sessionControl'
+import {
+  beginTurn,
+  endTurn,
+  parkDiff,
+  registerSteer,
+  resolveDiff,
+} from './sessionControl'
 import type { SessionStatus as DomoSessionStatus } from '../schemas'
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
@@ -311,6 +317,17 @@ async function executeClaudeTurn(
       signal: ac.signal,
       onPermissionRequest,
       onPermissionCancel,
+      // Mid-turn steering (Decided #18): record a durable `steer_sent`
+      // event from inside the live handler (send-ordered, survives
+      // reload), then inject into the child's stdin. The CLI's
+      // `isReplay` echo (mirrored via onEvent) is matched by uuid to
+      // flip the bubble queued→delivered.
+      onReady: (steerWrite) => {
+        registerSteer(sessionId, (text, uuid) => {
+          appendEvent(ctx, 'steer_sent', { text, uuid })
+          steerWrite(text, uuid)
+        })
+      },
       onEvent: (type, envelope) => appendEvent(ctx, type, envelope),
       onSessionId: (id) => {
         if (meta.nativeSessionId === id) return

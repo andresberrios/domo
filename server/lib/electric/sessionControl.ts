@@ -31,6 +31,12 @@ interface ParkedDiff {
 interface SessionControl {
   diffs: Map<string, ParkedDiff>
   onAbort?: () => void
+  /**
+   * Mid-turn steer hook — set once the live `claude` child's stdin is
+   * open (Decided #18). Presence == "a turn is live and steerable", so
+   * `sessions.prompt` routes a send to steering vs. a new queued turn.
+   */
+  onSteer?: (text: string, uuid: string) => void
 }
 
 const sessions = new Map<string, SessionControl>()
@@ -49,6 +55,33 @@ export function beginTurn(sessionId: string, onAbort: () => void): void {
   ctl(sessionId).onAbort = onAbort
 }
 
+/**
+ * Register the mid-turn steer channel (called once the child's stdin is
+ * open). Until this is set, a send falls back to a normal queued turn.
+ */
+export function registerSteer(
+  sessionId: string,
+  fn: (text: string, uuid: string) => void,
+): void {
+  ctl(sessionId).onSteer = fn
+}
+
+/**
+ * Deliver a steer message to the live turn. Returns false if no turn is
+ * steerable in this process (caller then falls back to the durable
+ * `prompt` inbox → a new queued turn).
+ */
+export function steerSession(
+  sessionId: string,
+  text: string,
+  uuid: string,
+): boolean {
+  const fn = sessions.get(sessionId)?.onSteer
+  if (!fn) return false
+  fn(text, uuid)
+  return true
+}
+
 /** Turn finished/failed: settle any still-parked diffs as rejected. */
 export function endTurn(sessionId: string): void {
   const c = sessions.get(sessionId)
@@ -56,6 +89,7 @@ export function endTurn(sessionId: string): void {
   for (const w of c.diffs.values()) w.resolve(false)
   c.diffs.clear()
   c.onAbort = undefined
+  c.onSteer = undefined
 }
 
 /**

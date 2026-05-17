@@ -26,6 +26,15 @@ type Rendered =
 
 const isUser = computed(() => props.message.role === 'user')
 
+// Mid-turn steer messages (Decided #18) carry metadata; show whether the
+// running agent has picked it up yet (queued) or has (delivered).
+const steer = computed<{ steer?: boolean; delivered?: boolean } | null>(() => {
+  const m = props.message.metadata
+  return m && typeof m === 'object' && 'steer' in m
+    ? (m as { steer?: boolean; delivered?: boolean })
+    : null
+})
+
 const rendered = computed<Rendered[]>(() => {
   const out: Rendered[] = []
   for (const part of props.message.parts) {
@@ -42,6 +51,17 @@ const rendered = computed<Rendered[]>(() => {
 </script>
 
 <template>
+  <UBadge
+    v-if="steer?.steer"
+    :color="steer.delivered ? 'success' : 'neutral'"
+    :icon="steer.delivered ? 'i-lucide-check' : 'i-lucide-clock'"
+    variant="subtle"
+    size="sm"
+    class="mb-1"
+  >
+    {{ steer.delivered ? 'Steered into the turn' : 'Queued — agent will pick this up' }}
+  </UBadge>
+
   <template
     v-for="(part, index) in rendered"
     :key="`${message.id}-${index}`"

@@ -48,6 +48,14 @@ export interface ClaudeTurnOpts {
   onPermissionRequest?: (req: PermissionRequest) => Promise<PermissionDecision>
   /** The CLI withdrew a pending permission request (it decided otherwise). */
   onPermissionCancel?: (requestId: string) => void
+  /**
+   * Called once the child is spawned and stdin is open, with a `steer`
+   * fn that injects a mid-turn user message (stream-json). The CLI queues
+   * it and consumes it at the next step boundary while the turn continues
+   * (`--replay-user-messages` echoes it back as `{type:'user',uuid,
+   * isReplay:true}`). See design "Steering a running turn" (Decided #18).
+   */
+  onReady?: (steer: (text: string, uuid: string) => void) => void
   /** Abort the turn — SIGTERM the child; the turn resolves (not errors). */
   signal?: AbortSignal
 }
@@ -87,6 +95,10 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
     'stdio',
     '--permission-mode',
     'default',
+    // Echo user messages (initial + mid-turn steer) back on stdout as
+    // `{type:'user',uuid,isReplay:true}` — the consumption ack that the
+    // transcript matches by uuid to flip a steer queued→delivered.
+    '--replay-user-messages',
     '--add-dir',
     opts.cwd,
     ...(opts.resumeSessionId ? ['--resume', opts.resumeSessionId] : []),
@@ -240,6 +252,16 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
   // Keep stdin OPEN — control responses are written to it for the rest of
   // the turn; it's closed on the `result` envelope (or process exit).
   child.stdin.write(JSON.stringify(userMsg) + '\n')
+
+  // stdin is open now → expose the mid-turn steer channel. The CLI queues
+  // the message and consumes it at the next step boundary (Decided #18).
+  opts.onReady?.((text: string, uuid: string) => {
+    writeLine({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text }] },
+      uuid,
+    })
+  })
 
   try {
     await new Promise<void>((resolve, reject) => {

@@ -135,6 +135,19 @@ prompt, ⌘S save, ⌘↵ commit); **responsive** — terminal moved off a
 ↔ slideover swap via `useBreakpoints`, left rail is the Nuxt UI
 built-in mobile drawer. Verified live desktop + mobile.
 
+**Mid-turn steering — shipped & verified live e2e** (design Decided #18,
+post-Phase-4). Sending while a turn runs injects the message into the
+live `claude` (queued, consumed at the next step boundary — the agent
+redirects, the turn continues; *not* an interrupt, *not*
+end-of-turn-only). `--replay-user-messages` echoes it on stdout as a
+consumption ack; `sessions.prompt` routes a send to `steerSession()`
+(in-process side-channel in `sessionControl`, same lane as
+diff-decisions) when a turn is live; the live handler appends a durable
+`steer_sent` event and the adapter matches the CLI `isReplay` echo by
+`uuid` to flip the bubble queued→delivered. Best-effort (event-stream
+durable, not a durable inbox queue); steered text is not `@`/slash
+expanded in v1. Spike kept at `smoke/steering-spike.mjs`.
+
 ## Running it
 
 ```bash
@@ -235,7 +248,8 @@ fallback to `$XDG_DATA_HOME/domo` when set).
     `claude.ts` (`runClaudeTurn`: host-side `claude` stream-json spawn,
     env scrub, `session_id` capture, **`--permission-prompt-tool stdio`
     control protocol** → `onPermissionRequest`/`onPermissionCancel`,
-    `AbortSignal`), `bridge.ts` (`createIdeBridge`: hand-rolled RFC 6455
+    **`--replay-user-messages` + `onReady(steer)`** for mid-turn
+    steering, `AbortSignal`), `bridge.ts` (`createIdeBridge`: hand-rolled RFC 6455
     WS server + 8 tools — **dormant**, superseded by stdio permission;
     not booted per turn), `entity.ts` (`registerClaudeCodeCli` + handler
     + `executeClaudeTurn` → `expandInWorktree` then `runClaudeTurn` with
@@ -447,6 +461,24 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   dead turn's pending diff** — it races the re-run; `reconcile
   StalePendingDiffs` rejects orphaned rows and the interrupted prompt
   re-proposes instead.
+- **Mid-turn steering: the CLI replay is a *consumption* ack, not a
+  receipt ack** (Decided #18; spike `smoke/steering-spike.mjs`). A user
+  message written to the live child's stdin mid-turn is *queued* and
+  consumed at the next step/tool boundary (agent redirects, turn
+  continues) — `--replay-user-messages` echoes it on stdout as
+  `{type:'user',uuid,isReplay:true}` *only when the agent drains the
+  queue*, so send→ack latency = the in-flight tool's remaining time
+  (seconds), NOT immediate. So a steer needs a queued→delivered UI
+  state, matched by the `uuid` we generate. Steered text is **not**
+  `@`/slash expanded (keeps the raw-text invariant trivial — no inbox
+  path). It's an in-process side-channel (`sessionControl.steerSession`),
+  same reason as diff-decisions (single-flight runner can't deliver a
+  wake mid-turn) — *not* a durable inbox message (a new inbox type would
+  re-run as a turn after the snapshot → double turn; the durable record
+  is a `steer_sent` *event* appended from inside the live handler).
+  Best-effort across restart (a `steer_sent` with no replay shows a
+  stale "queued" bubble; acceptable — contrast diff-approval, kept
+  durable).
 - **IDE bridge ≠ Nitro WS.** Browser↔Domo channels use
   `defineWebSocketHandler` (one app listener); the IDE bridge needs a
   *per-session ephemeral-port localhost* listener the `claude` child
