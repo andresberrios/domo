@@ -21,6 +21,13 @@ const diffMode = computed(() => {
   const d = route.query.diff
   return d === 'staged' || d === 'unstaged' ? d : null
 })
+// Full-screen view of a parked agent edit (the chat approval card links
+// here). Served from the in-process park registry, so it's available
+// while the turn is live; after a server restart it's gone — we fall back
+// to a pointer to the chat card (which is durable / cross-device).
+const pendingMode = computed(() => route.query.diff === 'pending')
+const pendingDiff = ref<{ before: string; after: string } | null>(null)
+const pendingGone = ref(false)
 
 const loading = ref(false)
 const errMsg = ref<string | null>(null)
@@ -42,7 +49,24 @@ async function load() {
   loading.value = true
   errMsg.value = null
   try {
-    if (diffMode.value) {
+    if (pendingMode.value) {
+      const sid = String(route.query.sid ?? '')
+      const callId = String(route.query.callId ?? '')
+      pendingGone.value = false
+      pendingDiff.value = null
+      file.value = null
+      diff.value = null
+      if (sid && callId) {
+        const r = await apiClient.sessions.pendingDiff.call({
+          id: sid,
+          callId,
+        })
+        if (r) pendingDiff.value = { before: r.before, after: r.after }
+        else pendingGone.value = true
+      } else {
+        pendingGone.value = true
+      }
+    } else if (diffMode.value) {
       diff.value = await apiClient.git.diff.call({
         envId: envId.value,
         path: path.value,
@@ -69,7 +93,11 @@ async function load() {
   }
 }
 
-watch([envId, path, diffMode], load, { immediate: true })
+watch(
+  [envId, path, diffMode, pendingMode, () => route.query.callId],
+  load,
+  { immediate: true },
+)
 
 function toggleMode() {
   if (isMarkdown.value) {
@@ -102,12 +130,13 @@ async function save() {
   <div class="flex flex-col h-full min-h-0">
     <div class="flex items-center gap-2 border-b border-default px-4 py-2">
       <UIcon
-        :name="diffMode ? 'i-lucide-git-compare' : 'i-lucide-file'"
+        :name="diffMode || pendingMode ? 'i-lucide-git-compare' : 'i-lucide-file'"
         class="size-4 text-muted shrink-0"
       />
       <span class="text-sm font-mono truncate">{{ path }}</span>
-      <span v-if="dirty && !diffMode" class="size-2 rounded-full bg-warning shrink-0" title="Unsaved changes" />
+      <span v-if="dirty && !diffMode && !pendingMode" class="size-2 rounded-full bg-warning shrink-0" title="Unsaved changes" />
       <span v-if="diffMode" class="text-xs text-muted">({{ diffMode }})</span>
+      <span v-if="pendingMode" class="text-xs text-warning">(proposed — pending review)</span>
 
       <div class="ml-auto flex items-center gap-2">
         <span v-if="file" class="text-xs text-muted">{{ languageLabel(file.language) }}</span>
@@ -145,6 +174,22 @@ async function save() {
       </div>
       <div v-else-if="errMsg" class="p-6 text-error text-sm">
         {{ errMsg }}
+      </div>
+
+      <DomoDiffView
+        v-else-if="pendingMode && pendingDiff"
+        :original="pendingDiff.before"
+        :modified="pendingDiff.after"
+        :language="languageFromPath(path)"
+        class="h-full"
+      />
+      <div
+        v-else-if="pendingMode && pendingGone"
+        class="p-6 text-muted text-sm"
+      >
+        This proposed edit is no longer pending here (already decided, or
+        the session runtime restarted). Review it from the session's chat —
+        the approval card there is restored from the durable stream.
       </div>
 
       <DomoDiffView

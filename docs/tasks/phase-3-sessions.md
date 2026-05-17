@@ -131,8 +131,30 @@ the temp `DOMO_HOME`.
 
 ## 11. Diff approval round-trip
 
-- [ ] `openDiff` parks the WS request, writes `pendingDiffs` row, emits a tool event
-- [ ] Inline diff card in the chat with accept/reject buttons
-- [ ] Full diff view in the workspace surface (`/p/.../f/*path` in `diff` mode)
-- [ ] `POST /api/sessions/:id/diff-decision` → inbox `diff_decision` → entity resolves parked call with `FILE_SAVED` / `DIFF_REJECTED`
-- [ ] Cleanup on session abort or env stop
+> **Status: landed & verified live end-to-end** (accept, reject, **and
+> server-restart resume**; isolated `DOMO_HOME`/worktree, 0 console
+> errors). The trigger is the **official VS Code extension mechanism**,
+> not the IDE-bridge `openDiff` (which headless `-p` never calls — that
+> earlier finding stands): `claude` is spawned with
+> `--permission-prompt-tool stdio --permission-mode default`. The CLI
+> emits a `control_request{can_use_tool}` NDJSON line on stdout; Domo
+> answers a `control_response` on stdin; on *allow* the **CLI itself
+> performs the edit**. Wire shapes mirror the public Claude Code source
+> snapshot `../claude-code/src/cli/structuredIO.ts`. See the ✅ box in the
+> design doc's [Diff visualization](../initial-design.md#diff-visualization-two-cases).
+
+**Verified smoke:** prompt → Write → `DomoDiffApprovalCard` → **Accept** →
+`notes.txt` written *by the CLI*, turn continued; **Reject** →
+`secret.txt` not written, agent acknowledged; **server killed mid-park →
+restarted → card replayed from the durable stream → orphaned rows
+auto-reconciled → interrupted prompt re-proposed a fresh card → Accept →
+`durable.txt` written, turn continued.**
+
+- [x] Edit-tool permission request parks, writes a durable `pendingDiffs` row, emits a `pending_diff` event, flips status to `pending-approval` (`server/lib/electric/entity.ts` `executeClaudeTurn.onPermissionRequest`; non-edit tools auto-allow). The CLI request id is reused as the `pendingDiffs` callId so a CLI-side cancel maps straight back (`onPermissionCancel`).
+- [x] Inline diff card with accept/reject — `DomoDiffApprovalCard` (reuses `DomoDiffView`), sourced from the **durable** `pendingDiffs` collection via `useSessionStream`, sticky above the prompt in `DomoChat`. Inherently cross-device + survives client/server restart (row replays from the stream).
+- [x] Full diff view in the workspace surface (`/p/.../f/*path?diff=pending&sid&callId`) — `sessions.pendingDiff` + a `pendingMode` branch in the file page; degrades to a "review in chat" pointer if the in-process park is gone (post-restart).
+- [x] `sessions.diffDecision` resolves the parked call **in-process** (single-flight runner ⇒ a `diff_decision` wake would deadlock behind the parked turn — see `server/lib/electric/sessionControl`); the live turn answers the CLI allow/deny and records the outcome durably. On allow the CLI writes the file (Domo never writes in the live path).
+- [x] Restart-resume — `reconcileStalePendingDiffs` runs at the top of every handler invocation (safe by the single-flight invariant: a *live* park only exists inside the currently-executing invocation) and rejects orphaned `pending` rows from a dead turn; the interrupted prompt (inbox key never advanced) re-runs and re-proposes a fresh, actionable card. We deliberately do **not** replay-apply a dead turn's edit (it would race the re-run and double-write).
+- [x] Cleanup — `sessions.abort` SIGTERMs the `claude` child + settles parked diffs as rejected in-process (`runClaudeTurn` takes an `AbortSignal`); `executeClaudeTurn`'s `finally` (`endTurn`) settles any leftover park on normal end/error; `reconcileStalePendingDiffs` covers post-restart. Env-stop needs no extra mechanism — the worktree is a host dir, so a stale pending row is cosmetic and reconciles on the next wake.
+
+**Phase 3 complete.**

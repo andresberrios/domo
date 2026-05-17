@@ -89,9 +89,36 @@ live; per-device new-output dot (`useDeviceId` + `sessions.markViewed`,
 suppressed for the open session); per-row kebab (rename inline / mark
 done / delete); show-done toggle (pre-existing). Rail liveness is a
 single 4 s tick in `DomoLeftRailTree` (paused when the tab is hidden) —
-sessions have no coast-style browser event channel. **Next: 11** diff
-approval round-trip. Phase 3's agent-diff approval card reuses the
-workspace surface's `DomoDiffView` (`@codemirror/merge`).
+sessions have no coast-style browser event channel. Step **11 — diff
+approval: landed & verified live end-to-end** (accept, reject, **and
+server-restart resume**; 0 console errors). The trigger is the
+**official VS Code extension mechanism**: `claude` is spawned with
+`--permission-prompt-tool stdio --permission-mode default`; each tool
+the CLI wants emits a `control_request{can_use_tool}` NDJSON line on
+stdout and we answer a `control_response` on stdin (stdin stays open
+until `result`). The earlier finding stands — headless `-p` does NOT
+use the IDE-bridge `openDiff` — so **`server/lib/electric/bridge.ts` is
+now dormant** (not booted per turn; kept for future editor-context
+tools). `claude.ts` carries the protocol + `onPermissionRequest`/
+`onPermissionCancel`; `entity.ts` `executeClaudeTurn.onPermissionRequest`
+is the policy — **non-edit tools auto-allow** (Bash/Read frictionless,
+like the old `acceptEdits`), **edit-family** tools become a durable
+`pendingDiffs` row + `DomoDiffApprovalCard`. On *allow* the **CLI itself
+writes the file** (Domo never writes in the live path). Decision is
+resolved **in-process** (`sessionControl` — the single-flight runner
+would deadlock on a `diff_decision` wake behind the parked turn).
+**Restart-resume:** the `pendingDiffs` row is durable so the card
+replays after a server restart; `reconcileStalePendingDiffs` (top of
+every handler invocation; safe by the single-flight invariant)
+auto-rejects orphaned `pending` rows from a dead turn, and the
+interrupted prompt re-runs and re-proposes a fresh, actionable card —
+verified by killing the server mid-park, restarting, and accepting the
+re-proposed card → file written, turn continued. `DomoDiffApprovalCard`
+(sticky in `DomoChat`, sourced from the durable collection) +
+`?diff=pending` workspace view + abort/turn-end cleanup
+(`runClaudeTurn` takes an `AbortSignal`). The approval card reuses the
+workspace surface's `DomoDiffView` (`@codemirror/merge`). **Phase 3
+complete.**
 
 ## Running it
 
@@ -190,14 +217,17 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   - `electric/` — Electric Agents session runtime: `config.ts` (URLs/ids),
     `schemas.ts` (locked `claude-code-cli` row/inbox Zod schemas),
     `claude.ts` (`runClaudeTurn`: host-side `claude` stream-json spawn,
-    env scrub, `session_id` capture, bridge env wiring), `bridge.ts`
-    (`createIdeBridge`: hand-rolled per-session RFC 6455 WS server +
-    handshake/auth + MCP dispatch + 8 tools + lock-file lifecycle),
-    `entity.ts` (`registerClaudeCodeCli` + handler + `executeClaudeTurn`
-    → `expandInWorktree` then boots `createIdeBridge` then `runClaudeTurn`;
-    also `mirrorToDb` — best-effort mirror of live status + `lastEventAt`
-    into the Domo `sessions` row, the in-process runtime being the single
-    writer), `runtime.ts`
+    env scrub, `session_id` capture, **`--permission-prompt-tool stdio`
+    control protocol** → `onPermissionRequest`/`onPermissionCancel`,
+    `AbortSignal`), `bridge.ts` (`createIdeBridge`: hand-rolled RFC 6455
+    WS server + 8 tools — **dormant**, superseded by stdio permission;
+    not booted per turn), `entity.ts` (`registerClaudeCodeCli` + handler
+    + `executeClaudeTurn` → `expandInWorktree` then `runClaudeTurn` with
+    `onPermissionRequest` (non-edit auto-allow; edit-family →
+    `pendingDiffs` row + park) + `reconcileStalePendingDiffs` (rejects
+    orphaned pending rows at handler entry — restart safety) + `mirrorToDb`
+    — live status/`lastEventAt` into the Domo `sessions` row, the
+    in-process runtime being the single writer), `runtime.ts`
     (`startElectricRuntime` singleton: registry + `createRuntimeHandler`
     + `runtime.registerTypes()` + pull-wake runner, non-fatal — the
     *worker* side), `client.ts` (the *driver* side: memoized
@@ -269,10 +299,20 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   - **`coast-daemon/src/api/`** — every HTTP/SSE/WS route Domo can call
   - **`coast-guard/src/api/`** — working TypeScript client + SSE consumer (reference)
   - **`coast-core/src/protocol/`** — Rust request/response types (mirror these in Zod)
-- `../claudecode.nvim/` — Claude Code IDE bridge protocol.
-  - **`PROTOCOL.md`** — canonical writeup. Read this before Phase 3.
-- `../claude-code-chat/` (andrepimenta) — fallback pattern for diff approval via
-  `--permission-prompt-tool` + custom MCP. See `claude-code-chat-permissions-mcp/`.
+- `../claude-code/` — **public Claude Code source snapshot** (a research
+  mirror; exposed via an npm source-map leak). Use **narrowly for protocol
+  interop** (don't lift implementation code). The step-11 stdio permission
+  wire shapes came from **`src/cli/structuredIO.ts`** (`createCanUseTool`,
+  `control_request`/`control_response`); `src/cli/print.ts` shows
+  `--permission-prompt-tool stdio` selection;
+  `src/utils/permissions/PermissionPromptToolResultSchema.ts` is the
+  allow/deny result schema.
+- `../claudecode.nvim/` — Claude Code IDE bridge protocol (now dormant in
+  Domo — see `bridge.ts`; superseded by stdio permission for approval).
+  - **`PROTOCOL.md`** — canonical bridge writeup.
+- `../claude-code-chat/` (andrepimenta) — the *MCP-tool* variant of
+  `--permission-prompt-tool` (we use the built-in `stdio` variant instead;
+  same semantics, no extra server). See `claude-code-chat-permissions-mcp/`.
 - `../claude-code-chat-codeflow/` (codeflow-studio) — slash command and
   `@`-mention UI patterns. See `src/utils/slash-commands.ts` and
   `src/service/customCommandService.ts`.
@@ -289,12 +329,30 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   spawned host `claude` per turn and `sessionMeta.bridgePort` was populated
   for the duration (the bridge booted + the lock file was written under
   `~/.claude/ide/`). The spawn → stream-json → wake → handler → mirrored
-  events path is fully validated. **Still unconfirmed:** whether the CLI
-  routes Edit/Write through the bridge's `openDiff` under
-  `--permission-mode acceptEdits` (vs auto-applying) — the 8d smoke used a
-  no-tool prompt to keep the throwaway worktree clean, so the actual
-  `openDiff` invocation is exercised for the first time in **step 11**
-  (the durable park/inbox approval round-trip), where it is load-bearing.
+  events path is fully validated.
+- **Headless `claude -p` permission = `--permission-prompt-tool stdio`,
+  NOT the IDE-bridge `openDiff` (resolved, step 11, `claude` 2.1.142).**
+  `openDiff` is never called in `-p` stream-json mode (verified: under
+  both `acceptEdits` and `default` a `Write`/`Edit` came back
+  permission-denied, no park). The working mechanism — exactly what the
+  official VS Code extension spawns — is `--permission-prompt-tool stdio
+  --permission-mode default`: the CLI emits a `control_request`
+  `{type:'control_request',request_id,request:{subtype:'can_use_tool',
+  tool_name,input,tool_use_id}}` NDJSON line on **stdout**; the host
+  replies on **stdin** with `{type:'control_response',response:{subtype:
+  'success',request_id,response:{behavior:'allow',updatedInput}|{behavior:
+  'deny',message}}}`. `--permission-prompt-tool` is a **hidden** flag
+  (absent from `--help`) and `stdio` is its built-in value (not an MCP
+  name). stdin MUST stay open for the whole turn (close on `result`).
+  On allow the **CLI applies the edit itself** — never write the file
+  in the live path. Wire shapes mirror the public Claude Code source
+  snapshot `../claude-code/src/cli/structuredIO.ts`. `bridge.ts` is
+  dormant (don't boot it / don't set `CLAUDE_CODE_SSE_PORT` —
+  ENABLE_IDE_INTEGRATION competing with stdio permission caused the
+  original confusion). After a server restart, **never replay-apply a
+  dead turn's pending diff** — it races the re-run; `reconcile
+  StalePendingDiffs` rejects orphaned rows and the interrupted prompt
+  re-proposes instead.
 - **IDE bridge ≠ Nitro WS.** Browser↔Domo channels use
   `defineWebSocketHandler` (one app listener); the IDE bridge needs a
   *per-session ephemeral-port localhost* listener the `claude` child

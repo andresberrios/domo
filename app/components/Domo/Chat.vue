@@ -19,8 +19,17 @@ const props = defineProps<{
 }>()
 
 const entityRef = computed(() => props.entityId)
-const { events, sessionMeta, inbox, ready, error } =
+const { events, sessionMeta, inbox, pendingDiffs, ready, error } =
   useSessionStream(entityRef)
+
+// Parked agent edits awaiting the user, oldest first. Read off the durable
+// collection, so they survive client/server restart and show on any
+// device — the core of the resumable diff-approval requirement.
+const awaitingDiffs = computed(() =>
+  [...pendingDiffs.value]
+    .filter((d) => d.status === 'pending')
+    .sort((a, b) => a.createdTs - b.createdTs),
+)
 
 // While this session is the focused one, keep stamping the per-device
 // viewed-at forward so its left-rail new-output dot stays cleared; once
@@ -152,6 +161,18 @@ async function onStop() {
       >
         Connecting to session…
       </div>
+    </div>
+
+    <div
+      v-if="awaitingDiffs.length"
+      class="shrink-0 px-3 pt-3 space-y-2 max-h-[55%] overflow-y-auto"
+    >
+      <DomoDiffApprovalCard
+        v-for="d in awaitingDiffs"
+        :key="d.callId"
+        :session-id="sessionId"
+        :diff="d"
+      />
     </div>
 
     <div class="shrink-0 p-3 border-t border-default">
