@@ -158,8 +158,10 @@ expanded in v1. Spike kept at `smoke/steering-spike.mjs`.
 installer (`scripts/install.sh`, curl|sh) + `domo` CLI (`bin/domo`) +
 compose'd infra (`release/`) + CI release matrix
 (`.github/workflows/release.yml`) are **built and released** — current
-**v0.1.4** (the only published release; v0.1.0–v0.1.3 tags/releases were
-deleted — v0.1.4 is the first release whose CI is actually green):
+**v0.3.0** (v0.1.4 was the first green-CI release; v0.1.0–v0.1.3 were
+deleted; v0.2.0–v0.2.1 followed; v0.3.0 lands the Robo theme +
+branding, the signup inline-validation fix, and the dir-picker / panel
+/ user-menu layout fixes):
 multi-platform tarballs (`{linux,darwin}-{x64,arm64}`, WSL=linux),
 **bundled Node** (no system Node req), infra runs as the host UID, all
 data under `$DOMO_HOME` (one dir to back up / wipe). All four v0.1.4
@@ -206,7 +208,7 @@ pnpm build          # production build (works since cross-cutting #11 fix)
 bash scripts/build-release.sh [ver]   # → dist/ tarball + install.sh + SHA256SUMS
 ```
 
-**Distribution (Decided #19; built, current release v0.1.4).**
+**Distribution (Decided #19; built, current release v0.3.0).**
 Domo ships as a host-installed app + compose'd infra, NOT
 docker-compose-only (the app is a host-side orchestrator). Pieces:
 `scripts/install.sh` (curl|sh, OS/arch-detecting, checksum-verified,
