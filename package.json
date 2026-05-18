@@ -1,6 +1,6 @@
 {
   "name": "domo",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Self-hosted workspace for running parallel Claude Code agents across isolated Coast environments.",
   "type": "module",
   "private": true,
@@ -64,6 +64,7 @@
     "codemirror": "^6.0.2",
     "comark": "^0.3.2",
     "nuxt": "^4.4.5",
+    "nuxt-auth-utils": "^0.5.29",
     "nuxt-procedures": "^0.1.9",
     "shiki": "^4.0.2",
     "superjson": "^2.2.6",

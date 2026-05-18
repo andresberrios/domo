@@ -1,6 +1,8 @@
 # Securing your install
 
-Domo has **no built-in authentication** in v1. Anyone who can reach the app port gets a full Claude Code agent with **host file, git, terminal, and `claude` control** over your machine and projects. Treat reaching `:7575` as equivalent to a shell on the host.
+Domo has **built-in email + password authentication**. The first visit creates the **admin** account; anyone who signs up afterward is **pending** until the admin approves them, and the entire backend — every API procedure, the SSE/WS streams, and the durable session-stream proxy — is gated server-side (an unauthenticated or unapproved request is rejected, not merely hidden in the UI). No email is ever sent; approval is a button in the admin's **Users** screen.
+
+That said, an approved user gets a full Claude Code agent with **host file, git, terminal, and `claude` control** over your machine and projects — so still treat an account on this instance as equivalent to a shell on the host. A strong admin password is the gate; the network hardening below is defence in depth, not optional, and is **not** a reason to expose `:7575` to the public internet.
 
 ## Default: localhost only
 
@@ -30,7 +32,7 @@ DOMO_BIND=0.0.0.0 domo up      # all interfaces
 DOMO_BIND=10.0.0.5 domo up     # one specific interface
 ```
 
-Only do this on a network you trust end to end, and still keep an auth proxy in front. **Never** bind to a public interface, and never port-forward `:7575` from a router to the host — there is no password to stop whoever finds it.
+Only do this on a network you trust end to end. **Never** bind to a public interface, and never port-forward `:7575` from a router to the host: the built-in login raises the bar, but a public agent with full host control is too valuable a target to expose on a single password — keep a tunnel or authenticating proxy in front.
 
 ## Checklist
 

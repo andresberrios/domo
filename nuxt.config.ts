@@ -2,7 +2,7 @@
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
-  modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-procedures', '@comark/nuxt', '@vueuse/nuxt'],
+  modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-procedures', '@comark/nuxt', '@vueuse/nuxt', 'nuxt-auth-utils'],
 
   // `main.css` is the Nuxt UI v4 entry (@import tailwindcss + @nuxt/ui) —
   // mandatory; without it Tailwind never runs and the whole app renders
@@ -41,6 +41,15 @@ export default defineNuxtConfig({
     coastApiUrl: process.env.DOMO_COAST_API_URL || 'http://127.0.0.1:31415',
     // Electric Agents control plane (docker-compose). Session runtime only.
     agentsServerUrl: process.env.DOMO_AGENTS_SERVER_URL || 'http://127.0.0.1:4437',
+    // nuxt-auth-utils sealed-cookie session. `password` is left empty here
+    // and filled at runtime by `server/plugins/00.session-secret.ts` from
+    // an auto-generated, persisted `$DOMO_HOME/session-secret` (so the
+    // operator never has to set an env var and sessions survive restarts).
+    // `NUXT_SESSION_PASSWORD` still overrides via Nuxt's env convention.
+    session: {
+      password: process.env.NUXT_SESSION_PASSWORD || '',
+      maxAge: 60 * 60 * 24 * 30, // 30 days — self-hosted, infrequent logins
+    },
   },
 
   // SQLite native binding can't be bundled.

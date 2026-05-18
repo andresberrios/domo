@@ -68,6 +68,17 @@ function migrate(d: Database.Database): void {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      last_login_at INTEGER
+    );
   `)
 
   const row = d.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as

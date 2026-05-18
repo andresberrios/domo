@@ -67,6 +67,29 @@ export const Session = z.object({
 })
 export type Session = z.infer<typeof Session>
 
+/**
+ * Public projection of a `users` row — never carries the password hash.
+ * `role`/`status` are authoritative from the DB (the session cookie holds
+ * identity only); the client uses these for routing (pending → waiting
+ * screen, admin → user-management UI).
+ */
+export const UserRole = z.enum(['admin', 'member'])
+export type UserRole = z.infer<typeof UserRole>
+
+export const UserStatus = z.enum(['active', 'pending'])
+export type UserStatus = z.infer<typeof UserStatus>
+
+export const PublicUser = z.object({
+  id: z.string(),
+  email: z.string(),
+  name: z.string(),
+  role: UserRole,
+  status: UserStatus,
+  createdAt: z.number().int(),
+  lastLoginAt: z.number().int().nullable(),
+})
+export type PublicUser = z.infer<typeof PublicUser>
+
 export const FsEntry = z.object({
   name: z.string(),
   path: z.string(),

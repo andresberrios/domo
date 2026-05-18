@@ -13,6 +13,7 @@ Index of the per-phase checklists in [`tasks/`](tasks/). Tick items as we land t
 | 2 | [`tasks/phase-2-workspace.md`](tasks/phase-2-workspace.md) | File tree + editor, terminal pane, git changes pane | 5–7 |
 | 3 | [`tasks/phase-3-sessions.md`](tasks/phase-3-sessions.md) | Electric Agents, chat surface, session lifecycle, diff approval | 8–11 |
 | 4 | [`tasks/phase-4-polish.md`](tasks/phase-4-polish.md) | Aborts, shortcuts, dark mode, error/loading, responsive, onboarding | 12 |
+| 5 | [`tasks/phase-5-collab.md`](tasks/phase-5-collab.md) | Multi-user auth (Part A, shipped) + group-chat collaboration (Part B, designed) | post-12 |
 
 ## Cross-cutting
 

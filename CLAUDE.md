@@ -172,6 +172,27 @@ not locally verified. Details: the
 "Distribution" block under *Running it* + `docs/site/getting-started.md`
 + `initial-design.md` Decided #19.
 
+**Multi-user auth — Part A shipped & verified e2e (Decided #20).**
+Email+password (`nuxt-auth-utils`, sealed cookie, scrypt) — **no email is
+ever sent**. First app open → `/setup` creates the **admin**
+(`role=admin, status=active`, logged straight in); later signups →
+`/register` create `role=member, status=pending` and park on `/pending`
+until the admin approves them at `/admin/users`. The sealed cookie holds
+**identity only** — `role`/`status` are re-read from the `users` table
+in every server guard, so an approve/reject lands on the user's next
+request with no re-login. **The real boundary is `server/middleware/
+auth.ts`** (gates `/procedures/**`, Domo's SSE/WS endpoints, and the
+`/_agents/**` durable-stream proxy; allow-lists only
+bootstrap/setup/register/login/me); the SPA route guard is cosmetic.
+Verified e2e (isolated `DOMO_HOME`): first-run→admin→app, reload
+persistence, logout, register→pending (gated 403), admin approve→member
+gains access, member blocked from admin procs (403), unauth API→401,
+0 console errors, CSS rendered (oklch). **Part B (group-chat
+collaboration: a chat message does NOT trigger the agent; only an
+`@agent` mention or a "Send to agent" button does) is designed but NOT
+built** — see `initial-design.md` Decided #21 +
+`docs/tasks/phase-5-collab.md`.
+
 ## Running it
 
 ```bash
@@ -274,6 +295,26 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   → `apiClient.projects.add.call(...)` / `.useCall(...)`). Both input AND output
   are Zod-validated; superjson handles serialization (Date, Map, etc. just work).
   Use **discriminated-union outputs** for multi-step flows (see `projects.add`).
+  A `defineProcedure` `handler` receives `{ input, event }` — the H3
+  `event` is how procedures call `requireUserSession`/`requireAdmin`
+  (auth procedures + admin procedures use it; most procedures don't need
+  it because `server/middleware/auth.ts` already gated the request).
+- **Auth = `nuxt-auth-utils` + a central Nitro middleware (Decided #20).**
+  `server/plugins/00.session-secret.ts` fills the sealed-cookie secret
+  from an auto-generated, persisted `$DOMO_HOME/session-secret` (so the
+  operator sets nothing; `NUXT_SESSION_PASSWORD` overrides). Procedures
+  live under `server/procedures/auth/**` (`bootstrap`/`setup`/`register`/
+  `login`/`me` + `auth/admin/{listUsers,approveUser,deleteUser}`).
+  `server/middleware/auth.ts` is the enforcement point — it gates
+  `/procedures/**`, Domo's own `/api/*` SSE/WS endpoints, and `/_agents/
+  **`, allow-listing only the five auth procedures (it must NOT gate the
+  broad `/api/` prefix — see Gotchas). SPA side: `useAuth()` composable
+  (wraps `useUserSession` + DB-fresh `me`), `app/middleware/
+  auth.global.ts` (redirects to `/setup`|`/login`|`/pending`), the bare
+  auth pages, and **`DomoAppShell`** (the dashboard chrome, extracted
+  from `app.vue`) which mounts ONLY for a signed-in active user so its
+  data procedures never fire pre-auth. Session augmentation:
+  `shared/types/auth.d.ts` (`#auth-utils` `User` = `{id,email,name}`).
 - **Streaming endpoints stay classic.** `nuxt-procedures` is request/response
   only. SSE proxies (`/api/projects/build`, `/api/envs/run`) and WS pass-throughs
   (`/api/coast-events`) live under `server/api/` as `defineEventHandler` /
@@ -284,7 +325,13 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   - `coast/{client,types,index}.ts` — typed coastd client
   - `projects.ts` — git/Coastfile detection + DB CRUD
   - `envs.ts` — env DB CRUD + `coast ls` reconciliation
-  - `schemas.ts` — shared Zod schemas (Project, Env, Session, FsEntry)
+  - `schemas.ts` — shared Zod schemas (Project, Env, Session, FsEntry,
+    PublicUser/UserRole/UserStatus)
+  - `users.ts` — `users` table CRUD (`countUsers`, `getUserByEmail`,
+    `createUser`, `setUserStatus`, …) + `toPublic` (strips the hash)
+  - `auth.ts` — server guards `requireUser`/`requireActiveUser`/
+    `requireAdmin` (each re-reads the live `users` row — the cookie is
+    identity-only, so approve/reject takes effect with no re-login)
   - `sessions.ts` — `sessions` table CRUD (Domo-side session pointer:
     title override, `done`, `viewed_at_per_device`, cached status) +
     `markSessionViewed` (per-device read-modify-write for the new-output dot)
@@ -656,6 +703,41 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   tagged commit**, so a workflow fix on `main` does *not* salvage an
   already-pushed tag — you must cut a fresh tag (this is why v0.1.4
   exists). Maintainer runbook: `docs/site/releasing.md`.
+
+- **`nuxt-auth-utils` auto-writes a dev `.env` secret — that's why the
+  `$DOMO_HOME/session-secret` plugin "doesn't run" in dev.** In dev with
+  no `NUXT_SESSION_PASSWORD`, the module generates one and persists it to
+  the project-root `.env` (gitignored — `.gitignore:25`), then maps it
+  into `runtimeConfig.session.password`. `server/plugins/00.session-
+  secret.ts` correctly *defers* when a secret already exists, so it
+  no-ops in dev and only owns the **production** path (a built server
+  does NOT auto-gen). Don't "fix" the plugin because no
+  `$DOMO_HOME/session-secret` appears in dev — that's expected.
+- **The auth middleware must NOT gate the broad `/api/` prefix.**
+  Framework endpoints live there too — `/api/_auth/session`
+  (nuxt-auth-utils' own session fetch/clear) and `/api/_nuxt_icon/*`
+  (the Nuxt Icon server bundle). Gating all of `/api/` 401s icon loads
+  on the *public* auth screens. `server/middleware/auth.ts` instead
+  enumerates Domo's own non-procedure endpoints (`/api/coast-events`,
+  `/api/terminal`, `/api/envs/`, `/api/projects/`) + `/procedures/**` +
+  `/_agents/**`. Add new Domo `/api/*` endpoints to that list explicitly.
+- **Logout must null `me` (→ unmount the shell) BEFORE `clear()`.**
+  `useAuth().logout()` sets `me.value = null` + `await nextTick()` first
+  so `showShell` flips false and `DomoAppShell` unmounts *before* the
+  awaited session `clear()`. Otherwise a still-mounted shell child
+  refetches a now-gated procedure mid-logout and the (correct) 401
+  surfaces as an **uncatchable** browser console error (a network 401 is
+  logged by the browser even with a JS `.catch`). Same class of bug as
+  the pre-auth `usePanelState` fetch — the fix there was extracting the
+  shell so its composables never run on auth pages.
+- **The session cookie is identity-only by design.** It carries
+  `{id,email,name}`; `role`/`status` are deliberately re-read from the
+  `users` table in every `server/lib/auth.ts` guard. This is what makes
+  admin approve/reject take effect on the user's *next request* with no
+  re-login (a sealed cookie can't be mutated server-side). Don't "cache"
+  role/status in the cookie to save a query — it reintroduces a stale-
+  permission window. `auth.me` is the client's fresh source; `/pending`
+  polls it.
 
 ## Updating this file
 
