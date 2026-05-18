@@ -25,6 +25,10 @@ INSTALL_URL="${DOMO_INSTALL_URL:-https://github.com/andresberrios/domo/releases/
 # $DOMO_DATA_DIR); exported so `docker compose` interpolation sees it.
 DATA_DIR="$HOME_DIR/data"
 export DOMO_DATA_DIR="$DATA_DIR"
+# Run infra containers as the host user so bind-mounted Postgres/streams
+# data stays host-owned — keeps `rm -rf`/`tar` of $DOMO_HOME working.
+export DOMO_UID="$(id -u)"
+export DOMO_GID="$(id -g)"
 
 mkdir -p "$RUN_DIR"
 

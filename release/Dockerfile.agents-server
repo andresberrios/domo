@@ -22,6 +22,13 @@ RUN npm install --no-audit --no-fund \
       "@durable-streams/server@https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/server@350" \
       "@durable-streams/state@https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/state@350"
 
+# The container runs as the host UID (compose `user:`, so bind-mounted
+# data stays host-owned). agents-server does `mkdir /app/logs` at
+# startup; /app is root-owned from the build, so make the dir itself
+# group/other-writable to let any runtime uid create entries in it.
+# (Single-tenant throwaway container; node_modules stays read-only 755.)
+RUN chmod 0777 /app
+
 # agents-server's entrypoint only runs main() when import.meta.url ===
 # argv[1], so invoke it via its real (symlink-resolved) path.
 CMD ["sh", "-c", "exec node \"$(readlink -f node_modules/@electric-ax/agents-server/dist/entrypoint.js)\""]

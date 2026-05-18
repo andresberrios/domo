@@ -26,6 +26,11 @@ name: domo
 services:
   postgres:
     image: postgres:16-alpine
+    # Run as the host user so the bind-mounted data is host-owned —
+    # otherwise `rm -rf`/`tar` of $DOMO_HOME fails (root-owned). The CLI
+    # pre-creates the dirs owned by this uid; the official image runs
+    # initdb as that uid when started non-root.
+    user: '${DOMO_UID:?set by the domo CLI}:${DOMO_GID:?set by the domo CLI}'
     environment:
       POSTGRES_DB: electric_agents
       POSTGRES_USER: electric_agents
@@ -44,6 +49,9 @@ services:
       context: .
       dockerfile: Dockerfile.agents-server
     image: domo-agents-server:local
+    # Same: writes /streams-data (bind-mounted) as the host user. node
+    # only reads the image's /app and writes the host-owned mount.
+    user: '${DOMO_UID:?set by the domo CLI}:${DOMO_GID:?set by the domo CLI}'
     environment:
       ELECTRIC_AGENTS_DATABASE_URL: postgresql://electric_agents:electric_agents@postgres:5432/electric_agents
       ELECTRIC_AGENTS_HOST: 0.0.0.0
