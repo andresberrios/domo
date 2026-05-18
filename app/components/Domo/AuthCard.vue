@@ -7,7 +7,11 @@ defineProps<{ title: string; subtitle?: string }>()
     <UCard class="w-full max-w-sm">
       <template #header>
         <div class="flex items-center gap-2">
-          <UIcon name="i-lucide-bot" class="size-5 text-primary" />
+          <img
+            src="/image/logo.png"
+            alt="Domo"
+            class="size-7 rounded-full object-cover"
+          >
           <span class="font-semibold">Domo</span>
         </div>
       </template>

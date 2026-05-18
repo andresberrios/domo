@@ -9,6 +9,19 @@ export default defineNuxtConfig({
   // unstyled. Keep it first so xterm's CSS layers on top.
   css: ['~/assets/css/main.css', '@xterm/xterm/css/xterm.css'],
 
+  // Window/tab title + favicon. The Robo logo lives at
+  // `public/image/logo.png` (served at `/image/logo.png`) and is the only
+  // favicon — the legacy `public/favicon.ico` was removed.
+  app: {
+    head: {
+      title: 'Domo',
+      link: [
+        { rel: 'icon', type: 'image/png', href: '/image/logo.png' },
+        { rel: 'apple-touch-icon', href: '/image/logo.png' },
+      ],
+    },
+  },
+
   // SPA-style rendering everywhere. Domo is self-hosted, single-user, and
   // the workspace is intrinsically client-side (xterm.js, CodeMirror, WS
   // subscriptions) — server-rendering the shell buys little. We use a

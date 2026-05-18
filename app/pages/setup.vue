@@ -4,11 +4,21 @@
  * exist (the global middleware sends the first visitor here and everyone
  * else away). On success the admin is logged straight into the app.
  */
+import { z } from 'zod'
+import type { FormSubmitEvent } from '@nuxt/ui'
+
 const { fetchSession, refreshBootstrap, refreshMe } = useAuth()
 
-const name = ref('')
-const email = ref('')
-const password = ref('')
+// Mirrors the server `auth.setup` input so the user gets an inline
+// reason (too-short password, bad email) before the request is sent.
+const schema = z.object({
+  name: z.string().trim().min(1, 'Enter your name'),
+  email: z.string().trim().pipe(z.email('Enter a valid email address')),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+})
+type Schema = z.output<typeof schema>
+
+const state = reactive({ name: '', email: '', password: '' })
 const pending = ref(false)
 const errMsg = ref<string | null>(null)
 
@@ -17,15 +27,14 @@ function errText(e: unknown): string {
   return x?.data?.message || x?.statusMessage || (e as Error).message
 }
 
-async function submit() {
-  if (!name.value.trim() || !email.value.trim() || !password.value) return
+async function onSubmit(event: FormSubmitEvent<Schema>) {
   pending.value = true
   errMsg.value = null
   try {
     await apiClient.auth.setup.call({
-      name: name.value.trim(),
-      email: email.value.trim(),
-      password: password.value,
+      name: event.data.name.trim(),
+      email: event.data.email.trim(),
+      password: event.data.password,
     })
     await fetchSession()
     await refreshBootstrap(true)
@@ -44,21 +53,26 @@ async function submit() {
     title="Create your admin account"
     subtitle="This is the first account on this Domo instance — it has full access and approves everyone who signs up next."
   >
-    <form class="space-y-3" @submit.prevent="submit">
-      <UFormField label="Name">
-        <UInput v-model="name" autocomplete="name" placeholder="Ada Lovelace" />
+    <UForm
+      :schema="schema"
+      :state="state"
+      class="space-y-3"
+      @submit="onSubmit"
+    >
+      <UFormField label="Name" name="name">
+        <UInput v-model="state.name" autocomplete="name" placeholder="Ada Lovelace" />
       </UFormField>
-      <UFormField label="Email">
+      <UFormField label="Email" name="email">
         <UInput
-          v-model="email"
+          v-model="state.email"
           type="email"
           autocomplete="username"
           placeholder="you@example.com"
         />
       </UFormField>
-      <UFormField label="Password" hint="At least 8 characters">
+      <UFormField label="Password" name="password" hint="At least 8 characters">
         <UInput
-          v-model="password"
+          v-model="state.password"
           type="password"
           autocomplete="new-password"
           placeholder="••••••••"
@@ -77,6 +91,6 @@ async function submit() {
       >
         Create admin account
       </UButton>
-    </form>
+    </UForm>
   </DomoAuthCard>
 </template>

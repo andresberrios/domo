@@ -3,9 +3,15 @@ const showAddProject = useState('leftRail:showAddProject', () => false)
 </script>
 
 <template>
-  <UDashboardSidebarCollapse />
-  <div class="flex-1 flex items-center justify-between gap-2 pl-2">
-    <span class="text-sm font-semibold">Domo</span>
+  <div class="flex-1 flex items-center justify-between gap-2">
+    <span class="flex items-center gap-2 min-w-0">
+      <img
+        src="/image/logo.png"
+        alt="Domo"
+        class="size-6 rounded-full object-cover shrink-0"
+      >
+      <span class="text-sm font-semibold truncate">Domo</span>
+    </span>
     <UButton
       size="xs"
       color="primary"

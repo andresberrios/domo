@@ -5,3 +5,63 @@
  * then Nuxt UI. Referenced from `nuxt.config.ts` `css`. */
 @import "tailwindcss";
 @import "@nuxt/ui";
+
+/* Theme tokens — Chrono Trigger's Robo.
+ *
+ * - `robo`     = Robo's golden/amber body  → wired to Nuxt UI `primary`
+ * - `roboeye`  = Robo's mint-green eyes    → wired to Nuxt UI `secondary`
+ *   (use `secondary`/`text-secondary`/`bg-secondary` for accents)
+ * - `robodark` = Robo's dark metal/outline → wired to Nuxt UI `neutral`
+ *   (a warm low-chroma ramp; drives app text/border/bg + dark-mode bg)
+ *
+ * Shades are referenced BY NAME from `app.config.ts` (`ui.colors`). Both
+ * scales must keep the full 50–950 range — Nuxt UI derives `--ui-primary`
+ * from shade 500 (light) / 400 (dark), etc.
+ *
+ * Fonts are declared here only; `@nuxt/fonts` (bundled + auto-registered
+ * by Nuxt UI) scans these `--font-*` families and fetches them from
+ * Google Fonts at build — no manual <link> or config needed.
+ *
+ * `static` keeps the tokens emitted even though they're referenced
+ * indirectly (via Nuxt UI's generated `--ui-*`), not as bare utilities. */
+@theme static {
+  --font-sans: "Jersey 25", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Young Serif", ui-serif, Georgia, serif;
+  --font-mono: "Kode Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-robo-50: #fbf6e9;
+  --color-robo-100: #f6e8c2;
+  --color-robo-200: #edd188;
+  --color-robo-300: #e3b850;
+  --color-robo-400: #d7a02f;
+  --color-robo-500: #c68a26;
+  --color-robo-600: #a86f20;
+  --color-robo-700: #85531c;
+  --color-robo-800: #6d441d;
+  --color-robo-900: #5c391c;
+  --color-robo-950: #34200d;
+
+  --color-roboeye-50: #ecfdf5;
+  --color-roboeye-100: #d2fae9;
+  --color-roboeye-200: #a6f2d5;
+  --color-roboeye-300: #6fe6bc;
+  --color-roboeye-400: #34d2a1;
+  --color-roboeye-500: #14b589;
+  --color-roboeye-600: #099070;
+  --color-roboeye-700: #0a725a;
+  --color-roboeye-800: #0b5a48;
+  --color-roboeye-900: #0a4a3c;
+  --color-roboeye-950: #022a21;
+
+  --color-robodark-50: #f7f6f4;
+  --color-robodark-100: #edebe6;
+  --color-robodark-200: #dad6cc;
+  --color-robodark-300: #beb8a9;
+  --color-robodark-400: #9a9384;
+  --color-robodark-500: #7a7365;
+  --color-robodark-600: #615b4f;
+  --color-robodark-700: #4d4840;
+  --color-robodark-800: #383430;
+  --color-robodark-900: #252220;
+  --color-robodark-950: #161310;
+}

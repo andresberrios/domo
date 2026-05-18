@@ -18,6 +18,9 @@ const terminalTo = computed(() =>
 
 <template>
   <UDashboardNavbar :title="title">
+    <template #leading>
+      <UDashboardSidebarCollapse />
+    </template>
     <template #right>
       <UColorModeButton size="xs" />
       <UTooltip v-if="terminalTo" text="Terminal">

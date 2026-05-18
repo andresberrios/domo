@@ -289,6 +289,35 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   (auto-import yields `<DomoLeftRail />` etc.). Use **UDashboard primitives**
   (`UDashboardGroup`, `UDashboardSidebar`, `UDashboardPanel`, `UDashboardNavbar`,
   `UDashboardToolbar`) for shell pieces — they handle resize/persist/mobile.
+  **The center `UDashboardPanel` carries NO `default-size`** — a size-less
+  panel is the theme's `flex-1` filler; a sized one is fixed `w-(--width)`
+  and won't reclaim space when the right panel hides / the rail collapses
+  (and `useResizable` ignores a reactive `default-size` after mount, so
+  binding it is dead anyway). Only the side rails are sized/resizable.
+- **Theme = `app/app.config.ts` + `@theme static` in `main.css`
+  (Decided: Robo palette).** Custom Tailwind color scales
+  (`--color-robo-*` = Robo's amber body → Nuxt UI `primary`;
+  `--color-roboeye-*` = Robo's mint eyes → `secondary`/accent via
+  `text-secondary`/`bg-secondary`; `--color-robodark-*` = Robo's dark
+  metal/outline, a warm low-chroma ramp → `neutral`, so it drives app
+  text/border/bg + dark-mode bg) live in `main.css`'s `@theme static`
+  block. **Every scale must be the full 50–950 (11 stops)** — Nuxt UI
+  needs the whole ramp (derives `--ui-primary` from 500 light / 400
+  dark, `--ui-text`/`--ui-bg`/`--ui-color-*` across the set); a partial
+  scale leaves `--ui-*` empty and the UI falls back. `app/app.config.ts`
+  (Nuxt-4 srcDir = `app/`) wires them by name:
+  `ui.colors.{primary,secondary,neutral}` (`neutral` accepts any
+  registered color — default is just `slate`). Fonts are declared ONLY
+  as `--font-{sans,serif,mono}` in the same block (sans "Jersey 25",
+  serif "Young Serif", mono "Kode Mono") — `@nuxt/fonts` (bundled +
+  auto-registered by Nuxt UI, weights 400–700) scans them and fetches
+  from Google Fonts at build; no `<link>`/nuxt.config needed. Window
+  title + favicon are `nuxt.config.ts` `app.head` (`title: 'Domo'`,
+  icon → `/image/logo.png`). The brand logo is **`public/image/logo.png`**
+  (served at `/image/logo.png`) and is the *only* favicon — the legacy
+  `public/favicon.ico` was deleted; `DomoLeftRailHeader` + `DomoAuthCard`
+  render the same file. To
+  re-skin, edit the scales in `main.css` (hex), not component classes.
 - **Backend API uses `nuxt-procedures`.** Every request/response endpoint
   is a file under `server/procedures/` exporting `defineProcedure({ input, output, handler })`.
   Files map to the auto-imported `apiClient` (e.g. `server/procedures/projects/add.ts`
@@ -315,6 +344,14 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   from `app.vue`) which mounts ONLY for a signed-in active user so its
   data procedures never fire pre-auth. Session augmentation:
   `shared/types/auth.d.ts` (`#auth-utils` `User` = `{id,email,name}`).
+  **`setup.vue`/`register.vue` wrap their form in `UForm` + a Zod
+  `schema` mirroring the server `auth.*` input** (named `UFormField`s →
+  inline per-field errors *before* submit; e.g. a too-short password is
+  rejected client-side with "Password must be at least 8 characters"
+  instead of the procedure layer's opaque 400 "Invalid procedure
+  input"). The server schema still validates (defense in depth); 409s
+  (email taken / no admin yet) stay in the shared `errMsg` line.
+  `login.vue` has no length constraint so it stays hand-rolled.
 - **Streaming endpoints stay classic.** `nuxt-procedures` is request/response
   only. SSE proxies (`/api/projects/build`, `/api/envs/run`) and WS pass-throughs
   (`/api/coast-events`) live under `server/api/` as `defineEventHandler` /
@@ -437,7 +474,13 @@ fallback to `$XDG_DATA_HOME/domo` when set).
 - **`useSelectedEnv()`** resolves `{project,env,envId,...}` from the route
   for the workspace panels (`nuxt-procedures` `useCall` is keyed on its
   serialized input, so it does *not* refetch on reactive arg changes —
-  re-`call()` inside a `watch` when you need that).
+  re-`call()` inside a `watch` when you need that). **`DomoDirectoryPicker`
+  is the cautionary instance**: it used `useCall` + `refresh()`, so
+  `refresh()` re-sent the *original* `{path:undefined}` and the picker was
+  permanently stuck on the home dir (couldn't navigate / type a path /
+  select a non-home dir — and "Select" then fed home to `projects.add`).
+  It now drives `apiClient.fs.browse.call({path})` imperatively and
+  re-calls per navigation. Any nav-driven fetch must do the same.
 - **Procedure inputs reject empty strings** (Zod `z.string()` is
   non-empty-validated server-side → HTTP 400). Don't fire a `useCall`/
   `.call` with an id that may be `''`/undefined on a not-found URL or
@@ -546,6 +589,36 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   `id`. Items with only `{ id }` leave the model stuck — give them
   `{ value, label, icon }` (bit `DomoRightPanel` in Phase 2: Git tab
   silently rendered nothing until items got `value`).
+
+- **`UDashboardSidebar` collapse floors at `min-w-16` (64px strip).** The
+  theme `root` is `min-w-16 w-(--width)`, so a `collapsible` rail with
+  the default `collapsedSize:0` collapses to a 64px strip, not hidden —
+  and Domo's project-tree rail can't render into an icon strip (looks
+  broken). `AppShell` binds `v-model:collapsed` and applies a
+  `:ui="{ root: 'min-w-0 border-e-0 overflow-hidden' }"` **only while
+  collapsed** → true 0-width hide. `UDashboardSidebarCollapse` is
+  desktop-only (`hidden lg:flex`) and lived in the rail header, so it
+  vanished with the rail — it's moved to `DomoCenterNavbar`'s `#leading`
+  slot so the expand control survives. `UDashboardSidebarToggle` (navbar
+  auto, `lg:hidden`) is the *mobile drawer* toggle, a different control.
+- **The sidebar `header`/`footer` slots are `flex items-center`** — a
+  slot root with no `w-full`/`flex-1` shrinks to its content. `Domo
+  LeftRailFooter`'s root needs `w-full` for the user dropdown to span
+  the rail (it was 129px inside a shrunk flex child until fixed).
+
+- **A static `<img src="/public-asset">` in a Vue template build-resolves
+  the asset — the file MUST be committed in `public/` first.**
+  `@vitejs/plugin-vue`'s `transformAssetUrls` resolves a *static* `src` as
+  a build-time import; if the file is absent Vite throws "Failed to
+  resolve import …" and the **whole SPA fails to load** (blank page,
+  `entry.js` dynamic-import error) — not just a broken image. The logo
+  (`/image/logo.png`, used by `DomoLeftRailHeader` / `DomoAuthCard`) is
+  static `src` and works *because the asset is committed*. If you ever
+  reference a not-yet-committed public asset, either commit it in the
+  same change or use a bound `:src="'/path'"` (a runtime expression
+  `transformAssetUrls` ignores → served from `public/` at request time,
+  missing = broken `<img>`, never a build break). Head `link` hrefs in
+  `nuxt.config` are not template assets — always fine static.
 
 - **IDE bridge connection didn't fire from a nested `claude` process** in the
   Phase 0 smoke. Resolved in the standalone Nuxt process: the 8d live smoke

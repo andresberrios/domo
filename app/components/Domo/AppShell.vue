@@ -31,6 +31,17 @@ function toggleWorkspace() { workspaceOpen.value = !workspaceOpen.value }
 // component channel — same pattern as `leftRail:*`).
 const workspaceTab = useState<'files' | 'git'>('workspace:tab', () => 'files')
 
+// Desktop left-rail collapse. The collapsed sidebar must be fully hidden
+// (width 0) — the Nuxt UI theme floors it at `min-w-16` (a 64px strip),
+// which our project-tree rail can't render into without looking broken.
+// Override to `min-w-0` + drop the divider while collapsed; the expand
+// control lives in `DomoCenterNavbar` (the rail's own collapse button
+// would vanish with the rail).
+const railCollapsed = ref(false)
+const railUi = computed(() => ({
+  root: railCollapsed.value ? 'min-w-0 border-e-0 overflow-hidden' : '',
+}))
+
 // Global shortcuts. `meta` auto-maps to Ctrl off macOS (defineShortcuts).
 // ⌘B toggles the workspace panel (drawer on mobile, inline on desktop);
 // ⌘1/⌘2 jump to its Files/Git tabs.
@@ -53,11 +64,13 @@ defineShortcuts({
     -->
     <UDashboardSidebar
       id="left-rail"
+      v-model:collapsed="railCollapsed"
       resizable
       collapsible
       :default-size="18"
       :min-size="12"
       :max-size="28"
+      :ui="railUi"
       :menu="{
         title: 'Navigation',
         description: 'Projects, environments, and sessions.',
@@ -74,7 +87,14 @@ defineShortcuts({
       </template>
     </UDashboardSidebar>
 
-    <UDashboardPanel id="center" :default-size="rightOpen ? 58 : 82">
+    <!--
+      No `default-size`: the center is the flex filler (theme gives a
+      size-less panel `flex-1`). A fixed size froze it at its initial
+      width, so hiding the right panel / collapsing the rail left a gap
+      instead of letting the center grow. `useResizable` also ignores a
+      reactive `default-size` after mount, so the old binding was dead.
+    -->
+    <UDashboardPanel id="center">
       <template #header>
         <DomoCenterNavbar @toggle-right="toggleWorkspace" />
       </template>

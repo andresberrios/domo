@@ -24,19 +24,24 @@ const menuItems = computed<DropdownMenuItem[][]>(() => {
 </script>
 
 <template>
-  <div class="space-y-2">
+  <!-- The sidebar `footer` slot is `flex items-center`; without `w-full`
+       this flex child shrinks to its content and the dropdown can't span
+       the rail. -->
+  <div class="space-y-2 w-full min-w-0">
     <USwitch v-model="showDone" label="Show done sessions" size="xs" />
 
     <UDropdownMenu
       v-if="me"
       :items="menuItems"
       :content="{ align: 'start', side: 'top' }"
+      :ui="{ content: 'w-(--reka-dropdown-menu-trigger-width)' }"
+      class="block w-full"
     >
       <UButton
         variant="ghost"
         color="neutral"
         block
-        class="justify-start"
+        class="w-full justify-start"
         :ui="{ base: 'px-2' }"
       >
         <UAvatar :text="initials" size="2xs" />
