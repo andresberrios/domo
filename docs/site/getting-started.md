@@ -1,13 +1,13 @@
 # Getting started
 
-Get Domo running and open your first agent session in a few minutes.
+Domo lets you run several AI coding agents at once — each in its own isolated copy of your project — and manage them all from one place. This guide gets it running and your first agent working in a few minutes.
 
 ## What you need
 
 Domo installs as a small app on your machine (or VPS) plus a couple of helper containers it manages for you. On the host you need:
 
 - **Docker** (with Compose) — on macOS or WSL, Docker Desktop. WSL works as Linux.
-- **[Coast](https://coastdev.com)**, installed and running — Domo uses it to spin up each environment's sandbox.
+- **[Coast](https://coasts.dev)**, installed and running — Domo uses it to spin up each environment's sandbox.
 - **The Claude Code CLI**, logged in once: run `claude`, then `/login`. Domo bills to your Claude subscription, not an API key.
 - **git**.
 

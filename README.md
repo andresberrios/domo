@@ -1,16 +1,19 @@
 # Domo
 
-**A self-hosted home for your [Claude Code](https://www.anthropic.com/claude-code) agents.** Run several of them in parallel — each in its own isolated environment — from one clean web app.
+**Run a whole fleet of AI coding agents at once — without them tripping over each other.**
+
+Running more than one AI coding agent on the same project usually goes badly: they edit the same files, fight over the same branch, and clobber each other's running services. So you end up babysitting one agent at a time in a terminal tab, losing track of what each one changed. Domo fixes that. Every agent gets its own isolated, fully-running copy of your project, and you drive and review all of them from one self-hosted web app.
 
 ## What you get
 
-- **Chat with Claude Code** — full agent sessions with slash commands, `@`-mentions, per-tool cards, and the ability to nudge a running agent mid-task.
-- **A built-in workspace** — browse and edit files, review changes in a diff view, and stage and commit with Git, without leaving the app.
-- **Isolated environments** — give each piece of work its own sandbox running your project's real services (on its own git branch, via [Coast](https://coasts.dev)). Run multiple agents at once without them stepping on each other.
+- **Many agents, truly in parallel.** Each session runs in its own sandbox — your project's real services, on its own git branch — so agents never overwrite each other's work or step on each other's databases.
+- **One place to drive and review.** Chat with each agent, watch what it's doing step by step, review and approve its file changes in a diff view, and stage and commit with Git — without leaving the app or juggling terminals.
+- **Nothing gets lost.** Sessions stay readable even after you tear an environment down.
+- **No surprise bills.** Agents run on your existing Claude subscription, not a metered API key.
 
-Work is organised as **Projects → Environments → Sessions**. Sessions stay readable even after their environment is torn down. Domo uses your existing Claude subscription — no per-token API key needed.
+Under the hood: Domo is self-hosted (one app you run on your own machine or server). The agents are [Claude Code](https://www.anthropic.com/claude-code); each isolated environment is a [Coast](https://coasts.dev) sandbox. Your code and your credentials stay with you.
 
-> **v0.2.0** — actively developed. Self-hosted, with built-in accounts (email + password).
+> **v0.2.0** — actively developed.
 
 ## Install
 
@@ -21,7 +24,7 @@ curl -fsSL https://github.com/andresberrios/domo/releases/latest/download/instal
 domo up
 ```
 
-Open **http://localhost:7575** and create your admin account on the first visit.
+Open **http://localhost:7575** and create your account on the first visit.
 
 `domo` commands: `up` · `down` · `status` · `logs` · `update` · `version`. Everything Domo stores lives in one folder (`~/.domo`) — easy to back up or remove.
 
@@ -31,7 +34,7 @@ Open **http://localhost:7575** and create your admin account on the first visit.
 
 The first person to open Domo becomes the **admin**. After that, new sign-ups wait for the admin to approve them, so you decide who gets in.
 
-By default Domo listens on **localhost only**, which is safe on your own machine. To reach it from other devices, put it behind **Tailscale**, a **Cloudflare Tunnel**, or your own HTTPS proxy — see **[Securing your install](docs/site/securing-your-install.md)**.
+Domo listens on **localhost only** by default, which is safe on your own machine. To reach it from other devices, put it behind **Tailscale**, a **Cloudflare Tunnel**, or your own HTTPS proxy — see **[Securing your install](docs/site/securing-your-install.md)**.
 
 ## Develop from source
 
@@ -45,8 +48,8 @@ Also: `pnpm typecheck` · `pnpm lint` · `pnpm build`. Architecture and design n
 
 ## Contributing
 
-Issues and pull requests are welcome. By contributing you agree to the **Developer Certificate of Origin** and the inbound terms in [CONTRIBUTING.md](CONTRIBUTING.md) — sign off your commits with `git commit -s`.
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Sign off your commits with `git commit -s`.
 
 ## License
 
-Source-available under the **[Functional Source License v1.1](LICENSE.md)** (`FSL-1.1-ALv2`): use, modify, self-host, and share Domo freely for any purpose **except** building a competing product or service. Two years after each release ships, that release becomes available under the **Apache License 2.0**. This is not an OSI-approved open-source license; see [`LICENSE.md`](LICENSE.md) for the exact terms.
+[FSL-1.1-ALv2](LICENSE.md)

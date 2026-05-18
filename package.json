@@ -1,7 +1,7 @@
 {
   "name": "domo",
   "version": "0.2.0",
-  "description": "Self-hosted workspace for running parallel Claude Code agents across isolated Coast environments.",
+  "description": "Run many AI coding agents in parallel, each in its own isolated sandbox — chat, review, and commit from one self-hosted app.",
   "type": "module",
   "private": true,
   "author": "Andres Berrios",
