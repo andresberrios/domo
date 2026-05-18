@@ -37,9 +37,7 @@ fi
   err "macOS: install Docker Desktop (https://docs.docker.com/desktop/) before 'domo up'."
 have tar  || die "tar is required."
 have curl || die "curl is required."
-have node || die "Node 22+ is required (https://nodejs.org)."
-NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
-[ "$NODE_MAJOR" -ge 22 ] || die "Node 22+ required (found $(node -v))."
+# Node is bundled in the release (no system Node needed).
 have docker || err "warning: Docker not found — needed by 'domo up' (not by install)."
 have git    || err "warning: git not found — Domo shells host git for worktrees."
 have coast  || err "warning: 'coast' not found — projects/envs need the Coast daemon."

@@ -180,9 +180,18 @@ it over the compose net; the app never touches PG — Decided #14 — so no
 host-port clash). **All data under `$DOMO_HOME`**: `state.db`,
 `app/<ver>`+`current`, `run/`, and Postgres + streams as bind mounts
 under `$DOMO_HOME/data` (compose `${DOMO_DATA_DIR:?}`, set by the CLI;
-no Docker named volumes — one dir to back up / wipe). Canonical port
-**7575**. Keep the pins in `release/Dockerfile.agents-server` in sync
-with `package.json`.
+no Docker named volumes — one dir to back up / wipe). **Infra
+containers run as the host UID** (compose `user:${DOMO_UID}:${DOMO_GID}`
++ `chmod 0777 /app` in the agents image so non-root can `mkdir
+/app/logs`) so that bind-mounted data stays host-owned. **Node is
+bundled** (`runtime/bin/node`, pinned v22 LTS, checksum-verified at
+build; `bin/domo` runs the app with it) → tarball ≈50 MB; remaining
+host reqs are Docker Compose + Coast + git + the `claude` CLI (git/
+claude can't be bundled — Decided #11). Canonical port **7575**. Keep
+the pins in `release/Dockerfile.agents-server` in sync with
+`package.json`. The whole installer→`domo up`→runtime path is verified
+e2e on linux-x64 (electricSmoke all-true on the freshly-built image);
+darwin/arm are CI-only.
 
 ## Browser testing
 

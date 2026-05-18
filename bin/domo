@@ -9,6 +9,10 @@ SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$SELF/.." && pwd)
 COMPOSE="$ROOT/release/docker-compose.yml"
 ENTRY="$ROOT/.output/server/index.mjs"
+# Bundled Node ships in the release (no system Node requirement);
+# fall back to a system `node` only if it's somehow absent.
+NODE="$ROOT/runtime/bin/node"
+[ -x "$NODE" ] || NODE="node"
 
 # Match server/lib/paths.ts: DOMO_HOME > $XDG_DATA_HOME/domo > ~/.domo
 if [ -n "${DOMO_HOME:-}" ]; then HOME_DIR="$DOMO_HOME";
@@ -56,7 +60,7 @@ wait_agents() {
 
 cmd_up() {
   have docker || die "Docker is required (https://docs.docker.com/engine/install/)."
-  have node || die "Node 22+ is required."
+  [ -x "$NODE" ] || have node || die "no Node runtime (bundled binary missing and no system node)."
   have coast || err "warning: 'coast' not found — projects/envs need the Coast daemon."
   have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
 
@@ -71,7 +75,7 @@ cmd_up() {
     return 0
   fi
   echo "domo: starting app on :${PORT}…"
-  DOMO_HOME="$HOME_DIR" PORT="$PORT" nohup node "$ENTRY" >"$LOGFILE" 2>&1 &
+  DOMO_HOME="$HOME_DIR" PORT="$PORT" nohup "$NODE" "$ENTRY" >"$LOGFILE" 2>&1 &
   echo $! >"$PIDFILE"
   sleep 1
   app_running || die "app failed to start — see: domo logs"

@@ -17,8 +17,9 @@ On the host (your VPS or workstation):
 - **Docker + Docker Compose** — runs the infra stack (and Coast's per-env containers). On macOS / WSL use **Docker Desktop**.
 - **[Coast](https://coastdev.com)** installed and its daemon running (`coast --version`; Domo talks to `coastd` on `127.0.0.1:31415`). Tested against Coast `0.1.53`.
 - **Claude Code CLI**, logged in once on the host: `claude` then `/login` (subscription auth lands in `~/.claude`). Domo deliberately strips `ANTHROPIC_API_KEY` from the spawn — billing is your Claude subscription.
-- **git**.
-- **Node 22+** (until the installer bundles it).
+- **git** — Domo shells host `git` for env worktrees.
+
+**Node is bundled** in the release (the app runs on a pinned Node 22 LTS shipped in the tarball) — no system Node needed. `git` and the `claude` CLI remain host requirements *by design*: Domo orchestrates them host-side (it's a host-side orchestrator, not a black box — see `initial-design.md` Decided #11), so they can't be containerised away.
 
 ## Install & run
 
