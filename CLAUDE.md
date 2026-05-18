@@ -706,6 +706,21 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   so the event never reaches the textarea's bubble-phase handlers. Don't
   move this to a bubble listener — both fire on the same element and the
   submit would race the selection.
+- **`UChatMessages` is not its own scroll container — it scrolls the
+  nearest ancestor with computed `overflow-y: auto|scroll`** (Nuxt UI
+  `getScrollParent`, `ChatMessages.vue`). In `DomoChat` the transcript
+  wrapper **must** be `overflow-y-auto` (not `overflow-hidden`). It was
+  `overflow-hidden`, so the scroll-parent search walked up to
+  `AppShell`'s center body; but `DomoChat` is `h-full` and clips
+  internally, so that ancestor's `scrollHeight == clientHeight` —
+  nothing scrolled and the transcript was clipped/unreachable. Latent
+  on desktop (short transcripts fit; every prior smoke used a tiny
+  "PONG" exchange), immediately visible on a short mobile viewport
+  ("can't scroll down"). Keep the wrapper a bounded `flex-1 min-h-0
+  overflow-y-auto`; the input + diff-approval cards stay pinned below
+  as `shrink-0`. **Lesson: scroll behaviour must be smoke-tested with a
+  transcript taller than the viewport, at a mobile breakpoint** — a
+  short exchange never exercises the scroll container.
 - **`@`-mentions are plain text tokens, not rich contenteditable chips.**
   The design mentions "inline chips"; we ship textarea `@token` text with
   server-side expansion (functionally equivalent, no contenteditable

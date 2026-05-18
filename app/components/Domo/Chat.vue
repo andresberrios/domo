@@ -129,7 +129,18 @@ async function onStop() {
       Session stream unavailable: {{ error }}
     </div>
 
-    <div class="flex-1 min-h-0 overflow-hidden">
+    <!--
+      This wrapper MUST be the scroll container. `UChatMessages` is not
+      itself scrollable — it scrolls the nearest ancestor whose computed
+      overflow-y is auto|scroll (Nuxt UI `getScrollParent`). With
+      `overflow-hidden` here the search walked up to AppShell's center
+      body, but `DomoChat` is `h-full` and clips internally so that
+      ancestor's scrollHeight == clientHeight — nothing scrolls and the
+      transcript is clipped/unreachable (bit us on short mobile
+      viewports). `overflow-y-auto` makes this bounded `flex-1 min-h-0`
+      region the scroll parent; input + diff cards stay pinned below.
+    -->
+    <div class="flex-1 min-h-0 overflow-y-auto">
       <UChatMessages
         :messages="messages"
         :status="status"
