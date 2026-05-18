@@ -1,57 +1,52 @@
 # Domo
 
-**Self-hosted workspace for running parallel [Claude Code](https://www.anthropic.com/claude-code) agents across isolated [Coast](https://coasts.dev) environments.**
+**A self-hosted home for your [Claude Code](https://www.anthropic.com/claude-code) agents.** Run several of them in parallel — each in its own isolated environment — from one clean web app.
 
-Domo is one app that combines three things:
+## What you get
 
-- **An AI chat interface** — scoped to a single backend, the Claude Code CLI. Slash commands, `@`-mentions, mid-turn steering, and per-tool cards.
-- **A file workspace** — Obsidian-style markdown + code viewer/editor (syntax highlighting only, no language tooling), a diff view that doubles as the **edit-approval surface**, and a VS Code–style Git staging/commit panel.
-- **Parallel isolated environments** — the flagship workflow. Each environment is a Coast instance running your project's full service stack (DB, redis, dev server, …) in a Docker-in-Docker container, bound to a per-env git worktree. Multiple agent sessions can run in one environment.
+- **Chat with Claude Code** — full agent sessions with slash commands, `@`-mentions, per-tool cards, and the ability to nudge a running agent mid-task.
+- **A built-in workspace** — browse and edit files, review changes in a diff view, and stage and commit with Git, without leaving the app.
+- **Isolated environments** — give each piece of work its own sandbox running your project's real services (on its own git branch, via [Coast](https://coasts.dev)). Run multiple agents at once without them stepping on each other.
 
-The data model is **Project → Environment → Session**. Sessions outlive their environments and stay readable after teardown. Billing rides on your existing Claude subscription, not a per-token API key.
+Work is organised as **Projects → Environments → Sessions**. Sessions stay readable even after their environment is torn down. Domo uses your existing Claude subscription — no per-token API key needed.
 
-> Status: **v0.1.4** — feature-complete v1, actively developed. Self-hosted, single-user, no built-in auth (see [Security](#security)).
+> **v0.2.0** — actively developed. Self-hosted, with built-in accounts (email + password).
 
 ## Install
 
-Domo is a host-installed app plus compose'd infra (Postgres + an agents server). Requirements: **Docker Compose, [Coast](https://coasts.dev), git, and the logged-in `claude` CLI**. Node is bundled — no system Node needed.
+You'll need **Docker, [Coast](https://coasts.dev), git, and the `claude` CLI** (logged in once). Node is bundled, so there's nothing else to set up.
 
 ```bash
 curl -fsSL https://github.com/andresberrios/domo/releases/latest/download/install.sh | sh
-domo up        # starts infra + app → http://localhost:7575
+domo up
 ```
 
-`domo` CLI: `up` · `down` · `status` · `logs` · `update` · `version`. Pin a version with `DOMO_VERSION=0.1.4 sh install.sh`; install offline with `DOMO_LOCAL_TARBALL=/path/to/domo-<os>-<arch>.tar.gz`. Platforms: `linux-{x64,arm64}`, `darwin-{x64,arm64}` (WSL = linux). All data lives under `$DOMO_HOME` (default `~/.domo`) — one directory to back up or wipe.
+Open **http://localhost:7575** and create your admin account on the first visit.
 
-See [docs/site/getting-started.md](docs/site/getting-started.md) for the full VPS walkthrough.
+`domo` commands: `up` · `down` · `status` · `logs` · `update` · `version`. Everything Domo stores lives in one folder (`~/.domo`) — easy to back up or remove.
 
-## Security
+**[→ Full setup guide](docs/site/getting-started.md)**
 
-Domo has **no built-in authentication**. By default the app binds to **localhost only** (`127.0.0.1:7575`) — safe on a shared machine. For remote access, expose it via **Tailscale** or a **Cloudflare Tunnel** (these connect to localhost), or put it behind your own authenticating reverse proxy.
+## Accounts & access
 
-Binding to a wider interface is opt-in via `DOMO_BIND` (e.g. `DOMO_BIND=0.0.0.0`). Anyone who can reach the port gets full host file, git, terminal, and `claude` control — so **never bind to a public interface unauthenticated**. See [docs/site/securing-your-install.md](docs/site/securing-your-install.md). Multi-user and built-in auth are deferred.
+The first person to open Domo becomes the **admin**. After that, new sign-ups wait for the admin to approve them, so you decide who gets in.
+
+By default Domo listens on **localhost only**, which is safe on your own machine. To reach it from other devices, put it behind **Tailscale**, a **Cloudflare Tunnel**, or your own HTTPS proxy — see **[Securing your install](docs/site/securing-your-install.md)**.
 
 ## Develop from source
 
 ```bash
-pnpm install            # pnpm 11
-docker compose up -d    # Postgres + agents-server
+pnpm install
+docker compose up -d    # Postgres + agents server
 pnpm dev                # http://localhost:7575
-pnpm typecheck          # vue-tsc
-pnpm lint               # eslint
-pnpm build              # production build
 ```
 
-Architecture and design live in [`docs/`](docs/): [`project-context.md`](docs/project-context.md) (what Domo is/isn't), [`initial-design.md`](docs/initial-design.md) (authoritative design), and [`docs/site/`](docs/site/) (operator docs). `CLAUDE.md` orients AI coding sessions.
+Also: `pnpm typecheck` · `pnpm lint` · `pnpm build`. Architecture and design notes live in [`docs/`](docs/).
 
 ## Contributing
 
-Contributions are welcome — issues and pull requests. By submitting a contribution you agree to the **Developer Certificate of Origin** and the inbound license terms in [CONTRIBUTING.md](CONTRIBUTING.md). Sign off your commits with `git commit -s`.
+Issues and pull requests are welcome. By contributing you agree to the **Developer Certificate of Origin** and the inbound terms in [CONTRIBUTING.md](CONTRIBUTING.md) — sign off your commits with `git commit -s`.
 
 ## License
 
-Domo is **source-available** under the **[Functional Source License v1.1](LICENSE.md)** with an Apache 2.0 future grant (`FSL-1.1-ALv2`).
-
-In plain terms: you may use, modify, self-host, and redistribute Domo freely for **any purpose except a Competing Use** — you may not use it to build a product or service that substitutes for or offers substantially the same functionality as Domo. Two years after each release is published, that release automatically becomes available under the **Apache License 2.0**.
-
-This is not an OSI-approved open-source license. See [`LICENSE.md`](LICENSE.md) for the exact terms.
+Source-available under the **[Functional Source License v1.1](LICENSE.md)** (`FSL-1.1-ALv2`): use, modify, self-host, and share Domo freely for any purpose **except** building a competing product or service. Two years after each release ships, that release becomes available under the **Apache License 2.0**. This is not an OSI-approved open-source license; see [`LICENSE.md`](LICENSE.md) for the exact terms.
