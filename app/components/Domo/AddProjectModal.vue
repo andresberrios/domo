@@ -7,7 +7,6 @@ const emit = defineEmits<{ added: [project: Project] }>()
 type Step = 'pick' | 'confirms' | 'build' | 'error'
 const step = ref<Step>('pick')
 const pickedPath = ref<string | null>(null)
-const customName = ref<string>('')
 const pending = ref(false)
 const errMsg = ref<string | null>(null)
 const addedProject = ref<Project | null>(null)
@@ -30,7 +29,6 @@ watch(open, (v) => {
 function reset() {
   step.value = 'pick'
   pickedPath.value = null
-  customName.value = ''
   pending.value = false
   errMsg.value = null
   addedProject.value = null
@@ -47,7 +45,6 @@ async function attemptAdd(): Promise<void> {
   try {
     const resp = await apiClient.projects.add.call({
       rootPath: pickedPath.value,
-      name: customName.value || undefined,
       ...confirms,
     })
     lastResp.value = resp
@@ -116,15 +113,10 @@ function cancelFlow() {
 
         <template v-else-if="lastResp.status === 'missing-coastfile'">
           <p>
-            This project has no Coastfile.
-            <strong>Initialize a starter Coastfile</strong>?
+            This project has no Coastfile. Domo will
+            <strong>initialize a starter Coastfile</strong> named
+            <code>{{ lastResp.suggestedName }}</code> (the folder name).
           </p>
-          <UInput
-            v-model="customName"
-            size="sm"
-            :placeholder="lastResp.suggestedName"
-            label="Coast project name"
-          />
           <p v-if="lastResp.composeDetected" class="text-xs text-muted">
             <UIcon name="i-lucide-info" class="size-3 inline mr-1" />
             <code>docker-compose.yml</code> detected — the starter will reference it.

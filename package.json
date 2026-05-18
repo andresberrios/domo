@@ -16,12 +16,13 @@
   },
   "scripts": {
     "build": "nuxt build",
-    "dev": "nuxt dev",
+    "dev": "nuxt dev --port 7576",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
-    "typecheck": "nuxt typecheck"
+    "typecheck": "nuxt typecheck",
+    "update:local": "bash scripts/local-update.sh"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",

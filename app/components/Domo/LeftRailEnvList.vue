@@ -25,8 +25,14 @@ function badgeColor(status: string | null | undefined): 'neutral' | 'success' | 
 
 <template>
   <ul class="pl-4 space-y-0.5 mt-0.5">
-    <li v-if="!envs || envs.length === 0" class="px-1 py-0.5 text-xs text-muted">
-      No envs yet
+    <li v-if="!envs || envs.length === 0" class="px-1 py-0.5 text-xs">
+      <NuxtLink
+        :to="`/p/${projectName}`"
+        class="text-muted hover:text-default inline-flex items-center gap-1"
+      >
+        <UIcon name="i-lucide-plus" class="size-3" />
+        No envs yet — create one
+      </NuxtLink>
     </li>
     <li v-for="e in envs" :key="e.id">
       <NuxtLink

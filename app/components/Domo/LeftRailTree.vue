@@ -17,6 +17,12 @@ function toggle(id: string): void {
   else next.add(id)
   expanded.value = next
 }
+function expand(id: string): void {
+  if (expanded.value.has(id)) return
+  const next = new Set(expanded.value)
+  next.add(id)
+  expanded.value = next
+}
 
 useCoastEvents((e: CoastEvent) => {
   // Any coast lifecycle event invalidates the env list. We coarsely
@@ -68,18 +74,23 @@ if (import.meta.client) {
 
     <ul v-else class="space-y-0.5">
       <li v-for="p in projects" :key="p.id">
-        <div
-          class="group flex items-center gap-1 rounded px-1 py-1 hover:bg-elevated cursor-pointer"
-          @click="toggle(p.id)"
-        >
+        <div class="group flex items-center gap-1 rounded px-1 py-1 hover:bg-elevated">
           <UIcon
             :name="isExpanded(p.id) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
-            class="size-3 text-muted shrink-0"
+            class="size-3 text-muted shrink-0 cursor-pointer hover:text-default"
+            @click="toggle(p.id)"
           />
-          <span class="font-medium truncate">{{ p.name }}</span>
-          <UTooltip v-if="!p.hasCoastfile" text="Missing Coastfile">
-            <UIcon name="i-lucide-triangle-alert" class="size-3 text-warning shrink-0 ml-auto" />
-          </UTooltip>
+          <NuxtLink
+            :to="`/p/${p.name}`"
+            class="flex items-center gap-1 flex-1 min-w-0"
+            active-class="text-primary"
+            @click="expand(p.id)"
+          >
+            <span class="font-medium truncate">{{ p.name }}</span>
+            <UTooltip v-if="!p.hasCoastfile" text="Missing Coastfile">
+              <UIcon name="i-lucide-triangle-alert" class="size-3 text-warning shrink-0 ml-auto" />
+            </UTooltip>
+          </NuxtLink>
         </div>
 
         <DomoLeftRailEnvList

@@ -201,11 +201,19 @@ built** — see `initial-design.md` Decided #21 +
 pnpm install        # pnpm 11; native builds in pnpm-workspace.yaml; @durable-streams/*
                     # pinned to pkg.pr.new build 350 in package.json (deps + pnpm.overrides)
 docker compose up -d  # Postgres + agents-server (Phase 3 session runtime; not needed for P0–2)
-pnpm dev            # http://localhost:7575
+pnpm dev            # http://localhost:7576 (dev port, pinned in package.json
+                    # `dev` script; production `domo up` is 7575 — keep distinct)
 pnpm typecheck      # vue-tsc
 pnpm lint           # eslint
 pnpm build          # production build (works since cross-cutting #11 fix)
 bash scripts/build-release.sh [ver]   # → dist/ tarball + install.sh + SHA256SUMS
+pnpm run update:local   # build + install over the LOCAL prod install
+                        # ($DOMO_HOME) the `domo update` way, no CI/GitHub
+                        # round-trip, then `domo restart`. Reuses the
+                        # install's bundled Node; seals cookies with the
+                        # repo .env secret not $DOMO_HOME/session-secret
+                        # (stable → sessions survive; see the script
+                        # header). See scripts/local-update.sh.
 ```
 
 **Distribution (Decided #19; built, current release v0.3.0).**
@@ -248,13 +256,13 @@ darwin/arm are CI-only.
 ## Browser testing
 
 The **Playwright MCP** is available — use `mcp__playwright__browser_*`
-tools to drive http://localhost:7575 in a real browser (snapshot the
+tools to drive http://localhost:7576 in a real browser (snapshot the
 DOM, click, type, evaluate JS, watch console / network). Prefer this
 over curl when validating UI flows: the project-add wizard, env
 lifecycle buttons, build/run SSE streams, and `apiClient.*` calls
 all execute client-side, so an SPA mode app needs a browser context
 to exercise end-to-end. Start `pnpm dev` first, then navigate the
-browser at `http://localhost:7575/`.
+browser at `http://localhost:7576/`.
 
 Smoke procedures (kept for the lifetime of the project — useful when wiring
 a new env):

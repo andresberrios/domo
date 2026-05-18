@@ -124,7 +124,10 @@ cmd_update() {
   curl -fsSL "$INSTALL_URL" | sh
   if [ "$was_running" = yes ]; then
     echo "domo: restarting…"
-    "$HOME_DIR/app/current/bin/domo" up
+    # `restart` (down→up), NOT `up`: the old app process is still alive
+    # after install, and `cmd_up` early-returns when app_running — so
+    # `up` would leave the OLD .output serving. `restart` swaps it.
+    "$HOME_DIR/app/current/bin/domo" restart
   else
     echo "domo: updated. Run: domo up"
   fi

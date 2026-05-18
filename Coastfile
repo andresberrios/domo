@@ -1,0 +1,6 @@
+[coast]
+name = "domo"
+compose = "./docker-compose.yml"
+
+[ports]
+# logical_name = canonical_port
