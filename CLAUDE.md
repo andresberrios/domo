@@ -713,6 +713,26 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   no-ops in dev and only owns the **production** path (a built server
   does NOT auto-gen). Don't "fix" the plugin because no
   `$DOMO_HOME/session-secret` appears in dev — that's expected.
+  **Corollary (bit us in v0.2.0): the dev `.env` masks the production
+  path in *local* builds too.** `pnpm build` loads the project `.env`,
+  so a local build bakes the dev secret into
+  `runtimeConfig.session.password` and the plugin early-returns — the
+  prod codepath never runs locally. The CI release build has no `.env`,
+  bakes an empty password, runs the plugin for real. v0.2.0 shipped a
+  plugin that did `rc.session.password = secret`, which **throws
+  `TypeError: Cannot assign to read only property 'password'` at
+  startup** because Nitro's production `runtimeConfig` is read-only — a
+  crash no local build could reproduce. Fix: the plugin sets
+  `process.env.NUXT_SESSION_PASSWORD` instead (nuxt-auth-utils resolves
+  `defu({ password: process.env.NUXT_SESSION_PASSWORD },
+  runtimeConfig.session)` lazily on first session use — see
+  `node_modules/nuxt-auth-utils/.../session.js`). **To verify any
+  change to this plugin, build with `.env` moved aside** (replicates the
+  release condition) — a plain `pnpm build` + run will silently
+  early-return. We do NOT write `.env` at install time: Nitro's
+  production server doesn't read `.env`, and the design keeps `$DOMO_HOME
+  /session-secret` as the single auto-managed store (no operator env
+  var, one dir to back up / wipe).
 - **The auth middleware must NOT gate the broad `/api/` prefix.**
   Framework endpoints live there too — `/api/_auth/session`
   (nuxt-auth-utils' own session fetch/clear) and `/api/_nuxt_icon/*`

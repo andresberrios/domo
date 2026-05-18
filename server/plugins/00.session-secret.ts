@@ -15,6 +15,15 @@ import { domoHome } from '../lib/paths'
  * `runtimeConfig.session.password` by nuxt.config) always wins; we only
  * fill in the auto-managed secret when it's empty. Runs as `00.*` so it's
  * applied before any request can touch a session.
+ *
+ * We hand the secret to nuxt-auth-utils by setting `process.env
+ * .NUXT_SESSION_PASSWORD`, NOT by mutating `runtimeConfig.session` — the
+ * latter is read-only in a production Nitro build (assigning throws
+ * `Cannot assign to read only property 'password'`). nuxt-auth-utils
+ * resolves its password lazily as `defu({ password: process.env
+ * .NUXT_SESSION_PASSWORD }, runtimeConfig.session)` on first session use
+ * (after this startup plugin), so the env var is read with the right
+ * precedence and survives the read-only config.
  */
 export default defineNitroPlugin(() => {
   if (import.meta.prerender) return
@@ -33,5 +42,5 @@ export default defineNitroPlugin(() => {
     secret = randomBytes(32).toString('hex') // 64 chars
     writeFileSync(secretPath, secret + '\n', { mode: 0o600 })
   }
-  rc.session.password = secret
+  process.env.NUXT_SESSION_PASSWORD = secret
 })

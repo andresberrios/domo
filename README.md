@@ -13,7 +13,7 @@ Running more than one AI coding agent on the same project usually goes badly: th
 
 Under the hood: Domo is self-hosted (one app you run on your own machine or server). The agents are [Claude Code](https://www.anthropic.com/claude-code); each isolated environment is a [Coast](https://coasts.dev) sandbox. Your code and your credentials stay with you.
 
-> **v0.2.0** — actively developed.
+> **v0.2.1** — actively developed.
 
 ## Install
 
