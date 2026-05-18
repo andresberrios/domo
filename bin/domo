@@ -22,6 +22,12 @@ RUN_DIR="$HOME_DIR/run"
 PIDFILE="$RUN_DIR/domo.pid"
 LOGFILE="$RUN_DIR/domo.log"
 PORT="${PORT:-7575}"
+# Bind localhost-only by default — Domo has no auth and grants full host
+# file/git/terminal/claude control to whoever reaches the port. Remote
+# access is meant to go through Tailscale / a Cloudflare Tunnel / an auth
+# proxy (all of which connect to localhost). Opt into a wider interface
+# explicitly with DOMO_BIND=0.0.0.0. See docs/site/securing-your-install.md.
+BIND="${DOMO_BIND:-127.0.0.1}"
 INSTALL_URL="${DOMO_INSTALL_URL:-https://github.com/andresberrios/domo/releases/latest/download/install.sh}"
 
 # Everything under $DOMO_HOME so the whole install is one dir to back up
@@ -75,7 +81,8 @@ cmd_up() {
     return 0
   fi
   echo "domo: starting app on :${PORT}…"
-  DOMO_HOME="$HOME_DIR" PORT="$PORT" nohup "$NODE" "$ENTRY" >"$LOGFILE" 2>&1 &
+  DOMO_HOME="$HOME_DIR" PORT="$PORT" HOST="$BIND" NITRO_HOST="$BIND" \
+    nohup "$NODE" "$ENTRY" >"$LOGFILE" 2>&1 &
   echo $! >"$PIDFILE"
   sleep 1
   app_running || die "app failed to start — see: domo logs"

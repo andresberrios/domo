@@ -1,8 +1,19 @@
 {
   "name": "domo",
   "version": "0.1.4",
+  "description": "Self-hosted workspace for running parallel Claude Code agents across isolated Coast environments.",
   "type": "module",
   "private": true,
+  "author": "Andres Berrios",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "homepage": "https://github.com/andresberrios/domo#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andresberrios/domo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/andresberrios/domo/issues"
+  },
   "scripts": {
     "build": "nuxt build",
     "dev": "nuxt dev",

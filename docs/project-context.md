@@ -31,7 +31,7 @@ Within each environment, the chat side and the editor side share that env's work
 ## Shape
 
 - **Web app + server, packaged as one Nuxt app, running on the user's VPS** (primary v1 target) or laptop.
-- **No auth in v1.** The user secures the deployment via Tailscale, Cloudflare Tunnel, a private network, or by binding to localhost behind their own auth proxy. Multi-user and built-in auth are deferred.
+- **No auth in v1.** The app binds **localhost-only by default** (`DOMO_BIND` to widen, opt-in); remote access goes through Tailscale, a Cloudflare Tunnel, a private network, or the user's own auth proxy (all connect to localhost). Multi-user and built-in auth are deferred. See `docs/site/securing-your-install.md`.
 - Each environment is a Coast instance. The user's existing `docker-compose.yml` describes the services that run inside it; a `Coastfile` at the project root tells Coast how to compose them.
 - Service exposure to the browser is whatever Coast provides — dynamic high ports per env, plus the user's project's canonical ports for whichever env is currently "checked out".
 - Billing rides on the user's existing Claude subscription, not a per-token API key.

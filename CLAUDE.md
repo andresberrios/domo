@@ -16,6 +16,12 @@ Coast environments. Three documents define it:
 
 **Read those first.** This file is just a pointer set.
 
+**Licensing.** Domo is source-available under **FSL-1.1-ALv2** (`LICENSE.md`)
+— use/modify/self-host freely, no Competing Use; each release auto-converts
+to Apache-2.0 after 2 years. Contributions require a **DCO sign-off**
+(`git commit -s`) + the inbound/relicensing grant in `CONTRIBUTING.md`. When
+landing contributed work, keep commits signed off.
+
 ## Where we are
 
 Phase 0 + 1 + 2 + 3 done. **Phase 4 (polish) complete — both halves**
@@ -205,9 +211,14 @@ containers run as the host UID** (compose `user:${DOMO_UID}:${DOMO_GID}`
 bundled** (`runtime/bin/node`, pinned v22 LTS, checksum-verified at
 build; `bin/domo` runs the app with it) → tarball ≈50 MB; remaining
 host reqs are Docker Compose + Coast + git + the `claude` CLI (git/
-claude can't be bundled — Decided #11). Canonical port **7575**. Keep
-the pins in `release/Dockerfile.agents-server` in sync with
-`package.json`. The whole installer→`domo up`→runtime path is verified
+claude can't be bundled — Decided #11). Canonical port **7575**;
+`bin/domo` binds it to **`127.0.0.1` by default** (no auth + full host
+control = localhost-only; `DOMO_BIND=0.0.0.0` to widen, opt-in only) —
+sets `HOST`/`NITRO_HOST` on the lone nohup launch (Nitro's default is
+all-interfaces, so this must be explicit). agents-server `127.0.0.1`-only
+in `release/docker-compose.yml`; Postgres not host-published. Operator
+guidance: `docs/site/securing-your-install.md`. Keep the pins in
+`release/Dockerfile.agents-server` in sync with `package.json`. The whole installer→`domo up`→runtime path is verified
 e2e on linux-x64 (electricSmoke all-true on the freshly-built image);
 darwin/arm are CI-only.
 

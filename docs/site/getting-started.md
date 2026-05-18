@@ -39,7 +39,7 @@ domo up
 | `domo update` | fetch + install the latest release, restart if running |
 | `domo version` | installed version |
 
-The first `domo up` builds the agents-server image from a pinned Dockerfile (one-time, ~1–2 min). Expose `:7575` over Tailscale / Cloudflare Tunnel / a front proxy — see [Securing your install](./securing-your-install.md). Do **not** put it on a public interface unauthenticated.
+The first `domo up` builds the agents-server image from a pinned Dockerfile (one-time, ~1–2 min). The app binds **`127.0.0.1` only by default** — reach it remotely via Tailscale / Cloudflare Tunnel / an auth proxy (all connect to localhost), or set `DOMO_BIND` to widen (opt-in, advanced). See [Securing your install](./securing-your-install.md). Do **not** put it on a public interface unauthenticated.
 
 Pin a version with `DOMO_VERSION=0.1.4 sh install.sh`; install offline with `DOMO_LOCAL_TARBALL=/path/to/domo-<os>-<arch>.tar.gz`.
 

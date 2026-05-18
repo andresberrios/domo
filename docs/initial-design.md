@@ -63,7 +63,7 @@ All three are coordinated through a left-rail tree: **Project → Environment �
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The Nuxt app runs on the user's VPS. The user reaches it through whatever mechanism they chose (Tailscale, Cloudflare Tunnel, a private VPN, an auth-proxy in front of the public domain). v1 has no built-in auth — exposing the URL is exposing the app.
+The Nuxt app runs on the user's VPS. It binds **localhost-only by default** (`bin/domo` sets `HOST`/`NITRO_HOST` from `DOMO_BIND`, default `127.0.0.1` — Nitro's own default is all-interfaces, so the CLI makes it explicit). The user reaches it through whatever mechanism they chose (Tailscale, Cloudflare Tunnel, a private VPN, an auth-proxy in front of the public domain), all of which connect to localhost. v1 has no built-in auth — exposing the URL is exposing the app.
 
 **Rendering is SPA-style.** The shell, the workspace, the terminal, and the chat surface all run client-side and bind to long-lived WebSockets / SSE streams (xterm.js, durable session subscriptions, coastd events). Server-rendering buys little here, so we set `routeRules: { '/**': { ssr: false } }`. Nitro is still up — it serves procedures (`nuxt-procedures`), SSE/WS proxies to coastd, and the Electric Agents webhook.
 
@@ -704,7 +704,7 @@ Every implementation step that lands in `domo/` should land its corresponding do
 
 1. **Coasts owns env isolation.** No homegrown compose / Docker / Caddy / port-management code.
 2. **VPS-first deployment.** Self-hosted on the user's VPS (or laptop). No managed offering.
-3. **No auth in v1.** User secures via Tailscale, Cloudflare Tunnel, an auth-proxy, or a private network.
+3. **No auth in v1.** App binds localhost-only by default (`DOMO_BIND` to widen); user secures remote access via Tailscale, Cloudflare Tunnel, an auth-proxy, or a private network.
 4. **One Coast instance per env, one worktree per env, multiple sessions per env.** Sessions share the env's worktree filesystem; we surface concurrent-edit signals via the bridge but don't prevent collisions.
 5. **Worktrees at `<project_root>/.worktrees/<env-name>`.** Coast's default; project-relative; require `.worktrees` in `.gitignore`.
 6. **Project add requires git + Coastfile.** Prompt to init either if missing; cancel aborts.
