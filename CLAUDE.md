@@ -151,13 +151,18 @@ expanded in v1. Spike kept at `smoke/steering-spike.mjs`.
 **Distribution shipped (post-Phase-4, Decided #19).** A real host
 installer (`scripts/install.sh`, curl|sh) + `domo` CLI (`bin/domo`) +
 compose'd infra (`release/`) + CI release matrix
-(`.github/workflows/release.yml`) are **built and released** — latest
-**v0.1.3**: multi-platform tarballs (`{linux,darwin}-{x64,arm64}`,
-WSL=linux), **bundled Node** (no system Node req), infra runs as the
-host UID, all data under `$DOMO_HOME` (one dir to back up / wipe). The
-whole installer→`domo up`→runtime path is verified e2e on linux-x64
-(`electricSmoke` all-true on the freshly-built agents-server image);
-darwin/linux-arm64 are CI-produced, not locally verified. Details: the
+(`.github/workflows/release.yml`) are **built and released** — current
+**v0.1.4** (the only published release; v0.1.0–v0.1.3 tags/releases were
+deleted — v0.1.4 is the first release whose CI is actually green):
+multi-platform tarballs (`{linux,darwin}-{x64,arm64}`, WSL=linux),
+**bundled Node** (no system Node req), infra runs as the host UID, all
+data under `$DOMO_HOME` (one dir to back up / wipe). All four v0.1.4
+tarballs built CI-green (incl. `darwin-x64` on **`macos-15-intel`** —
+`macos-13`, the old Intel runner, was retired 2025-12-04; see the
+"retired GitHub runner" gotcha). The whole installer→`domo up`→runtime
+path is verified e2e on linux-x64 (`electricSmoke` all-true on the
+freshly-built agents-server image); darwin/linux-arm64 are CI-produced,
+not locally verified. Details: the
 "Distribution" block under *Running it* + `docs/site/getting-started.md`
 + `initial-design.md` Decided #19.
 
@@ -174,7 +179,7 @@ pnpm build          # production build (works since cross-cutting #11 fix)
 bash scripts/build-release.sh [ver]   # → dist/ tarball + install.sh + SHA256SUMS
 ```
 
-**Distribution (Decided #19; built, latest release v0.1.3).**
+**Distribution (Decided #19; built, current release v0.1.4).**
 Domo ships as a host-installed app + compose'd infra, NOT
 docker-compose-only (the app is a host-side orchestrator). Pieces:
 `scripts/install.sh` (curl|sh, OS/arch-detecting, checksum-verified,
@@ -624,6 +629,22 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   `TS1005 ',' expected`. Do the narrowing in `<script>` (a typed
   `computed`) and keep template expressions cast-free — see
   `DomoChatMessageContent`.
+- **Retired GitHub runner silently wedged the release pipeline.**
+  `release.yml`'s `darwin-x64` leg ran on `macos-13`, which GitHub
+  **fully retired 2025-12-04**. A job on a dead runner label does not
+  fail — it sits in `queued` forever, and because `release` is
+  `needs: build`, *every* release (v0.1.2, v0.1.3) hung indefinitely
+  with the other three tarballs built but never published. Fix:
+  `darwin-x64` → **`macos-15-intel`** (the free x86_64 replacement,
+  available **until 2027-08**; after that GitHub has **no** x86_64
+  macOS runner and `darwin-x64` must be dropped or cross-built from an
+  arm64 mac). Also bumped the five Node-20-deprecated actions
+  (`checkout@v6`, `pnpm/action-setup@v6`, `setup-node@v6`,
+  `upload-artifact@v7`, `download-artifact@v8`; Node 20 enforced
+  2026-06-02). Lesson: a tag-triggered run uses the workflow **from the
+  tagged commit**, so a workflow fix on `main` does *not* salvage an
+  already-pushed tag — you must cut a fresh tag (this is why v0.1.4
+  exists). Maintainer runbook: `docs/site/releasing.md`.
 
 ## Updating this file
 

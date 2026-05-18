@@ -41,7 +41,7 @@ domo up
 
 The first `domo up` builds the agents-server image from a pinned Dockerfile (one-time, ~1–2 min). Expose `:7575` over Tailscale / Cloudflare Tunnel / a front proxy — see [Securing your install](./securing-your-install.md). Do **not** put it on a public interface unauthenticated.
 
-Pin a version with `DOMO_VERSION=0.1.2 sh install.sh`; install offline with `DOMO_LOCAL_TARBALL=/path/to/domo-<os>-<arch>.tar.gz`.
+Pin a version with `DOMO_VERSION=0.1.4 sh install.sh`; install offline with `DOMO_LOCAL_TARBALL=/path/to/domo-<os>-<arch>.tar.gz`.
 
 ### From source (development)
 

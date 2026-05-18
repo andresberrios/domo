@@ -24,7 +24,7 @@ Items that don't belong to any single phase: open decisions, pending discussions
 
 ## Docs we still owe
 
-- [x] `docs/site/getting-started.md` (VPS five-minute path) — written against the **built** distribution (Decided #19; latest v0.1.3): real `curl|sh` installer + `domo` CLI + compose'd infra, bundled Node, prereqs, the `<domoHome>/config.json` `claude.env` knob.
+- [x] `docs/site/getting-started.md` (VPS five-minute path) — written against the **built** distribution (Decided #19; current v0.1.4): real `curl|sh` installer + `domo` CLI + compose'd infra, bundled Node, prereqs, the `<domoHome>/config.json` `claude.env` knob.
 - [ ] `docs/site/concepts.md` (Project / Env / Session, Coast relationship)
 - [ ] `docs/site/projects.md`, `envs.md`, `sessions.md`
 - [ ] `docs/site/securing-your-install.md` (Tailscale, Tunnel, Caddy front-proxy; explicit "no auth in v1")

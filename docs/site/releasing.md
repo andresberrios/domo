@@ -25,4 +25,6 @@ Releases are git-tag driven; CI builds and attaches everything.
 - Tarballs are os/arch-specific (native `better-sqlite3` + bundled Node) — must build on a matching runner; only `linux-x64` is locally reproducible without CI.
 - Local build for testing: `bash scripts/build-release.sh [version]` → `dist/`.
 - The agents-server image is **built on the user's host at first `domo up`** (not published) — nothing to push to a registry.
-- v0.1.0 was a source milestone; v0.1.1 first installable; v0.1.2 multi-platform; v0.1.3 bundled Node + host-UID infra.
+- **`darwin-x64` runs on `macos-15-intel`.** `macos-13` (the prior Intel runner) was retired 2025-12-04; jobs on a dead runner label hang in `queued` forever (silently wedging the whole release, since `release` is `needs: build`). `macos-15-intel` is the free x86_64 replacement **only until 2027-08** — after that GitHub has no x86_64 macOS runner and `darwin-x64` must be dropped or cross-built from an arm64 mac. Watch [actions/runner-images](https://github.com/actions/runner-images) for the next deprecation.
+- A `v*` tag runs the workflow **as it existed at the tagged commit** — a CI fix on `main` does not salvage an already-pushed tag; cut a fresh tag.
+- History: v0.1.0–v0.1.3 were unpublished/removed (v0.1.2–v0.1.3 release runs hung on the retired `macos-13` runner). **v0.1.4 is the first release with a green CI matrix** and the only published release.
