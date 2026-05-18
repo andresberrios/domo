@@ -17,7 +17,21 @@ cd "$(dirname "$0")/.."
 
 VER="${1:-$(node -p 'require("./package.json").version')}"
 VER="${VER#v}"
-PLATFORM="linux-x64"
+
+# Platform = the box this runs on (native better-sqlite3 gets bundled
+# into .output, so the tarball is host-os/arch-specific). CI builds one
+# per target on a matching runner; locally you get your own platform.
+case "$(uname -s)" in
+  Linux)  OS=linux ;;
+  Darwin) OS=darwin ;;
+  *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=x64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+esac
+PLATFORM="${OS}-${ARCH}"
 STAGE="dist/stage/domo-${VER}"
 
 echo "==> building Domo ${VER} (${PLATFORM})"

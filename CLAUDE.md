@@ -161,19 +161,28 @@ pnpm build          # production build (works since cross-cutting #11 fix)
 bash scripts/build-release.sh [ver]   # → dist/ tarball + install.sh + SHA256SUMS
 ```
 
-**Distribution (Decided #19, built v0.1.1).** Domo ships as a
-host-installed app + compose'd infra, NOT docker-compose-only (the app
-is a host-side orchestrator). Pieces: `scripts/install.sh` (curl|sh,
-checksum-verified, `DOMO_LOCAL_TARBALL` for offline/test), `bin/domo`
-(CLI: `up`/`down`/`status`/`logs`/`update`/`version`),
+**Distribution (Decided #19, built v0.1.1; multi-platform v0.1.2).**
+Domo ships as a host-installed app + compose'd infra, NOT
+docker-compose-only (the app is a host-side orchestrator). Pieces:
+`scripts/install.sh` (curl|sh, OS/arch-detecting, checksum-verified,
+`DOMO_LOCAL_TARBALL` for offline/test), `bin/domo` (CLI:
+`up`/`down`/`status`/`logs`/`update`/`version`),
 `release/docker-compose.yml` + `release/Dockerfile.agents-server`
 (Postgres + an agents-server image **built at first `domo up`** from
-pinned versions — no registry; the dev `docker-compose.yml` still
+pinned versions — no registry; the dev root `docker-compose.yml` still
 bind-mounts the repo and is dev-only), `scripts/build-release.sh`,
-`.github/workflows/release.yml` (tag `v*` → build + attach). Tarball is
-**linux-x64/node22-specific** (native `better-sqlite3` bundled into
-`.output`). Canonical port **7575**. Keep pins in
-`release/Dockerfile.agents-server` in sync with `package.json`.
+`.github/workflows/release.yml` (tag `v*` → **matrix** build + attach).
+Tarballs are per `os-arch` (`{linux,darwin}-{x64,arm64}`; native
+`better-sqlite3` bundled into `.output`; **WSL = linux**); only
+`linux-x64` is locally buildable/verifiable here, the rest are
+CI-produced. **Postgres is not host-published** (agents-server reaches
+it over the compose net; the app never touches PG — Decided #14 — so no
+host-port clash). **All data under `$DOMO_HOME`**: `state.db`,
+`app/<ver>`+`current`, `run/`, and Postgres + streams as bind mounts
+under `$DOMO_HOME/data` (compose `${DOMO_DATA_DIR:?}`, set by the CLI;
+no Docker named volumes — one dir to back up / wipe). Canonical port
+**7575**. Keep the pins in `release/Dockerfile.agents-server` in sync
+with `package.json`.
 
 ## Browser testing
 

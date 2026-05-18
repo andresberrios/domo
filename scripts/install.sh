@@ -11,18 +11,30 @@
 set -eu
 
 REPO="andresberrios/domo"
-PLATFORM="linux-x64"
 
 err() { echo "install: $*" >&2; }
 die() { err "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # --- platform + prerequisites -------------------------------------------
-[ "$(uname -s)" = "Linux" ] || die "prebuilt release is Linux-only; build from source for $(uname -s)."
-case "$(uname -m)" in
-  x86_64|amd64) : ;;
-  *) die "prebuilt release is x86_64-only (got $(uname -m)); build from source." ;;
+# Prebuilt for linux/darwin × x64/arm64. WSL is just Linux. Anything else
+# → build from source (see docs/site/getting-started.md).
+case "$(uname -s)" in
+  Linux)  OS=linux ;;
+  Darwin) OS=darwin ;;
+  *) die "no prebuilt release for $(uname -s) — build from source." ;;
 esac
+case "$(uname -m)" in
+  x86_64|amd64)  ARCH=x64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) die "no prebuilt release for $(uname -m) — build from source." ;;
+esac
+PLATFORM="${OS}-${ARCH}"
+if [ "$OS" = linux ] && grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+  err "WSL detected — ensure Docker Desktop's WSL integration is enabled for this distro."
+fi
+[ "$OS" = darwin ] && ! have docker && \
+  err "macOS: install Docker Desktop (https://docs.docker.com/desktop/) before 'domo up'."
 have tar  || die "tar is required."
 have curl || die "curl is required."
 have node || die "Node 22+ is required (https://nodejs.org)."

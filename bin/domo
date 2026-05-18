@@ -20,6 +20,12 @@ LOGFILE="$RUN_DIR/domo.log"
 PORT="${PORT:-7575}"
 INSTALL_URL="${DOMO_INSTALL_URL:-https://github.com/andresberrios/domo/releases/latest/download/install.sh}"
 
+# Everything under $DOMO_HOME so the whole install is one dir to back up
+# or wipe. Postgres + durable streams bind-mount here (compose reads
+# $DOMO_DATA_DIR); exported so `docker compose` interpolation sees it.
+DATA_DIR="$HOME_DIR/data"
+export DOMO_DATA_DIR="$DATA_DIR"
+
 mkdir -p "$RUN_DIR"
 
 err() { echo "domo: $*" >&2; }
@@ -50,6 +56,7 @@ cmd_up() {
   have coast || err "warning: 'coast' not found — projects/envs need the Coast daemon."
   have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
 
+  mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/streams"
   echo "domo: starting infra (postgres + agents-server)…"
   dc up -d --build
   echo "domo: waiting for agents-server…"

@@ -10,9 +10,11 @@ Domo is **a host-installed app plus a small Docker-Compose infra stack** — *no
 
 ## Prerequisites
 
+**Platforms:** prebuilt for **Linux** and **macOS**, x86-64 and arm64. **WSL** counts as Linux (works as-is; enable Docker Desktop's WSL integration). Other targets: build from source.
+
 On the host (your VPS or workstation):
 
-- **Docker + Docker Compose** — runs the infra stack (and Coast's per-env containers).
+- **Docker + Docker Compose** — runs the infra stack (and Coast's per-env containers). On macOS / WSL use **Docker Desktop**.
 - **[Coast](https://coastdev.com)** installed and its daemon running (`coast --version`; Domo talks to `coastd` on `127.0.0.1:31415`). Tested against Coast `0.1.53`.
 - **Claude Code CLI**, logged in once on the host: `claude` then `/login` (subscription auth lands in `~/.claude`). Domo deliberately strips `ANTHROPIC_API_KEY` from the spawn — billing is your Claude subscription.
 - **git**.
@@ -25,7 +27,7 @@ curl -fsSL https://github.com/andresberrios/domo/releases/latest/download/instal
 domo up
 ```
 
-`install.sh` checks prerequisites, downloads the release for your platform (linux-x64), verifies its checksum, installs to `~/.domo/app/<version>`, and drops a `domo` CLI on your PATH. `domo up` then builds + starts the infra (Docker) and the app:
+`install.sh` detects your OS/arch, downloads the matching release (`domo-<os>-<arch>.tar.gz`), verifies its checksum, installs to `~/.domo/app/<version>`, and drops a `domo` CLI on your PATH. `domo up` then builds + starts the infra (Docker) and the app:
 
 | command | does |
 |---|---|
@@ -38,7 +40,7 @@ domo up
 
 The first `domo up` builds the agents-server image from a pinned Dockerfile (one-time, ~1–2 min). Expose `:7575` over Tailscale / Cloudflare Tunnel / a front proxy — see [Securing your install](./securing-your-install.md). Do **not** put it on a public interface unauthenticated.
 
-Pin a version with `DOMO_VERSION=0.1.1 sh install.sh`; install offline with `DOMO_LOCAL_TARBALL=/path/to/domo-linux-x64.tar.gz`.
+Pin a version with `DOMO_VERSION=0.1.2 sh install.sh`; install offline with `DOMO_LOCAL_TARBALL=/path/to/domo-<os>-<arch>.tar.gz`.
 
 ### From source (development)
 
@@ -74,11 +76,25 @@ It's read fresh per turn (no restart needed). The security scrub still wins: thi
 
 `domo update` fetches + verifies the latest release, atomically swaps the app dir (`~/.domo/app/<version>` + a `current` symlink), and restarts if it was running. Versions are pinned together in the release `manifest.json` (app, Postgres image, `@electric-ax/agents-server`, the `@durable-streams` build).
 
-## Where state lives
+## Where state lives — and backup / cleanup
 
-- **`<DOMO_HOME>/state.db`** (default `~/.domo/state.db`) — Domo's SQLite: projects, envs, sessions metadata. Override the data dir with `DOMO_HOME` (XDG-aware: `$XDG_DATA_HOME/domo` when set).
-- **Postgres + the streams volume** (compose volumes) — the Electric Agents control plane and durable session streams.
-- Coast owns each env's container + worktree lifecycle.
+**Everything is under `<DOMO_HOME>` (default `~/.domo`)** — one dir to back up or wipe:
+
+```
+~/.domo/
+  state.db            Domo's SQLite (projects / envs / sessions metadata)
+  app/<version>/      installed release   (current → symlink)
+  run/                domo.pid, domo.log
+  data/postgres/      Postgres data        (bind-mounted into the container)
+  data/streams/       durable session streams
+```
+
+Postgres and the durable streams are **bind-mounted** here (not Docker named volumes) on purpose, so there's nothing scattered in Docker's volume store. Override the location with `DOMO_HOME` (XDG-aware: `$XDG_DATA_HOME/domo` when set).
+
+- **Back up:** `domo down && tar czf domo-backup.tgz -C ~ .domo`
+- **Wipe completely:** `domo down && rm -rf ~/.domo` (and `docker image rm domo-agents-server:local` to drop the built image)
+
+Coast owns each env's container + worktree lifecycle separately (outside `~/.domo`).
 
 ## See also
 
