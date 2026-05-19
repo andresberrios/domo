@@ -266,15 +266,13 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
       return
     }
     if (type === 'control_response' || type === 'keep_alive') return
-    // `--include-partial-messages` (extension parity) emits incremental
-    // `stream_event` deltas. Domo's durable model is built on the
-    // complete `assistant`/`user`/`result` envelopes; forwarding every
-    // partial would flood the durable `events` stream and change adapter
-    // behavior. Drop them here — preserves today's behavior exactly
-    // (Domo never passed the flag before, so never saw these) while the
-    // argv stays byte-identical to the official extension. (Phase 2 may
-    // consume partials for a token-streaming UI.)
-    if (type === 'stream_event') return
+    // `stream_event` (from `--include-partial-messages`) carries the raw
+    // Anthropic streaming deltas (message_start / content_block_delta
+    // {text|thinking}_delta / …). Forwarded as-is; the *entity* coalesces
+    // them into a single throttled, updatable `assistant_partial` durable
+    // row per message (it does NOT appendEvent them raw — that would
+    // flood the durable stream). The complete `assistant` envelope still
+    // arrives and supersedes the partial in the adapter.
 
     if (
       !sessionCaptured &&

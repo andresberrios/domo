@@ -76,6 +76,10 @@ interface EntityCtx {
         updater: (d: InboxStateRow) => void
       }): unknown
       events_insert(a: { row: EventRow }): unknown
+      events_update(a: {
+        key: string
+        updater: (d: EventRow) => void
+      }): unknown
       pendingDiffs_insert(a: { row: PendingDiffRow }): unknown
       pendingDiffs_update(a: {
         key: string
@@ -143,8 +147,101 @@ function appendEvent(
   mirrorToDb(ctx, { lastEventAt: ts })
 }
 
-/** Worktree-relative when the edit is inside cwd (it is — `--add-dir
- *  <cwd>`); absolute otherwise. Keeps `pendingDiffs.path` UI/link-friendly. */
+/**
+ * Coalesce `--include-partial-messages` `stream_event` deltas (raw
+ * Anthropic streaming events) into a SINGLE updatable durable
+ * `assistant_partial` row per assistant message, so the chat renders
+ * text/thinking as it streams without flooding the durable `events`
+ * stream (one throttled, in-place-updated row per message — not one row
+ * per token). Correlation: `message_start.event.message.id` ===
+ * the complete `assistant` envelope's `message.id`, so the adapter
+ * supersedes the partial with the final. Durable-collection updates
+ * propagate to the browser subscription (same mechanism as
+ * `pendingDiffs_update` → live `DomoDiffApprovalCard`).
+ */
+function makeStreamCoalescer(ctx: EntityCtx): {
+  handle: (envelope: Record<string, unknown>) => void
+} {
+  let msgId: string | null = null
+  let text = ''
+  let thinking = ''
+  let inserted = false
+  let lastFlush = 0
+  let dirty = false
+  const FLUSH_MS = 100
+
+  function flush(force: boolean): void {
+    if (!msgId || !dirty) return
+    const now = Date.now()
+    if (!force && now - lastFlush < FLUSH_MS) return
+    lastFlush = now
+    dirty = false
+    const key = `partial:${msgId}`
+    const payload = { messageId: msgId, text, thinking }
+    if (!inserted) {
+      inserted = true
+      if (ctx.db.collections.events.get(key) === undefined) {
+        ctx.db.actions.events_insert({
+          row: { key, ts: now, type: 'assistant_partial', payload },
+        })
+      }
+    } else {
+      ctx.db.actions.events_update({
+        key,
+        updater: (d: EventRow) => {
+          d.payload = { messageId: msgId, text, thinking }
+          d.ts = now
+        },
+      })
+    }
+    mirrorToDb(ctx, { lastEventAt: now })
+  }
+
+  function handle(envelope: Record<string, unknown>): void {
+    const ev = (envelope as { event?: Record<string, unknown> }).event
+    const et = typeof ev?.type === 'string' ? ev.type : ''
+    if (et === 'message_start') {
+      const id = (ev?.message as { id?: unknown } | undefined)?.id
+      msgId = typeof id === 'string' ? id : null
+      text = ''
+      thinking = ''
+      inserted = false
+      dirty = false
+      lastFlush = 0
+      return
+    }
+    if (et === 'content_block_delta') {
+      const d = ev?.delta as
+        | { type?: string; text?: string; thinking?: string }
+        | undefined
+      if (d?.type === 'text_delta' && typeof d.text === 'string') {
+        text += d.text
+        dirty = true
+        flush(false)
+      } else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') {
+        thinking += d.thinking
+        dirty = true
+        flush(false)
+      }
+      return
+    }
+    // Block/message boundaries: force a final flush so the streamed text
+    // is complete even before the authoritative `assistant` envelope (and
+    // on abort).
+    if (
+      et === 'content_block_stop' ||
+      et === 'message_delta' ||
+      et === 'message_stop'
+    ) {
+      flush(true)
+    }
+  }
+
+  return { handle }
+}
+
+/** Worktree-relative when the edit is inside cwd; absolute otherwise.
+ *  Keeps `pendingDiffs.path` UI/link-friendly. */
 function relWorktree(cwd: string, abs: string): string {
   const rel = relative(cwd, abs)
   return rel && rel !== '..' && !rel.startsWith(`..${sep}`) ? rel : abs
@@ -307,6 +404,9 @@ async function executeClaudeTurn(
   }
 
   try {
+    // Coalesces `--include-partial-messages` deltas → a single updatable
+    // `assistant_partial` row per message (live token rendering).
+    const stream = makeStreamCoalescer(ctx)
     // Resolve custom slash commands + @-mentions now (the CLI doesn't in
     // stream-json mode); the inbox/transcript keeps the raw user text.
     const resolved = await expandInWorktree(meta.cwd, prompt)
@@ -328,7 +428,13 @@ async function executeClaudeTurn(
           steerWrite(text, uuid)
         })
       },
-      onEvent: (type, envelope) => appendEvent(ctx, type, envelope),
+      onEvent: (type, envelope) => {
+        // stream_event partials are coalesced into one updatable row;
+        // everything else (incl. the complete `assistant` that
+        // supersedes the partial) is appended as before.
+        if (type === 'stream_event') stream.handle(envelope)
+        else appendEvent(ctx, type, envelope)
+      },
       onSessionId: (id) => {
         if (meta.nativeSessionId === id) return
         ctx.db.actions.sessionMeta_update({

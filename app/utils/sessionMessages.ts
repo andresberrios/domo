@@ -12,6 +12,12 @@
  *  - `assistant` → an assistant message; content blocks become parts:
  *      text → text part, thinking → reasoning part,
  *      tool_use → `dynamic-tool` part (state `input-available`)
+ *  - `assistant_partial` (Domo-coalesced from `--include-partial-messages`
+ *      `stream_event` deltas) → a *streaming* assistant bubble (text /
+ *      reasoning parts, `state:'streaming'`); same bubble id as the
+ *      final `assistant` (Anthropic `message.id`), and dropped once that
+ *      final envelope arrives (`finalizedMsgIds`) so it grows in place
+ *      then settles with no remount
  *  - `user` (tool_result) → patches the matching `dynamic-tool` part by
  *      `tool_use_id` to `output-available` / `output-error`
  *  - `steer_sent` (Domo-synthesized, Decided #18) → a user message
@@ -108,11 +114,19 @@ export function projectSessionMessages(
   // `user` envelope with `isReplay` and the `uuid` we sent. Harvest those
   // uuids so a `steer_sent` bubble can show queued→delivered.
   const deliveredSteerUuids = new Set<string>()
+  // Message ids that have a *complete* `assistant` envelope — their
+  // streaming `assistant_partial` rows are stale and must be dropped
+  // (the final supersedes; correlation is the Anthropic `message.id`).
+  const finalizedMsgIds = new Set<string>()
   for (const evt of ordered) {
-    if (evt.type !== 'user') continue
-    const p = evt.payload as { isReplay?: unknown; uuid?: unknown }
-    if (p.isReplay === true && typeof p.uuid === 'string') {
-      deliveredSteerUuids.add(p.uuid)
+    if (evt.type === 'user') {
+      const p = evt.payload as { isReplay?: unknown; uuid?: unknown }
+      if (p.isReplay === true && typeof p.uuid === 'string') {
+        deliveredSteerUuids.add(p.uuid)
+      }
+    } else if (evt.type === 'assistant') {
+      const id = (evt.payload as { message?: { id?: unknown } }).message?.id
+      if (typeof id === 'string') finalizedMsgIds.add(id)
     }
   }
 
@@ -133,8 +147,13 @@ export function projectSessionMessages(
         },
       })
     } else if (evt.type === 'assistant') {
-      const message = (evt.payload as { message?: { content?: unknown } })
-        .message
+      const message = (
+        evt.payload as { message?: { content?: unknown; id?: unknown } }
+      ).message
+      // Stable bubble id keyed on the Anthropic message id (when
+      // present) so the streaming `assistant_partial` and this final
+      // message are the SAME bubble — it grows in place, no remount.
+      const mid = typeof message?.id === 'string' ? message.id : ''
       const blocks = asBlocks(message?.content)
       const parts: Part[] = []
       for (const b of blocks) {
@@ -158,7 +177,34 @@ export function projectSessionMessages(
       timeline.push({
         ts: evt.ts,
         ord: `e:${evt.key}`,
-        message: { id: `a-${evt.key}`, role: 'assistant', parts },
+        message: {
+          id: mid ? `a-msg-${mid}` : `a-${evt.key}`,
+          role: 'assistant',
+          parts,
+        },
+      })
+    } else if (evt.type === 'assistant_partial') {
+      // Live token stream (coalesced in the entity). Dropped once the
+      // complete `assistant` with the same message id arrives.
+      const p = evt.payload as {
+        messageId?: unknown
+        text?: unknown
+        thinking?: unknown
+      }
+      const mid = typeof p.messageId === 'string' ? p.messageId : ''
+      if (!mid || finalizedMsgIds.has(mid)) continue
+      const parts: Part[] = []
+      if (typeof p.thinking === 'string' && p.thinking) {
+        parts.push({ type: 'reasoning', text: p.thinking, state: 'streaming' })
+      }
+      if (typeof p.text === 'string' && p.text) {
+        parts.push({ type: 'text', text: p.text, state: 'streaming' })
+      }
+      if (parts.length === 0) continue
+      timeline.push({
+        ts: evt.ts,
+        ord: `e:${evt.key}`,
+        message: { id: `a-msg-${mid}`, role: 'assistant', parts },
       })
     } else if (evt.type === 'user') {
       const message = (evt.payload as { message?: { content?: unknown } })
