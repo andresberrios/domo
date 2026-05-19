@@ -109,11 +109,22 @@ over the process lifecycle.
 - [ ] Verify e2e: multi-user chat without turns; trigger sees backlog;
       restart-safe.
 
-## 6 — Re-polish + docs/site rewrite
+## 6 — Re-polish + docs/site rewrite + prod reinstall
+
+Prod was **decommissioned 2026-05-19** (app stopped, all Coast envs
+`coast rm`'d, prod/dev/Electric docker stacks down, `~/.domo` wiped).
+The user will **reinstall prod after the pivot is implemented**, from
+the new release line — there is no live prod until then (the
+don't-touch-7575 caution is suspended until reinstall).
 
 - [ ] Sweep aborts/shortcuts/responsive against the new engine.
 - [ ] Rewrite `docs/site/*` (getting-started, securing, releasing) to
-      the devcontainer/own-engine model; cut a new release line.
+      the devcontainer/own-engine model; cut the new release line
+      (no agents-server image; per Build-seq step 1's release/CLI
+      cleanup).
+- [ ] User reinstalls prod from the new release; then run step 7's
+      billing check against it too (the deadline check must pass on the
+      reinstalled prod).
 
 ## 7 — ⚠️ Deadline-critical: live-verify subscription billing
 
