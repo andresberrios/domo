@@ -9,18 +9,38 @@ import { loadDomoConfig } from '../config'
  * one NDJSON envelope per line — `system` (init; carries `session_id`),
  * `assistant` (text / tool_use), `user` (tool_result), `result` (final).
  *
- * **Permission protocol (the official-extension path).** We run with
- * `--permission-prompt-tool stdio --permission-mode default`, exactly as
- * the official VS Code extension spawns the CLI. Tools that need approval
- * surface as a `control_request` `{ subtype:'can_use_tool', tool_name,
- * input, tool_use_id }` NDJSON line on **stdout**; the host answers with a
- * `control_response` line on **stdin** carrying a `behavior: 'allow' |
- * 'deny'` decision. (Wire shapes verified against the public Claude Code
- * source snapshot, `src/cli/structuredIO.ts`.) This replaces the
- * step-8c/11 IDE-bridge `openDiff` trigger, which the CLI does **not**
- * use in headless `-p` mode — see CLAUDE.md gotcha. stdin therefore stays
- * open for the whole turn (we close it on the `result` envelope) so we
- * can write decisions back.
+ * **Invocation mirrors the official VS Code extension EXACTLY (no `-p`).**
+ * Spike-proven (`smoke/no-print-lifecycle-spike.mjs`): the post-2026-06-15
+ * billing classifier reads the outbound `x-anthropic-billing-header`
+ * `cc_entrypoint=` value, which claude's `main.tsx initializeEntrypoint()`
+ * derives from `CLAUDE_CODE_ENTRYPOINT` (preserved if set, else forced to
+ * `sdk-cli` for piped/non-TTY). `-p` is a *red herring* — changes neither
+ * billing nor lifecycle. So we (1) **set
+ * `CLAUDE_CODE_ENTRYPOINT=claude-vscode`** (the extension's value → full
+ * subscription billing, not the capped post-2026-06-15 Agent-SDK
+ * credit), and (2) pass the extension's flag set **without `-p`**, so
+ * we're genuinely using the CLI the allowed/interactive way rather than
+ * spoofing a header. The extension omits `--resume` for a new session
+ * and adds it only when resuming — Domo's existing conditional
+ * `--resume` (capture `session_id` from the first `system` event, resume
+ * thereafter) already matches that. See `project-agent-sdk-billing`.
+ *
+ * **Permission protocol.** `--permission-prompt-tool stdio
+ * --permission-mode default`, exactly as the extension spawns it (its
+ * argv carries `--permission-prompt-tool stdio` too — diff approval is
+ * stdio, NOT the IDE-bridge `openDiff`; `bridge.ts` stays dormant). Tools
+ * that need approval surface as a `control_request`
+ * `{ subtype:'can_use_tool', tool_name, input, tool_use_id }` NDJSON line
+ * on **stdout**; the host answers with a `control_response` line on
+ * **stdin** carrying a `behavior: 'allow' | 'deny'` decision. (Wire
+ * shapes verified against the public Claude Code source snapshot,
+ * `src/cli/structuredIO.ts`.) stdin stays open for the whole turn (we
+ * close it on the `result` envelope) so we can write decisions back.
+ *
+ * NOTE: still spawn-per-turn (process exits on `result`, next turn
+ * `--resume`). The spike confirmed the no-`-p` process also exits cleanly
+ * on stdin-close; the long-lived per-session process model (full
+ * behavioral fidelity) is the Phase-2 follow-up.
  */
 export type PermissionDecision =
   | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
@@ -102,28 +122,43 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
       .join(pathDelimiter)
   }
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1'
+  // Billing lever (spike-proven, smoke/no-print-lifecycle-spike.mjs):
+  // the post-2026-06-15 classifier reads `cc_entrypoint` from
+  // CLAUDE_CODE_ENTRYPOINT. It's in SCRUB_ENV (nested-claude hygiene) so
+  // it's stripped above → would default to `sdk-cli` = the capped
+  // Agent-SDK credit. Pin the official VS Code extension's value so usage
+  // bills against the full Claude subscription. See the
+  // project-agent-sdk-billing memory.
+  env.CLAUDE_CODE_ENTRYPOINT = 'claude-vscode'
 
+  // EXACT official VS Code 2.1.142 new-session argv (no `-p`, no
+  // `--add-dir` — the extension uses neither; cwd is the spawn cwd).
+  // Order mirrors the extension. `--resume` is appended only when
+  // resuming (the extension omits it for new sessions, adds it for
+  // resumed ones — i.e. Domo's existing conditional model already
+  // matches it: capture session_id from the first `system` event, then
+  // `--resume` thereafter).
   const args = [
-    '-p',
-    '--output-format',
-    'stream-json',
-    '--input-format',
-    'stream-json',
-    '--verbose', // required with stream-json output in -p mode
-    // Headless permission delegation, matching the official VS Code
-    // extension's spawn. `default` (not `acceptEdits`) so edit tools are
-    // *asked*; `stdio` routes the ask to us over this stream-json channel.
-    '--permission-prompt-tool',
-    'stdio',
-    '--permission-mode',
-    'default',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--input-format', 'stream-json',
+    '--max-thinking-tokens', '31999',
+    // Built-in stdio permission protocol — exactly what the extension's
+    // argv carries (NOT the IDE-bridge openDiff; bridge.ts stays
+    // dormant). `default` (not acceptEdits) so edit tools are *asked*.
+    '--permission-prompt-tool', 'stdio',
+    ...(opts.resumeSessionId ? ['--resume', opts.resumeSessionId] : []),
+    '--setting-sources=user,project,local',
+    '--permission-mode', 'default',
+    '--include-partial-messages',
+    '--debug',
+    '--debug-to-stderr',
+    '--enable-auth-status',
+    '--no-chrome',
     // Echo user messages (initial + mid-turn steer) back on stdout as
-    // `{type:'user',uuid,isReplay:true}` — the consumption ack that the
+    // `{type:'user',uuid,isReplay:true}` — the consumption ack the
     // transcript matches by uuid to flip a steer queued→delivered.
     '--replay-user-messages',
-    '--add-dir',
-    opts.cwd,
-    ...(opts.resumeSessionId ? ['--resume', opts.resumeSessionId] : []),
   ]
 
   const child = spawn('claude', args, {
@@ -231,6 +266,15 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
       return
     }
     if (type === 'control_response' || type === 'keep_alive') return
+    // `--include-partial-messages` (extension parity) emits incremental
+    // `stream_event` deltas. Domo's durable model is built on the
+    // complete `assistant`/`user`/`result` envelopes; forwarding every
+    // partial would flood the durable `events` stream and change adapter
+    // behavior. Drop them here — preserves today's behavior exactly
+    // (Domo never passed the flag before, so never saw these) while the
+    // argv stays byte-identical to the official extension. (Phase 2 may
+    // consume partials for a token-streaming UI.)
+    if (type === 'stream_event') return
 
     if (
       !sessionCaptured &&
@@ -242,8 +286,10 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
     }
     opts.onEvent(type, evt)
 
-    // `result` is the final turn envelope — close stdin so the one-shot
-    // `-p` process exits (we keep it open until now for control responses).
+    // `result` is the final turn envelope — close stdin so the process
+    // exits (kept open until now for control responses). Spike-proven
+    // (smoke/no-print-lifecycle-spike.mjs): the no-`-p` process also
+    // exits cleanly on stdin-close, so the spawn-per-turn model holds.
     if (type === 'result') {
       try {
         child.stdin.end()
@@ -259,9 +305,13 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
     for (const l of lines) onLine(l)
   })
 
+  // `--debug-to-stderr` (extension parity) floods stderr with debug
+  // logs; the fatal error on a non-zero exit is at the TAIL, so keep a
+  // rolling last ~8 KB (was: first 4 KB — which would now be startup
+  // debug noise, burying the actual error).
   let stderr = ''
   child.stderr.on('data', (b: Buffer) => {
-    if (stderr.length < 4096) stderr += b.toString().slice(0, 4096)
+    stderr = (stderr + b.toString()).slice(-8192)
   })
 
   const userMsg = {

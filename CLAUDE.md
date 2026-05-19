@@ -104,10 +104,21 @@ server-restart resume**; 0 console errors). The trigger is the
 `--permission-prompt-tool stdio --permission-mode default`; each tool
 the CLI wants emits a `control_request{can_use_tool}` NDJSON line on
 stdout and we answer a `control_response` on stdin (stdin stays open
-until `result`). The earlier finding stands — headless `-p` does NOT
-use the IDE-bridge `openDiff` — so **`server/lib/electric/bridge.ts` is
-now dormant** (not booted per turn; kept for future editor-context
-tools). `claude.ts` carries the protocol + `onPermissionRequest`/
+until `result`). The IDE-bridge `openDiff` is NOT used (the extension's
+own argv carries `--permission-prompt-tool stdio` too), so
+**`server/lib/electric/bridge.ts` is now dormant** (not booted per
+turn; kept for future editor-context tools). **Post-Phase-4 billing fix
+(2026-05-19, spike-proven):** the spawn now mirrors the official VS
+Code extension *exactly* — **no `-p`**, full extension flag set, and
+**`CLAUDE_CODE_ENTRYPOINT=claude-vscode`** set (not scrubbed). `-p`/
+`sdk-cli` is the post-2026-06-15 *capped Agent-SDK credit*;
+`claude-vscode` entrypoint = full Claude **subscription**. `-p` was a
+red herring (changes neither billing nor lifecycle — proven by
+`smoke/no-print-lifecycle-spike.mjs`). Still **spawn-per-turn** (the
+no-`-p` process also exits cleanly on stdin-close); the **long-lived
+per-session process** model (full behavioral fidelity to the
+extension) is the tracked Phase-5 follow-up. See the
+`project-agent-sdk-billing` memory + the Gotcha below. `claude.ts` carries the protocol + `onPermissionRequest`/
 `onPermissionCancel`; `entity.ts` `executeClaudeTurn.onPermissionRequest`
 is the policy — **non-edit tools auto-allow** (Bash/Read frictionless,
 like the old `acceptEdits`), **edit-family** tools become a durable
@@ -407,11 +418,14 @@ fallback to `$XDG_DATA_HOME/domo` when set).
     Decided #9). See design Decided #19 (distribution).
   - `electric/` — Electric Agents session runtime: `config.ts` (URLs/ids),
     `schemas.ts` (locked `claude-code-cli` row/inbox Zod schemas),
-    `claude.ts` (`runClaudeTurn`: host-side `claude` stream-json spawn,
-    env scrub, `session_id` capture, **`--permission-prompt-tool stdio`
-    control protocol** → `onPermissionRequest`/`onPermissionCancel`,
-    **`--replay-user-messages` + `onReady(steer)`** for mid-turn
-    steering, `AbortSignal`), `bridge.ts` (`createIdeBridge`: hand-rolled RFC 6455
+    `claude.ts` (`runClaudeTurn`: host-side `claude` stream-json spawn
+    **mirroring the official VS Code extension's exact argv — no `-p`** +
+    **`CLAUDE_CODE_ENTRYPOINT=claude-vscode`** pinned for full-
+    subscription billing post-2026-06-15; env scrub, `session_id`
+    capture, **`--permission-prompt-tool stdio` control protocol** →
+    `onPermissionRequest`/`onPermissionCancel`, **`--replay-user-messages`
+    + `onReady(steer)`** for mid-turn steering, `stream_event` partial-
+    delta filter, rolling stderr tail, `AbortSignal`), `bridge.ts` (`createIdeBridge`: hand-rolled RFC 6455
     WS server + 8 tools — **dormant**, superseded by stdio permission;
     not booted per turn), `entity.ts` (`registerClaudeCodeCli` + handler
     + `executeClaudeTurn` → `expandInWorktree` then `runClaudeTurn` with
@@ -636,11 +650,39 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   for the duration (the bridge booted + the lock file was written under
   `~/.claude/ide/`). The spawn → stream-json → wake → handler → mirrored
   events path is fully validated.
-- **Headless `claude -p` permission = `--permission-prompt-tool stdio`,
-  NOT the IDE-bridge `openDiff` (resolved, step 11, `claude` 2.1.142).**
-  `openDiff` is never called in `-p` stream-json mode (verified: under
-  both `acceptEdits` and `default` a `Write`/`Edit` came back
-  permission-denied, no park). The working mechanism — exactly what the
+- **Spawn mirrors the official VS Code extension EXACTLY — no `-p`;
+  `CLAUDE_CODE_ENTRYPOINT=claude-vscode` is the billing lever (spike-
+  proven 2026-05-19, `claude` 2.1.142+).** Post-2026-06-15, `claude -p`
+  / Agent-SDK usage drops off the full Claude subscription onto a small
+  *capped credit*; **interactive (no `-p`) stays on the full
+  subscription**. The classifier reads the outbound
+  `x-anthropic-billing-header: cc_entrypoint=`, which `claude`'s
+  `main.tsx initializeEntrypoint()` takes from `CLAUDE_CODE_ENTRYPOINT`
+  (**preserved if set**, else forced `sdk-cli` for piped/non-TTY). So
+  Domo (a) **sets `CLAUDE_CODE_ENTRYPOINT=claude-vscode`** (still scrubs
+  it first for nested-claude hygiene, then pins it — the extension's
+  value → full subscription) and (b) passes the extension's **exact
+  new-session argv minus `-p`** (`--output-format stream-json --verbose
+  --input-format stream-json --max-thinking-tokens 31999
+  --permission-prompt-tool stdio [--resume <id> only when resuming]
+  --setting-sources=user,project,local --permission-mode default
+  --include-partial-messages --debug --debug-to-stderr
+  --enable-auth-status --no-chrome --replay-user-messages`; **no
+  `--add-dir`** — cwd is the spawn cwd). `-p` is a **red herring**
+  (changes neither billing nor lifecycle — proven). `claude.ts` filters
+  `stream_event` (the `--include-partial-messages` partial deltas) so
+  the durable stream/adapter is unchanged from pre-flag behavior, and
+  keeps a **rolling last-8KB stderr tail** so `--debug-to-stderr` noise
+  doesn't bury the fatal error. Still **spawn-per-turn** (the no-`-p`
+  process also exits cleanly on stdin-close — `smoke/
+  no-print-lifecycle-spike.mjs`); the **long-lived per-session process**
+  (full behavioral fidelity) is the tracked Phase-5 follow-up. Do **not**
+  re-add `-p` or scrub `CLAUDE_CODE_ENTRYPOINT` (regresses billing). See
+  the `project-agent-sdk-billing` memory.
+- **Permission = `--permission-prompt-tool stdio`, NOT the IDE-bridge
+  `openDiff` (resolved step 11; still true without `-p` — the
+  extension's own argv carries `--permission-prompt-tool stdio`).**
+  The mechanism — exactly what the
   official VS Code extension spawns — is `--permission-prompt-tool stdio
   --permission-mode default`: the CLI emits a `control_request`
   `{type:'control_request',request_id,request:{subtype:'can_use_tool',
@@ -714,6 +756,24 @@ fallback to `$XDG_DATA_HOME/domo` when set).
 - **Native modules** (`better-sqlite3`, `@parcel/watcher`, `esbuild`,
   `unrs-resolver`, `vue-demi`) require `allowBuilds:` in `pnpm-workspace.yaml` —
   pnpm 11 won't run install scripts otherwise.
+- **Dogfooding gotcha: the sandboxed `claude` CLI litters the worktree
+  and breaks `pnpm`.** When Domo runs a Claude session on its *own*
+  repo, the `claude` CLI's sandbox bind-mounts immutable empty files
+  over alternative-package-manager / submodule config paths. Two
+  consequences a session will hit: **(1)** empty `.npmrc` / `.yarnrc` /
+  `.yarnrc.yml` / `bunfig.toml` / `package-lock.json` / `yarn.lock` /
+  `.gitmodules` anchor files persist on disk (can't be `rm`'d from
+  inside — `EBUSY`, they're active mounts; regenerated every turn) and
+  would show in Domo's git panel — **they are gitignored on purpose**
+  (`.gitignore` "Claude Code sandbox artifacts"; don't "un-ignore" them,
+  and don't try to delete them). **(2)** `node_modules/.bin/` is a
+  read-only empty mount, so `pnpm install` fails linking bins (`EROFS`)
+  and `pnpm <script>` fails on its pre-run deps check. Run tooling
+  **directly via node**, bypassing `.bin`: `node
+  node_modules/nuxt/bin/nuxt.mjs typecheck` (needs
+  `NODE_OPTIONS=--max-old-space-size=8192` — default heap OOM-kills it,
+  exit 137), `node node_modules/eslint/bin/eslint.js <files>`. Not a
+  Domo/repo bug — a Claude Code harness sandbox artifact.
 - **Coast version pinning is still open** (cross-cutting decision 4). Tested
   against 0.1.53. The daemon API is at `/api/v1/`.
 - **`@durable-streams/*` are pkg.pr.new URL deps, pinned to build 350.**
