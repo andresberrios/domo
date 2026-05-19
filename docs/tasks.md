@@ -10,6 +10,30 @@ Tick items as they land; add as discovered. Each landed step updates
 `initial-design.md`/`project-context.md`/`CLAUDE.md` in the *same*
 change (doc-sync is a prime directive).
 
+## START HERE (fresh session)
+
+The pivot is **designed, not built**. Code is still the Electric/Coast
+implementation; the merged billing/streaming rescue lives in
+`electric/claude.ts`/`entity.ts` and is reused by the new engine.
+
+1. Read `CLAUDE.md` (Where-we-are + gotchas) → `docs/initial-design.md`
+   (design + Build sequence + Decisions) → `docs/history.md` (what was &
+   why) → `BUGS.md`.
+2. Build in order below. **Step 1 first** (kills the corruption class).
+3. Test on an **isolated `DOMO_HOME` + dev port 7576** — never the
+   user's live prod at `localhost:7575`.
+4. Doc-sync every landed step (prime directive).
+
+> **⚠️ Deadline-critical, deferred by the user to AFTER the engine
+> migration:** live-verify subscription billing in a real Domo session
+> (isolated `DOMO_HOME`/7576): a session must show
+> `cc_entrypoint=claude-vscode` + `apiKeySource:none` on the spawned
+> `claude`. The fix is merged + typecheck/lint-green + spike-proven, but
+> **never confirmed in a live Domo session**. Anthropic billing change
+> lands **~2026-06-15** (support 15036540) — this verification must pass
+> on the new engine before that date. Tracked as step 1's final check
+> **and** repeated as step 7 so it cannot be missed.
+
 ## 1 — Session engine swap
 
 Rescued from `dev` (merged, `8e63794`) and reused as-is: the billing
@@ -75,7 +99,7 @@ over the process lifecycle.
 - [ ] Verify: toggle exposes/unexposes with no container recreate;
       canonical rebinds; restart-safe.
 
-## 5 — Collaboration (Decided #21)
+## 5 — Collaboration (Decided #13)
 
 - [ ] Durable `chat` event `{text,author:{userId,userName}}`; engine
       records every chat msg, runs a turn only on `@agent`/`trigger`,
@@ -90,6 +114,23 @@ over the process lifecycle.
 - [ ] Sweep aborts/shortcuts/responsive against the new engine.
 - [ ] Rewrite `docs/site/*` (getting-started, securing, releasing) to
       the devcontainer/own-engine model; cut a new release line.
+
+## 7 — ⚠️ Deadline-critical: live-verify subscription billing
+
+Deferred by the user to **after** the engine migration (step 1). Must
+pass on the new engine before the Anthropic billing change
+(**~2026-06-15**, support 15036540). The fix is merged + spike-proven
+but **never confirmed in a live Domo session**.
+
+- [ ] Isolated `DOMO_HOME` + dev port 7576 (NOT prod 7575): create a
+      session, send a prompt, confirm the spawned `claude` emits
+      `cc_entrypoint=claude-vscode` (outbound `x-anthropic-billing-header`)
+      and `apiKeySource:none` in the `system` init event.
+- [ ] Confirm long-lived per-session process behaves (multi-turn over
+      one stdin, idle-reap, `--resume` respawn) — fidelity follow-up.
+- [ ] If it regresses, `electric/claude.ts` is the lever; spikes
+      `smoke/no-print-lifecycle-spike.mjs` + `persistent-session-spike.mjs`
+      are the reusable A/B harness. Memory: `project-agent-sdk-billing`.
 
 ## Open questions
 
