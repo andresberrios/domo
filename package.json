@@ -19,7 +19,7 @@
     "dev": "nuxt dev --port 7576",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare",
+    "postinstall": "sh scripts/apply-patches.sh && nuxt prepare",
     "lint": "eslint .",
     "typecheck": "nuxt typecheck",
     "update:local": "bash scripts/local-update.sh"

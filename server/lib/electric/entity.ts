@@ -16,7 +16,8 @@ import {
 } from './schemas'
 import { CLAUDE_CODE_CLI_ENTITY } from './config'
 import { runClaudeTurn, type PermissionDecision } from './claude'
-import { updateSession } from '../sessions'
+import { getSession, updateSession } from '../sessions'
+import { loadDomoConfig } from '../config'
 import { expandInWorktree } from '../promptExpand'
 import {
   beginTurn,
@@ -25,7 +26,10 @@ import {
   registerSteer,
   resolveDiff,
 } from './sessionControl'
-import type { SessionStatus as DomoSessionStatus } from '../schemas'
+import type {
+  ApprovalMode,
+  SessionStatus as DomoSessionStatus,
+} from '../schemas'
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
@@ -235,13 +239,33 @@ async function executeClaudeTurn(
   const ac = new AbortController()
   beginTurn(sessionId, () => ac.abort())
 
+  // Effective approval policy (Decided #22): per-session override, else
+  // the operator default, else `manual`. Read fresh per turn (the
+  // in-process runtime has the `db()` singleton; `loadDomoConfig` is
+  // read-fresh too), so flipping it takes effect on the next turn with
+  // no restart. Only `manual` parks — `auto`/`passthrough` never create
+  // a `pendingDiffs` row, so they are inherently restart-safe.
+  const approvalMode: ApprovalMode =
+    getSession(sessionId)?.approvalMode ??
+    loadDomoConfig().claude?.approvalMode ??
+    'manual'
+  const permissionMode =
+    approvalMode === 'auto'
+      ? 'acceptEdits'
+      : approvalMode === 'passthrough'
+        ? 'passthrough'
+        : 'default'
+
   const onPermissionRequest = async (req: {
     toolName: string
     input: Record<string, unknown>
     toolUseId: string
     requestId: string
   }): Promise<PermissionDecision> => {
-    if (!EDIT_TOOLS.has(req.toolName)) {
+    // Auto / passthrough (or any non-edit tool): allow without parking.
+    // `passthrough` means the CLI's own settings/classifier already
+    // gated this — anything still reaching us is a frictionless allow.
+    if (approvalMode !== 'manual' || !EDIT_TOOLS.has(req.toolName)) {
       return { behavior: 'allow', updatedInput: req.input }
     }
     const callId = req.requestId
@@ -315,6 +339,7 @@ async function executeClaudeTurn(
       prompt: resolved,
       resumeSessionId: meta.nativeSessionId,
       signal: ac.signal,
+      permissionMode,
       onPermissionRequest,
       onPermissionCancel,
       // Mid-turn steering (Decided #18): record a durable `steer_sent`

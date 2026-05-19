@@ -73,6 +73,7 @@ async function decide(decision: 'accept' | 'reject') {
       :original="diff.before"
       :modified="diff.after"
       :language="language"
+      inline
       class="max-h-80 border-b border-warning/30"
     />
 

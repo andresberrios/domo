@@ -22,6 +22,22 @@ RUN npm install --no-audit --no-fund \
       "@durable-streams/server@https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/server@350" \
       "@durable-streams/state@https://pkg.pr.new/durable-streams/durable-streams/@durable-streams/state@350"
 
+# Vendored patch: agents-server@0.4.2 does not re-link persisted entities'
+# pull-wake subscriptions on its own boot, so wake delivery is dead after
+# an agents-server crash/reboot/upgrade. This adds the missing boot
+# re-link. Same patch as dev's `scripts/apply-patches.sh` (npm install
+# here means pnpm's patch system can't run). Upstream PR target:
+# electric-sql/electric. `patch` is not in node:slim → install it.
+# `--forward` makes the apply idempotent across image-cache reuse.
+COPY agents-server-0.4.2-boot-relink.patch /tmp/agents-relink.patch
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends patch \
+  && rm -rf /var/lib/apt/lists/* \
+  && cd node_modules/@electric-ax/agents-server \
+  && patch -p1 --forward < /tmp/agents-relink.patch \
+  && grep -q 'domo patch] Re-link persisted' dist/entrypoint.js \
+  && node --check dist/entrypoint.js
+
 # The container runs as the host UID (compose `user:`, so bind-mounted
 # data stays host-owned). agents-server does `mkdir /app/logs` at
 # startup; /app is root-owned from the build, so make the dir itself

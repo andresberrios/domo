@@ -90,6 +90,18 @@ export async function startElectricRuntime(): Promise<ElectricRuntime | null> {
       console.log(
         `[electric] runtime "${runtimeName}" connected to ${serverUrl} (runner: ${runnerId})`,
       )
+      // Restart-resume note: there is deliberately NO host-side boot
+      // sweep here. agents-server keeps pull-wake subscriptions only in
+      // memory and does not rebuild them on its own boot, so after an
+      // agents-server restart no host claim/sweep can recover orphans
+      // (the subscription is gone → claim 404s). The real fix is twofold
+      // and lives elsewhere: (1) `bin/domo` no longer recreates
+      // agents-server on app update (app-only restart — the common path,
+      // so offset-replay keeps working), and (2) a patch to
+      // `@electric-ax/agents-server` re-links every persisted entity's
+      // dispatch subscription on *its* boot (covers true agents-server
+      // crash/reboot/upgrade). See CLAUDE.md "restart-resume" + the
+      // `patches/` entry + Decided #23.
       return started
     } catch (err) {
       console.error(

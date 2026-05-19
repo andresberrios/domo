@@ -10,7 +10,7 @@
  * row, reconciled client-side in Phase 9/10.
  */
 import { db } from './db'
-import type { SessionStatus } from './schemas'
+import type { ApprovalMode, SessionStatus } from './schemas'
 
 export interface SessionRow {
   id: string
@@ -21,6 +21,8 @@ export interface SessionRow {
   entityId: string | null
   durableStreamUrl: string | null
   nativeClaudeSessionId: string | null
+  /** null → inherit `config.claude.approvalMode` (default `manual`). */
+  approvalMode: ApprovalMode | null
   createdAt: number
   lastEventAt: number | null
   viewedAtPerDevice: Record<string, number>
@@ -35,6 +37,7 @@ interface SessionDbRow {
   entity_id: string | null
   durable_stream_url: string | null
   native_claude_session_id: string | null
+  approval_mode: string | null
   created_at: number
   last_event_at: number | null
   viewed_at_per_device: string
@@ -62,6 +65,7 @@ function fromDb(r: SessionDbRow): SessionRow {
     entityId: r.entity_id,
     durableStreamUrl: r.durable_stream_url,
     nativeClaudeSessionId: r.native_claude_session_id,
+    approvalMode: (r.approval_mode as ApprovalMode | null) ?? null,
     createdAt: r.created_at,
     lastEventAt: r.last_event_at,
     viewedAtPerDevice: parseViewed(r.viewed_at_per_device),
@@ -88,17 +92,19 @@ export function insertSession(row: SessionRow): void {
       `
       INSERT INTO sessions (
         id, env_id, title, status, done, entity_id, durable_stream_url,
-        native_claude_session_id, created_at, last_event_at,
+        native_claude_session_id, approval_mode, created_at, last_event_at,
         viewed_at_per_device
       ) VALUES (
         @id, @envId, @title, @status, @done, @entityId, @durableStreamUrl,
-        @nativeClaudeSessionId, @createdAt, @lastEventAt, @viewedAtPerDevice
+        @nativeClaudeSessionId, @approvalMode, @createdAt, @lastEventAt,
+        @viewedAtPerDevice
       )
     `,
     )
     .run({
       ...row,
       done: row.done ? 1 : 0,
+      approvalMode: row.approvalMode ?? null,
       viewedAtPerDevice: JSON.stringify(row.viewedAtPerDevice),
     })
 }
@@ -112,6 +118,7 @@ export function updateSession(
       | 'status'
       | 'done'
       | 'nativeClaudeSessionId'
+      | 'approvalMode'
       | 'lastEventAt'
       | 'viewedAtPerDevice'
     >
@@ -134,6 +141,10 @@ export function updateSession(
   if (fields.nativeClaudeSessionId !== undefined) {
     sets.push('native_claude_session_id = @nativeClaudeSessionId')
     params.nativeClaudeSessionId = fields.nativeClaudeSessionId
+  }
+  if (fields.approvalMode !== undefined) {
+    sets.push('approval_mode = @approvalMode')
+    params.approvalMode = fields.approvalMode
   }
   if (fields.lastEventAt !== undefined) {
     sets.push('last_event_at = @lastEventAt')

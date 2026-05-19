@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { Session } from '../../lib/schemas'
+import { ApprovalMode, Session } from '../../lib/schemas'
 import { getEnv } from '../../lib/envs'
 import { insertSession, type SessionRow } from '../../lib/sessions'
 import { CLAUDE_CODE_CLI_ENTITY } from '../../lib/electric/config'
@@ -24,6 +24,8 @@ export default defineProcedure({
   input: z.object({
     envId: z.string(),
     title: z.string().optional(),
+    /** Optional per-session approval policy; omitted → inherit default. */
+    approvalMode: ApprovalMode.optional(),
   }),
   output: Session,
   handler: async ({ input }) => {
@@ -62,6 +64,7 @@ export default defineProcedure({
       entityId: info.entityUrl,
       durableStreamUrl: durableStreamUrl(info.streamPath),
       nativeClaudeSessionId: null,
+      approvalMode: input.approvalMode ?? null,
       createdAt: Date.now(),
       lastEventAt: null,
       viewedAtPerDevice: {},

@@ -16,10 +16,18 @@ import { z } from 'zod'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { domoHome } from './paths'
+import { ApprovalMode } from './schemas'
 
 const configSchema = z.object({
   claude: z
     .object({
+      /**
+       * Default edit-approval policy for new sessions when the session
+       * itself has no override (Decided #22). Defaults to `manual` (every
+       * edit parks as a diff card). Set `auto` / `passthrough` to make
+       * the frictionless, restart-safe modes the deployment default.
+       */
+      approvalMode: ApprovalMode.optional(),
       /**
        * Extra env vars for the `claude` spawn. Applied after the host env
        * but the security scrub still wins (Decided #9) — this can NOT

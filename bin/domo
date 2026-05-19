@@ -64,18 +64,36 @@ wait_agents() {
   return 1
 }
 
-cmd_up() {
-  have docker || die "Docker is required (https://docs.docker.com/engine/install/)."
-  [ -x "$NODE" ] || have node || die "no Node runtime (bundled binary missing and no system node)."
-  have coast || err "warning: 'coast' not found — projects/envs need the Coast daemon."
-  have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
+infra_running() {
+  # agents-server answering HTTP == infra is up (postgres is its dep).
+  curl -s -o /dev/null "http://127.0.0.1:${DOMO_AGENTS_PORT:-4437}/" 2>/dev/null
+}
 
+# Bring infra up idempotently. `up -d --build` (NOT `--force-recreate`):
+# compose recreates a service only when its image/config actually
+# changed, so when the agents image is cache-identical (the common
+# app-only update) the running agents-server container is LEFT IN PLACE.
+# That is load-bearing: recreating agents-server wipes its in-memory
+# pull-wake subscription delivery, and the official restart-resume
+# mechanism (the runner resuming from its persisted wake-stream offset
+# and replaying backlog wakes) only works if those wakes were actually
+# emitted — which needs agents-server to have stayed up. See CLAUDE.md
+# "restart-resume" + Decided #23.
+cmd_infra_up() {
   mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/streams"
-  echo "domo: starting infra (postgres + agents-server)…"
   dc up -d --build
-  echo "domo: waiting for agents-server…"
   wait_agents || die "agents-server did not come up — see: domo logs infra"
+}
 
+cmd_app_stop() {
+  if app_running; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null || true
+    echo "domo: app stopped"
+  fi
+  rm -f "$PIDFILE"
+}
+
+cmd_app_start() {
   if app_running; then
     echo "domo: app already running (pid $(cat "$PIDFILE")) at http://localhost:${PORT}"
     return 0
@@ -89,12 +107,36 @@ cmd_up() {
   echo "domo: up → http://localhost:${PORT}  (logs: domo logs)"
 }
 
-cmd_down() {
-  if app_running; then
-    kill "$(cat "$PIDFILE")" 2>/dev/null || true
-    echo "domo: app stopped"
+cmd_up() {
+  have docker || die "Docker is required (https://docs.docker.com/engine/install/)."
+  [ -x "$NODE" ] || have node || die "no Node runtime (bundled binary missing and no system node)."
+  have coast || err "warning: 'coast' not found — projects/envs need the Coast daemon."
+  have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
+
+  echo "domo: starting infra (postgres + agents-server)…"
+  cmd_infra_up
+  cmd_app_start
+}
+
+# App-only restart — the update path. Infra (postgres + agents-server)
+# stays UP so the official offset-replay restart-resume keeps working;
+# only the Domo app process is swapped onto the freshly installed
+# `.output`. A full infra teardown is `domo down` (explicit), never an
+# update side effect.
+cmd_restart() {
+  cmd_app_stop
+  if infra_running; then
+    echo "domo: infra already up (kept) — restarting app only"
+  else
+    echo "domo: infra not up — starting it"
+    have docker || die "Docker is required."
+    cmd_infra_up
   fi
-  rm -f "$PIDFILE"
+  cmd_app_start
+}
+
+cmd_down() {
+  cmd_app_stop
   if have docker; then dc down; echo "domo: infra stopped (volumes kept)"; fi
 }
 
@@ -124,9 +166,12 @@ cmd_update() {
   curl -fsSL "$INSTALL_URL" | sh
   if [ "$was_running" = yes ]; then
     echo "domo: restarting…"
-    # `restart` (down→up), NOT `up`: the old app process is still alive
-    # after install, and `cmd_up` early-returns when app_running — so
-    # `up` would leave the OLD .output serving. `restart` swaps it.
+    # `restart` is an app-only swap (NOT down→up): the old app process is
+    # still alive after install and `cmd_app_start` early-returns when
+    # app_running, so `up` would leave the OLD .output serving.
+    # `cmd_restart` stops the old app and starts the new one while
+    # LEAVING infra (and the official offset-replay restart-resume)
+    # untouched.
     "$HOME_DIR/app/current/bin/domo" restart
   else
     echo "domo: updated. Run: domo up"
@@ -136,7 +181,7 @@ cmd_update() {
 case "${1:-}" in
   up)      cmd_up ;;
   down)    cmd_down ;;
-  restart) cmd_down; cmd_up ;;
+  restart) cmd_restart ;;
   status)  cmd_status ;;
   logs)    shift; cmd_logs "${1:-}" ;;
   update)  cmd_update ;;

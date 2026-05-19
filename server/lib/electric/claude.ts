@@ -60,6 +60,18 @@ export interface ClaudeTurnOpts {
   onReady?: (steer: (text: string, uuid: string) => void) => void
   /** Abort the turn — SIGTERM the child; the turn resolves (not errors). */
   signal?: AbortSignal
+  /**
+   * `--permission-mode` value (approval policy, Decided #22):
+   * - `'default'`     → `--permission-mode default` (manual: tools are
+   *                      *asked* via the stdio prompt → diff cards).
+   * - `'acceptEdits'` → `--permission-mode acceptEdits` (auto: the CLI
+   *                      auto-allows edits; nothing parks).
+   * - `'passthrough'` → omit `--permission-mode` entirely so the user's
+   *                      own `~/.claude/settings.json` (`defaultMode` +
+   *                      its model classifier) decides.
+   * Defaults to `'default'` (preserves the original behavior).
+   */
+  permissionMode?: 'default' | 'acceptEdits' | 'passthrough'
 }
 
 // Scrub the key + the outer Claude Code session vars: Domo's own dev
@@ -111,12 +123,16 @@ export async function runClaudeTurn(opts: ClaudeTurnOpts): Promise<void> {
     'stream-json',
     '--verbose', // required with stream-json output in -p mode
     // Headless permission delegation, matching the official VS Code
-    // extension's spawn. `default` (not `acceptEdits`) so edit tools are
-    // *asked*; `stdio` routes the ask to us over this stream-json channel.
+    // extension's spawn. `stdio` routes any "ask" to us over this
+    // stream-json channel; the `--permission-mode` value is the approval
+    // policy (Decided #22). `passthrough` omits the flag so the user's
+    // own settings.json `defaultMode` (e.g. the `auto` classifier) wins —
+    // the CLI flag would otherwise override settings.
     '--permission-prompt-tool',
     'stdio',
-    '--permission-mode',
-    'default',
+    ...(opts.permissionMode === 'passthrough'
+      ? []
+      : ['--permission-mode', opts.permissionMode ?? 'default']),
     // Echo user messages (initial + mid-turn steer) back on stdout as
     // `{type:'user',uuid,isReplay:true}` — the consumption ack that the
     // transcript matches by uuid to flip a steer queued→delivered.

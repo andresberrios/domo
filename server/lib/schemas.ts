@@ -49,6 +49,23 @@ export const SessionStatus = z.enum([
 ])
 export type SessionStatus = z.infer<typeof SessionStatus>
 
+/**
+ * Per-session edit-approval policy (Decided #22). Resolved at turn start
+ * as `session.approvalMode ?? config.claude.approvalMode ?? 'manual'`.
+ *
+ * - `manual`      — every file edit parks as a diff-approval card the user
+ *                   must accept/reject (the original Phase-3 behavior).
+ *                   The only mode that *parks*, so the only one exposed to
+ *                   the restart-resume fragility.
+ * - `auto`        — Domo auto-approves all tools incl. edits; no park.
+ *                   (`claude` spawned `--permission-mode acceptEdits`.)
+ * - `passthrough` — Domo does not force `--permission-mode`; the user's
+ *                   own `~/.claude/settings.json` (e.g. `defaultMode:
+ *                   "auto"` + its model classifier) decides. No Domo park.
+ */
+export const ApprovalMode = z.enum(['manual', 'auto', 'passthrough'])
+export type ApprovalMode = z.infer<typeof ApprovalMode>
+
 export const Session = z.object({
   id: z.string(),
   envId: z.string(),
@@ -60,6 +77,8 @@ export const Session = z.object({
   /** Absolute URL the chat surface subscribes to (Phase 9). */
   durableStreamUrl: z.string().nullable(),
   nativeClaudeSessionId: z.string().nullable(),
+  /** Per-session edit-approval policy; null → inherit the config default. */
+  approvalMode: ApprovalMode.nullable(),
   createdAt: z.number().int(),
   lastEventAt: z.number().int().nullable(),
   /** deviceId → epoch ms last viewed (drives the new-output dot, Phase 10). */

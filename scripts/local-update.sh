@@ -66,7 +66,8 @@ rm -rf dist
 mkdir -p "$STAGE/bin" "$STAGE/release" "$STAGE/runtime/bin"
 cp -r .output "$STAGE/.output"
 cp bin/domo "$STAGE/bin/domo"; chmod +x "$STAGE/bin/domo"
-cp release/docker-compose.yml release/Dockerfile.agents-server "$STAGE/release/"
+cp release/docker-compose.yml release/Dockerfile.agents-server \
+   release/agents-server-0.4.2-boot-relink.patch "$STAGE/release/"
 printf '%s\n' "$VER" >"$STAGE/VERSION"
 cat >"$STAGE/manifest.json" <<JSON
 { "version": "${VER}", "platform": "${PLATFORM}", "build": "local-update" }
@@ -91,7 +92,7 @@ echo "==> installing into ${HOME_DIR} (atomic 'current' flip)"
 DOMO_HOME="$HOME_DIR" DOMO_LOCAL_TARBALL="$TARBALL" sh scripts/install.sh
 
 DOMO_BIN="$HOME_DIR/app/current/bin/domo"
-echo "==> restarting prod instance (down → up)"
+echo "==> restarting prod instance (app only; infra + live sessions kept)"
 DOMO_HOME="$HOME_DIR" "$DOMO_BIN" restart
 
 echo "==> done — domo $("$DOMO_BIN" version) live at http://localhost:${PORT:-7575}"

@@ -195,6 +195,38 @@ collaboration: a chat message does NOT trigger the agent; only an
 built** — see `initial-design.md` Decided #21 +
 `docs/tasks/phase-5-collab.md`.
 
+**Approval modes + restart-resume — shipped & verified (Decided #22, #23).**
+*Approval modes:* per-session `manual` (the original park-every-edit
+diff card) / `auto` (`--permission-mode acceptEdits`, no park) /
+`passthrough` (don't pass `--permission-mode`; the user's
+`~/.claude/settings.json` `defaultMode`/classifier decides, no park).
+Resolved per turn as `session.approvalMode ?? config.claude
+.approvalMode ?? 'manual'` (plain DB+config read, **not** a durable
+inbox round-trip — applies next turn, no wake). `auto`/`passthrough`
+never create a `pendingDiffs` row → inherently restart-safe. Wired:
+`ApprovalMode` in `schemas.ts`, nullable `approval_mode` column
+(idempotent `ensureColumn`), `claude.approvalMode` in `config.ts`,
+`sessions.setApprovalMode`, `USelect` in `DomoChat`.
+*Restart-resume:* the real mechanism (from upstream source) — agents-
+server keeps pull-wake **subscriptions in memory only** and does NOT
+rebuild them on its own boot, so the official clean-restart story only
+covers a *runner* restart while agents-server stays up (offset-replay).
+Fix = **(a)** `bin/domo restart` is now an **app-only** swap
+(`cmd_restart` keeps postgres+agents-server up; only explicit `domo
+down` tears infra) so `domo update`/`update:local` no longer recreates
+agents-server, + **(b)** a vendored patch
+(`release/agents-server-0.4.2-boot-relink.patch`) adds the missing
+boot step (re-link every persisted entity's dispatch subscription, via
+agents-server's own `linkEntityDispatchSubscription`) for genuine
+agents-server crash/reboot/upgrade. Applied by `scripts/apply-patches.sh`
+(dev `postinstall`) **and** `release/Dockerfile.agents-server` (the
+release image npm-installs, and pnpm 11.0.9 won't reconcile
+`patchedDependencies` here anyway). Verified live (`smoke/
+agents-server-restart-resume.mjs`, isolated stack): force-recreate
+agents-server → boot log `re-linked dispatch subscriptions for 1
+persisted entity` → subscription back → fresh send emits a wake.
+Upstream PR target: `electric-sql/electric` (`packages/agents-server`).
+
 ## Running it
 
 ```bash
@@ -636,6 +668,35 @@ fallback to `$XDG_DATA_HOME/domo` when set).
   for the duration (the bridge booted + the lock file was written under
   `~/.claude/ide/`). The spawn → stream-json → wake → handler → mirrored
   events path is fully validated.
+- **Restart-resume hazards (Decided #23).** (1) **agents-server keeps
+  pull-wake subscriptions in memory and never rebuilds them on its own
+  boot** — so a host-side claim/boot "sweep" is futile after an
+  agents-server restart (the subscription is gone → claim 404s). The
+  only working fixes are app-only `domo restart` + the vendored
+  agents-server boot-relink patch. Don't reintroduce a claim sweep.
+  (2) **pnpm 11.0.9 will NOT apply `patchedDependencies`** here —
+  `pnpm patch-commit` writes the file but `pnpm install` reports
+  "Already up to date" forever and never patches `node_modules`; the
+  release image installs with **npm** anyway. The patch is applied by
+  `scripts/apply-patches.sh` (idempotent; `postinstall` runs it before
+  `nuxt prepare`) and by `release/Dockerfile.agents-server`. Don't
+  "fix" it back to pnpm patchedDependencies. (3) **Never `rm
+  pnpm-lock.yaml` to force a reinstall** — re-resolving drifts the
+  pkg.pr.new `@durable-streams/*` pins (Decided #12 hazard); restore
+  with `git checkout -- pnpm-lock.yaml && pnpm install
+  --frozen-lockfile`. (4) The agents image is rebuilt+recreated only
+  when its Dockerfile/pins change (`dc up -d --build` diff), so the
+  **deploy that introduces the patch needs a one-time infra
+  rebuild/recreate** (e.g. `domo down && domo up`, or `dc up -d --build`
+  for agents-server) — a plain app-only `update:local`/`domo restart`
+  keeps the *old* agents-server. After that, app-only restarts are
+  correct and the patch persists in the image.
+- **`DomoDiffView` is split at ≥md, unified/inline below (and the
+  approval card forces `inline`).** Side-by-side `MergeView` is
+  unreadable on a phone; `useBreakpoints` picks `unifiedMergeView`
+  (`@codemirror/merge`) under `md`. The existing rebuild `watch`
+  re-runs on the breakpoint change. `DomoDiffApprovalCard` passes
+  `inline` unconditionally (it's a narrow card even on desktop).
 - **Headless `claude -p` permission = `--permission-prompt-tool stdio`,
   NOT the IDE-bridge `openDiff` (resolved, step 11, `claude` 2.1.142).**
   `openDiff` is never called in `-p` stream-json mode (verified: under

@@ -70,6 +70,43 @@ const sending = ref(false)
 const actionError = ref<string | null>(null)
 const inputRef = useTemplateRef<{ focus: () => void }>('inputRef')
 
+// Per-session edit-approval policy (Decided #22). `null` = inherit the
+// operator default (`config.claude.approvalMode`, itself defaulting to
+// `manual`). Plain DB read/write — the entity re-reads the effective
+// mode at the start of each turn, so a change applies next turn.
+// `'default'` is the UI sentinel for "no override → inherit the
+// operator default"; it maps to a `null` approvalMode on the wire
+// (USelect values must be primitives, not `null`).
+type ApprovalChoice = 'manual' | 'auto' | 'passthrough'
+const approvalValue = ref<ApprovalChoice | 'default'>('default')
+const approvalItems = [
+  { label: 'Approvals: Default', value: 'default' },
+  { label: 'Approvals: Manual (review each edit)', value: 'manual' },
+  { label: 'Approvals: Auto-accept edits', value: 'auto' },
+  { label: 'Approvals: Use my Claude settings', value: 'passthrough' },
+]
+async function loadApprovalMode() {
+  try {
+    const s = await apiClient.sessions.get.call({ id: props.sessionId })
+    approvalValue.value = s.approvalMode ?? 'default'
+  } catch {
+    /* non-fatal — selector just stays on Default */
+  }
+}
+async function onApprovalChange(v: string) {
+  approvalValue.value = v as ApprovalChoice | 'default'
+  try {
+    await apiClient.sessions.setApprovalMode.call({
+      id: props.sessionId,
+      approvalMode: v === 'default' ? null : (v as ApprovalChoice),
+    })
+  } catch (e) {
+    actionError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+onMounted(loadApprovalMode)
+watch(() => props.sessionId, loadApprovalMode)
+
 // ⌘I focuses the prompt from anywhere in the session view (incl. while
 // the editor/terminal has focus — hence usingInput).
 defineShortcuts({
@@ -192,6 +229,18 @@ async function onStop() {
     </div>
 
     <div class="shrink-0 p-3 border-t border-default">
+      <div class="flex items-center justify-end mb-2">
+        <USelect
+          :model-value="approvalValue"
+          :items="approvalItems"
+          size="xs"
+          variant="ghost"
+          color="neutral"
+          class="text-xs"
+          :ui="{ base: 'text-muted' }"
+          @update:model-value="onApprovalChange"
+        />
+      </div>
       <p v-if="actionError" class="text-xs text-error mb-2">
         {{ actionError }}
       </p>

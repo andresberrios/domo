@@ -76,7 +76,8 @@ echo "==> assembling tarball"
 cp -r .output "$STAGE/.output"
 mkdir -p "$STAGE/bin" "$STAGE/release"
 cp bin/domo "$STAGE/bin/domo"; chmod +x "$STAGE/bin/domo"
-cp release/docker-compose.yml release/Dockerfile.agents-server "$STAGE/release/"
+cp release/docker-compose.yml release/Dockerfile.agents-server \
+   release/agents-server-0.4.2-boot-relink.patch "$STAGE/release/"
 printf '%s\n' "$VER" >"$STAGE/VERSION"
 
 cat >"$STAGE/manifest.json" <<JSON

@@ -56,6 +56,7 @@ function migrate(d: Database.Database): void {
       entity_id TEXT,
       durable_stream_url TEXT,
       native_claude_session_id TEXT,
+      approval_mode TEXT,
       created_at INTEGER NOT NULL,
       last_event_at INTEGER,
       viewed_at_per_device TEXT NOT NULL DEFAULT '{}'
@@ -81,10 +82,30 @@ function migrate(d: Database.Database): void {
     );
   `)
 
+  // Additive, idempotent column migrations. `CREATE TABLE IF NOT EXISTS`
+  // above is a no-op on an existing DB, so new columns on existing tables
+  // must be ALTERed in explicitly (guarded by PRAGMA table_info so it is
+  // safe to run on every boot).
+  ensureColumn(d, 'sessions', 'approval_mode', 'approval_mode TEXT')
+
   const row = d.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as
     | { version: number }
     | undefined
   if (!row) {
     d.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(1)
+  }
+}
+
+function ensureColumn(
+  d: Database.Database,
+  table: string,
+  column: string,
+  ddl: string,
+): void {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string
+  }[]
+  if (!cols.some((c) => c.name === column)) {
+    d.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
   }
 }
