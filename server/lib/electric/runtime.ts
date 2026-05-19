@@ -8,6 +8,7 @@ import {
 } from '@electric-ax/agents-runtime'
 import { electricConfig } from './config'
 import { registerClaudeCodeCli } from './entity'
+import { superviseRunnerLoop } from './runner-supervisor'
 
 export interface ElectricRuntime {
   registry: EntityRegistry
@@ -18,6 +19,11 @@ export interface ElectricRuntime {
 
 let started: ElectricRuntime | null = null
 let starting: Promise<ElectricRuntime | null> | null = null
+/**
+ * Set true by `stopElectricRuntime` so the runner supervisor exits
+ * instead of treating the intentional stop as an outage to reconnect.
+ */
+let stopRequested = false
 
 async function registerRunner(
   serverUrl: string,
@@ -45,6 +51,29 @@ async function registerRunner(
 }
 
 /**
+ * Thin module wrapper over `superviseRunnerLoop` (the resilience logic
+ * lives there — see runner-supervisor.ts). Supplies the two
+ * environment-specific seams: re-assert the runner registration on
+ * reconnect (idempotent upsert; covers an agents-server that restarted
+ * and dropped runner state), and the exit predicate — stop when
+ * `stopElectricRuntime` ran OR this runner is no longer the active one
+ * (`started` only changes on stop/restart; a transient disconnect keeps
+ * the same instance, so this stays false through reconnects).
+ */
+function superviseRunner(
+  runner: PullWakeRunner,
+  serverUrl: string,
+  runnerId: string,
+): Promise<void> {
+  return superviseRunnerLoop(runner, {
+    reassert: async () => {
+      await registerRunner(serverUrl, runnerId)
+    },
+    isDone: () => stopRequested || started?.runner !== runner,
+  })
+}
+
+/**
  * Bring up the in-process `claude-code-cli` runtime and connect it to
  * agents-server via a pull-wake runner. Idempotent. Non-fatal: if
  * agents-server is unreachable Domo still serves projects/envs/workspace
@@ -55,6 +84,7 @@ export async function startElectricRuntime(): Promise<ElectricRuntime | null> {
   if (starting) return starting
 
   starting = (async () => {
+    stopRequested = false
     const { serverUrl, runnerId, runtimeName } = electricConfig()
     const registry = createEntityRegistry()
     registerClaudeCodeCli(registry)
@@ -81,12 +111,19 @@ export async function startElectricRuntime(): Promise<ElectricRuntime | null> {
         runtime,
         offset: wake_stream_offset,
         onError: (err) => {
+          // Returning true suppresses the throw (don't crash the
+          // process on a transient heartbeat/stream error). It does
+          // NOT reconnect — superviseRunner() owns that.
           console.error('[electric] pull-wake runner error:', err)
           return true
         },
       })
       runner.start()
       started = { registry, runtime, runner, serverUrl }
+      // Fire-and-forget: keep the runner alive across agents-server
+      // blips/restarts (otherwise a single dropped wake stream
+      // permanently stops wake delivery — see superviseRunner).
+      void superviseRunner(runner, serverUrl, runnerId)
       console.log(
         `[electric] runtime "${runtimeName}" connected to ${serverUrl} (runner: ${runnerId})`,
       )
@@ -124,6 +161,9 @@ export function getElectricRuntime(): ElectricRuntime | null {
 export async function stopElectricRuntime(): Promise<void> {
   if (!started) return
   const { runner, runtime } = started
+  // Set before stop() so superviseRunner sees the intentional stop
+  // (its waitForStopped resolves) and exits instead of reconnecting.
+  stopRequested = true
   started = null
   await runner.stop().catch(() => {})
   runtime.abortWakes()
