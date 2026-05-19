@@ -70,11 +70,21 @@ one-Nitro-process manager (no Docker compose); `install.sh` /
 `build-release.sh` / `local-update.sh` dropped the infra copies + the
 `infra.agentsServer` manifest field.
 
-**Still pending:** the **deadline-critical billing live-verify on the
-new engine** (step 7 — never confirmed in a live Domo session; the spike
-proves the persistent-process model in isolation but step 1 was not
-e2e-driven via a browser yet). Plus step 2's coarse `/api/live` table
-path + `useLiveCall` + rail-poll deletion, and steps 3–6.
+**CLI argv + env now verified against the live VS Code 2.1.142
+extension** (capture from `ps eww` on the user's Mac, 2026-05-20):
+argv identical for a fresh session in `manual` mode; four extra env
+vars added alongside `CLAUDE_CODE_ENTRYPOINT=claude-vscode` —
+`MCP_CONNECTION_NONBLOCKING=true`, `CLAUDE_CODE_ENABLE_TASKS=0`,
+`CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`,
+`CLAUDE_AGENT_SDK_VERSION=0.3.142` (pinned literal — bump when matching
+a newer extension capture).
+
+**Next up:** step 2 remainder (coarse `/api/live` table path +
+`useLiveCall` + rail-poll deletion), then steps 3–6. Step 7's billing
+live-verify is a **single end-of-build check** scoped by the user to
+*after* all of steps 1–6 land (including the devcontainer swap and the
+release re-cut). Don't surface it as a milestone in the meantime —
+just keep the whole build moving so it lands well before ~2026-06-15.
 
 `server/lib/coast/*` + `app/composables/useCoastEvents.ts` +
 `server/api/coast-events.ts` + the Coast adapter in `envs.*` stay in
@@ -253,23 +263,27 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
 ## Gotchas (live)
 
 - **Subscription billing is load-bearing and `claude` spawn must mirror
-  the official VS Code extension (deadline ~2026-06-15).** The spawn in
-  `server/lib/sessionEngine/claude.ts` runs **no `-p`**, sets
-  `CLAUDE_CODE_ENTRYPOINT=claude-vscode` (it's in `SCRUB_ENV` for
+  the official VS Code 2.1.142 extension** (Anthropic's billing change
+  lands ~2026-06-15; post-change the `-p`/`sdk-cli` path drops to a
+  small capped credit and `cc_entrypoint` drives the classifier).
+  `server/lib/sessionEngine/claude.ts` runs **no `-p`**, passes the
+  extension's exact argv (verified against a `ps eww` capture of the
+  live extension binary 2026-05-20), pins
+  `CLAUDE_CODE_ENTRYPOINT=claude-vscode` (which is in `SCRUB_ENV` for
   nested-claude hygiene → must be re-pinned *after* the scrub, never
-  left scrubbed), and passes the extension's exact argv. Post-2026-06-15
-  the `-p`/`sdk-cli` path drops to a capped credit; `cc_entrypoint`
-  drives the classifier. `-p` is a red herring (spike
-  `smoke/no-print-lifecycle-spike.mjs`). Don't "simplify" the argv or
-  re-scrub the entrypoint. Verify via `apiKeySource:"none"` +
-  `cc_entrypoint=claude-vscode` on the spawned process. Memory:
-  `project-agent-sdk-billing`. The **long-lived per-session process**
-  is now the engine's actual model (one process serves multiple turns
-  over one stdin, demux by `result`, idle-reap closes stdin → exit,
-  next prompt respawns with `--resume`; spike-proven by
-  `smoke/persistent-session-spike.mjs`); the deadline-critical live
-  verification of this in a real Domo session (tasks.md step 7) is
-  **still pending** and must happen before 2026-06-15.
+  left scrubbed), and also pins the four ancillary env vars the
+  extension sets alongside it: `MCP_CONNECTION_NONBLOCKING=true`,
+  `CLAUDE_CODE_ENABLE_TASKS=0`,
+  `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`,
+  `CLAUDE_AGENT_SDK_VERSION=0.3.142` (literal — bump when re-checking
+  against a newer extension). Don't "simplify" the argv, don't drop any
+  of these vars, and don't re-scrub the entrypoint. The
+  **long-lived per-session process** (one process serves multiple
+  turns over one stdin, demux by `result`, idle-reap → exit, next
+  prompt respawns with `--resume`) is the engine's actual model
+  (spike-proven by `smoke/persistent-session-spike.mjs`). Memory:
+  `project-agent-sdk-billing`. The single end-of-build live-verify is
+  tasks.md step 7 — runs *after* all of steps 1–6 land, not before.
 - **Dogfooding/sandbox litter (Claude-inside-Domo only).** If the
   operator's `~/.claude` has `permissions.defaultMode:"auto"` *and* the
   Claude Code session is running inside a Domo-spawned env, Claude Code's

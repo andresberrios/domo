@@ -138,6 +138,24 @@ function buildEnv(): NodeJS.ProcessEnv {
   // bills against the full Claude subscription. See the
   // project-agent-sdk-billing memory.
   env.CLAUDE_CODE_ENTRYPOINT = 'claude-vscode'
+  // Official VS Code 2.1.142 extension parity — these four vars are set
+  // alongside CLAUDE_CODE_ENTRYPOINT on every spawn (captured from
+  // `ps eww -p <pid> -o command=` against the live extension binary,
+  // 2026-05-20). Mirror, don't guess — see project-agent-sdk-billing /
+  // feedback-official-integration-pattern.
+  //   * MCP_CONNECTION_NONBLOCKING — slow/broken MCP servers don't
+  //     block claude startup.
+  //   * CLAUDE_CODE_ENABLE_TASKS=0 — the extension disables the internal
+  //     Tasks feature.
+  //   * CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true — file-edit
+  //     checkpointing on.
+  //   * CLAUDE_AGENT_SDK_VERSION — the SDK module version the
+  //     "extension caller" declares. Pinned literal; bump when matching
+  //     a newer extension capture.
+  env.MCP_CONNECTION_NONBLOCKING = 'true'
+  env.CLAUDE_CODE_ENABLE_TASKS = '0'
+  env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = 'true'
+  env.CLAUDE_AGENT_SDK_VERSION = '0.3.142'
   return env
 }
 

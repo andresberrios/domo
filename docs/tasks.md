@@ -23,54 +23,51 @@ design; the complete `assistant` row supersedes them in the adapter).
 The Electric/agents-server/Postgres infra + the `@durable-streams/*`
 pkg.pr.new pins + the `_agents` proxy + the boot-relink patch + the
 `agent-session-protocol` dep (IDE-bridge leftover) are all deleted.
-The billing-critical spawn argv / env scrub /
-`cc_entrypoint=claude-vscode` / stdio permission / steering / coalescer
-carried over verbatim into `server/lib/sessionEngine/claude.ts`; the
-engine owns the **long-lived per-session process** (multi-turn over one
-stdin, demux by `result`, idle-reap ~15 min, `--resume` respawn).
+The engine owns the **long-lived per-session process** (multi-turn over
+one stdin, demux by `result`, idle-reap ~15 min, `--resume` respawn).
+
+**CLI argv + env now verified against the live VS Code 2.1.142
+extension** (capture from `ps eww`, 2026-05-20): argv identical for a
+fresh session in `manual` mode; four extension env vars added alongside
+`CLAUDE_CODE_ENTRYPOINT=claude-vscode` (`MCP_CONNECTION_NONBLOCKING`,
+`CLAUDE_CODE_ENABLE_TASKS=0`,
+`CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`, `CLAUDE_AGENT_SDK_VERSION`).
+
 `pnpm install` clean. `pnpm typecheck` + `pnpm lint` green.
 
-**Still pending:**
-- **Step 7 (deadline-critical billing live-verify)** — never run against
-  the new engine; must pass before ~2026-06-15.
-- **CLI argv parity check** — user is sharing the official VS Code
-  extension's actual spawn command for a diff against
-  `sessionEngine/claude.ts`; pending their paste. (The current argv is
-  the spike-proven set, but a fresh capture from the live extension is
-  the canonical source.)
-- **Step 2 remainder** — coarse `{table,id,op}` path on `/api/live` +
-  `useLiveCall` + rail-poll deletion (the chat fine path landed early
-  with step 1).
-- **Steps 3–6** — devcontainers, port forwarding, collab, docs rewrite.
+**Next-up build order:**
 
-**Fresh-session order:**
+1. **Step 2 remainder** — coarse `{table,id,op}` path on `/api/live` +
+   `useLiveCall` + rail-poll deletion (the chat fine path landed early
+   with step 1).
+2. **Step 3** — devcontainer + rootless-DinD environments, `Domofile`,
+   terminal → `docker exec`, Coast adapter removed.
+3. **Step 4** — port forwarding (HTTP reverse-proxy + TCP listeners,
+   canonical env binding, SQLite forward table).
+4. **Step 5** — group-chat collaboration (`chat` events + trigger
+   detection).
+5. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
+6. **Step 7** — billing live-verify (single end-of-build check; runs
+   AFTER 1–6 land; see the note at the top of this file — don't
+   surface as next-actionable while earlier steps are in flight).
 
-1. Read `CLAUDE.md` (Where-we-are + gotchas) → `docs/initial-design.md`
-   (design + Build sequence + Decisions) → `docs/history.md` (what was &
-   why) → `BUGS.md`.
-2. **First**: if the user pasted the official extension's spawn command
-   in this session's opening turn, diff against
-   `server/lib/sessionEngine/claude.ts` `buildArgs` + `buildEnv` and
-   land any deltas before anything else (deadline-critical context).
-3. **Then**: step 7's live-verify on isolated `DOMO_HOME` + dev port
-   7576 — drive a real session through Playwright, confirm
-   `apiKeySource:"none"` + `cc_entrypoint=claude-vscode` on the spawned
-   process + multi-turn / `--resume` respawn / idle-reap behaviours.
-4. Then step 2 remainder, then steps 3–6.
-5. Doc-sync every landed step (prime directive).
-6. Test on **isolated `DOMO_HOME` + dev port 7576** — prod is
-   decommissioned until reinstall (step 6), but treat 7575 as
-   off-limits regardless.
+**Fresh-session rules:**
 
-> **⚠️ Deadline-critical, deferred by the user to AFTER the engine
-> migration:** live-verify subscription billing in a real Domo session
-> (isolated `DOMO_HOME`/7576): a session must show
-> `cc_entrypoint=claude-vscode` + `apiKeySource:none` on the spawned
-> `claude`. The fix is merged + typecheck/lint-green + spike-proven, but
-> **never confirmed in a live Domo session**. Anthropic billing change
-> lands **~2026-06-15** (support 15036540) — this verification must pass
-> on the new engine before that date. Tracked as step 1's final check
-> **and** repeated as step 7 so it cannot be missed.
+- Read `CLAUDE.md` (Where-we-are + gotchas) → `docs/initial-design.md`
+  (design + Build sequence + Decisions) → `docs/history.md` (what was
+  & why) → `BUGS.md`.
+- Doc-sync every landed step in the same change (prime directive).
+- Test on **isolated `DOMO_HOME` + dev port 7576** — prod is
+  decommissioned until reinstall (step 6), but treat 7575 as
+  off-limits regardless.
+
+> **Billing live-verify (step 7).** Deferred by the user to **after all
+> the build steps land — including the devcontainer swap (step 3) and
+> the release re-cut (step 6).** It is a single end-of-build check, not
+> a recurring milestone. Don't surface it as next-actionable while
+> steps 2–6 are still in flight. Anthropic's billing change lands
+> ~2026-06-15 (support 15036540); the verify must pass *before that
+> date*, so the entire build (1→6) needs to land in time.
 
 ## 1 — Session engine swap — LANDED
 
@@ -206,22 +203,27 @@ don't-touch-7575 caution is suspended until reinstall).
       billing check against it too (the deadline check must pass on the
       reinstalled prod).
 
-## 7 — ⚠️ Deadline-critical: live-verify subscription billing
+## 7 — Live-verify subscription billing on the new engine
 
-Deferred by the user to **after** the engine migration (step 1). Must
-pass on the new engine before the Anthropic billing change
-(**~2026-06-15**, support 15036540). The fix is merged + spike-proven
-but **never confirmed in a live Domo session**.
+Single end-of-build check, **not** a recurring milestone. Run this
+**after all of steps 1–6 have landed** (in particular the devcontainer
+swap and the release re-cut) — the user has explicitly scoped it that
+way. Anthropic's billing change lands ~2026-06-15 (support 15036540),
+so the entire build needs to land in time; don't surface this step as
+next-actionable while earlier steps are in flight.
 
-- [ ] Isolated `DOMO_HOME` + dev port 7576 (NOT prod 7575): create a
-      session, send a prompt, confirm the spawned `claude` emits
-      `cc_entrypoint=claude-vscode` (outbound `x-anthropic-billing-header`)
-      and `apiKeySource:none` in the `system` init event.
-- [ ] Confirm long-lived per-session process behaves (multi-turn over
-      one stdin, idle-reap, `--resume` respawn) — fidelity follow-up.
-- [ ] If it regresses, `electric/claude.ts` is the lever; spikes
-      `smoke/no-print-lifecycle-spike.mjs` + `persistent-session-spike.mjs`
-      are the reusable A/B harness. Memory: `project-agent-sdk-billing`.
+- [ ] Isolated `DOMO_HOME` + dev port 7576: create a session, send a
+      prompt, confirm the spawned `claude` shows
+      `apiKeySource:"none"` in the `system` init event and the
+      outbound `x-anthropic-billing-header` carries
+      `cc_entrypoint=claude-vscode`.
+- [ ] Confirm the long-lived per-session process behaves end-to-end:
+      multi-turn over one stdin, idle-reap closes stdin → exit, next
+      prompt respawns with `--resume`.
+- [ ] If it regresses, `server/lib/sessionEngine/claude.ts` is the
+      lever; spikes `smoke/no-print-lifecycle-spike.mjs` +
+      `persistent-session-spike.mjs` are the reusable A/B harness.
+      Memory: `project-agent-sdk-billing`.
 
 ## Open questions
 
