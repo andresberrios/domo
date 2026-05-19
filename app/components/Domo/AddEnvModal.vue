@@ -11,8 +11,8 @@ const pending = ref(false)
 const errMsg = ref<string | null>(null)
 const streaming = ref(false)
 const cancelling = ref(false)
-const lines = ref<string[]>([])
 const createdEnv = ref<Env | null>(null)
+const { steps, reset, consume } = useBuildProgress()
 
 watch(open, (v) => {
   if (v) {
@@ -22,7 +22,7 @@ watch(open, (v) => {
     errMsg.value = null
     streaming.value = false
     cancelling.value = false
-    lines.value = []
+    reset()
     createdEnv.value = null
   }
 })
@@ -42,32 +42,9 @@ async function streamRun(envId: string): Promise<void> {
     streaming.value = false
     return
   }
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-  let currentEvent: string | null = null
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    const partials = buf.split('\n')
-    buf = partials.pop() ?? ''
-    for (const line of partials) {
-      if (line.startsWith('event: ')) currentEvent = line.slice(7).trim()
-      else if (line.startsWith('data: ') && currentEvent) {
-        const payload = line.slice(6)
-        if (currentEvent === 'progress') {
-          try {
-            const p = JSON.parse(payload)
-            lines.value.push(typeof p === 'string' ? p : (p.message ?? p.step ?? JSON.stringify(p)))
-          } catch { lines.value.push(payload) }
-        } else if (currentEvent === 'error') {
-          try { errMsg.value = JSON.parse(payload).error ?? payload } catch { errMsg.value = payload }
-        }
-        currentEvent = null
-      } else if (line === '') currentEvent = null
-    }
-  }
+  await consume(res.body, {
+    onError: (msg) => { errMsg.value = msg },
+  })
   streaming.value = false
 }
 
@@ -155,16 +132,7 @@ async function cancelProvisioning() {
           <UIcon v-else name="i-lucide-check" class="size-3.5 inline mr-1.5 text-success" />
           {{ streaming ? `Provisioning ${createdEnv.name}…` : `${createdEnv.name} is ready.` }}
         </p>
-        <div
-          class="rounded-md bg-elevated/40 font-mono text-xs p-2 max-h-72 overflow-auto border border-default"
-        >
-          <div v-for="(l, i) in lines" :key="i" class="whitespace-pre-wrap">
-            {{ l }}
-          </div>
-          <div v-if="lines.length === 0" class="text-muted">
-            Waiting for coastd…
-          </div>
-        </div>
+        <DomoBuildSteps :steps="steps" />
         <p v-if="errMsg" class="text-sm text-error">
           {{ errMsg }}
         </p>

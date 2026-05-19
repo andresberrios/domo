@@ -26,3 +26,19 @@ logs
 .env.*
 !.env.example
 .worktrees/
+
+# Claude Code sandbox artifacts. The sandboxed `claude` CLI (spawned by
+# Domo per session, incl. dogfooding this repo) bind-mounts immutable
+# empty files over these alternative-package-manager / submodule config
+# paths; the empty anchor files persist on disk and can't be deleted
+# from inside the sandbox (EBUSY) — so they'd otherwise show in Domo's
+# git panel every session. This repo is pnpm-only (pnpm-workspace.yaml,
+# no committed .npmrc) and has no submodules, so an empty stub here is
+# never legitimate. Real lockfile is pnpm-lock.yaml.
+.npmrc
+.yarnrc
+.yarnrc.yml
+bunfig.toml
+package-lock.json
+yarn.lock
+.gitmodules
