@@ -61,21 +61,40 @@ choice (Tailscale / Cloudflare Tunnel / VPN / auth-proxy). SPA-style:
 
 ## Session engine (own, in-process)
 
-One `claude` child per turn, owned by a **single-flight per-session
-manager** (`server/lib/sessionEngine`, the shape today's
+A **long-lived per-session `claude` process**, owned by a single-flight
+per-session manager (`server/lib/sessionEngine`, the shape today's
 `electric/sessionControl` already has, minus the entity/runner/wake
-indirection). `Map<sessionId, { child?, queue, steer, diffWaiters }>`.
+indirection). `Map<sessionId, { proc, queue, steer, diffWaiters }>`.
+One persistent process serves all turns of a session over one stdin
+(turns demuxed by the `result` envelope), idle-reaped (~15 min → close
+stdin → clean exit → next prompt respawns with `--resume`). This is
+**behavioral fidelity to the official VS Code extension** (which keeps
+one process per panel) — not just convenience: spawning hundreds of
+short-lived `claude-vscode` clients is exactly what Anthropic telemetry
+could flag as spoofing. Spike-proven viable
+(`smoke/persistent-session-spike.mjs`: one process, multi-turn, context
+continuity, clean exit). Spawn-per-turn (today's shipped behavior) is
+the interim until this lands.
 
 - **Durable transcript = SQLite.** `session_events(session_id, seq,
   type, payload, created_at)`, monotonic `seq` per session, in the
   existing `state.db`. This *is* the log — append is atomic, no external
   store, no intermediary to desync.
-- **Spawn** unchanged from what shipped: `claude -p [--resume <id>]
-  --output-format stream-json --input-format stream-json
-  --permission-prompt-tool stdio --permission-mode <per mode>
-  --replay-user-messages`; `ANTHROPIC_API_KEY` scrubbed; first `system`
-  event's `session_id` persisted to the `sessions` row for `--resume`.
-  Each stdout NDJSON envelope → one `session_events` row.
+- **Spawn mirrors the official VS Code 2.1.142 extension EXACTLY (no
+  `-p`) — this is a billing requirement, not a style choice (Decided
+  #3).** Set `CLAUDE_CODE_ENTRYPOINT=claude-vscode` (scrubbed for
+  nested-claude hygiene, then re-pinned) and pass the extension's exact
+  argv: `--output-format stream-json --verbose --input-format
+  stream-json --max-thinking-tokens 31999 --permission-prompt-tool
+  stdio [--resume <id>] --setting-sources=user,project,local
+  [--permission-mode <default|acceptEdits> | omit for passthrough]
+  --include-partial-messages --debug --debug-to-stderr
+  --enable-auth-status --no-chrome --replay-user-messages`.
+  `ANTHROPIC_API_KEY` scrubbed; first `system` event's `session_id`
+  persisted for `--resume`. `--include-partial-messages` emits
+  incremental `stream_event` deltas → coalesced into one updatable
+  `assistant_partial` event row per message (live token rendering),
+  superseded by the complete `assistant` row.
 - **Side-channels stay in-process** (they already are): edit approval
   (`--permission-prompt-tool stdio` → non-edit auto-allow, edit-family →
   durable `pending_diffs` row + approval card, resolved by
@@ -121,7 +140,7 @@ Postgres). What's left to build is a small change-bus + invalidation —
 a *generalization of the `useCoastEvents` pattern already in the
 codebase*. Electric "shapes" would also make the browser read tables
 directly, **bypassing the procedure auth boundary** (a regression for
-multi-user, Decided #20/#21) and reintroduce a stateful sync daemon —
+multi-user, Decided #12/#13) and reintroduce a stateful sync daemon —
 the exact category of thing being removed. Revisit only for
 offline-local-first clients or thousand-client fan-out; Domo is neither.
 
@@ -208,7 +227,7 @@ ready.
 ## Chat surface (carried over, valid against the new engine)
 
 Reuse Nuxt UI `UChat*` primitives. **UI transcript = AI SDK `UIMessage`
-shape; each backend is an adapter** (Decided #17): `app/utils/
+shape; each backend is an adapter** (Decided #10): `app/utils/
 sessionMessages.ts` folds native stream-json events + prompts + `chat`/
 `steer_sent` events → `UIMessage[]`. `ai` is a **types-only devDep** (do
 not import its runtime in app code). Render: `DomoChat` (`UChatMessages`
@@ -230,7 +249,7 @@ no round-trip): `manual` (park every edit as a diff card), `auto`
 `--permission-mode`; user's `~/.claude/settings.json` decides). Only
 `manual` parks → `auto`/`passthrough` are inherently restart-safe. Diff
 card reuses `DomoDiffView` (`@codemirror/merge`; split ≥md, inline
-below). **Mid-turn steering** (Decided #18): sending while a turn runs
+below). **Mid-turn steering** (Decided #11): sending while a turn runs
 injects into the live child (queued, consumed at the next boundary;
 `queued→delivered` matched by `uuid` off the `--replay-user-messages`
 echo). **Edit-and-resend** pulls a past user message back into the
@@ -279,7 +298,7 @@ merge **before** the scrub re-applies (the scrub stays the final word).
 
 ## Multi-user & collaboration
 
-**Auth — shipped (Decided #20).** `nuxt-auth-utils`, email+password
+**Auth — shipped (Decided #12).** `nuxt-auth-utils`, email+password
 (scrypt, sealed cookie), **no email ever sent**. First app open →
 `/setup` creates the admin (active, logged in); later signups →
 `role=member, status=pending`, parked on `/pending` until an admin
@@ -296,7 +315,7 @@ auto-managed under `$DOMO_HOME/session-secret` (operator sets nothing;
 mounts only for a signed-in active user so its procedures never fire
 pre-auth.
 
-**Collaboration — designed, not built (Decided #21).** A chat message
+**Collaboration — designed, not built (Decided #13).** A chat message
 does **not** trigger the agent; only an `@agent` mention or a "Send to
 agent" button does. A durable `chat` event type carries `{text,
 author:{userId,userName}}`; the engine records every chat message to
@@ -317,10 +336,21 @@ reads/writes host worktrees, uses host `~/.claude`), so containerising
 *it* would reintroduce the credential/OAuth-replay risk. **The new
 engine deletes the Postgres + agents-server compose stack entirely** —
 there is no session-engine infra. Per-env DinD is created/owned by the
-app on demand. Pieces: `scripts/install.sh` (curl|sh, OS/arch-detecting,
-checksum-verified, `DOMO_LOCAL_TARBALL` for offline), `bin/domo` (CLI:
-`up`/`down`/`status`/`logs`/`update`/`version`), `scripts/build-release.sh`,
-`.github/workflows/release.yml` (tag `v*` → matrix build + attach).
+app on demand. **The pivot mostly *deletes* distribution complexity**
+(it does not migrate it): gone are `release/docker-compose.yml`,
+`release/Dockerfile.agents-server`, the boot-relink patch,
+`scripts/apply-patches.sh`, the `@electric-ax/*`+`@durable-streams/*`
+pins/overrides, and the entire restart-resume saga (`bin/domo`'s
+app-only-vs-teardown dance evaporates — no infra to keep up). `bin/domo`
+collapses to managing the one Nitro process (`up`/`down`/`restart` =
+start/stop the app; per-env devcontainers are runtime, not `domo up`);
+`install.sh` prereqs drop the infra compose (Docker is now only for
+devcontainers/DinD); `build-release.sh`/`release.yml` drop the
+agents-server image build, keep the tarball matrix + bundled Node.
+Pieces (kept, slimmed): `scripts/install.sh` (curl|sh, OS/arch-detecting,
+checksum-verified, `DOMO_LOCAL_TARBALL` for offline), `bin/domo`,
+`scripts/build-release.sh`, `.github/workflows/release.yml` (tag `v*` →
+matrix build + attach).
 Tarballs per `{linux,darwin}-{x64,arm64}` (WSL=linux), **bundled Node**
 (no system Node req). All data under `$DOMO_HOME` (`state.db`,
 `app/<ver>`+`current`, run/). Host reqs: Docker (+ a rootless-DinD-capable
@@ -337,22 +367,42 @@ line ships the new engine. CI-runner reality: `darwin-x64` on
 1. **Self-hosted only, no managed offering.** FSL-1.1-ALv2 blocks
    competing managed use; a future first-party SaaS stays possible.
 2. **Localhost-bind by default**; user owns remote exposure.
-3. **Subscription billing via the `claude` CLI; always strip
-   `ANTHROPIC_API_KEY`** (+ optional subprocess scrub). `claude` runs
-   host-side.
+3. **Subscription billing — spawn `claude` exactly like the official VS
+   Code 2.1.142 extension (deadline-critical, ~2026-06-15).** Post-
+   2026-06-15 (Anthropic support 15036540) the `-p`/Agent-SDK path drops
+   off the full subscription onto a small capped credit; interactive
+   (no `-p`) stays on the subscription. The classifier reads the
+   outbound `x-anthropic-billing-header cc_entrypoint=`, derived from
+   `CLAUDE_CODE_ENTRYPOINT` (preserved if set, else forced `sdk-cli`).
+   So: set `CLAUDE_CODE_ENTRYPOINT=claude-vscode` (Domo's scrub strips
+   it for nested-claude hygiene → must re-pin after), pass the
+   extension's exact argv **without `-p`** (`-p` is a billing/lifecycle
+   red herring — spike-proven, `smoke/no-print-lifecycle-spike.mjs`),
+   and run a long-lived per-session process (fidelity, not spoofing —
+   see Session engine). Always strip `ANTHROPIC_API_KEY` (the CLI
+   silently prefers it → flips subscription→API billing) + optional
+   subprocess scrub. `claude` runs host-side. Memory:
+   `project-agent-sdk-billing`.
 4. **Stdout `stream-json` is the only runtime event source.** No file
    tailing.
-5. **`--permission-prompt-tool stdio --permission-mode default`** is the
-   headless edit-approval mechanism (CLI applies the file on allow; Domo
-   never writes in the live path). Per-session approval modes
-   `manual`/`auto`/`passthrough`, resolved by a plain read each turn.
+5. **`--permission-prompt-tool stdio`** (part of the extension argv,
+   Decided #3) is the edit-approval mechanism (CLI applies the file on
+   allow; Domo never writes in the live path; bridge `openDiff` is
+   dead). Per-session approval modes drive `--permission-mode`:
+   `manual`→`default` (ask → diff card), `auto`→`acceptEdits`,
+   `passthrough`→omit the flag (user's `~/.claude` decides); resolved by
+   a plain DB+config read each turn (no round-trip; restart-safe).
 6. **SQLite owns everything** — project/env/session metadata, the
    `session_events` transcript log, the port-forward table, settings,
    users. One file under `$DOMO_HOME`.
 7. **Own in-process session engine** — single-flight per-session
-   `claude` manager + SQLite event log + `claude --resume`. Replaces
-   Electric Agents; removes the stateful-intermediary corruption class.
-   Restart = one SQLite reconcile pass.
+   manager + SQLite event log + `claude --resume`. A **long-lived
+   per-session process** (one process serves all turns; idle-reaped) —
+   matches the VS Code extension's one-process-per-panel (billing
+   fidelity, Decided #3) and is spike-proven
+   (`smoke/persistent-session-spike.mjs`); spawn-per-turn is the
+   interim. Replaces Electric Agents; removes the stateful-intermediary
+   corruption class. Restart = one SQLite reconcile pass.
 8. **Unified reactivity** — one change bus + one `/api/live` SSE +
    procedure-refetch (coarse) / seq-tail (chat). Replaces durable-stream
    + coast WS + rail poll. **ElectricSQL rejected** (single-writer /
@@ -410,12 +460,19 @@ The Electric/Coast phases 0–4 + auth Part A **shipped** (see
 `history.md`); they are being replaced from the inside.
 
 1. **Session engine swap.** `server/lib/sessionEngine` (single-flight
-   per-session `claude` manager) + `session_events` SQLite table + the
-   `sessions.*` procedures re-pointed off the entity/driver client.
-   Reuse `electric/claude.ts`'s spawn/stdio-permission/steering verbatim
-   (it's the host-side piece, not the Electric piece). Restart reconcile
-   pass. Delete `electric/*`, the `/_agents` proxy, the agents-server
-   compose + patch, the pkg.pr.new pins.
+   manager, **long-lived per-session process** — see Session engine /
+   Decided #3,#7) + `session_events` SQLite table + the `sessions.*`
+   procedures re-pointed off the entity/driver client. Reuse
+   `electric/claude.ts` verbatim — it **already carries the rescued
+   billing fix** (no `-p`, `CLAUDE_CODE_ENTRYPOINT=claude-vscode`, exact
+   VS Code argv) + stdio-permission + steering + the partial-stream
+   coalescer; the engine just owns the process lifecycle instead of the
+   entity. Restart reconcile pass. Delete `electric/*` (keep `claude.ts`
+   logic), the `/_agents` proxy, the agents-server compose + patch +
+   `apply-patches.sh`, the pkg.pr.new pins. **Release/CLI cleanup
+   lands here** (it's all tied to the deleted infra): slim `bin/domo`
+   (no compose), `install.sh` prereqs, `build-release.sh`/`release.yml`
+   (drop the agents-server image build); `local-update.sh`.
 2. **Reactivity spine.** Change bus + `/api/live` SSE; chat adapter
    reads the seq-tail; `useLiveCall` (or extend the `useCoastEvents`
    pattern) for coarse invalidation; delete the rail poll + durable-stream
@@ -426,7 +483,7 @@ The Electric/Coast phases 0–4 + auth Part A **shipped** (see
 4. **Port forwarding.** HTTP reverse-proxy + TCP forwarder services,
    `envs.ports`/`setCanonical`, env-screen toggles, boot-rebuild from
    the SQLite forward table.
-5. **Collaboration (Decided #21).** Durable `chat` events, record-without-
+5. **Collaboration (Decided #13).** Durable `chat` events, record-without-
    running + trigger detection, authored bubbles.
 6. **Re-polish + docs/site rewrite** to the new model once it's live.
 

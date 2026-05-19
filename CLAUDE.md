@@ -27,19 +27,29 @@ narrative in `history.md`). Testing showed that stack corrupts sessions
 on restart — a structural flaw of a stateful agent-server intermediary,
 not a fixable bug. **Decision:** replace it with an **in-process engine
 over the existing SQLite** (`session_events` log + single-flight
-per-session `claude` manager + `--resume`), a **unified change-bus +
-`/api/live` SSE** reactivity spine, and **devcontainer + rootless-DinD**
-environments with a `Domofile` + in-process port forwarding. Engine
-first, then devcontainers. Full design + build sequence in
-`initial-design.md`.
+**long-lived per-session `claude` process** + `--resume`), a **unified
+change-bus + `/api/live` SSE** reactivity spine, and **devcontainer +
+rootless-DinD** environments with a `Domofile` + in-process port
+forwarding. Engine first, then devcontainers. Full design + build
+sequence in `initial-design.md`.
+
+**Rescued from `dev` (merged):** the **deadline-critical subscription-
+billing fix** (`51a6517` — spawn like the official VS Code 2.1.142
+extension: no `-p`, `CLAUDE_CODE_ENTRYPOINT=claude-vscode`; see the
+billing gotcha), **live partial streaming** (`672cdc6` — coalesced
+`stream_event` → `assistant_partial`), and the **build-progress
+checklist** (`2f64638`). These already live in `electric/claude.ts`/
+`entity.ts` (reconciled with main's approval modes) and carry straight
+into the new engine.
 
 **So:** `server/lib/electric/*`, `server/routes/_agents/*`, the
 agents-server/Postgres compose + boot-relink patch + `apply-patches.sh`,
 the `@durable-streams/*` pins, and `server/lib/coast/*` are **legacy,
 scheduled for deletion** (tasks.md steps 1–4). Don't extend them; build
 the replacements per the design. `electric/claude.ts` is the exception —
-its host-side `claude` spawn (stdio-permission, steering, scrub) is
-**kept and reused** by the new engine.
+its host-side `claude` spawn (billing argv, stdio-permission, steering,
+scrub, partial-stream coalescer) is **kept and reused** by the new
+engine.
 
 ## Running it
 
@@ -196,6 +206,32 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
 
 ## Gotchas (live)
 
+- **Subscription billing is load-bearing and `claude` spawn must mirror
+  the official VS Code extension (deadline ~2026-06-15).** The spawn in
+  `electric/claude.ts` runs **no `-p`**, sets
+  `CLAUDE_CODE_ENTRYPOINT=claude-vscode` (it's in `SCRUB_ENV` for
+  nested-claude hygiene → must be re-pinned *after* the scrub, never
+  left scrubbed), and passes the extension's exact argv. Post-2026-06-15
+  the `-p`/`sdk-cli` path drops to a capped credit; `cc_entrypoint`
+  drives the classifier. `-p` is a red herring (spike
+  `smoke/no-print-lifecycle-spike.mjs`). Don't "simplify" the argv or
+  re-scrub the entrypoint. Verify via `apiKeySource:"none"` +
+  `cc_entrypoint=claude-vscode` on the spawned process. Memory:
+  `project-agent-sdk-billing`. Long-lived per-session process (vs
+  spawn-per-turn) is the tracked fidelity follow-up
+  (`smoke/persistent-session-spike.mjs`).
+- **Dogfooding/sandbox litter.** If the operator's `~/.claude` has
+  `permissions.defaultMode:"auto"`, Claude Code's bwrap sandbox bind-
+  mounts immutable empty stubs over alt-package-manager/submodule paths
+  (`.npmrc`, `yarn.lock`, `.gitmodules`, …) in every worktree and makes
+  `node_modules/.bin` **read-only** (so `pnpm <script>`/`pnpm install`
+  EROFS-fail — run tools node-direct: `NODE_OPTIONS=--max-old-space-size=8192
+  node node_modules/nuxt/bin/nuxt.mjs typecheck`, `node
+  node_modules/eslint/bin/eslint.js <files>`, with the Bash tool's
+  `dangerouslyDisableSandbox`). The stub litter is `.gitignore`d
+  (stopgap); the real fix (pin `sandbox.enabled:false` or operator drops
+  `defaultMode:auto`) is unverified — measuring it from inside a Claude
+  Code session is confounded by the harness's own bwrap.
 - **Nuxt UI v4 needs an app CSS entry** — `main.css` must have `@import
   "tailwindcss"; @import "@nuxt/ui";` and be in `nuxt.config.css`, else
   the whole app is unstyled (and the a11y tree looks fine — verify with

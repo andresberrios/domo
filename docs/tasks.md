@@ -12,21 +12,36 @@ change (doc-sync is a prime directive).
 
 ## 1 — Session engine swap
 
-- [ ] `server/lib/sessionEngine`: single-flight per-session `claude`
-      manager (`Map<sessionId,{child?,queue,steer,diffWaiters}>`); reuse
-      `electric/claude.ts` spawn + stdio-permission + steering verbatim.
+Rescued from `dev` (merged, `8e63794`) and reused as-is: the billing
+spawn (no `-p`, `CLAUDE_CODE_ENTRYPOINT=claude-vscode`, exact VS Code
+argv), stdio-permission, steering, and the partial-stream coalescer all
+already live in `electric/claude.ts`/`entity.ts` — the engine just takes
+over the process lifecycle.
+
+- [ ] `server/lib/sessionEngine`: single-flight per-session manager;
+      **long-lived per-session process** (one process, multi-turn over
+      one stdin, demux by `result`, idle-reap ~15 min → `--resume`
+      respawn; spike `smoke/persistent-session-spike.mjs`). Reuse
+      `electric/claude.ts` verbatim.
 - [ ] `session_events(session_id,seq,type,payload,created_at)` SQLite
-      table + append/read; `sessions` row keeps `nativeSessionId`,
+      table + append/read (incl. updatable `assistant_partial` rows for
+      the live coalescer); `sessions` row keeps `nativeSessionId`,
       status, approval mode.
 - [ ] Re-point `sessions.*` procedures off the entity/driver client onto
-      the engine; diff-decision + steer hit the live child directly.
+      the engine; diff-decision + steer hit the live process directly.
 - [ ] Boot reconcile pass: `running`→`interrupted`, auto-reject orphan
       `pending` diffs; next prompt `--resume`s.
-- [ ] Delete `server/lib/electric/*`, `/_agents` proxy, agents-server
-      compose + boot-relink patch, `apply-patches.sh`, pkg.pr.new
-      `@durable-streams/*` pins + `pnpm.overrides`.
+- [ ] Delete `server/lib/electric/*` (keep `claude.ts` logic),
+      `/_agents` proxy, agents-server compose + boot-relink patch,
+      `apply-patches.sh`, pkg.pr.new `@durable-streams/*` pins +
+      `pnpm.overrides`.
+- [ ] **Release/CLI cleanup (tied to the deleted infra):** slim
+      `bin/domo` (no compose; `up`/`down`/`restart` = the Nitro
+      process), `install.sh` prereqs, `build-release.sh`/`release.yml`
+      (drop the agents-server image build), `local-update.sh`.
 - [ ] Verify e2e on isolated `DOMO_HOME` + dev port: create→prompt→tool→
-      assistant; kill mid-turn → restart → no corruption, resumes.
+      assistant streaming live; kill mid-turn → restart → no corruption,
+      resumes; `apiKeySource:none` + `cc_entrypoint=claude-vscode`.
 
 ## 2 — Reactivity spine
 

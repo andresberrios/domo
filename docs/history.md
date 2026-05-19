@@ -32,6 +32,19 @@ devcontainers. Full rationale: `initial-design.md` Decided list.
 The Electric/Coast implementation below still runs the **last shipped
 release**; it is being removed, not maintained.
 
+**Concurrent `dev`-branch work was rescued into the pivot line** (merge
+`8e63794`): a **deadline-critical subscription-billing fix** (post-
+2026-06-15 the `-p`/`sdk-cli` path drops off the full subscription;
+Domo now spawns `claude` like the official VS Code 2.1.142 extension —
+no `-p`, `CLAUDE_CODE_ENTRYPOINT=claude-vscode`), **live partial
+streaming**, and a **build-progress checklist**. These live in
+`electric/claude.ts`/`entity.ts`, reconciled with main's per-session
+approval modes, and carry forward unchanged — `claude.ts` is the file
+the new engine keeps. This finding is **forward-active**, not history —
+see `initial-design.md` Decided #3 + the CLAUDE.md billing gotcha + the
+`project-agent-sdk-billing` memory. The HANDOFF.md/spikes from that work
+proved the long-lived-per-session-process model the new engine adopts.
+
 ---
 
 ## Build history (phases 0–5A, all shipped on the Electric/Coast stack)
