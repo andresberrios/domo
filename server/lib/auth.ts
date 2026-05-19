@@ -8,8 +8,8 @@
  * very next request with no re-login.
  *
  * Used both centrally (the `server/middleware/auth.ts` gate over the
- * whole API + `/_agents` proxy) and per-procedure for role checks
- * (`requireAdmin`) as defence-in-depth.
+ * procedures + Domo's own `/api/*` SSE/WS endpoints, incl. `/api/live`)
+ * and per-procedure for role checks (`requireAdmin`) as defence-in-depth.
  */
 import type { H3Event } from 'h3'
 import { getUserById, type UserRow } from './users'

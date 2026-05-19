@@ -6,13 +6,17 @@
 #
 # Output (dist/):
 #   domo-<os>-<arch>.tar.gz  self-contained: .output/ + bin/domo +
-#                            release/ + runtime/bin/node (bundled Node) +
+#                            runtime/bin/node (bundled Node) +
 #                            manifest.json + VERSION (extracts to domo-<ver>/)
 #   install.sh               the curl|sh installer (verbatim copy)
 #   SHA256SUMS               checksums for the two above
 #
 # Native better-sqlite3 (bundled into .output) + the bundled Node binary
 # make the tarball os/arch-specific — build on a matching runner.
+#
+# Post-pivot: no `release/` infra files. The in-process engine + SQLite
+# replaced the agents-server compose stack, so the tarball is just the
+# app + Node — no Postgres image, no agents-server image, no patches.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -49,9 +53,9 @@ mkdir -p "$STAGE"
 echo "==> pnpm build"
 pnpm build
 
-# Bundle an official Node so the user needs no system Node (only Docker
-# Compose + Coast + git + the claude CLI). Resolve the latest v22 LTS,
-# download + checksum-verify, keep just the `node` binary.
+# Bundle an official Node so the user needs no system Node (Docker is
+# only needed at runtime for devcontainer-backed envs). Resolve the
+# latest v22 LTS, download + checksum-verify, keep just the `node` binary.
 echo "==> bundling Node (v22 LTS, ${PLATFORM})"
 NODE_VER=$(curl -fsSL https://nodejs.org/dist/index.json | node -e '
   let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
@@ -74,10 +78,8 @@ echo "    bundled Node ${NODE_VER}"
 
 echo "==> assembling tarball"
 cp -r .output "$STAGE/.output"
-mkdir -p "$STAGE/bin" "$STAGE/release"
+mkdir -p "$STAGE/bin"
 cp bin/domo "$STAGE/bin/domo"; chmod +x "$STAGE/bin/domo"
-cp release/docker-compose.yml release/Dockerfile.agents-server \
-   release/agents-server-0.4.2-boot-relink.patch "$STAGE/release/"
 printf '%s\n' "$VER" >"$STAGE/VERSION"
 
 cat >"$STAGE/manifest.json" <<JSON
@@ -85,12 +87,7 @@ cat >"$STAGE/manifest.json" <<JSON
   "version": "${VER}",
   "platform": "${PLATFORM}",
   "bundledNode": "${NODE_VER}",
-  "app": "runtime/bin/node .output/server/index.mjs (PORT=7575)",
-  "infra": {
-    "postgresImage": "postgres:16-alpine",
-    "agentsServer": "@electric-ax/agents-server@0.4.2",
-    "durableStreamsBuild": "pkg.pr.new build 350"
-  }
+  "app": "runtime/bin/node .output/server/index.mjs (PORT=7575)"
 }
 JSON
 

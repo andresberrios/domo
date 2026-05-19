@@ -1,14 +1,14 @@
 <script setup lang="ts">
 /**
- * The chat surface for one session. Subscribes to the entity's durable
- * stream (`useSessionStream`), projects it to AI SDK `UIMessage[]`
+ * The chat surface for one session. Subscribes to the in-process engine's
+ * `/api/live` SSE (`useSessionStream`), projects it to AI SDK `UIMessage[]`
  * (`projectSessionMessages`), and renders with Nuxt UI's `UChatMessages`
  * — the design's "reuse the chat template wholesale" path, now that the
  * UI transcript is standardized on the `UIMessage` shape.
  *
  * Sending / aborting go through the `sessions.*` procedures; the result
- * flows back in via the durable stream (no optimistic echo needed — the
- * inbox prompt and assistant turn both arrive on the stream).
+ * flows back in via the SSE (no optimistic echo needed — the engine
+ * appends a durable `prompt` event so both ends agree on send order).
  */
 import type { ChatStatus, UIMessage } from 'ai'
 import { projectSessionMessages } from '~/utils/sessionMessages'
@@ -18,12 +18,12 @@ const props = defineProps<{
 }>()
 
 const sessionRef = computed(() => props.sessionId)
-const { events, sessionMeta, inbox, pendingDiffs, ready, error } =
+const { events, partial, pendingDiffs, status: streamStatus, ready, error } =
   useSessionStream(sessionRef)
 
-// Parked agent edits awaiting the user, oldest first. Read off the durable
-// collection, so they survive client/server restart and show on any
-// device — the core of the resumable diff-approval requirement.
+// Parked agent edits awaiting the user, oldest first. Folded client-side
+// from the SSE-replayed `pending_diff`/`diff_decision` events, so cards
+// survive client/server restart and show on any device.
 const awaitingDiffs = computed(() =>
   [...pendingDiffs.value]
     .filter((d) => d.status === 'pending')
@@ -46,22 +46,19 @@ function scheduleMarkViewed() {
   }, 600)
 }
 onMounted(scheduleMarkViewed)
-watch(
-  [() => events.value.length, () => sessionMeta.value?.status],
-  scheduleMarkViewed,
-)
+watch([() => events.value.length, () => streamStatus.value], scheduleMarkViewed)
 onBeforeUnmount(() => {
   if (viewedTimer) clearTimeout(viewedTimer)
 })
 
 const messages = computed(() =>
-  projectSessionMessages(events.value, inbox.value),
+  projectSessionMessages(events.value, partial.value),
 )
 
 const status = computed<ChatStatus>(() => {
-  const s = sessionMeta.value?.status
+  const s = streamStatus.value
   if (s === 'error') return 'error'
-  if (s === 'running' || s === 'pending-approval') return 'streaming'
+  if (s === 'active' || s === 'pending-approval') return 'streaming'
   return 'ready'
 })
 

@@ -1,37 +1,42 @@
 /**
- * Per-adapter, client-side projection: claude-code-cli durable events +
- * inbox prompts → AI SDK `UIMessage[]`.
+ * Per-adapter, client-side projection: in-process engine `session_events`
+ * (durable) ⊕ the latest live `partial` frame → AI SDK `UIMessage[]`.
  *
- * This is the adapter layer behind the design decision to standardize the
- * UI transcript on the AI SDK `UIMessage` shape (see initial-design.md):
- * the durable stream stays our rich *native* claude stream-json event log;
+ * The adapter layer behind the design decision to standardize the UI
+ * transcript on the AI SDK `UIMessage` shape: the durable log stays the
+ * rich native claude stream-json envelope + a few Domo-synthesized types;
  * the UI only ever consumes `UIMessage[]`, so a future `ai`-package-based
  * agent can emit that shape natively and reuse the exact same renderer.
  *
- * Claude stream-json envelopes we fold in:
+ * Event types we fold in (`server/lib/sessionEngine/store.ts`):
+ *  - `prompt` (Domo-synthesized) → a user message bubble (the raw text the
+ *      user typed; slash/`@` expansion lives in the engine, not the
+ *      transcript)
  *  - `assistant` → an assistant message; content blocks become parts:
  *      text → text part, thinking → reasoning part,
  *      tool_use → `dynamic-tool` part (state `input-available`)
- *  - `assistant_partial` (Domo-coalesced from `--include-partial-messages`
- *      `stream_event` deltas) → a *streaming* assistant bubble (text /
- *      reasoning parts, `state:'streaming'`); same bubble id as the
- *      final `assistant` (Anthropic `message.id`), and dropped once that
- *      final envelope arrives (`finalizedMsgIds`) so it grows in place
- *      then settles with no remount
  *  - `user` (tool_result) → patches the matching `dynamic-tool` part by
  *      `tool_use_id` to `output-available` / `output-error`
- *  - `steer_sent` (Domo-synthesized, Decided #18) → a user message
- *      bubble at send time; flips queued→delivered when the CLI's
- *      `isReplay` echo with the same `uuid` arrives
+ *  - `steer_sent` (Domo-synthesized) → a user message bubble at send time;
+ *      flips queued→delivered when the CLI's `--replay-user-messages` echo
+ *      arrives with the same `uuid`
  *  - `user` with `isReplay` → NOT a bubble; only its `uuid` is harvested
- *      to mark the matching `steer_sent` delivered (the first prompt's
- *      own replay is thus ignored — its bubble comes from the inbox)
+ *      to mark the matching `steer_sent` delivered (the initial prompt's
+ *      own replay is thus ignored — its bubble comes from the `prompt`
+ *      event)
  *  - `system` (init) / `result` / `rate_limit_event` → not rendered
- *      (status comes from `sessionMeta`, not the transcript)
- *  - inbox `prompt` sends → user messages, interleaved chronologically
+ *      (status is derived from events by the composable)
+ *
+ * The `partial` argument is the latest **live-only** coalesced streaming
+ * delta (not persisted). It renders as a *streaming* assistant bubble
+ * (text / reasoning parts, `state:'streaming'`) keyed on the Anthropic
+ * `message.id` so when the complete `assistant` event arrives with the
+ * same id it occupies the SAME bubble and grows in place. The composable
+ * clears `partial` on the complete-`assistant` / `result` / `aborted` /
+ * `error` boundary, so we don't need to track finalization here.
  */
 import type { UIMessage } from 'ai'
-import type { EventRow, InboxRow } from '~/utils/sessionStreamTypes'
+import type { EventRow, PartialFrame } from '~/utils/sessionStreamTypes'
 
 type Part = UIMessage['parts'][number]
 
@@ -76,71 +81,57 @@ interface TimelineItem {
 }
 
 /**
- * Build the chat transcript. `events` and `inbox` come straight off
- * `useSessionStream`; output is sorted chronologically and safe to feed
- * `UChatMessages`.
+ * Build the chat transcript. `events` comes straight off `useSessionStream`;
+ * `partial` is the latest live streaming frame (or null). Output is sorted
+ * chronologically and safe to feed `UChatMessages`.
  */
 export function projectSessionMessages(
   events: EventRow[],
-  inbox: InboxRow[],
+  partial: PartialFrame | null = null,
 ): UIMessage[] {
   const timeline: TimelineItem[] = []
   // toolCallId → the dynamic-tool part object, so a later tool_result can
   // patch it in place regardless of which assistant message it lives on.
   const toolParts = new Map<string, Record<string, unknown>>()
 
-  for (const msg of inbox) {
-    const type = msg.message_type
-    if (type && type !== 'prompt') continue
-    const payload = (msg.payload ?? {}) as { text?: unknown }
-    if (typeof payload.text !== 'string') continue
-    const ts = Date.parse(msg.timestamp)
-    timeline.push({
-      ts: Number.isNaN(ts) ? 0 : ts,
-      ord: `i:${msg.key}`,
-      message: {
-        id: `prompt-${msg.key}`,
-        role: 'user',
-        parts: [{ type: 'text', text: payload.text, state: 'done' }],
-      },
-    })
-  }
-
-  const ordered = [...events].sort((a, b) =>
-    a.ts !== b.ts ? a.ts - b.ts : a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
-  )
+  const ordered = [...events].sort((a, b) => a.seq - b.seq)
 
   // The CLI's `--replay-user-messages` echo is the consumption ack: a
   // `user` envelope with `isReplay` and the `uuid` we sent. Harvest those
   // uuids so a `steer_sent` bubble can show queued→delivered.
   const deliveredSteerUuids = new Set<string>()
-  // Message ids that have a *complete* `assistant` envelope — their
-  // streaming `assistant_partial` rows are stale and must be dropped
-  // (the final supersedes; correlation is the Anthropic `message.id`).
-  const finalizedMsgIds = new Set<string>()
   for (const evt of ordered) {
     if (evt.type === 'user') {
       const p = evt.payload as { isReplay?: unknown; uuid?: unknown }
       if (p.isReplay === true && typeof p.uuid === 'string') {
         deliveredSteerUuids.add(p.uuid)
       }
-    } else if (evt.type === 'assistant') {
-      const id = (evt.payload as { message?: { id?: unknown } }).message?.id
-      if (typeof id === 'string') finalizedMsgIds.add(id)
     }
   }
 
   for (const evt of ordered) {
-    if (evt.type === 'steer_sent') {
+    if (evt.type === 'prompt') {
+      const p = evt.payload as { text?: unknown }
+      if (typeof p.text !== 'string') continue
+      timeline.push({
+        ts: evt.createdAt,
+        ord: `e:${evt.seq}`,
+        message: {
+          id: `prompt-${evt.seq}`,
+          role: 'user',
+          parts: [{ type: 'text', text: p.text, state: 'done' }],
+        },
+      })
+    } else if (evt.type === 'steer_sent') {
       const p = evt.payload as { text?: unknown; uuid?: unknown }
       if (typeof p.text !== 'string') continue
       const delivered =
         typeof p.uuid === 'string' && deliveredSteerUuids.has(p.uuid)
       timeline.push({
-        ts: evt.ts,
-        ord: `e:${evt.key}`,
+        ts: evt.createdAt,
+        ord: `e:${evt.seq}`,
         message: {
-          id: `steer-${evt.key}`,
+          id: `steer-${evt.seq}`,
           role: 'user',
           metadata: { steer: true, delivered },
           parts: [{ type: 'text', text: p.text, state: 'done' }],
@@ -151,8 +142,8 @@ export function projectSessionMessages(
         evt.payload as { message?: { content?: unknown; id?: unknown } }
       ).message
       // Stable bubble id keyed on the Anthropic message id (when
-      // present) so the streaming `assistant_partial` and this final
-      // message are the SAME bubble — it grows in place, no remount.
+      // present) so the live `partial` frame and this final message
+      // are the SAME bubble — it grows in place, no remount.
       const mid = typeof message?.id === 'string' ? message.id : ''
       const blocks = asBlocks(message?.content)
       const parts: Part[] = []
@@ -175,36 +166,13 @@ export function projectSessionMessages(
       }
       if (parts.length === 0) continue
       timeline.push({
-        ts: evt.ts,
-        ord: `e:${evt.key}`,
+        ts: evt.createdAt,
+        ord: `e:${evt.seq}`,
         message: {
-          id: mid ? `a-msg-${mid}` : `a-${evt.key}`,
+          id: mid ? `a-msg-${mid}` : `a-${evt.seq}`,
           role: 'assistant',
           parts,
         },
-      })
-    } else if (evt.type === 'assistant_partial') {
-      // Live token stream (coalesced in the entity). Dropped once the
-      // complete `assistant` with the same message id arrives.
-      const p = evt.payload as {
-        messageId?: unknown
-        text?: unknown
-        thinking?: unknown
-      }
-      const mid = typeof p.messageId === 'string' ? p.messageId : ''
-      if (!mid || finalizedMsgIds.has(mid)) continue
-      const parts: Part[] = []
-      if (typeof p.thinking === 'string' && p.thinking) {
-        parts.push({ type: 'reasoning', text: p.thinking, state: 'streaming' })
-      }
-      if (typeof p.text === 'string' && p.text) {
-        parts.push({ type: 'text', text: p.text, state: 'streaming' })
-      }
-      if (parts.length === 0) continue
-      timeline.push({
-        ts: evt.ts,
-        ord: `e:${evt.key}`,
-        message: { id: `a-msg-${mid}`, role: 'assistant', parts },
       })
     } else if (evt.type === 'user') {
       const message = (evt.payload as { message?: { content?: unknown } })
@@ -224,6 +192,36 @@ export function projectSessionMessages(
       }
     }
     // system / result / rate_limit_event: intentionally not rendered.
+  }
+
+  // The latest live partial: a streaming assistant bubble keyed on
+  // `messageId` so when the complete `assistant` arrives with the same
+  // id it occupies the SAME bubble and grows in place (no remount).
+  // The composable clears `partial` on the complete-assistant /
+  // result / aborted / error boundary, so we don't filter here.
+  if (partial) {
+    const parts: Part[] = []
+    if (partial.thinking) {
+      parts.push({
+        type: 'reasoning',
+        text: partial.thinking,
+        state: 'streaming',
+      })
+    }
+    if (partial.text) {
+      parts.push({ type: 'text', text: partial.text, state: 'streaming' })
+    }
+    if (parts.length > 0) {
+      timeline.push({
+        ts: partial.createdAt,
+        ord: `p:${partial.messageId}`,
+        message: {
+          id: `a-msg-${partial.messageId}`,
+          role: 'assistant',
+          parts,
+        },
+      })
+    }
   }
 
   return timeline

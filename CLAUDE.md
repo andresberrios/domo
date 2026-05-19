@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot
+## Where we are — mid-pivot, step 1 landed
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -33,23 +33,52 @@ rootless-DinD** environments with a `Domofile` + in-process port
 forwarding. Engine first, then devcontainers. Full design + build
 sequence in `initial-design.md`.
 
-**Rescued from `dev` (merged):** the **deadline-critical subscription-
-billing fix** (`51a6517` — spawn like the official VS Code 2.1.142
-extension: no `-p`, `CLAUDE_CODE_ENTRYPOINT=claude-vscode`; see the
-billing gotcha), **live partial streaming** (`672cdc6` — coalesced
-`stream_event` → `assistant_partial`), and the **build-progress
-checklist** (`2f64638`). These already live in `electric/claude.ts`/
-`entity.ts` (reconciled with main's approval modes) and carry straight
-into the new engine.
+**Step 1 (session engine swap) landed.** `server/lib/sessionEngine/{engine,
+claude,store}.ts` owns the session lifecycle: single-flight per-session
+manager, **long-lived per-session `claude` process** (multi-turn over one
+stdin, demux by `result`, idle-reap ~15 min → `--resume` respawn), the
+host spawn moved verbatim from `electric/claude.ts` (billing argv +
+`cc_entrypoint=claude-vscode` re-pin + env scrub + stdio permission +
+steering + partial-stream coalescer). `session_events(session_id,seq,
+type,payload,message_id,created_at)` + `pending_diffs` SQLite tables are
+the durable truth — every row an INSERT (no UPDATEs), monotonic `seq`
+the cursor. The reactivity spine's **chat fine path** is live on two
+SSE event types: `session-event` for durable rows
+(`server/api/live.ts` SSE, auth-gated; replay past `?since=` on connect
+then tail via the change bus, idempotent reconnect) and `partial` for
+**live-only** coalesced streaming deltas (NOT persisted — the complete
+`assistant` row supersedes them in the adapter, matched by Anthropic
+`message.id`). `useSessionStream` consumes both,
+`sessionMessages.ts(events, partial)` projects to `UIMessage[]`. Boot
+reconcile (`plugins/sessionEngine.ts`) flips stale `active`/
+`pending-approval` cached statuses to `waiting` and auto-rejects orphan
+`pending` diffs with a `diff_decision { reason:'runtime restarted' }`
+event so cards clear cross-device — the "no corruption mode" property
+the old stack couldn't have.
 
-**So:** `server/lib/electric/*`, `server/routes/_agents/*`, the
-agents-server/Postgres compose + boot-relink patch + `apply-patches.sh`,
-the `@durable-streams/*` pins, and `server/lib/coast/*` are **legacy,
-scheduled for deletion** (tasks.md steps 1–4). Don't extend them; build
-the replacements per the design. `electric/claude.ts` is the exception —
-its host-side `claude` spawn (billing argv, stdio-permission, steering,
-scrub, partial-stream coalescer) is **kept and reused** by the new
-engine.
+**Deleted with step 1** (don't try to import or revive): `server/lib/
+electric/*`, `server/routes/_agents/*`, `server/plugins/electric.ts`,
+`server/procedures/electricSmoke.ts`, `sessions/streamInfo.ts`,
+`docker-compose.yml`, `release/{docker-compose.yml,Dockerfile.agents-server,
+agents-server-0.4.2-boot-relink.patch}`, `scripts/apply-patches.sh`, the
+`@electric-ax/agents-{runtime,server}` + `@electric-ax/durable-streams-
+state-beta` + `@durable-streams/{client,server,state}` deps and the
+`pnpm.overrides` URL pins + `blockExoticSubdeps`, the unused
+`agent-session-protocol` dep (IDE-bridge leftover), `agentsServerUrl`
+runtimeConfig + `DOMO_AGENTS_*` env vars. `bin/domo` collapsed to a
+one-Nitro-process manager (no Docker compose); `install.sh` /
+`build-release.sh` / `local-update.sh` dropped the infra copies + the
+`infra.agentsServer` manifest field.
+
+**Still pending:** the **deadline-critical billing live-verify on the
+new engine** (step 7 — never confirmed in a live Domo session; the spike
+proves the persistent-process model in isolation but step 1 was not
+e2e-driven via a browser yet). Plus step 2's coarse `/api/live` table
+path + `useLiveCall` + rail-poll deletion, and steps 3–6.
+
+`server/lib/coast/*` + `app/composables/useCoastEvents.ts` +
+`server/api/coast-events.ts` + the Coast adapter in `envs.*` stay in
+the tree — they're step 3's swap (devcontainers). Don't extend them.
 
 ## Running it
 
@@ -61,24 +90,27 @@ pnpm lint           # eslint
 pnpm build          # production build
 pnpm run update:local   # build + install over the LOCAL prod install
                         # ($DOMO_HOME), then app-only restart
-docker compose up -d    # LEGACY (Postgres + agents-server) — only the
-                        # not-yet-replaced session engine needs it;
-                        # goes away in tasks.md step 1
 ```
 
 Distribution (built; v0.3.0 on the old stack): host installer
 (`scripts/install.sh`, curl|sh) + `domo` CLI (`bin/domo`) + CI release
 matrix. Per-`{linux,darwin}-{x64,arm64}` tarballs, bundled Node, all
 data under `$DOMO_HOME`. Canonical port **7575**, `127.0.0.1` by default
-(`DOMO_BIND=0.0.0.0` to widen). The new engine removes the
-Postgres/agents-server infra entirely.
+(`DOMO_BIND=0.0.0.0` to widen). **Post-step-1: no engine infra** —
+`bin/domo` is just the Nitro-process manager, `install.sh` only checks
+for the runtime prereqs (Docker for devcontainers later, git, `claude`),
+the release tarball is `.output/` + bundled Node + `bin/domo` + VERSION.
 
 ## Testing
 
-**This machine runs the user's LIVE prod Domo at `localhost:7575`** — do
-not kill/seed it. Test on an **isolated `DOMO_HOME` + the dev port
-7576**. `DOMO_HOME` overrides the data dir (default `~/.domo`, XDG
-fallback); `DOMO_PROJECTS_ROOT` sets the dir-picker root.
+**Prod was DECOMMISSIONED 2026-05-19** (user-driven, to clear the way for
+the pivot): the prod app is stopped, all Coast envs `coast rm`'d, the
+Electric/dev/prod compose stacks down, `~/.domo` wiped. There is no live
+Domo on `localhost:7575` until the user reinstalls from the new release
+line. **Still test on an isolated `DOMO_HOME` + the dev port 7576**;
+the don't-touch-7575 caution returns post-reinstall. `DOMO_HOME`
+overrides the data dir (default `~/.domo`, XDG fallback);
+`DOMO_PROJECTS_ROOT` sets the dir-picker root.
 
 **Playwright MCP** (`mcp__playwright__browser_*`) drives a real browser
 — prefer it over curl for UI flows (the SPA executes `apiClient.*`
@@ -151,25 +183,39 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   `git.ts` (injection-safe `execFile git -C`), `settings.ts` (UX prefs),
   `config.ts` (`<domoHome>/config.json` operator host config, read fresh;
   `claude.env`/`extraPath` merged **before** the security scrub —
-  cannot reintroduce `ANTHROPIC_API_KEY`). **To build:**
-  `sessionEngine` (single-flight `claude` manager + `session_events`),
-  `changeBus` + `/api/live`, devcontainer client + `portForwarder`. **To
-  delete:** `electric/*` (keep `claude.ts`'s spawn), `coast/*`.
+  cannot reintroduce `ANTHROPIC_API_KEY`), and (post-step-1):
+  `sessionEngine/{engine,claude,store}.ts` (single-flight long-lived
+  per-session `claude` manager; `session_events` + `pending_diffs`
+  durable log; the host `claude` spawn moved from `electric/claude.ts`)
+  and `changeBus.ts` (in-process emitter the chat SSE consumes).
+  **Still to build:** the change bus's coarse path + `useLiveCall`
+  (step 2), the devcontainer client + `portForwarder` (steps 3–4).
+  **Still legacy (step 3 swap):** `coast/*`.
 - **Workspace + git are host-side.** `workspace.{tree,read,write}` use
   `node:fs`; `git.*` shells `git -C <worktree>` on the host. Every path
   worktree-relative through `safeResolve` (rejects `..`, abs-outside,
   symlink-out). Only the terminal crosses into the container.
 - **Chat surface.** UI transcript = AI SDK `UIMessage` shape; each
   backend is an adapter (`app/utils/sessionMessages.ts` folds native
-  stream-json + prompt/`chat`/`steer_sent` events → `UIMessage[]`). `ai`
+  stream-json + `prompt`/`steer_sent` events → `UIMessage[]`). `ai`
   is a **types-only devDep** — don't import its runtime in app code
   (switch on the part `type` string; `import type` is fine). Render:
   `DomoChat`→`DomoChatMessageContent`→`DomoChatToolCard`/`DomoComark`;
   input `DomoChatInput`+`DomoChatAutocomplete` (nav keys intercepted at
   keydown-**capture** so they never reach `UChatPrompt`'s Enter/Esc).
   Per-session approval modes (`manual`/`auto`/`passthrough`, plain read
-  per turn). *(New engine: the browser tails `session_events` via the
-  `/api/live` seq path instead of a durable-stream subscription.)*
+  per turn). **The browser tails the engine via `/api/live`** on two
+  SSE event types: `session-event` (durable `session_events` rows,
+  replayed past `?since=` on connect → idempotent reconnect, never
+  UPDATEd) and `partial` (live-only coalesced assistant deltas, NOT
+  persisted — the complete `assistant` row arrives on the durable
+  channel and supersedes the partial bubble in the adapter, joined by
+  Anthropic `message.id`). `useSessionStream` opens one EventSource per
+  focused session; `projectSessionMessages(events, partial)` renders the
+  streaming bubble in place. The pending-diff queue + the chat status
+  are **derived client-side** from the event stream (`pending_diff` +
+  `diff_decision` events fold into a map; `prompt`/assistant activity →
+  `active`, `result`/`aborted` → `waiting`, `error` → `error`).
 - **CodeMirror/xterm/Comark are client-only** — dynamic-import in
   `onMounted`, lazy grammars (`app/utils/language.ts`). `DomoCodeEditor`,
   `DomoDiffView` (`@codemirror/merge`; split ≥md, inline below — the
@@ -208,7 +254,7 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
 
 - **Subscription billing is load-bearing and `claude` spawn must mirror
   the official VS Code extension (deadline ~2026-06-15).** The spawn in
-  `electric/claude.ts` runs **no `-p`**, sets
+  `server/lib/sessionEngine/claude.ts` runs **no `-p`**, sets
   `CLAUDE_CODE_ENTRYPOINT=claude-vscode` (it's in `SCRUB_ENV` for
   nested-claude hygiene → must be re-pinned *after* the scrub, never
   left scrubbed), and passes the extension's exact argv. Post-2026-06-15
@@ -217,21 +263,25 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   `smoke/no-print-lifecycle-spike.mjs`). Don't "simplify" the argv or
   re-scrub the entrypoint. Verify via `apiKeySource:"none"` +
   `cc_entrypoint=claude-vscode` on the spawned process. Memory:
-  `project-agent-sdk-billing`. Long-lived per-session process (vs
-  spawn-per-turn) is the tracked fidelity follow-up
-  (`smoke/persistent-session-spike.mjs`).
-- **Dogfooding/sandbox litter.** If the operator's `~/.claude` has
-  `permissions.defaultMode:"auto"`, Claude Code's bwrap sandbox bind-
-  mounts immutable empty stubs over alt-package-manager/submodule paths
-  (`.npmrc`, `yarn.lock`, `.gitmodules`, …) in every worktree and makes
-  `node_modules/.bin` **read-only** (so `pnpm <script>`/`pnpm install`
-  EROFS-fail — run tools node-direct: `NODE_OPTIONS=--max-old-space-size=8192
-  node node_modules/nuxt/bin/nuxt.mjs typecheck`, `node
-  node_modules/eslint/bin/eslint.js <files>`, with the Bash tool's
-  `dangerouslyDisableSandbox`). The stub litter is `.gitignore`d
-  (stopgap); the real fix (pin `sandbox.enabled:false` or operator drops
-  `defaultMode:auto`) is unverified — measuring it from inside a Claude
-  Code session is confounded by the harness's own bwrap.
+  `project-agent-sdk-billing`. The **long-lived per-session process**
+  is now the engine's actual model (one process serves multiple turns
+  over one stdin, demux by `result`, idle-reap closes stdin → exit,
+  next prompt respawns with `--resume`; spike-proven by
+  `smoke/persistent-session-spike.mjs`); the deadline-critical live
+  verification of this in a real Domo session (tasks.md step 7) is
+  **still pending** and must happen before 2026-06-15.
+- **Dogfooding/sandbox litter (Claude-inside-Domo only).** If the
+  operator's `~/.claude` has `permissions.defaultMode:"auto"` *and* the
+  Claude Code session is running inside a Domo-spawned env, Claude Code's
+  bwrap sandbox bind-mounts immutable empty stubs over alt-package-
+  manager/submodule paths (`.npmrc`, `yarn.lock`, `.gitmodules`, …) in
+  every worktree and makes `node_modules/.bin` **read-only** (so
+  `pnpm <script>`/`pnpm install` EROFS-fail — run tools node-direct with
+  the Bash tool's `dangerouslyDisableSandbox`). **Running Claude Code
+  outside Domo (e.g. against this repo directly) is unaffected — use
+  plain `pnpm typecheck` / `pnpm lint`.** The stub litter is
+  `.gitignore`d (stopgap); the real fix (pin `sandbox.enabled:false` or
+  operator drops `defaultMode:auto`) is unverified.
 - **Nuxt UI v4 needs an app CSS entry** — `main.css` must have `@import
   "tailwindcss"; @import "@nuxt/ui";` and be in `nuxt.config.css`, else
   the whole app is unstyled (and the a11y tree looks fine — verify with

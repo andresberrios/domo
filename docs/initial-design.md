@@ -62,9 +62,8 @@ choice (Tailscale / Cloudflare Tunnel / VPN / auth-proxy). SPA-style:
 ## Session engine (own, in-process)
 
 A **long-lived per-session `claude` process**, owned by a single-flight
-per-session manager (`server/lib/sessionEngine`, the shape today's
-`electric/sessionControl` already has, minus the entity/runner/wake
-indirection). `Map<sessionId, { proc, queue, steer, diffWaiters }>`.
+per-session manager (`server/lib/sessionEngine/{engine,claude,store}.ts`,
+landed in step 1). `Map<sessionId, { proc, queue, steer, diffWaiters }>`.
 One persistent process serves all turns of a session over one stdin
 (turns demuxed by the `result` envelope), idle-reaped (~15 min → close
 stdin → clean exit → next prompt respawns with `--resume`). This is
@@ -73,8 +72,8 @@ one process per panel) — not just convenience: spawning hundreds of
 short-lived `claude-vscode` clients is exactly what Anthropic telemetry
 could flag as spoofing. Spike-proven viable
 (`smoke/persistent-session-spike.mjs`: one process, multi-turn, context
-continuity, clean exit). Spawn-per-turn (today's shipped behavior) is
-the interim until this lands.
+continuity, clean exit). The deadline-critical billing live-verify of
+this on the new engine is tasks.md step 7 — **still pending**.
 
 - **Durable transcript = SQLite.** `session_events(session_id, seq,
   type, payload, created_at)`, monotonic `seq` per session, in the
@@ -92,9 +91,14 @@ the interim until this lands.
   --enable-auth-status --no-chrome --replay-user-messages`.
   `ANTHROPIC_API_KEY` scrubbed; first `system` event's `session_id`
   persisted for `--resume`. `--include-partial-messages` emits
-  incremental `stream_event` deltas → coalesced into one updatable
-  `assistant_partial` event row per message (live token rendering),
-  superseded by the complete `assistant` row.
+  incremental `stream_event` deltas → throttled (~10 Hz) into
+  **live-only** `partial` frames on the change bus (NOT persisted), so
+  the chat renders text/thinking as it streams without touching the
+  durable log; the complete `assistant` event arrives as its own
+  durable row and supersedes the partial bubble in the adapter (joined
+  by Anthropic `message.id`). A reconnecting browser that missed a
+  partial just doesn't see it until the next flush or the final
+  `assistant` row — partials are transient by design.
 - **Side-channels stay in-process** (they already are): edit approval
   (`--permission-prompt-tool stdio` → non-edit auto-allow, edit-family →
   durable `pending_diffs` row + approval card, resolved by
@@ -125,10 +129,17 @@ mechanisms the old stack used (durable stream + coast WS + 4 s rail poll
   affected procedure. Reads stay through procedures, so Zod + superjson
   + per-user auth filtering are unchanged. The rail's polling tick
   becomes push and is deleted.
-- **Fine path (chat):** a `session_events` insert emits `{ session_id,
-  seq }`; the open transcript appends rows past `lastSeq`. Reconnect
-  with `?since=<lastSeq>` (+ one idempotent refetch of live queries).
-  Seq-cursored + idempotent ⇒ no missed-update corruption.
+- **Fine path (chat) — two SSE event types:**
+  - `session-event` — every durable `session_events` INSERT (no
+    UPDATEs). Emits `{ session_id, seq }`; the open transcript appends
+    rows past `lastSeq`. Reconnect with `?since=<lastSeq>`
+    (+ one idempotent refetch of live queries). Seq-cursored +
+    idempotent ⇒ no missed-update corruption.
+  - `partial` — **live-only** coalesced streaming assistant deltas
+    (throttled ~10 Hz, NOT persisted). Carries `{messageId, text,
+    thinking}` cumulative state. Superseded by the complete `assistant`
+    row matched on `message.id`. Not replayed on reconnect — partials
+    are transient by design.
 - Coast-style env events fold into the bus. Build/run stay streaming-log
   SSE (genuinely a stream; fold later if worth it).
 
@@ -459,24 +470,32 @@ compose in distribution.
 The Electric/Coast phases 0–4 + auth Part A **shipped** (see
 `history.md`); they are being replaced from the inside.
 
-1. **Session engine swap.** `server/lib/sessionEngine` (single-flight
-   manager, **long-lived per-session process** — see Session engine /
-   Decided #3,#7) + `session_events` SQLite table + the `sessions.*`
-   procedures re-pointed off the entity/driver client. Reuse
-   `electric/claude.ts` verbatim — it **already carries the rescued
-   billing fix** (no `-p`, `CLAUDE_CODE_ENTRYPOINT=claude-vscode`, exact
-   VS Code argv) + stdio-permission + steering + the partial-stream
-   coalescer; the engine just owns the process lifecycle instead of the
-   entity. Restart reconcile pass. Delete `electric/*` (keep `claude.ts`
-   logic), the `/_agents` proxy, the agents-server compose + patch +
-   `apply-patches.sh`, the pkg.pr.new pins. **Release/CLI cleanup
-   lands here** (it's all tied to the deleted infra): slim `bin/domo`
-   (no compose), `install.sh` prereqs, `build-release.sh`/`release.yml`
-   (drop the agents-server image build); `local-update.sh`.
-2. **Reactivity spine.** Change bus + `/api/live` SSE; chat adapter
-   reads the seq-tail; `useLiveCall` (or extend the `useCoastEvents`
-   pattern) for coarse invalidation; delete the rail poll + durable-stream
-   client.
+1. **Session engine swap — LANDED.** `server/lib/sessionEngine/{engine,
+   claude,store}.ts` (single-flight manager, **long-lived per-session
+   process** — see Session engine / Decided #3,#7) + `session_events` +
+   `pending_diffs` SQLite tables + `sessions.*` procedures re-pointed
+   off the entity/driver onto the engine. Host `claude` spawn moved
+   verbatim from `electric/claude.ts` (carries the billing fix: no `-p`,
+   `CLAUDE_CODE_ENTRYPOINT=claude-vscode`, exact VS Code argv,
+   stdio-permission, steering, partial-stream coalescer). Boot reconcile
+   pass: stale `active`/`pending-approval` → `waiting`, orphan
+   `pending` diffs auto-rejected with `diff_decision { reason:'runtime
+   restarted' }`. The chat fine path of the reactivity spine landed
+   here too (`server/api/live.ts` + `server/lib/changeBus.ts` +
+   `useSessionStream` rewritten) — without it the chat is unusable, so
+   it had to ship with step 1. Deleted: `electric/*`, `/_agents` proxy,
+   agents-server compose + patch + `apply-patches.sh`, pkg.pr.new pins.
+   Release/CLI cleanup: slimmed `bin/domo` (no compose), `install.sh`
+   prereqs, `build-release.sh` / `local-update.sh` (drop the
+   agents-server image build); `release.yml` unchanged (it just calls
+   `scripts/build-release.sh`). **Outstanding:** the deadline-critical
+   billing live-verify (step 7).
+2. **Reactivity spine (remainder).** Coarse `{table,id,op}` path on the
+   already-built change bus + `/api/live`; singleton browser SSE client
+   that multiplexes coarse + chat (extend `useSessionStream`'s
+   single-connection model); `useLiveCall` (or extend `useCoastEvents`)
+   for procedure refetch; delete the 4 s rail poll in
+   `LeftRailTree.vue`.
 3. **Devcontainer environment engine.** `@devcontainers/cli` lifecycle,
    rootless DinD, `Domofile` parse, project-add / env-create reworked,
    terminal → `docker exec`. Coast adapter removed.

@@ -89,8 +89,8 @@ child.stdout.on('data', (c) => {
           console.log(`  [stdin closed] process exited code=${code} after ${Date.now() - tClose}ms`)
           finish()
         })
-        try { child.stdin.end() } catch {}
-        setTimeout(() => { if (child.exitCode === null) { console.log('  [stdin closed] did NOT exit within 12s → persistent'); try { child.kill('SIGTERM') } catch {}; finish() } }, 12000)
+        try { child.stdin.end() } catch { /* already closed */ }
+        setTimeout(() => { if (child.exitCode === null) { console.log('  [stdin closed] did NOT exit within 12s → persistent'); try { child.kill('SIGTERM') } catch { /* gone */ }; finish() } }, 12000)
       }
     }
   }
@@ -98,6 +98,7 @@ child.stdout.on('data', (c) => {
 let stderr = ''
 child.stderr.on('data', (c) => {
   const s = c.toString(); stderr += s
+  void stderr
   const m = s.match(/cc_entrypoint=([a-z0-9-]+)/i)
   if (m) ccEntrypoint = m[1]
 })
@@ -116,7 +117,7 @@ function finish() {
 }
 
 // Hard timeout guard
-setTimeout(() => { console.log('HARD TIMEOUT'); try { child.kill('SIGKILL') } catch {}; finish() }, 150000)
+setTimeout(() => { console.log('HARD TIMEOUT'); try { child.kill('SIGKILL') } catch { /* gone */ }; finish() }, 150000)
 
 // Turn 1 — plant a fact.
 turn = 1

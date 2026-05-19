@@ -1,13 +1,13 @@
 #!/bin/sh
-# Domo host CLI — manages the compose'd infra + the host Nitro app.
-# Shipped inside the release tarball; the installer drops a PATH shim that
-# execs this. See initial-design.md "Distribution & release" (Decided #19).
+# Domo host CLI — manages the one Nitro app process. Shipped inside the
+# release tarball; the installer drops a PATH shim that execs this. See
+# initial-design.md "Distribution" (Decided #14: no engine infra — the
+# in-process engine + SQLite replaced the agents-server compose stack).
 set -eu
 
-# Release root = parent of this script's dir (tarball: <root>/{bin,.output,release}).
+# Release root = parent of this script's dir (tarball: <root>/{bin,.output}).
 SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$SELF/.." && pwd)
-COMPOSE="$ROOT/release/docker-compose.yml"
 ENTRY="$ROOT/.output/server/index.mjs"
 # Bundled Node ships in the release (no system Node requirement);
 # fall back to a system `node` only if it's somehow absent.
@@ -22,23 +22,14 @@ RUN_DIR="$HOME_DIR/run"
 PIDFILE="$RUN_DIR/domo.pid"
 LOGFILE="$RUN_DIR/domo.log"
 PORT="${PORT:-7575}"
-# Bind localhost-only by default — Domo has no auth and grants full host
-# file/git/terminal/claude control to whoever reaches the port. Remote
-# access is meant to go through Tailscale / a Cloudflare Tunnel / an auth
-# proxy (all of which connect to localhost). Opt into a wider interface
-# explicitly with DOMO_BIND=0.0.0.0. See docs/site/securing-your-install.md.
+# Bind localhost-only by default — Domo has no per-user network isolation
+# beyond the cookie-authed app, and once exposed grants whoever reaches the
+# port full host file/git/terminal/claude control. Remote access is meant
+# to go through Tailscale / a Cloudflare Tunnel / an auth proxy (all of
+# which connect to localhost). Opt into a wider interface explicitly with
+# DOMO_BIND=0.0.0.0. See docs/site/securing-your-install.md.
 BIND="${DOMO_BIND:-127.0.0.1}"
 INSTALL_URL="${DOMO_INSTALL_URL:-https://github.com/andresberrios/domo/releases/latest/download/install.sh}"
-
-# Everything under $DOMO_HOME so the whole install is one dir to back up
-# or wipe. Postgres + durable streams bind-mount here (compose reads
-# $DOMO_DATA_DIR); exported so `docker compose` interpolation sees it.
-DATA_DIR="$HOME_DIR/data"
-export DOMO_DATA_DIR="$DATA_DIR"
-# Run infra containers as the host user so bind-mounted Postgres/streams
-# data stays host-owned — keeps `rm -rf`/`tar` of $DOMO_HOME working.
-export DOMO_UID="$(id -u)"
-export DOMO_GID="$(id -g)"
 
 mkdir -p "$RUN_DIR"
 
@@ -46,43 +37,8 @@ err() { echo "domo: $*" >&2; }
 die() { err "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-dc() { docker compose -f "$COMPOSE" "$@"; }
-
 app_running() {
   [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
-}
-
-wait_agents() {
-  # agents-server up == the port answers HTTP (any status, incl. 404).
-  i=0
-  while [ "$i" -lt 60 ]; do
-    if curl -s -o /dev/null "http://127.0.0.1:${DOMO_AGENTS_PORT:-4437}/" 2>/dev/null; then
-      return 0
-    fi
-    i=$((i + 1)); sleep 1
-  done
-  return 1
-}
-
-infra_running() {
-  # agents-server answering HTTP == infra is up (postgres is its dep).
-  curl -s -o /dev/null "http://127.0.0.1:${DOMO_AGENTS_PORT:-4437}/" 2>/dev/null
-}
-
-# Bring infra up idempotently. `up -d --build` (NOT `--force-recreate`):
-# compose recreates a service only when its image/config actually
-# changed, so when the agents image is cache-identical (the common
-# app-only update) the running agents-server container is LEFT IN PLACE.
-# That is load-bearing: recreating agents-server wipes its in-memory
-# pull-wake subscription delivery, and the official restart-resume
-# mechanism (the runner resuming from its persisted wake-stream offset
-# and replaying backlog wakes) only works if those wakes were actually
-# emitted — which needs agents-server to have stayed up. See CLAUDE.md
-# "restart-resume" + Decided #23.
-cmd_infra_up() {
-  mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/streams"
-  dc up -d --build
-  wait_agents || die "agents-server did not come up — see: domo logs infra"
 }
 
 cmd_app_stop() {
@@ -108,48 +64,30 @@ cmd_app_start() {
 }
 
 cmd_up() {
-  have docker || die "Docker is required (https://docs.docker.com/engine/install/)."
   [ -x "$NODE" ] || have node || die "no Node runtime (bundled binary missing and no system node)."
-  have coast || err "warning: 'coast' not found — projects/envs need the Coast daemon."
+  have docker || err "warning: 'docker' not found — needed for the devcontainer-backed env containers."
+  have coast  || err "warning: 'coast' not found — projects/envs still use Coast on this release line."
   have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
-
-  echo "domo: starting infra (postgres + agents-server)…"
-  cmd_infra_up
   cmd_app_start
 }
 
-# App-only restart — the update path. Infra (postgres + agents-server)
-# stays UP so the official offset-replay restart-resume keeps working;
-# only the Domo app process is swapped onto the freshly installed
-# `.output`. A full infra teardown is `domo down` (explicit), never an
-# update side effect.
 cmd_restart() {
   cmd_app_stop
-  if infra_running; then
-    echo "domo: infra already up (kept) — restarting app only"
-  else
-    echo "domo: infra not up — starting it"
-    have docker || die "Docker is required."
-    cmd_infra_up
-  fi
   cmd_app_start
 }
 
 cmd_down() {
   cmd_app_stop
-  if have docker; then dc down; echo "domo: infra stopped (volumes kept)"; fi
 }
 
 cmd_status() {
-  if app_running; then echo "app:   running (pid $(cat "$PIDFILE")) http://localhost:${PORT}"
-  else echo "app:   stopped"; fi
-  if have docker; then echo "infra:"; dc ps 2>/dev/null || echo "  (compose not up)"; fi
+  if app_running; then echo "app: running (pid $(cat "$PIDFILE")) http://localhost:${PORT}"
+  else echo "app: stopped"; fi
   echo "version: $(cmd_version)"
   echo "home:    $HOME_DIR"
 }
 
 cmd_logs() {
-  if [ "${1:-}" = "infra" ]; then dc logs -f; return; fi
   [ -f "$LOGFILE" ] || die "no app log yet ($LOGFILE)"
   tail -n 200 -f "$LOGFILE"
 }
@@ -166,12 +104,6 @@ cmd_update() {
   curl -fsSL "$INSTALL_URL" | sh
   if [ "$was_running" = yes ]; then
     echo "domo: restarting…"
-    # `restart` is an app-only swap (NOT down→up): the old app process is
-    # still alive after install and `cmd_app_start` early-returns when
-    # app_running, so `up` would leave the OLD .output serving.
-    # `cmd_restart` stops the old app and starts the new one while
-    # LEAVING infra (and the official offset-replay restart-resume)
-    # untouched.
     "$HOME_DIR/app/current/bin/domo" restart
   else
     echo "domo: updated. Run: domo up"
@@ -183,19 +115,19 @@ case "${1:-}" in
   down)    cmd_down ;;
   restart) cmd_restart ;;
   status)  cmd_status ;;
-  logs)    shift; cmd_logs "${1:-}" ;;
+  logs)    cmd_logs ;;
   update)  cmd_update ;;
   version) cmd_version ;;
   *)
     cat >&2 <<EOF
-domo — run parallel Claude Code agents over Coast environments
+domo — run parallel Claude Code agents over isolated dev environments
 
 usage: domo <command>
-  up         start infra (docker) + the app on :${PORT}
-  down       stop the app and infra (volumes kept)
-  restart    down then up
-  status     show app + infra state
-  logs       tail the app log   (logs infra → compose logs)
+  up         start the app on :${PORT}
+  down       stop the app
+  restart    stop then start the app
+  status     show app state
+  logs       tail the app log
   update     fetch + install the latest release, then restart if running
   version    print the installed version
 EOF

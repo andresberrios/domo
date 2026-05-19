@@ -18,7 +18,7 @@
 // clean namespace (like Domo's server), not nested in our bwrap.
 
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -63,7 +63,7 @@ const PROMPT = 'Respond with exactly the single word PONG and nothing else. Do n
 const HARD_TIMEOUT_MS = 120_000
 const EXIT_WAIT_MS = 15_000
 
-function nestedBwrap(pid) {
+function nestedBwrap() {
   try {
     const out = execFileSync('bash', ['-lc',
       `ps -eo pid,ppid,comm | awk '$3=="bwrap"{print $1" ppid="$2}'`], { encoding: 'utf8' }).trim()
@@ -88,7 +88,7 @@ async function runArm(label, withPrint, extraEnv = {}, settingSources = 'user,pr
 
   let stdoutBuf = '', stderrBuf = ''
   const done = new Promise((resolve) => {
-    const hard = setTimeout(() => { r.error = 'HARD_TIMEOUT (no result)'; try { child.kill('SIGKILL') } catch {} }, HARD_TIMEOUT_MS)
+    const hard = setTimeout(() => { r.error = 'HARD_TIMEOUT (no result)'; try { child.kill('SIGKILL') } catch { /* gone */ } }, HARD_TIMEOUT_MS)
 
     child.stdout.on('data', (c) => {
       stdoutBuf += c.toString()
@@ -103,11 +103,11 @@ async function runArm(label, withPrint, extraEnv = {}, settingSources = 'user,pr
         if (ty === 'result' && !r.sawResult) {
           r.sawResult = true; r.tResultMs = Date.now() - t0
           setTimeout(() => { r.nestedBwrap = nestedBwrap(child.pid) }, 200)
-          try { child.stdin.end() } catch {}      // Domo's per-turn behavior
+          try { child.stdin.end() } catch { /* already closed */ }      // Domo's per-turn behavior
           const exitTimer = setTimeout(() => {
             r.exitedOnStdinClose = false           // persistent session
-            try { child.kill('SIGTERM') } catch {}
-            setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 3000)
+            try { child.kill('SIGTERM') } catch { /* gone */ }
+            setTimeout(() => { try { child.kill('SIGKILL') } catch { /* gone */ } }, 3000)
           }, EXIT_WAIT_MS)
           child.once('exit', () => clearTimeout(exitTimer))
         }
@@ -168,7 +168,7 @@ console.log(`claude = ${CLAUDE}`)
 // → litters). D = full fix candidate (vscode entrypoint + drop the `user`
 // setting-source so the operator's global defaultMode:auto is ignored).
 const A = { exitedOnStdinClose: 'true(prior)', systemInit: { apiKeySource: '"none"(prior)' }, billingLines: ['cc_entrypoint=sdk-cli'], litter: new Array(17) }
-const B = A
+void A // referenced in the summary table below the live arms
 const C = await runArm('C-vscode', false, { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })
 summarize(C)
 const D = await runArm('D-vscode-nouser', false, { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' }, 'project,local')

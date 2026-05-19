@@ -3,9 +3,9 @@ import { requireActiveUser } from '../lib/auth'
 /**
  * The central auth gate. SPA route middleware is cosmetic — this is where
  * access is actually enforced, in front of the whole backend: every
- * `nuxt-procedures` call (`/procedures/**`), the streaming/WS endpoints
- * (`/api/**`), and the durable-stream reverse proxy (`/_agents/**`, which
- * carries the raw session transcript — must not be world-readable).
+ * `nuxt-procedures` call (`/procedures/**`) plus Domo's own streaming/WS
+ * endpoints under `/api/*` (the chat seq-tail `/api/live`, the terminal
+ * WS, the build/run progress SSEs, the coast events WS — until step 3).
  *
  * Public (no auth): the auth procedures needed to bootstrap/sign in, plus
  * nuxt-auth-utils' own session endpoint (`useUserSession` fetch + the
@@ -20,16 +20,16 @@ import { requireActiveUser } from '../lib/auth'
  * Only Domo's own backend is gated. The broad `/api/` prefix is NOT —
  * framework endpoints live there too (`/api/_auth/session`, the Nuxt
  * Icon bundle `/api/_nuxt_icon/*`) and must stay public so the auth
- * screens render. We instead enumerate Domo's own non-procedure
- * endpoints (the SSE/WS streams) explicitly.
+ * screens render. We enumerate Domo's own non-procedure endpoints
+ * explicitly.
  */
 const GATED_PREFIXES = [
   '/procedures/',
-  '/_agents/',
   '/api/coast-events',
   '/api/terminal',
   '/api/envs/',
   '/api/projects/',
+  '/api/live',
 ]
 
 const PUBLIC_PATHS = new Set([

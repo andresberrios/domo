@@ -2,17 +2,19 @@
 /**
  * Sessions nested under an env in the left rail (Project ▸ Env ▸ Session).
  *
- * Phase 10 lifecycle UI:
+ * Lifecycle UI:
  *  - status dot (waiting / active / pending-approval / error) — the
- *    authoritative value is mirrored entity→DB by the in-process runtime
- *    (server/lib/electric/entity.ts), so the cached `status` here is live;
+ *    authoritative value is the in-process engine's per-turn write to the
+ *    `sessions.status` cache (see server/lib/sessionEngine), refreshed
+ *    here on the rail's tick;
  *  - a new-output dot when this device hasn't seen the latest activity
  *    (`lastEventAt` newer than `viewed_at_per_device[deviceId]`);
  *  - per-row kebab: rename (inline), mark done / not done, delete.
  *
- * The rail has no server→client push channel for sessions (coast events
- * don't cover them), so a single low-frequency tick (owned by
- * DomoLeftRailTree, paused when the tab is hidden) drives `refresh()`.
+ * The rail has no server→client push channel for sessions yet (step 2 of
+ * the new-architecture build adds it via the coarse path on `/api/live`),
+ * so a single low-frequency tick (owned by DomoLeftRailTree, paused when
+ * the tab is hidden) drives `refresh()`.
  */
 type Session = Awaited<
   ReturnType<typeof apiClient.sessions.list.call>

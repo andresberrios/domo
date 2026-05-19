@@ -5,11 +5,15 @@ let _db: Database.Database | null = null
 
 /**
  * Singleton handle to Domo's SQLite metadata DB. Schema is migrated on first
- * access. Holds projects, envs, sessions, settings — the small UX-shaped
- * state that survives restarts. Coast owns runtime state (running/stopped,
- * dynamic ports); Electric Agents owns session event streams. We just point
- * at them and remember user-facing flags (session done, last-viewed-at,
- * cached `coast ls` status for fast first render).
+ * access. Holds projects, envs, sessions, the per-session `session_events`
+ * transcript log, parked `pending_diffs`, settings, users — every piece of
+ * durable state Domo owns (Decided #6: SQLite owns everything).
+ *
+ * The pivot put the engine in-process and made SQLite the authoritative
+ * event log. The old Electric Agents durable stream is gone; `session_events`
+ * is the chat transcript, `pending_diffs` is the durable diff-approval queue
+ * (so a parked edit survives a Domo restart and re-renders the card). Coast
+ * still owns container runtime state until step 3 swaps it for devcontainers.
  */
 export function db(): Database.Database {
   if (_db) return _db
@@ -80,6 +84,51 @@ function migrate(d: Database.Database): void {
       created_at INTEGER NOT NULL,
       last_login_at INTEGER
     );
+
+    -- Per-session transcript log (the new in-process engine's durable
+    -- truth — replaces the Electric Agents durable stream). One row per
+    -- envelope from the spawned claude process plus a few Domo-synthesized
+    -- types (prompt, steer_sent, pending_diff, diff_decision, aborted,
+    -- error). seq is monotonic per session and primary-keys the row so
+    -- the SSE seq-tail (?since=) is naturally idempotent +
+    -- reconnect-lossless.
+    --
+    -- Streaming assistant deltas are NOT stored — partials live on the
+    -- change bus / SSE only, and the complete assistant envelope (its
+    -- own row here) is the source of truth in the adapter. The
+    -- message_id column lingers from step 1's first cut (when partials
+    -- were UPDATE-coalesced in place); unused now, kept to avoid an
+    -- awkward SQLite column drop.
+    CREATE TABLE IF NOT EXISTS session_events (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      message_id TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, seq)
+    );
+    -- Drop the (now dead) partial-row index on existing DBs from the
+    -- first cut. Idempotent, safe on a fresh DB.
+    DROP INDEX IF EXISTS idx_session_events_partial;
+
+    -- Durable diff-approval queue. A manual-mode edit parks here so the
+    -- card re-renders cross-device and survives restart. The engine's
+    -- boot-reconcile pass auto-rejects any row still pending on startup
+    -- (its parking turn is dead — Decided #7's "no corruption mode").
+    CREATE TABLE IF NOT EXISTS pending_diffs (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      call_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      before TEXT NOT NULL,
+      after TEXT NOT NULL,
+      tab_name TEXT,
+      status TEXT NOT NULL,
+      created_ts INTEGER NOT NULL,
+      PRIMARY KEY (session_id, call_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pending_diffs_session
+      ON pending_diffs(session_id, status);
   `)
 
   // Additive, idempotent column migrations. `CREATE TABLE IF NOT EXISTS`

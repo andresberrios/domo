@@ -1,13 +1,16 @@
 /**
  * Session helpers — typed CRUD against the `sessions` table.
  *
- * A session row is Domo's UX-shaped pointer at an Electric Agents
- * `claude-code-cli` entity: it stores the entity url + durable-stream URL
- * (so the chat surface can subscribe) plus Domo-owned concepts the durable
- * stream does not model — the editable `title`, the `done` flag, and
- * per-device `viewed_at` for the new-output dot. `status` is a cache for
- * fast first render; the authoritative value is the entity's `sessionMeta`
- * row, reconciled client-side in Phase 9/10.
+ * The row is Domo's UX-shaped pointer at the in-process engine: title,
+ * `done`, per-device `viewed_at`, cached `status`, and `nativeClaudeSessionId`
+ * (Claude's own session id captured from the first `system` event, used as
+ * `--resume <id>` on subsequent turns / after a process restart).
+ *
+ * The old `entityId` / `durableStreamUrl` (pre-pivot Electric Agents
+ * pointers) are unused: the DB columns linger as harmless NULLs (SQLite
+ * column drops are awkward; nothing reads them), but they're absent from
+ * the TS row and the procedure schema. The chat surface subscribes via the
+ * new `/api/live` SSE keyed by the Domo session id.
  */
 import { db } from './db'
 import type { ApprovalMode, SessionStatus } from './schemas'
@@ -18,8 +21,7 @@ export interface SessionRow {
   title: string | null
   status: SessionStatus
   done: boolean
-  entityId: string | null
-  durableStreamUrl: string | null
+  /** Claude's own session id (captured on first `system` event) → `--resume`. */
   nativeClaudeSessionId: string | null
   /** null → inherit `config.claude.approvalMode` (default `manual`). */
   approvalMode: ApprovalMode | null
@@ -34,8 +36,6 @@ interface SessionDbRow {
   title: string | null
   status: string
   done: number
-  entity_id: string | null
-  durable_stream_url: string | null
   native_claude_session_id: string | null
   approval_mode: string | null
   created_at: number
@@ -62,8 +62,6 @@ function fromDb(r: SessionDbRow): SessionRow {
     title: r.title,
     status: r.status as SessionStatus,
     done: r.done === 1,
-    entityId: r.entity_id,
-    durableStreamUrl: r.durable_stream_url,
     nativeClaudeSessionId: r.native_claude_session_id,
     approvalMode: (r.approval_mode as ApprovalMode | null) ?? null,
     createdAt: r.created_at,
@@ -79,6 +77,13 @@ export function listSessions(envId: string): SessionRow[] {
   return rows.map(fromDb)
 }
 
+export function listAllSessions(): SessionRow[] {
+  const rows = db()
+    .prepare(`SELECT * FROM sessions ORDER BY created_at ASC`)
+    .all() as SessionDbRow[]
+  return rows.map(fromDb)
+}
+
 export function getSession(id: string): SessionRow | null {
   const r = db().prepare(`SELECT * FROM sessions WHERE id = ?`).get(id) as
     | SessionDbRow
@@ -91,11 +96,11 @@ export function insertSession(row: SessionRow): void {
     .prepare(
       `
       INSERT INTO sessions (
-        id, env_id, title, status, done, entity_id, durable_stream_url,
+        id, env_id, title, status, done,
         native_claude_session_id, approval_mode, created_at, last_event_at,
         viewed_at_per_device
       ) VALUES (
-        @id, @envId, @title, @status, @done, @entityId, @durableStreamUrl,
+        @id, @envId, @title, @status, @done,
         @nativeClaudeSessionId, @approvalMode, @createdAt, @lastEventAt,
         @viewedAtPerDevice
       )

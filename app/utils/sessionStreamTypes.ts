@@ -1,53 +1,50 @@
 /**
- * Client-side mirrors of the `claude-code-cli` entity's durable row shapes.
+ * Client-side mirrors of the in-process session engine's wire shapes.
  *
- * The authoritative Zod schemas live in `server/lib/electric/schemas.ts`,
- * but `server/` is server-only and not bundled to the client, so the chat
- * surface keeps its own structural copies. Keep these in sync with that
- * file (they're tiny and change rarely; the entity's row schemas are
- * "locked" per design Pending-Discussion 1).
+ * The authoritative server types live in `server/lib/sessionEngine/store.ts`
+ * (`SessionEventRow`, `PendingDiffRow`) and `server/lib/schemas.ts`
+ * (`SessionStatus`), but `server/` is not bundled to the client — these
+ * structural copies stay in sync by convention (they're tiny and rarely
+ * change).
  */
 
-/** A mirrored claude stream-json envelope (payload) + Domo metadata. */
+/** One row from `/api/live`'s `session-event` frame (and the snapshot replay). */
 export interface EventRow {
-  key: string
-  ts: number
-  /** stream-json envelope type (`system`/`assistant`/`user`/`result`/…). */
+  /** Monotonic per-session insertion id; primary key on the wire. */
+  seq: number
+  /** stream-json envelope type or a Domo-synthesized type (see store.ts). */
   type: string
-  callId?: string
-  /** The raw claude stream-json envelope. */
+  /** The raw stream-json envelope OR the Domo-synthesized payload. */
   payload: Record<string, unknown>
+  createdAt: number
 }
 
-export interface SessionMetaRow {
-  key: 'current'
-  /** Domo `sessions` row id (== entity id). */
-  sessionId: string
-  envId: string
-  coastInstance: string
-  cwd: string
-  status: 'initializing' | 'idle' | 'running' | 'pending-approval' | 'error'
-  nativeSessionId?: string
-  bridgePort?: number
-  error?: string
-  currentPromptInboxKey?: string
+/**
+ * One frame from `/api/live`'s `partial` event — the latest coalesced
+ * streaming assistant delta. Live-only (not replayed on reconnect);
+ * superseded by the complete `assistant` event row matched on `messageId`.
+ */
+export interface PartialFrame {
+  /** Anthropic `message.id` — the bubble id joined against the final `assistant`. */
+  messageId: string
+  text: string
+  thinking: string
+  createdAt: number
 }
 
+/** Derived client-side by folding `pending_diff` ⊕ `diff_decision` events. */
 export interface PendingDiffRow {
   callId: string
   path: string
   before: string
   after: string
-  tabName?: string
+  tabName: string
   status: 'pending' | 'accepted' | 'rejected'
   createdTs: number
 }
 
-/** Built-in `inbox` collection row (agents-runtime `MessageReceived`). */
-export interface InboxRow {
-  key: string
-  from: string
-  payload?: unknown
-  timestamp: string
-  message_type?: string
-}
+export type ChatSessionStatus =
+  | 'waiting'
+  | 'active'
+  | 'pending-approval'
+  | 'error'

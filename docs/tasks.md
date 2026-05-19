@@ -12,17 +12,55 @@ change (doc-sync is a prime directive).
 
 ## START HERE (fresh session)
 
-The pivot is **designed, not built**. Code is still the Electric/Coast
-implementation; the merged billing/streaming rescue lives in
-`electric/claude.ts`/`entity.ts` and is reused by the new engine.
+**Step 1 (engine swap) landed 2026-05-19 / -20.** The session engine is
+now the in-process `server/lib/sessionEngine/*` over `session_events` +
+`pending_diffs` in SQLite. The reactivity spine's chat fine path is
+live (`/api/live` SSE + `server/lib/changeBus.ts`) on **two SSE event
+types**: `session-event` for every durable row (replayed past `?since=`
+on connect, lossless reconnect) and `partial` for **live-only**
+streaming assistant deltas (NOT persisted — partials are transient by
+design; the complete `assistant` row supersedes them in the adapter).
+The Electric/agents-server/Postgres infra + the `@durable-streams/*`
+pkg.pr.new pins + the `_agents` proxy + the boot-relink patch + the
+`agent-session-protocol` dep (IDE-bridge leftover) are all deleted.
+The billing-critical spawn argv / env scrub /
+`cc_entrypoint=claude-vscode` / stdio permission / steering / coalescer
+carried over verbatim into `server/lib/sessionEngine/claude.ts`; the
+engine owns the **long-lived per-session process** (multi-turn over one
+stdin, demux by `result`, idle-reap ~15 min, `--resume` respawn).
+`pnpm install` clean. `pnpm typecheck` + `pnpm lint` green.
+
+**Still pending:**
+- **Step 7 (deadline-critical billing live-verify)** — never run against
+  the new engine; must pass before ~2026-06-15.
+- **CLI argv parity check** — user is sharing the official VS Code
+  extension's actual spawn command for a diff against
+  `sessionEngine/claude.ts`; pending their paste. (The current argv is
+  the spike-proven set, but a fresh capture from the live extension is
+  the canonical source.)
+- **Step 2 remainder** — coarse `{table,id,op}` path on `/api/live` +
+  `useLiveCall` + rail-poll deletion (the chat fine path landed early
+  with step 1).
+- **Steps 3–6** — devcontainers, port forwarding, collab, docs rewrite.
+
+**Fresh-session order:**
 
 1. Read `CLAUDE.md` (Where-we-are + gotchas) → `docs/initial-design.md`
    (design + Build sequence + Decisions) → `docs/history.md` (what was &
    why) → `BUGS.md`.
-2. Build in order below. **Step 1 first** (kills the corruption class).
-3. Test on an **isolated `DOMO_HOME` + dev port 7576** — never the
-   user's live prod at `localhost:7575`.
-4. Doc-sync every landed step (prime directive).
+2. **First**: if the user pasted the official extension's spawn command
+   in this session's opening turn, diff against
+   `server/lib/sessionEngine/claude.ts` `buildArgs` + `buildEnv` and
+   land any deltas before anything else (deadline-critical context).
+3. **Then**: step 7's live-verify on isolated `DOMO_HOME` + dev port
+   7576 — drive a real session through Playwright, confirm
+   `apiKeySource:"none"` + `cc_entrypoint=claude-vscode` on the spawned
+   process + multi-turn / `--resume` respawn / idle-reap behaviours.
+4. Then step 2 remainder, then steps 3–6.
+5. Doc-sync every landed step (prime directive).
+6. Test on **isolated `DOMO_HOME` + dev port 7576** — prod is
+   decommissioned until reinstall (step 6), but treat 7575 as
+   off-limits regardless.
 
 > **⚠️ Deadline-critical, deferred by the user to AFTER the engine
 > migration:** live-verify subscription billing in a real Domo session
@@ -34,48 +72,90 @@ implementation; the merged billing/streaming rescue lives in
 > on the new engine before that date. Tracked as step 1's final check
 > **and** repeated as step 7 so it cannot be missed.
 
-## 1 — Session engine swap
+## 1 — Session engine swap — LANDED
 
 Rescued from `dev` (merged, `8e63794`) and reused as-is: the billing
 spawn (no `-p`, `CLAUDE_CODE_ENTRYPOINT=claude-vscode`, exact VS Code
 argv), stdio-permission, steering, and the partial-stream coalescer all
-already live in `electric/claude.ts`/`entity.ts` — the engine just takes
-over the process lifecycle.
+moved verbatim from `electric/claude.ts` into
+`server/lib/sessionEngine/claude.ts`; the engine owns the **long-lived
+per-session process**.
 
-- [ ] `server/lib/sessionEngine`: single-flight per-session manager;
-      **long-lived per-session process** (one process, multi-turn over
-      one stdin, demux by `result`, idle-reap ~15 min → `--resume`
-      respawn; spike `smoke/persistent-session-spike.mjs`). Reuse
-      `electric/claude.ts` verbatim.
-- [ ] `session_events(session_id,seq,type,payload,created_at)` SQLite
-      table + append/read (incl. updatable `assistant_partial` rows for
-      the live coalescer); `sessions` row keeps `nativeSessionId`,
-      status, approval mode.
-- [ ] Re-point `sessions.*` procedures off the entity/driver client onto
-      the engine; diff-decision + steer hit the live process directly.
-- [ ] Boot reconcile pass: `running`→`interrupted`, auto-reject orphan
-      `pending` diffs; next prompt `--resume`s.
-- [ ] Delete `server/lib/electric/*` (keep `claude.ts` logic),
-      `/_agents` proxy, agents-server compose + boot-relink patch,
-      `apply-patches.sh`, pkg.pr.new `@durable-streams/*` pins +
-      `pnpm.overrides`.
-- [ ] **Release/CLI cleanup (tied to the deleted infra):** slim
-      `bin/domo` (no compose; `up`/`down`/`restart` = the Nitro
-      process), `install.sh` prereqs, `build-release.sh`/`release.yml`
-      (drop the agents-server image build), `local-update.sh`.
-- [ ] Verify e2e on isolated `DOMO_HOME` + dev port: create→prompt→tool→
-      assistant streaming live; kill mid-turn → restart → no corruption,
-      resumes; `apiKeySource:none` + `cc_entrypoint=claude-vscode`.
+- [x] `server/lib/sessionEngine`: single-flight per-session manager
+      (`engine.ts`); **long-lived per-session process** (one process,
+      multi-turn over one stdin, demux by `result`, idle-reap ~15 min →
+      `--resume` respawn; spike `smoke/persistent-session-spike.mjs`).
+      Claude spawn moved into `sessionEngine/claude.ts`.
+- [x] `session_events(session_id,seq,type,payload,message_id,created_at)`
+      SQLite table + append/read (every row an INSERT, monotonic `seq`).
+      Streaming deltas are NOT persisted — partials live on the change
+      bus / SSE only; the complete `assistant` envelope is its own
+      durable row. `pending_diffs` table backs the cross-device card.
+      `sessions` row keeps `nativeClaudeSessionId`, status, approval
+      mode. `message_id` column + `entity_id`/`durable_stream_url`
+      columns linger as harmless NULLs (SQLite DROP COLUMN is awkward;
+      nothing reads them).
+- [x] Re-pointed `sessions.create/prompt/abort/diffDecision/pendingDiff/
+      delete` onto the engine; `streamInfo` deleted (replaced by the
+      `/api/live` snapshot+tail); `get/list/rename/done/setApprovalMode/
+      markViewed/commands/mentions` unchanged.
+- [x] Boot reconcile pass (`server/plugins/sessionEngine.ts`):
+      `active`/`pending-approval`→`waiting`, orphan `pending` diffs
+      auto-reject + record `diff_decision { reason:'runtime restarted' }`
+      so cards clear cross-device; next prompt `--resume`s.
+- [x] Minimal `/api/live` chat seq-tail SSE (server/api/live.ts) +
+      `server/lib/changeBus.ts`; `useSessionStream` rewritten to
+      consume it; durable-stream browser client deleted (the chat fine
+      path of step 2's spine landed here because the chat is unusable
+      without it — the coarse path / `useLiveCall` / rail-poll deletion
+      stays as step 2 proper). Two SSE event types: `session-event`
+      for durable rows (replayed past `?since=` on connect, lossless
+      reconnect) and `partial` for **live-only** coalesced streaming
+      deltas (NOT persisted — the complete `assistant` row supersedes
+      them in the adapter; `sessionMessages.ts` takes `(events, partial)`
+      and renders the streaming bubble keyed on Anthropic `message.id`).
+- [x] Deleted `server/lib/electric/*`, `/_agents` proxy
+      (`server/routes/_agents/`), `server/plugins/electric.ts`,
+      `server/procedures/electricSmoke.ts`, `docker-compose.yml`,
+      `release/*` (compose + Dockerfile + boot-relink patch), and
+      `scripts/apply-patches.sh`; dropped the `@electric-ax/*` +
+      `@durable-streams/*` deps + the `pnpm.overrides` URL pins +
+      `blockExoticSubdeps`; dropped the unused `agent-session-protocol`
+      dep (IDE-bridge leftover); pruned `agentsServerUrl` runtimeConfig
+      + `DOMO_AGENTS_*` env vars.
+- [x] **Release/CLI cleanup:** `bin/domo` collapsed to managing the
+      Nitro app (`up`/`down`/`restart`/`status`/`logs`/`update`,
+      no Docker compose). `install.sh` dropped the agents-server
+      prereqs. `build-release.sh` / `local-update.sh` drop the
+      `release/` infra copies + manifest no longer carries
+      `infra.agentsServer`. `release.yml` is unchanged (it just calls
+      `scripts/build-release.sh`).
+- [ ] **DEFERRED to step 7 by the user:** live-verify e2e on isolated
+      `DOMO_HOME` + dev port: create→prompt→tool→assistant streaming
+      live; kill mid-turn → restart → no corruption, resumes;
+      `apiKeySource:none` + `cc_entrypoint=claude-vscode`. The first
+      browser-driven session against the new engine has not happened
+      yet — see "⚠️ Deadline-critical" above + step 7.
 
 ## 2 — Reactivity spine
 
-- [ ] In-process change bus; single post-write chokepoint emits
-      `{table,id,op}`.
-- [ ] `GET /api/live` SSE (auth-gated, singleton client); coarse
-      `{table}`→procedure refetch; chat fine path `{session_id,seq}`→
-      append past `lastSeq`; reconnect `?since=`.
-- [ ] `useLiveCall` (or generalize `useCoastEvents`); delete the 4 s rail
-      poll + the browser durable-stream client.
+The chat fine path + auth-gated `/api/live` + the durable-stream client
+deletion landed with step 1 (the chat needed them to work). What remains
+is the **coarse path** (`{table,id,op}` → procedure refetch) and the
+singleton browser SSE client wrapper.
+
+- [x] In-process change bus (`server/lib/changeBus.ts`) — two topics
+      so far (durable session events + live-only partial frames);
+      extend to `{table,id,op}` here.
+- [x] `GET /api/live` SSE auth-gated (chat fine path only): emits two
+      event types — `session-event` (durable rows past `?since=`, then
+      tailed via the change bus) and `partial` (live-only streaming
+      assistant deltas, not replayed on reconnect).
+- [ ] Extend `/api/live` to also emit `{table,id,op}` notices from the
+      coarse change-bus topic; single browser-side SSE singleton multi-
+      plexes both shapes.
+- [ ] `useLiveCall` (or generalize `useCoastEvents`); delete the 4 s
+      rail poll (`LeftRailTree.vue`).
 - [ ] Verify: rail/env/ports update push-live; chat tails incrementally;
       reconnect lossless; mobile scroll OK with a tall transcript.
 

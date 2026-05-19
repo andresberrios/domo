@@ -1,6 +1,7 @@
 #!/bin/sh
 # Domo installer — host install of the app + the `domo` CLI.
-# (Infra runs in Docker, managed by `domo up`.) initial-design.md #19.
+# (No engine infra — the in-process engine + SQLite replaces it.) See
+# initial-design.md "Distribution" (Decided #14).
 #
 #   curl -fsSL https://github.com/andresberrios/domo/releases/latest/download/install.sh | sh
 #
@@ -33,14 +34,11 @@ PLATFORM="${OS}-${ARCH}"
 if [ "$OS" = linux ] && grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
   err "WSL detected — ensure Docker Desktop's WSL integration is enabled for this distro."
 fi
-[ "$OS" = darwin ] && ! have docker && \
-  err "macOS: install Docker Desktop (https://docs.docker.com/desktop/) before 'domo up'."
 have tar  || die "tar is required."
 have curl || die "curl is required."
 # Node is bundled in the release (no system Node needed).
-have docker || err "warning: Docker not found — needed by 'domo up' (not by install)."
+have docker || err "warning: Docker not found — needed at runtime for devcontainer-backed envs."
 have git    || err "warning: git not found — Domo shells host git for worktrees."
-have coast  || err "warning: 'coast' not found — projects/envs need the Coast daemon."
 have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
 
 # --- resolve data/app dir (must match server/lib/paths.ts) --------------

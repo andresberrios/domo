@@ -2,17 +2,15 @@
 # Local prod update — the `domo update` flow WITHOUT the GitHub/CI round
 # trip. Builds the current source into a release tarball, installs it
 # over the local prod install via the *same* bundled installer (atomic
-# `current` symlink flip + PATH shim), then restarts infra + app so the
-# running prod instance serves the freshly built code.
+# `current` symlink flip + PATH shim), then restarts the prod app so the
+# running instance serves the freshly built code.
 #
 #   pnpm run update:local                  # → $DOMO_HOME (default ~/.domo)
 #   DOMO_HOME=/path pnpm run update:local
 #
-# vs `scripts/build-release.sh` + a CI release:
-#   - no GitHub Actions, no upload/download, no checksum dance
-#   - reuses the bundled Node from the existing install instead of
-#     re-downloading v22 from nodejs.org each time (bin/domo falls back
-#     to system `node` if it's absent anyway).
+# Post-pivot: there is no engine infra to keep up. The in-process engine
+# + SQLite replaced the Postgres/agents-server compose stack, so the
+# script's only job is build → install → app restart.
 #
 # Session secret: `pnpm build` loads the repo `.env`, so its
 # NUXT_SESSION_PASSWORD gets baked as runtimeConfig's build-time default
@@ -23,13 +21,7 @@
 # (nuxt-auth-utils writes it once), so it's identical across every
 # `update:local` and prod sessions survive. The only catch: a real CI
 # `domo update` (no `.env`, uses `$DOMO_HOME/session-secret`) would flip
-# the secret once → a single forced re-login. Don't re-add an `.env`
-# shuffle to "fix" this — it's a deliberate trade for a simpler script.
-#
-# Touches the LIVE prod install (restarts its services — brief infra
-# blip). It never touches prod DATA: install.sh only `rm -rf`s the app
-# code dir ($DOMO_HOME/app/<ver>), and `domo down` keeps Postgres/streams
-# (bind-mounted under $DOMO_HOME/data).
+# the secret once → a single forced re-login.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
@@ -63,11 +55,9 @@ pnpm build
 # --- assemble the tarball (mirrors build-release.sh, sans Node fetch) ---
 echo "==> assembling ${TARBALL##*/}"
 rm -rf dist
-mkdir -p "$STAGE/bin" "$STAGE/release" "$STAGE/runtime/bin"
+mkdir -p "$STAGE/bin" "$STAGE/runtime/bin"
 cp -r .output "$STAGE/.output"
 cp bin/domo "$STAGE/bin/domo"; chmod +x "$STAGE/bin/domo"
-cp release/docker-compose.yml release/Dockerfile.agents-server \
-   release/agents-server-0.4.2-boot-relink.patch "$STAGE/release/"
 printf '%s\n' "$VER" >"$STAGE/VERSION"
 cat >"$STAGE/manifest.json" <<JSON
 { "version": "${VER}", "platform": "${PLATFORM}", "build": "local-update" }
@@ -92,7 +82,7 @@ echo "==> installing into ${HOME_DIR} (atomic 'current' flip)"
 DOMO_HOME="$HOME_DIR" DOMO_LOCAL_TARBALL="$TARBALL" sh scripts/install.sh
 
 DOMO_BIN="$HOME_DIR/app/current/bin/domo"
-echo "==> restarting prod instance (app only; infra + live sessions kept)"
+echo "==> restarting prod app"
 DOMO_HOME="$HOME_DIR" "$DOMO_BIN" restart
 
 echo "==> done — domo $("$DOMO_BIN" version) live at http://localhost:${PORT:-7575}"
