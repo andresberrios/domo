@@ -1,932 +1,239 @@
 # CLAUDE.md — orientation for future Claude Code sessions
 
-> **Living document.** Update this in the same change as the code/docs whenever
-> something here goes stale — new commands, new conventions, new gotchas,
-> phase transitions. The rule from `docs/initial-design.md` applies: keep
-> design ↔ tasks ↔ this file in sync.
+> **Living document.** Update this in the *same* change as the code/docs
+> whenever something here goes stale. Doc-sync (design ↔ tasks ↔ this
+> file) is a **prime directive**, never optional.
 
 ## What this repo is
 
-Domo — a self-hosted Nuxt app that runs parallel Claude Code agents over
-Coast environments. Three documents define it:
+Domo — a self-hosted Nuxt app running parallel Claude Code agents over
+isolated dev environments. Read these first:
 
-- `docs/project-context.md` — what Domo is and isn't (high level)
-- `docs/initial-design.md` — full design (~700 lines, authoritative)
-- `docs/tasks.md` + `docs/tasks/phase-*.md` — work tracker, organized by phase
+- `docs/project-context.md` — what Domo is/isn't (high level)
+- `docs/initial-design.md` — authoritative forward design
+- `docs/tasks.md` — work tracker (new-architecture build)
+- `docs/history.md` — superseded implementation + resolved gotchas
 
-**Read those first.** This file is just a pointer set.
+**Licensing:** source-available **FSL-1.1-ALv2** (`LICENSE.md`); auto-
+converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
+(`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
+signed off.
 
-**Licensing.** Domo is source-available under **FSL-1.1-ALv2** (`LICENSE.md`)
-— use/modify/self-host freely, no Competing Use; each release auto-converts
-to Apache-2.0 after 2 years. Contributions require a **DCO sign-off**
-(`git commit -s`) + the inbound/relicensing grant in `CONTRIBUTING.md`. When
-landing contributed work, keep commits signed off.
+## Where we are — mid-pivot
 
-## Where we are
+Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
+session engine + Coast environments** stack (last release **v0.3.0**;
+narrative in `history.md`). Testing showed that stack corrupts sessions
+on restart — a structural flaw of a stateful agent-server intermediary,
+not a fixable bug. **Decision:** replace it with an **in-process engine
+over the existing SQLite** (`session_events` log + single-flight
+per-session `claude` manager + `--resume`), a **unified change-bus +
+`/api/live` SSE** reactivity spine, and **devcontainer + rootless-DinD**
+environments with a `Domofile` + in-process port forwarding. Engine
+first, then devcontainers. Full design + build sequence in
+`initial-design.md`.
 
-Phase 0 + 1 + 2 + 3 done. **Phase 4 (polish) complete — both halves**
-(`docs/tasks/phase-4-polish.md`); production `pnpm build` fixed
-(cross-cutting #11). Phase 3 narrative below is kept as history.
-Step **8a landed & verified end-to-end** (typecheck clean; `docker compose
-up` → agents-server healthy; `electricSmoke` → runner `liveness: online`):
-Electric Agents control plane wired (docker-compose Postgres + agents-server,
-durable streams embedded), `claude-code-cli` entity registered with locked
-row schemas, in-process runtime connected via **pull-wake** (not the push
-webhook — see `initial-design.md` Decided #11–14). Step **8b landed**:
-real host-side `claude` stream-json spawn in
-`server/lib/electric/claude.ts` (ANTHROPIC_API_KEY + nested-claude vars
-scrubbed, `session_id` captured for `--resume`), wired into the entity.
-Step **8c landed**: standalone per-session IDE-bridge WS server
-(`server/lib/electric/bridge.ts`, hand-rolled RFC 6455 — design Decided
-#15), 8 tools + `getDiagnostics`, `~/.claude/ide/<port>.lock` lifecycle,
-booted per turn with `CLAUDE_CODE_SSE_PORT`/`ENABLE_IDE_INTEGRATION` set;
-`openDiff` uses an interim resolver (persist + log) — the durable
-park/inbox approval round-trip is **step 11**. Step **8d landed &
-verified live end-to-end**: `sessions.*` procedures
-(`create`/`list`/`get`/`prompt`/`diffDecision`/`abort`/`rename`/`done`/
-`delete`) over `server/lib/sessions.ts` (DB) + `server/lib/electric/
-client.ts` (the *driver* side — `createRuntimeServerClient`
-spawn/send/delete). **Key fix:** `startElectricRuntime()` now calls
-`runtime.registerTypes()` on boot (was missing — `registry.define` is
-in-process only; without the control-plane POST `spawnEntity` 404s, so
-8a's "entity registered" was local-only). Sessions spawn with an
-**explicit per-entity runner dispatch policy** (design Decided #16). The
-bundled live check (carried since 8b/8c) **passed** against live
-agents-server (isolated `DOMO_HOME`, throwaway worktree, no Coast
-container needed): `sessions.create` → entity on agents-server carries
-`dispatch_policy {runner: domo-runtime}`; `sessions.prompt` → wake →
-pull-wake runner → handler → host `claude` → `system`/`assistant`/
-`result` mirrored into the durable stream; `apiKeySource: none`
-(subscription billing), `session_id` captured into
-`sessionMeta.nativeSessionId`, IDE bridge booted (`bridgePort`),
-`assistant: "PONG"`; `delete` → entity `stopped` on agents-server + DB
-row gone. Step **9 core landed & verified live end-to-end**: the chat
-surface is online — browser subscribes to the entity's durable stream
-through the same-origin `/_agents` reverse proxy, projects it to AI SDK
-`UIMessage[]` (**Decided #17**: UI transcript standardized on
-`UIMessage`; each backend is an adapter; `ai` is a types-only devDep)
-and renders with `UChatMessages` + per-tool cards. Step-9 smoke (isolated
-`DOMO_HOME`, throwaway worktree, no Coast container): created a session
-from the left rail, sent a prompt, browser rendered *user prompt →
-`Read` tool card → assistant "PONG"*, 0 console errors. **Step 9
-remainder + Step 10 landed & verified live end-to-end** (isolated
-`DOMO_HOME`, throwaway worktree, no Coast container; 0 console errors):
-left-rail **New session auto-navigate** fixed (`navigateTo`, navigate
-before refresh — a `useRouter()` captured after an async-setup `await`
-no-ops); **slash-command popup** (16 builtins ∪ custom commands scanned
-host-side from `<worktree>/.claude/commands/*.md` + user
-`<claudeConfigDir>/commands/*.md`, project precedence,
-`# heading`→description) and **`@`-mention popup** (worktree file/folder
-index via `git ls-files`, `@git-changes`, recent commits) with shared
-keyboard-nav `DomoChatAutocomplete` (Arrow/Tab/Enter/Esc intercepted at
-keydown-**capture** so they never reach `UChatPrompt`'s own
-Enter→submit/Esc→blur); **server-side expansion at execution time** —
-`expandInWorktree` (custom-command `$ARGUMENTS` substitution + `@`-token
-→ file/dir/diff/commit content) runs in the *entity*, not
-`sessions.prompt`, so the durable inbox/transcript keeps the **raw**
-text the user typed (smoke: typed `/greet Bob`, transcript showed
-`/greet Bob`, assistant greeted "Bob"); **tool-card** long-output
-show-more + copy; **edit-and-resend** (pragmatic — pulls a past user
-message back into the prompt; same session, claude `--resume` keeps
-context — true durable-stream *fork* deferred, see `initial-design.md`
-"Reconciling Claude's session file with the durable stream"). **Step 10
-session-lifecycle UI:** the in-process entity mirrors live status +
-`lastEventAt` into the Domo `sessions` row (`creationArgsSchema` /
-`sessionMetaRowSchema` now carry `sessionId`), so the rail status dot is
-live; per-device new-output dot (`useDeviceId` + `sessions.markViewed`,
-suppressed for the open session); per-row kebab (rename inline / mark
-done / delete); show-done toggle (pre-existing). Rail liveness is a
-single 4 s tick in `DomoLeftRailTree` (paused when the tab is hidden) —
-sessions have no coast-style browser event channel. Step **11 — diff
-approval: landed & verified live end-to-end** (accept, reject, **and
-server-restart resume**; 0 console errors). The trigger is the
-**official VS Code extension mechanism**: `claude` is spawned with
-`--permission-prompt-tool stdio --permission-mode default`; each tool
-the CLI wants emits a `control_request{can_use_tool}` NDJSON line on
-stdout and we answer a `control_response` on stdin (stdin stays open
-until `result`). The earlier finding stands — headless `-p` does NOT
-use the IDE-bridge `openDiff` — so **`server/lib/electric/bridge.ts` is
-now dormant** (not booted per turn; kept for future editor-context
-tools). `claude.ts` carries the protocol + `onPermissionRequest`/
-`onPermissionCancel`; `entity.ts` `executeClaudeTurn.onPermissionRequest`
-is the policy — **non-edit tools auto-allow** (Bash/Read frictionless,
-like the old `acceptEdits`), **edit-family** tools become a durable
-`pendingDiffs` row + `DomoDiffApprovalCard`. On *allow* the **CLI itself
-writes the file** (Domo never writes in the live path). Decision is
-resolved **in-process** (`sessionControl` — the single-flight runner
-would deadlock on a `diff_decision` wake behind the parked turn).
-**Restart-resume:** the `pendingDiffs` row is durable so the card
-replays after a server restart; `reconcileStalePendingDiffs` (top of
-every handler invocation; safe by the single-flight invariant)
-auto-rejects orphaned `pending` rows from a dead turn, and the
-interrupted prompt re-runs and re-proposes a fresh, actionable card —
-verified by killing the server mid-park, restarting, and accepting the
-re-proposed card → file written, turn continued. `DomoDiffApprovalCard`
-(sticky in `DomoChat`, sourced from the durable collection) +
-`?diff=pending` workspace view + abort/turn-end cleanup
-(`runClaudeTurn` takes an `AbortSignal`). The approval card reuses the
-workspace surface's `DomoDiffView` (`@codemirror/merge`). **Phase 3
-complete.**
-
-**Phase 4 (polish) — COMPLETE** (`docs/tasks/phase-4-polish.md`).
-*First half:* dark-mode toggle, global error/loading scaffolding
-(`app/error.vue`, `<NuxtErrorBoundary>` + `<NuxtLoadingIndicator>`,
-`DomoEmptyState`, `USkeleton`, `UAlert`), first-run onboarding.
-*Second half:* **aborts** (build Cancel pre-existed; `DomoAddEnvModal`
-gained a real Cancel = abort stream + `envs.delete`, vs "Run in
-background"; short coastd RPCs intentionally have none); **keyboard
-shortcuts** via `defineShortcuts` (⌘B workspace, ⌘1/⌘2 tabs, ⌘I focus
-prompt, ⌘S save, ⌘↵ commit); **responsive** — terminal moved off a
-"bottom panel" to a center route, workspace panel does an inline-panel
-↔ slideover swap via `useBreakpoints`, left rail is the Nuxt UI
-built-in mobile drawer. Verified live desktop + mobile.
-
-**Mid-turn steering — shipped & verified live e2e** (design Decided #18,
-post-Phase-4). Sending while a turn runs injects the message into the
-live `claude` (queued, consumed at the next step boundary — the agent
-redirects, the turn continues; *not* an interrupt, *not*
-end-of-turn-only). `--replay-user-messages` echoes it on stdout as a
-consumption ack; `sessions.prompt` routes a send to `steerSession()`
-(in-process side-channel in `sessionControl`, same lane as
-diff-decisions) when a turn is live; the live handler appends a durable
-`steer_sent` event and the adapter matches the CLI `isReplay` echo by
-`uuid` to flip the bubble queued→delivered. Best-effort (event-stream
-durable, not a durable inbox queue); steered text is not `@`/slash
-expanded in v1. Spike kept at `smoke/steering-spike.mjs`.
-
-**Distribution shipped (post-Phase-4, Decided #19).** A real host
-installer (`scripts/install.sh`, curl|sh) + `domo` CLI (`bin/domo`) +
-compose'd infra (`release/`) + CI release matrix
-(`.github/workflows/release.yml`) are **built and released** — current
-**v0.3.0** (v0.1.4 was the first green-CI release; v0.1.0–v0.1.3 were
-deleted; v0.2.0–v0.2.1 followed; v0.3.0 lands the Robo theme +
-branding, the signup inline-validation fix, and the dir-picker / panel
-/ user-menu layout fixes):
-multi-platform tarballs (`{linux,darwin}-{x64,arm64}`, WSL=linux),
-**bundled Node** (no system Node req), infra runs as the host UID, all
-data under `$DOMO_HOME` (one dir to back up / wipe). All four v0.1.4
-tarballs built CI-green (incl. `darwin-x64` on **`macos-15-intel`** —
-`macos-13`, the old Intel runner, was retired 2025-12-04; see the
-"retired GitHub runner" gotcha). The whole installer→`domo up`→runtime
-path is verified e2e on linux-x64 (`electricSmoke` all-true on the
-freshly-built agents-server image); darwin/linux-arm64 are CI-produced,
-not locally verified. Details: the
-"Distribution" block under *Running it* + `docs/site/getting-started.md`
-+ `initial-design.md` Decided #19.
-
-**Multi-user auth — Part A shipped & verified e2e (Decided #20).**
-Email+password (`nuxt-auth-utils`, sealed cookie, scrypt) — **no email is
-ever sent**. First app open → `/setup` creates the **admin**
-(`role=admin, status=active`, logged straight in); later signups →
-`/register` create `role=member, status=pending` and park on `/pending`
-until the admin approves them at `/admin/users`. The sealed cookie holds
-**identity only** — `role`/`status` are re-read from the `users` table
-in every server guard, so an approve/reject lands on the user's next
-request with no re-login. **The real boundary is `server/middleware/
-auth.ts`** (gates `/procedures/**`, Domo's SSE/WS endpoints, and the
-`/_agents/**` durable-stream proxy; allow-lists only
-bootstrap/setup/register/login/me); the SPA route guard is cosmetic.
-Verified e2e (isolated `DOMO_HOME`): first-run→admin→app, reload
-persistence, logout, register→pending (gated 403), admin approve→member
-gains access, member blocked from admin procs (403), unauth API→401,
-0 console errors, CSS rendered (oklch). **Part B (group-chat
-collaboration: a chat message does NOT trigger the agent; only an
-`@agent` mention or a "Send to agent" button does) is designed but NOT
-built** — see `initial-design.md` Decided #21 +
-`docs/tasks/phase-5-collab.md`.
-
-**Approval modes + restart-resume — shipped & verified (Decided #22, #23).**
-*Approval modes:* per-session `manual` (the original park-every-edit
-diff card) / `auto` (`--permission-mode acceptEdits`, no park) /
-`passthrough` (don't pass `--permission-mode`; the user's
-`~/.claude/settings.json` `defaultMode`/classifier decides, no park).
-Resolved per turn as `session.approvalMode ?? config.claude
-.approvalMode ?? 'manual'` (plain DB+config read, **not** a durable
-inbox round-trip — applies next turn, no wake). `auto`/`passthrough`
-never create a `pendingDiffs` row → inherently restart-safe. Wired:
-`ApprovalMode` in `schemas.ts`, nullable `approval_mode` column
-(idempotent `ensureColumn`), `claude.approvalMode` in `config.ts`,
-`sessions.setApprovalMode`, `USelect` in `DomoChat`.
-*Restart-resume:* the real mechanism (from upstream source) — agents-
-server keeps pull-wake **subscriptions in memory only** and does NOT
-rebuild them on its own boot, so the official clean-restart story only
-covers a *runner* restart while agents-server stays up (offset-replay).
-Fix = **(a)** `bin/domo restart` is now an **app-only** swap
-(`cmd_restart` keeps postgres+agents-server up; only explicit `domo
-down` tears infra) so `domo update`/`update:local` no longer recreates
-agents-server, + **(b)** a vendored patch
-(`release/agents-server-0.4.2-boot-relink.patch`) adds the missing
-boot step (re-link every persisted entity's dispatch subscription, via
-agents-server's own `linkEntityDispatchSubscription`) for genuine
-agents-server crash/reboot/upgrade. Applied by `scripts/apply-patches.sh`
-(dev `postinstall`) **and** `release/Dockerfile.agents-server` (the
-release image npm-installs, and pnpm 11.0.9 won't reconcile
-`patchedDependencies` here anyway). Verified live (`smoke/
-agents-server-restart-resume.mjs`, isolated stack): force-recreate
-agents-server → boot log `re-linked dispatch subscriptions for 1
-persisted entity` → subscription back → fresh send emits a wake.
-Upstream PR target: `electric-sql/electric` (`packages/agents-server`).
+**So:** `server/lib/electric/*`, `server/routes/_agents/*`, the
+agents-server/Postgres compose + boot-relink patch + `apply-patches.sh`,
+the `@durable-streams/*` pins, and `server/lib/coast/*` are **legacy,
+scheduled for deletion** (tasks.md steps 1–4). Don't extend them; build
+the replacements per the design. `electric/claude.ts` is the exception —
+its host-side `claude` spawn (stdio-permission, steering, scrub) is
+**kept and reused** by the new engine.
 
 ## Running it
 
 ```bash
-pnpm install        # pnpm 11; native builds in pnpm-workspace.yaml; @durable-streams/*
-                    # pinned to pkg.pr.new build 350 in package.json (deps + pnpm.overrides)
-docker compose up -d  # Postgres + agents-server (Phase 3 session runtime; not needed for P0–2)
-pnpm dev            # http://localhost:7576 (dev port, pinned in package.json
-                    # `dev` script; production `domo up` is 7575 — keep distinct)
+pnpm install        # pnpm 11; native builds in pnpm-workspace.yaml
+pnpm dev            # http://localhost:7576 (dev port; prod is 7575)
 pnpm typecheck      # vue-tsc
 pnpm lint           # eslint
-pnpm build          # production build (works since cross-cutting #11 fix)
-bash scripts/build-release.sh [ver]   # → dist/ tarball + install.sh + SHA256SUMS
+pnpm build          # production build
 pnpm run update:local   # build + install over the LOCAL prod install
-                        # ($DOMO_HOME) the `domo update` way, no CI/GitHub
-                        # round-trip, then `domo restart`. Reuses the
-                        # install's bundled Node; seals cookies with the
-                        # repo .env secret not $DOMO_HOME/session-secret
-                        # (stable → sessions survive; see the script
-                        # header). See scripts/local-update.sh.
+                        # ($DOMO_HOME), then app-only restart
+docker compose up -d    # LEGACY (Postgres + agents-server) — only the
+                        # not-yet-replaced session engine needs it;
+                        # goes away in tasks.md step 1
 ```
 
-**Distribution (Decided #19; built, current release v0.3.0).**
-Domo ships as a host-installed app + compose'd infra, NOT
-docker-compose-only (the app is a host-side orchestrator). Pieces:
-`scripts/install.sh` (curl|sh, OS/arch-detecting, checksum-verified,
-`DOMO_LOCAL_TARBALL` for offline/test), `bin/domo` (CLI:
-`up`/`down`/`status`/`logs`/`update`/`version`),
-`release/docker-compose.yml` + `release/Dockerfile.agents-server`
-(Postgres + an agents-server image **built at first `domo up`** from
-pinned versions — no registry; the dev root `docker-compose.yml` still
-bind-mounts the repo and is dev-only), `scripts/build-release.sh`,
-`.github/workflows/release.yml` (tag `v*` → **matrix** build + attach).
-Tarballs are per `os-arch` (`{linux,darwin}-{x64,arm64}`; native
-`better-sqlite3` bundled into `.output`; **WSL = linux**); only
-`linux-x64` is locally buildable/verifiable here, the rest are
-CI-produced. **Postgres is not host-published** (agents-server reaches
-it over the compose net; the app never touches PG — Decided #14 — so no
-host-port clash). **All data under `$DOMO_HOME`**: `state.db`,
-`app/<ver>`+`current`, `run/`, and Postgres + streams as bind mounts
-under `$DOMO_HOME/data` (compose `${DOMO_DATA_DIR:?}`, set by the CLI;
-no Docker named volumes — one dir to back up / wipe). **Infra
-containers run as the host UID** (compose `user:${DOMO_UID}:${DOMO_GID}`
-+ `chmod 0777 /app` in the agents image so non-root can `mkdir
-/app/logs`) so that bind-mounted data stays host-owned. **Node is
-bundled** (`runtime/bin/node`, pinned v22 LTS, checksum-verified at
-build; `bin/domo` runs the app with it) → tarball ≈50 MB; remaining
-host reqs are Docker Compose + Coast + git + the `claude` CLI (git/
-claude can't be bundled — Decided #11). Canonical port **7575**;
-`bin/domo` binds it to **`127.0.0.1` by default** (no auth + full host
-control = localhost-only; `DOMO_BIND=0.0.0.0` to widen, opt-in only) —
-sets `HOST`/`NITRO_HOST` on the lone nohup launch (Nitro's default is
-all-interfaces, so this must be explicit). agents-server `127.0.0.1`-only
-in `release/docker-compose.yml`; Postgres not host-published. Operator
-guidance: `docs/site/securing-your-install.md`. Keep the pins in
-`release/Dockerfile.agents-server` in sync with `package.json`. The whole installer→`domo up`→runtime path is verified
-e2e on linux-x64 (electricSmoke all-true on the freshly-built image);
-darwin/arm are CI-only.
+Distribution (built; v0.3.0 on the old stack): host installer
+(`scripts/install.sh`, curl|sh) + `domo` CLI (`bin/domo`) + CI release
+matrix. Per-`{linux,darwin}-{x64,arm64}` tarballs, bundled Node, all
+data under `$DOMO_HOME`. Canonical port **7575**, `127.0.0.1` by default
+(`DOMO_BIND=0.0.0.0` to widen). The new engine removes the
+Postgres/agents-server infra entirely.
 
-## Browser testing
+## Testing
 
-The **Playwright MCP** is available — use `mcp__playwright__browser_*`
-tools to drive http://localhost:7576 in a real browser (snapshot the
-DOM, click, type, evaluate JS, watch console / network). Prefer this
-over curl when validating UI flows: the project-add wizard, env
-lifecycle buttons, build/run SSE streams, and `apiClient.*` calls
-all execute client-side, so an SPA mode app needs a browser context
-to exercise end-to-end. Start `pnpm dev` first, then navigate the
-browser at `http://localhost:7576/`.
+**This machine runs the user's LIVE prod Domo at `localhost:7575`** — do
+not kill/seed it. Test on an **isolated `DOMO_HOME` + the dev port
+7576**. `DOMO_HOME` overrides the data dir (default `~/.domo`, XDG
+fallback); `DOMO_PROJECTS_ROOT` sets the dir-picker root.
 
-Smoke procedures (kept for the lifetime of the project — useful when wiring
-a new env):
+**Playwright MCP** (`mcp__playwright__browser_*`) drives a real browser
+— prefer it over curl for UI flows (the SPA executes `apiClient.*`
+client-side). **UI work MUST be confirmed with a real rendered check**
+(screenshot / `getComputedStyle` is `oklch(...)`), not just the a11y
+snapshot — the a11y tree is identical with/without CSS (this hid a
+project-wide missing-CSS bug for 4 phases). **Scroll behaviour MUST be
+smoke-tested with a transcript taller than the viewport at a mobile
+breakpoint** — short exchanges never exercise the scroll container.
 
-- `health` — SQLite + `DOMO_HOME` resolution
-- `coastSmoke` — coastd reachability + Zod-validated `/ls`
-- `electricSmoke` — agents-server reachability + pull-wake runner state
-  (also lazily (re)starts the runtime, so call it after `docker compose up -d`)
-
-Call from the browser console: `await apiClient.health.call()`.
-
-Workspace + git are host-side, so you can exercise the file tree / editor
-/ git pane **without provisioning a Coast container**: seed a `projects`
-row + an `envs` row whose `worktree_path` points at any on-disk git repo
-(set `status='running'`), then visit `/p/<proj>/e/<env>`. Only the
-terminal needs a live container (it degrades gracefully otherwise).
-Clean up seeded rows afterward — they pollute the real `~/.domo/state.db`.
-
-`DOMO_HOME` env var overrides the data dir (default `~/.domo`, XDG-aware
-fallback to `$XDG_DATA_HOME/domo` when set).
-`DOMO_PROJECTS_ROOT` controls the directory picker's initial path (default `$HOME`).
+Workspace + git are host-side: exercise the file tree/editor/git pane
+without a container by seeding a `projects` + `envs` row whose
+`worktree_path` points at any on-disk git repo (`status='running'`);
+clean up seeded rows after (they pollute the real `~/.domo/state.db`).
 
 ## Layout + conventions
 
-- **Nuxt 4 app at the repo root.** `app/` holds Vue code, `server/` holds Nitro
-  routes + libs, `docs/` and `smoke/` are siblings.
-- **SPA rendering.** `nuxt.config.ts` sets `routeRules: { '/**': { ssr: false } }`
-  so HTML is rendered client-side; Nitro still serves procedures + SSE/WS.
-  (We don't use top-level `ssr: false` because Nuxt 4.4's vite-builder
-  errors with "No entry found in rollupOptions.input" in that mode.) This
-  means `useRequestURL` is unnecessary — components can use `location`
-  directly.
-- **Components** live under `app/components/Domo/` with a `Domo` prefix
-  (auto-import yields `<DomoLeftRail />` etc.). Use **UDashboard primitives**
-  (`UDashboardGroup`, `UDashboardSidebar`, `UDashboardPanel`, `UDashboardNavbar`,
-  `UDashboardToolbar`) for shell pieces — they handle resize/persist/mobile.
-  **The center `UDashboardPanel` carries NO `default-size`** — a size-less
-  panel is the theme's `flex-1` filler; a sized one is fixed `w-(--width)`
-  and won't reclaim space when the right panel hides / the rail collapses
-  (and `useResizable` ignores a reactive `default-size` after mount, so
-  binding it is dead anyway). Only the side rails are sized/resizable.
-- **Theme = `app/app.config.ts` + `@theme static` in `main.css`
-  (Decided: Robo palette).** Custom Tailwind color scales
-  (`--color-robo-*` = Robo's amber body → Nuxt UI `primary`;
-  `--color-roboeye-*` = Robo's mint eyes → `secondary`/accent via
-  `text-secondary`/`bg-secondary`; `--color-robodark-*` = Robo's dark
-  metal/outline, a warm low-chroma ramp → `neutral`, so it drives app
-  text/border/bg + dark-mode bg) live in `main.css`'s `@theme static`
-  block. **Every scale must be the full 50–950 (11 stops)** — Nuxt UI
-  needs the whole ramp (derives `--ui-primary` from 500 light / 400
-  dark, `--ui-text`/`--ui-bg`/`--ui-color-*` across the set); a partial
-  scale leaves `--ui-*` empty and the UI falls back. `app/app.config.ts`
-  (Nuxt-4 srcDir = `app/`) wires them by name:
-  `ui.colors.{primary,secondary,neutral}` (`neutral` accepts any
-  registered color — default is just `slate`). Fonts are declared ONLY
-  as `--font-{sans,serif,mono}` in the same block (sans "Jersey 25",
-  serif "Young Serif", mono "Kode Mono") — `@nuxt/fonts` (bundled +
-  auto-registered by Nuxt UI, weights 400–700) scans them and fetches
-  from Google Fonts at build; no `<link>`/nuxt.config needed. Window
-  title + favicon are `nuxt.config.ts` `app.head` (`title: 'Domo'`,
-  icon → `/image/logo.png`). The brand logo is **`public/image/logo.png`**
-  (served at `/image/logo.png`) and is the *only* favicon — the legacy
-  `public/favicon.ico` was deleted; `DomoLeftRailHeader` + `DomoAuthCard`
-  render the same file. To
-  re-skin, edit the scales in `main.css` (hex), not component classes.
-- **Backend API uses `nuxt-procedures`.** Every request/response endpoint
-  is a file under `server/procedures/` exporting `defineProcedure({ input, output, handler })`.
-  Files map to the auto-imported `apiClient` (e.g. `server/procedures/projects/add.ts`
-  → `apiClient.projects.add.call(...)` / `.useCall(...)`). Both input AND output
-  are Zod-validated; superjson handles serialization (Date, Map, etc. just work).
-  Use **discriminated-union outputs** for multi-step flows (see `projects.add`).
-  A `defineProcedure` `handler` receives `{ input, event }` — the H3
-  `event` is how procedures call `requireUserSession`/`requireAdmin`
-  (auth procedures + admin procedures use it; most procedures don't need
-  it because `server/middleware/auth.ts` already gated the request).
-- **Auth = `nuxt-auth-utils` + a central Nitro middleware (Decided #20).**
-  `server/plugins/00.session-secret.ts` fills the sealed-cookie secret
-  from an auto-generated, persisted `$DOMO_HOME/session-secret` (so the
-  operator sets nothing; `NUXT_SESSION_PASSWORD` overrides). Procedures
-  live under `server/procedures/auth/**` (`bootstrap`/`setup`/`register`/
-  `login`/`me` + `auth/admin/{listUsers,approveUser,deleteUser}`).
-  `server/middleware/auth.ts` is the enforcement point — it gates
-  `/procedures/**`, Domo's own `/api/*` SSE/WS endpoints, and `/_agents/
-  **`, allow-listing only the five auth procedures (it must NOT gate the
-  broad `/api/` prefix — see Gotchas). SPA side: `useAuth()` composable
-  (wraps `useUserSession` + DB-fresh `me`), `app/middleware/
-  auth.global.ts` (redirects to `/setup`|`/login`|`/pending`), the bare
-  auth pages, and **`DomoAppShell`** (the dashboard chrome, extracted
-  from `app.vue`) which mounts ONLY for a signed-in active user so its
-  data procedures never fire pre-auth. Session augmentation:
-  `shared/types/auth.d.ts` (`#auth-utils` `User` = `{id,email,name}`).
-  **`setup.vue`/`register.vue` wrap their form in `UForm` + a Zod
-  `schema` mirroring the server `auth.*` input** (named `UFormField`s →
-  inline per-field errors *before* submit; e.g. a too-short password is
-  rejected client-side with "Password must be at least 8 characters"
-  instead of the procedure layer's opaque 400 "Invalid procedure
-  input"). The server schema still validates (defense in depth); 409s
-  (email taken / no admin yet) stay in the shared `errMsg` line.
-  `login.vue` has no length constraint so it stays hand-rolled.
-- **Streaming endpoints stay classic.** `nuxt-procedures` is request/response
-  only. SSE proxies (`/api/projects/build`, `/api/envs/run`) and WS pass-throughs
-  (`/api/coast-events`) live under `server/api/` as `defineEventHandler` /
-  `defineWebSocketHandler`. The procedure layer kicks off / orchestrates them.
-- **Server libs** under `server/lib/`:
-  - `paths.ts` — `domoHome()`, `domoDbPath()`
-  - `db.ts` — `db()` singleton, schema migration
-  - `coast/{client,types,index}.ts` — typed coastd client
-  - `projects.ts` — git/Coastfile detection + DB CRUD
-  - `envs.ts` — env DB CRUD + `coast ls` reconciliation
-  - `schemas.ts` — shared Zod schemas (Project, Env, Session, FsEntry,
-    PublicUser/UserRole/UserStatus)
-  - `users.ts` — `users` table CRUD (`countUsers`, `getUserByEmail`,
-    `createUser`, `setUserStatus`, …) + `toPublic` (strips the hash)
-  - `auth.ts` — server guards `requireUser`/`requireActiveUser`/
-    `requireAdmin` (each re-reads the live `users` row — the cookie is
-    identity-only, so approve/reject takes effect with no re-login)
-  - `sessions.ts` — `sessions` table CRUD (Domo-side session pointer:
-    title override, `done`, `viewed_at_per_device`, cached status) +
-    `markSessionViewed` (per-device read-modify-write for the new-output dot)
-  - `claudeCommands.ts` — builtin ∪ custom slash-command discovery
-    (`<worktree>/.claude/commands/*.md` + user `<claudeConfigDir>/
-    commands/*.md`, project precedence) + `expandSlashCommand`
-    (`$ARGUMENTS` substitution); `mentions.ts` — `@`-mention index
-    (`searchMentions`) + `expandMentions` (file/dir/`@git-changes`/
-    `@<sha>`/`@url` → inline content); `promptExpand.ts` —
-    `expandInWorktree` orchestrates both. **Expansion runs in the
-    *entity* at execution time** (`executeClaudeTurn`), not in
-    `sessions.prompt`, so the durable inbox / transcript keeps the raw
-    text the user typed.
-  - `workspace.ts` — `resolveEnvWorktree()` + `safeResolve()` (the single
-    path-safety chokepoint), language-by-extension, binary/size sniff
-  - `git.ts` — injection-safe `execFile git` helpers (status parse,
-    show, stage/unstage/commit/push, check-ignore, plus
-    `gitListPaths`/`gitRecentCommits`/`gitDiffWorking`/`gitShowCommit`
-    for `@`-mention indexing/expansion)
-  - `settings.ts` — `settings` table get/set (panel state, etc.)
-  - `config.ts` — operator host config `<domoHome>/config.json`
-    (`loadDomoConfig`, Zod, read fresh per use, defaults on missing/bad).
-    Distinct from `settings.ts` (SQLite UX prefs): deploy-level, survives
-    app updates. Today: `claude.env` / `claude.extraPath` merged into the
-    `claude` spawn **before** `SCRUB_ENV` re-applies (scrub wins —
-    Decided #9). See design Decided #19 (distribution).
-  - `electric/` — Electric Agents session runtime: `config.ts` (URLs/ids),
-    `schemas.ts` (locked `claude-code-cli` row/inbox Zod schemas),
-    `claude.ts` (`runClaudeTurn`: host-side `claude` stream-json spawn,
-    env scrub, `session_id` capture, **`--permission-prompt-tool stdio`
-    control protocol** → `onPermissionRequest`/`onPermissionCancel`,
-    **`--replay-user-messages` + `onReady(steer)`** for mid-turn
-    steering, `AbortSignal`), `bridge.ts` (`createIdeBridge`: hand-rolled RFC 6455
-    WS server + 8 tools — **dormant**, superseded by stdio permission;
-    not booted per turn), `entity.ts` (`registerClaudeCodeCli` + handler
-    + `executeClaudeTurn` → `expandInWorktree` then `runClaudeTurn` with
-    `onPermissionRequest` (non-edit auto-allow; edit-family →
-    `pendingDiffs` row + park) + `reconcileStalePendingDiffs` (rejects
-    orphaned pending rows at handler entry — restart safety) + `mirrorToDb`
-    — live status/`lastEventAt` into the Domo `sessions` row, the
-    in-process runtime being the single writer), `runtime.ts`
-    (`startElectricRuntime` singleton: registry + `createRuntimeHandler`
-    + `runtime.registerTypes()` + pull-wake runner, non-fatal — the
-    *worker* side), `client.ts` (the *driver* side: memoized
-    `createRuntimeServerClient` + `ensureRuntimeReady` +
-    `runnerDispatchPolicy` + `durableStreamUrl` + `deleteEntityBestEffort`,
-    used by `sessions.*`). Booted by `server/plugins/electric.ts`.
-    Dev-only `app/plugins/dev-api-client.client.ts` exposes `apiClient` on
-    `window` so smoke procedures are callable from the browser console.
-- **Chat surface = browser-direct durable subscription, adapter to
-  `UIMessage`.** The browser subscribes to the entity stream itself (not
-  a procedure) but through the same-origin `/_agents/**` transparent
-  reverse proxy (`server/routes/_agents/[...].ts` → agents-server; h3
-  `proxyRequest`, streaming-safe) so it works over Tailscale/Tunnel with
-  no auth. `useSessionStream(sessionId)` wraps the framework-agnostic
-  agents-runtime core (no Vue binding ships): resolve the stream *path*
-  server-side via the `sessions.streamInfo` procedure (keyed by the Domo
-  session id), then — importing **only** the browser-safe
-  `@electric-ax/agents-runtime/client` entry —
-  `createEntityStreamDB(appendPathToUrl(origin+'/_agents', streamPath),
-  customState)` → `preload` → mirror each TanStack DB collection into a
-  `shallowRef` on change (client-only, dynamic import — CodeMirror/xterm
-  pattern). The full `@electric-ax/agents-runtime` entry is **never**
-  imported client-side (its `createRuntimeServerClient`/`getEntityInfo`
-  drag in `model-runner` → `node:os/path/fs` and break the production
-  build — cross-cutting #11, now fixed this way).
-  `app/utils/sessionMessages.ts` is the claude-cli **adapter**: folds the
-  native stream-json `events` + inbox prompts → AI SDK `UIMessage[]`
-  (Decided #17). Render path mirrors the chat template: `DomoChat`
-  (`UChatMessages` + sticky `UChatPrompt`/`UChatPromptSubmit`) →
-  `DomoChatMessageContent` (switch on part `type`) → `DomoChatToolCard`
-  (per-tool cards, reuses `DomoDiffView`) / `DomoComark` (markdown,
-  `defineComarkComponent`, on-demand shiki langs — no `@shikijs/langs`
-  imports). Prompt input is `DomoChatInput` (wraps `UChatPrompt`/
-  `UChatPromptSubmit` + the shared keyboard-nav `DomoChatAutocomplete`
-  popup; owns `/` + `@` trigger detection off the textarea value/caret;
-  nav keys intercepted at keydown-**capture** on the wrapper so they
-  never reach `UChatPrompt`'s own Enter→submit / Esc→blur).
-  `useDeviceId` (localStorage uuid) keys the per-device new-output dot;
-  the transcript `#actions` slot hosts the edit-and-resend pencil.
-  Client row mirrors of the locked entity schemas live in
-  `app/utils/sessionStreamTypes.ts` (server `schemas.ts` is server-only).
-- **Workspace + git are host-side.** Under Option A (host-side `claude`)
-  the worktree is a host dir, so `workspace.{tree,read,write}` use
-  `node:fs` directly and `git.*` shells `git -C <worktree>` on the host —
-  *not* coastd `/files/*`. Every path is worktree-relative and must pass
-  `safeResolve` (rejects `..`, abs-outside, symlink-out). The terminal is
-  the only workspace surface that crosses into the container.
-- **Terminal** = `WS /api/terminal?envId=…` (`server/api/terminal.ts`),
-  a dumb pass-through to coastd `WS /api/v1/exec/interactive`. The client
-  (`DomoTerminal`, xterm + `@xterm/addon-fit`) speaks coastd's frame
-  protocol directly: first frame is a `{session_id}` JSON handshake
-  (swallowed), resize is `\x01`+JSON, clear is `\x02clear`. **It's a
-  center route** `…/e/:env/terminal` (Phase 4) — a peer of chat
-  (`s/:session`) and file (`f/:path`), *not* a bottom panel: the
-  `UDashboardGroup` is a non-wrapping flex row with no vertical
-  stacking, so "bottom panel" never fit the primitive. `DomoCenterNavbar`
-  links to it.
-- **CodeMirror/xterm/Comark are client-only**; dynamic-import inside
-  `onMounted` and keep grammars lazy (`app/utils/language.ts` maps a
-  language id → `@codemirror/lang-*`). `DomoCodeEditor` (view/edit),
-  `DomoDiffView` (`@codemirror/merge`), `DomoMarkdownView` (`<Comark>`).
-- **`useSelectedEnv()`** resolves `{project,env,envId,...}` from the route
-  for the workspace panels (`nuxt-procedures` `useCall` is keyed on its
-  serialized input, so it does *not* refetch on reactive arg changes —
-  re-`call()` inside a `watch` when you need that). **`DomoDirectoryPicker`
-  is the cautionary instance**: it used `useCall` + `refresh()`, so
-  `refresh()` re-sent the *original* `{path:undefined}` and the picker was
-  permanently stuck on the home dir (couldn't navigate / type a path /
-  select a non-home dir — and "Select" then fed home to `projects.add`).
-  It now drives `apiClient.fs.browse.call({path})` imperatively and
-  re-calls per navigation. Any nav-driven fetch must do the same.
-- **Procedure inputs reject empty strings** (Zod `z.string()` is
-  non-empty-validated server-side → HTTP 400). Don't fire a `useCall`/
-  `.call` with an id that may be `''`/undefined on a not-found URL or
-  before a parent query resolves (it spams console 400s). Guard with a
-  manual `ref` + `async refreshX()` that no-ops when the id is falsy and
-  re-runs in a `watch` — see `p/[project]/index.vue` &
-  `p/[project]/e/[env]/index.vue` `refreshEnvs`.
-- **Panel state persists server-side** via `usePanelState(key, def)`
-  (`settings` table), not ephemeral `useState`. **But the mobile
-  workspace drawer is deliberately *ephemeral* (`ref(false)`)** — the
-  persisted desktop `rightOpen:true` must not auto-open a full-screen
-  slideover over the chat on every phone load. `app.vue` keeps both and
-  routes the toggle/⌘B through a `workspaceOpen` computed keyed on
-  `isDesktop` (`useBreakpoints`).
-- **Responsive panels = component swap, not CSS hiding.** The dashboard
-  group can't stack, so secondary surfaces swap component by breakpoint:
-  the workspace panel is an inline resizable `UDashboardPanel` at ≥lg and
-  a `USlideover` at <lg (`useBreakpoints(breakpointsTailwind)` mounts
-  exactly one); the left rail uses Nuxt UI's built-in
-  `UDashboardSidebar` mobile drawer (+ `UDashboardNavbar`'s auto
-  `UDashboardSidebarToggle`). `@vueuse/nuxt` is a Nuxt module;
-  `@vueuse/core` is a **direct** dependency (was only transitive via
-  `@nuxt/ui` — don't let a lint "unused" sweep drop it).
-- **Coast contract is the daemon's HTTP API**, not the CLI. Talk to coastd
-  via `coast()` from `server/lib/coast`. CLI is only for `--version` / `doctor`.
-- **Coast types** are currently modeled as Zod schemas in `server/lib/coast/types.ts`
-  (mirrors Rust types in `../coasts/coast-core/src/protocol/`). Swap to
-  vendored `ts-rs` bindings later — public API of `createCoastClient()`
-  doesn't change.
-- **Live state via `useCoastEvents`.** Composable opens a singleton WS to
-  `/api/coast-events`; pages register handlers to invalidate their data
-  on `instance.*` / `service.*` / `build.*` events. No polling.
+- **Nuxt 4 at repo root.** `app/` (Vue), `server/` (Nitro routes+libs),
+  `docs/`, `smoke/`. **SPA**: `routeRules:{'/**':{ssr:false}}` (top-level
+  `ssr:false` breaks Nuxt 4.4's vite-builder) — use `location` directly,
+  no `useRequestURL`.
+- **Components** `app/components/Domo/*` with a `Domo` prefix. Use
+  **UDashboard primitives** for shell pieces. The center `UDashboardPanel`
+  carries **no `default-size`** (size-less = `flex-1` filler; a sized one
+  won't reclaim space and `useResizable` ignores a reactive size after
+  mount). Only side rails are sized/resizable.
+- **Theme = `app/app.config.ts` + `@theme static` in `main.css`** (Robo
+  palette). Custom scales `--color-robo*` must each be the full 50–950
+  (Nuxt UI derives `--ui-*` across the ramp; a partial scale falls
+  back). Fonts only via `--font-{sans,serif,mono}` (`@nuxt/fonts` scans
+  them). Re-skin by editing the hex scales, not component classes.
+- **Backend = `nuxt-procedures`.** Files under `server/procedures/`
+  export `defineProcedure({input,output,handler})`; auto-imported
+  `apiClient` (`projects/add.ts`→`apiClient.projects.add.call/.useCall`).
+  Zod in+out, superjson serializes (Date/Map work). Multi-step flows use
+  discriminated-union outputs (see `projects.add`). Handler gets
+  `{input,event}`; only auth/admin procs use `event` (the middleware
+  gates the rest). **Inputs reject empty strings** (`z.string()`
+  non-empty server-side → 400): guard a `useCall`/`.call` against ``''``/
+  undefined ids (manual `ref` + `async refresh()` that no-ops when
+  falsy, re-run in a `watch`).
+- **Streaming stays classic Nitro** (`server/api/`,
+  `defineEventHandler`/`defineWebSocketHandler`): `nuxt-procedures` is
+  request/response only. The change-bus/chat SSE (`/api/live`), terminal
+  WS, and env reverse-proxy live here; procedures orchestrate them.
+- **Auth = `nuxt-auth-utils` + one Nitro middleware.**
+  `server/middleware/auth.ts` is the real boundary — gates
+  `/procedures/**` + Domo's own `/api/*` SSE/WS, allow-lists only
+  bootstrap/setup/register/login/me. It must **NOT** gate the broad
+  `/api/` prefix (framework `/api/_auth/`, `/api/_nuxt_icon/` live
+  there — add new Domo `/api/*` endpoints to the list explicitly). The
+  sealed cookie is **identity-only** (`{id,email,name}`); `role`/
+  `status` are re-read from `users` in every guard (`server/lib/auth.ts`)
+  so approve/reject needs no re-login — don't cache them in the cookie.
+  Session secret auto-managed at `$DOMO_HOME/session-secret`
+  (`server/plugins/00.session-secret.ts`; in dev nuxt-auth-utils'
+  `.env` auto-gen takes precedence — the plugin owns prod only; to test
+  the plugin, build with `.env` moved aside, and it must set
+  `process.env.NUXT_SESSION_PASSWORD`, not assign read-only prod
+  `runtimeConfig`). `setup.vue`/`register.vue` wrap a `UForm` + Zod
+  mirroring the server input (inline per-field errors pre-submit).
+- **Server libs** `server/lib/`: `paths.ts`, `db.ts` (better-sqlite3
+  singleton + `CREATE TABLE IF NOT EXISTS` migrate + `ensureColumn`),
+  `schemas.ts` (shared Zod), `users.ts`+`auth.ts`, `projects.ts`,
+  `envs.ts`, `sessions.ts` (Domo session pointer: title/done/per-device
+  viewed/cached status), `claudeCommands.ts`/`mentions.ts`/`promptExpand.ts`
+  (slash + `@` discovery & **expansion at execution time, not in
+  `sessions.prompt`** — transcript keeps raw text), `workspace.ts`
+  (`resolveEnvWorktree`+`safeResolve` — the path-safety chokepoint),
+  `git.ts` (injection-safe `execFile git -C`), `settings.ts` (UX prefs),
+  `config.ts` (`<domoHome>/config.json` operator host config, read fresh;
+  `claude.env`/`extraPath` merged **before** the security scrub —
+  cannot reintroduce `ANTHROPIC_API_KEY`). **To build:**
+  `sessionEngine` (single-flight `claude` manager + `session_events`),
+  `changeBus` + `/api/live`, devcontainer client + `portForwarder`. **To
+  delete:** `electric/*` (keep `claude.ts`'s spawn), `coast/*`.
+- **Workspace + git are host-side.** `workspace.{tree,read,write}` use
+  `node:fs`; `git.*` shells `git -C <worktree>` on the host. Every path
+  worktree-relative through `safeResolve` (rejects `..`, abs-outside,
+  symlink-out). Only the terminal crosses into the container.
+- **Chat surface.** UI transcript = AI SDK `UIMessage` shape; each
+  backend is an adapter (`app/utils/sessionMessages.ts` folds native
+  stream-json + prompt/`chat`/`steer_sent` events → `UIMessage[]`). `ai`
+  is a **types-only devDep** — don't import its runtime in app code
+  (switch on the part `type` string; `import type` is fine). Render:
+  `DomoChat`→`DomoChatMessageContent`→`DomoChatToolCard`/`DomoComark`;
+  input `DomoChatInput`+`DomoChatAutocomplete` (nav keys intercepted at
+  keydown-**capture** so they never reach `UChatPrompt`'s Enter/Esc).
+  Per-session approval modes (`manual`/`auto`/`passthrough`, plain read
+  per turn). *(New engine: the browser tails `session_events` via the
+  `/api/live` seq path instead of a durable-stream subscription.)*
+- **CodeMirror/xterm/Comark are client-only** — dynamic-import in
+  `onMounted`, lazy grammars (`app/utils/language.ts`). `DomoCodeEditor`,
+  `DomoDiffView` (`@codemirror/merge`; split ≥md, inline below — the
+  approval card forces `inline`), `DomoMarkdownView`.
+- **`useSelectedEnv()`** resolves `{project,env,...}` from the route.
+  `nuxt-procedures` `useCall` is **keyed on serialized input** — it does
+  NOT refetch on reactive arg changes; re-`.call()` in a `watch`, or
+  drive `.call()` imperatively per nav (the `DomoDirectoryPicker`
+  cautionary case: `useCall`+`refresh()` re-sent the original args and
+  stuck the picker on `$HOME`).
+- **Panel state persists server-side** via `usePanelState`
+  (`settings`), except the **mobile workspace drawer is ephemeral
+  `ref(false)`** (a persisted desktop `rightOpen:true` must not
+  auto-open a slideover on phones); `app.vue` routes the toggle/⌘B
+  through an `isDesktop`-keyed computed.
+- **Responsive = component swap, not CSS hide** (the dashboard group
+  can't stack): workspace = inline `UDashboardPanel` ≥lg ↔ `USlideover`
+  <lg via `useBreakpoints`; left rail = Nuxt UI `UDashboardSidebar`
+  mobile drawer. `@vueuse/core` is a **direct** dep (don't let a lint
+  sweep drop it as "unused").
 
 ## Reference projects in `../`
 
-- `../coasts/` — Coast's Rust + React source.
-  - **`coast-daemon/src/api/`** — every HTTP/SSE/WS route Domo can call
-  - **`coast-guard/src/api/`** — working TypeScript client + SSE consumer (reference)
-  - **`coast-core/src/protocol/`** — Rust request/response types (mirror these in Zod)
-- `../claude-code/` — **public Claude Code source snapshot** (a research
-  mirror; exposed via an npm source-map leak). Use **narrowly for protocol
-  interop** (don't lift implementation code). The step-11 stdio permission
-  wire shapes came from **`src/cli/structuredIO.ts`** (`createCanUseTool`,
-  `control_request`/`control_response`); `src/cli/print.ts` shows
-  `--permission-prompt-tool stdio` selection;
-  `src/utils/permissions/PermissionPromptToolResultSchema.ts` is the
-  allow/deny result schema.
-- `../claudecode.nvim/` — Claude Code IDE bridge protocol (now dormant in
-  Domo — see `bridge.ts`; superseded by stdio permission for approval).
-  - **`PROTOCOL.md`** — canonical bridge writeup.
-- `../claude-code-chat/` (andrepimenta) — the *MCP-tool* variant of
-  `--permission-prompt-tool` (we use the built-in `stdio` variant instead;
-  same semantics, no extra server). See `claude-code-chat-permissions-mcp/`.
-- `../claude-code-chat-codeflow/` (codeflow-studio) — slash command and
-  `@`-mention UI patterns. See `src/utils/slash-commands.ts` and
-  `src/service/customCommandService.ts`.
+- `../claude-code/` — public Claude Code source snapshot. Narrow
+  protocol-interop use only. The stdio-permission wire shapes are in
+  `src/cli/structuredIO.ts` (`createCanUseTool`, `control_request`/
+  `control_response`).
+- `../claude-code-chat*/` — slash-command + `@`-mention UI patterns.
+- `../nuxt-chat-template/` — `UChat*` layout / `MessageContent` /
+  `Comark` patterns.
 
-## Gotchas
+(Electric/Coast/IDE-bridge references are now history — see
+`history.md`.)
 
-- **Nuxt UI v4 needs an app CSS entry — without it the WHOLE app is
-  unstyled.** `app/assets/css/main.css` must contain `@import
-  "tailwindcss"; @import "@nuxt/ui";` and be listed in `nuxt.config.ts`
-  `css`. The `@nuxt/ui` module only injects theme color *variables*
-  (`<style id="nuxt-ui-colors">` → `--ui-*`) and component runtime; it
-  does **not** run Tailwind. Missing the entry = no Preflight + zero
-  utility classes (`bg-*`/`flex`/`rounded`/…) → everything renders with
-  native browser styles. This was missing project-wide through Phases
-  0–4-firsthalf and went unnoticed because **every prior "verified live"
-  used the Playwright accessibility tree only** — the a11y tree is
-  identical whether or not CSS applies. **Lesson: visual/UI work MUST be
-  confirmed with a real rendered check** — screenshot AND/OR
-  `getComputedStyle` on a known element (e.g. a primary `UButton` bg must
-  be an `oklch(...)`, not `rgb(239, 239, 239)`), not just the snapshot.
-- **Never import the full `@electric-ax/agents-runtime` entry into client
-  code.** It pulls `model-runner` → `node:os/path/fs`; the client bundle
-  can't externalize them → Rollup `"join" is not exported by
-  "__vite-browser-external"` (this broke `pnpm build` until the
-  cross-cutting #11 fix). The browser must use **only** the browser-safe
-  `@electric-ax/agents-runtime/client` entry (`createEntityStreamDB`,
-  `appendPathToUrl` — no `node:` deps). Anything that needs the full
-  entry's `createRuntimeServerClient`/`getEntityInfo` (e.g. resolving an
-  entity's durable-stream path) must run **server-side** — that's why
-  `useSessionStream` is keyed by the Domo session id and resolves the
-  `streamPath` through the `sessions.streamInfo` procedure. `pnpm build`
-  now passes; keep it green (don't reintroduce a full-entry client
-  import).
+## Gotchas (live)
+
+- **Nuxt UI v4 needs an app CSS entry** — `main.css` must have `@import
+  "tailwindcss"; @import "@nuxt/ui";` and be in `nuxt.config.css`, else
+  the whole app is unstyled (and the a11y tree looks fine — verify with
+  a rendered check).
+- **`UChatMessages` scrolls the nearest `overflow-y:auto` ancestor**,
+  not itself — keep the transcript wrapper a bounded `flex-1 min-h-0
+  overflow-y-auto`, input/cards pinned below as `shrink-0`.
 - **Always pass `title` AND `description` to every `UModal`/`USlideover`
-  /`UDrawer`.** Reka UI dialogs need an accessible name *and* description
-  (missing description → console warning). Separately, Nuxt UI 4.7.1's
-  `UDashboardSidebar` mobile slideover renders the **literal i18n path**
-  `dashboardSidebar.title`/`.description` — its `DashboardSidebar.vue`
-  calls `t('dashboardSidebar.*')` but the bundled `en` locale only ships
-  `dashboardSidebarCollapse`/`...Toggle`, no `dashboardSidebar` key. Fix:
-  pass `:menu="{ title, description }"` (forwarded to the slideover;
-  `v-bind="menu"` is applied *after* the broken `:title`, so it wins).
-  See `app.vue`.
-- **`defineShortcuts` disables a shortcut while an INPUT/TEXTAREA/
-  contenteditable is focused** unless `usingInput: true`. ⌘S (save in
-  the editor) and ⌘↵ (commit from the message textarea) *must* set
-  `usingInput: true` or they no-op exactly when you'd use them. It also
-  `preventDefault()`s on match (so ⌘S won't open the browser save
-  dialog). `meta_*` auto-maps to Ctrl off macOS — don't add a separate
-  `ctrl_*`.
-
-- **Nuxt UI v4 `UTabs` keys its `v-model` off each item's `value`**, not
-  `id`. Items with only `{ id }` leave the model stuck — give them
-  `{ value, label, icon }` (bit `DomoRightPanel` in Phase 2: Git tab
-  silently rendered nothing until items got `value`).
-
-- **`UDashboardSidebar` collapse floors at `min-w-16` (64px strip).** The
-  theme `root` is `min-w-16 w-(--width)`, so a `collapsible` rail with
-  the default `collapsedSize:0` collapses to a 64px strip, not hidden —
-  and Domo's project-tree rail can't render into an icon strip (looks
-  broken). `AppShell` binds `v-model:collapsed` and applies a
-  `:ui="{ root: 'min-w-0 border-e-0 overflow-hidden' }"` **only while
-  collapsed** → true 0-width hide. `UDashboardSidebarCollapse` is
-  desktop-only (`hidden lg:flex`) and lived in the rail header, so it
-  vanished with the rail — it's moved to `DomoCenterNavbar`'s `#leading`
-  slot so the expand control survives. `UDashboardSidebarToggle` (navbar
-  auto, `lg:hidden`) is the *mobile drawer* toggle, a different control.
-- **The sidebar `header`/`footer` slots are `flex items-center`** — a
-  slot root with no `w-full`/`flex-1` shrinks to its content. `Domo
-  LeftRailFooter`'s root needs `w-full` for the user dropdown to span
-  the rail (it was 129px inside a shrunk flex child until fixed).
-
-- **A static `<img src="/public-asset">` in a Vue template build-resolves
-  the asset — the file MUST be committed in `public/` first.**
-  `@vitejs/plugin-vue`'s `transformAssetUrls` resolves a *static* `src` as
-  a build-time import; if the file is absent Vite throws "Failed to
-  resolve import …" and the **whole SPA fails to load** (blank page,
-  `entry.js` dynamic-import error) — not just a broken image. The logo
-  (`/image/logo.png`, used by `DomoLeftRailHeader` / `DomoAuthCard`) is
-  static `src` and works *because the asset is committed*. If you ever
-  reference a not-yet-committed public asset, either commit it in the
-  same change or use a bound `:src="'/path'"` (a runtime expression
-  `transformAssetUrls` ignores → served from `public/` at request time,
-  missing = broken `<img>`, never a build break). Head `link` hrefs in
-  `nuxt.config` are not template assets — always fine static.
-
-- **IDE bridge connection didn't fire from a nested `claude` process** in the
-  Phase 0 smoke. Resolved in the standalone Nuxt process: the 8d live smoke
-  spawned host `claude` per turn and `sessionMeta.bridgePort` was populated
-  for the duration (the bridge booted + the lock file was written under
-  `~/.claude/ide/`). The spawn → stream-json → wake → handler → mirrored
-  events path is fully validated.
-- **Restart-resume hazards (Decided #23).** (1) **agents-server keeps
-  pull-wake subscriptions in memory and never rebuilds them on its own
-  boot** — so a host-side claim/boot "sweep" is futile after an
-  agents-server restart (the subscription is gone → claim 404s). The
-  only working fixes are app-only `domo restart` + the vendored
-  agents-server boot-relink patch. Don't reintroduce a claim sweep.
-  (2) **pnpm 11.0.9 will NOT apply `patchedDependencies`** here —
-  `pnpm patch-commit` writes the file but `pnpm install` reports
-  "Already up to date" forever and never patches `node_modules`; the
-  release image installs with **npm** anyway. The patch is applied by
-  `scripts/apply-patches.sh` (idempotent; `postinstall` runs it before
-  `nuxt prepare`) and by `release/Dockerfile.agents-server`. Don't
-  "fix" it back to pnpm patchedDependencies. (3) **Never `rm
-  pnpm-lock.yaml` to force a reinstall** — re-resolving drifts the
-  pkg.pr.new `@durable-streams/*` pins (Decided #12 hazard); restore
-  with `git checkout -- pnpm-lock.yaml && pnpm install
-  --frozen-lockfile`. (4) The agents image is rebuilt+recreated only
-  when its Dockerfile/pins change (`dc up -d --build` diff), so the
-  **deploy that introduces the patch needs a one-time infra
-  rebuild/recreate** (e.g. `domo down && domo up`, or `dc up -d --build`
-  for agents-server) — a plain app-only `update:local`/`domo restart`
-  keeps the *old* agents-server. After that, app-only restarts are
-  correct and the patch persists in the image.
-- **`DomoDiffView` is split at ≥md, unified/inline below (and the
-  approval card forces `inline`).** Side-by-side `MergeView` is
-  unreadable on a phone; `useBreakpoints` picks `unifiedMergeView`
-  (`@codemirror/merge`) under `md`. The existing rebuild `watch`
-  re-runs on the breakpoint change. `DomoDiffApprovalCard` passes
-  `inline` unconditionally (it's a narrow card even on desktop).
-- **Headless `claude -p` permission = `--permission-prompt-tool stdio`,
-  NOT the IDE-bridge `openDiff` (resolved, step 11, `claude` 2.1.142).**
-  `openDiff` is never called in `-p` stream-json mode (verified: under
-  both `acceptEdits` and `default` a `Write`/`Edit` came back
-  permission-denied, no park). The working mechanism — exactly what the
-  official VS Code extension spawns — is `--permission-prompt-tool stdio
-  --permission-mode default`: the CLI emits a `control_request`
-  `{type:'control_request',request_id,request:{subtype:'can_use_tool',
-  tool_name,input,tool_use_id}}` NDJSON line on **stdout**; the host
-  replies on **stdin** with `{type:'control_response',response:{subtype:
-  'success',request_id,response:{behavior:'allow',updatedInput}|{behavior:
-  'deny',message}}}`. `--permission-prompt-tool` is a **hidden** flag
-  (absent from `--help`) and `stdio` is its built-in value (not an MCP
-  name). stdin MUST stay open for the whole turn (close on `result`).
-  On allow the **CLI applies the edit itself** — never write the file
-  in the live path. Wire shapes mirror the public Claude Code source
-  snapshot `../claude-code/src/cli/structuredIO.ts`. `bridge.ts` is
-  dormant (don't boot it / don't set `CLAUDE_CODE_SSE_PORT` —
-  ENABLE_IDE_INTEGRATION competing with stdio permission caused the
-  original confusion). After a server restart, **never replay-apply a
-  dead turn's pending diff** — it races the re-run; `reconcile
-  StalePendingDiffs` rejects orphaned rows and the interrupted prompt
-  re-proposes instead.
-- **Mid-turn steering: the CLI replay is a *consumption* ack, not a
-  receipt ack** (Decided #18; spike `smoke/steering-spike.mjs`). A user
-  message written to the live child's stdin mid-turn is *queued* and
-  consumed at the next step/tool boundary (agent redirects, turn
-  continues) — `--replay-user-messages` echoes it on stdout as
-  `{type:'user',uuid,isReplay:true}` *only when the agent drains the
-  queue*, so send→ack latency = the in-flight tool's remaining time
-  (seconds), NOT immediate. So a steer needs a queued→delivered UI
-  state, matched by the `uuid` we generate. Steered text is **not**
-  `@`/slash expanded (keeps the raw-text invariant trivial — no inbox
-  path). It's an in-process side-channel (`sessionControl.steerSession`),
-  same reason as diff-decisions (single-flight runner can't deliver a
-  wake mid-turn) — *not* a durable inbox message (a new inbox type would
-  re-run as a turn after the snapshot → double turn; the durable record
-  is a `steer_sent` *event* appended from inside the live handler).
-  Best-effort across restart (a `steer_sent` with no replay shows a
-  stale "queued" bubble; acceptable — contrast diff-approval, kept
-  durable).
-- **IDE bridge ≠ Nitro WS.** Browser↔Domo channels use
-  `defineWebSocketHandler` (one app listener); the IDE bridge needs a
-  *per-session ephemeral-port localhost* listener the `claude` child
-  discovers via its own lock file, so it's a standalone hand-rolled
-  `node:http` RFC 6455 server (design Decided #15). Don't "consolidate" it
-  onto a Nitro route — the lock-file→port→`/` model can't multiplex.
-- **Subscription billing confirmed** via `apiKeySource: "none"` in the
-  `system` init event when `ANTHROPIC_API_KEY` is scrubbed.
-- **Prompt expansion happens in the entity, not the procedure.** Custom
-  slash-command + `@`-mention resolution runs in `executeClaudeTurn`
-  (`expandInWorktree`), so `sessions.prompt`'s inbox payload — and thus
-  the durable transcript — stays the *raw* text the user typed. Don't
-  "optimize" by expanding in `sessions.prompt`: the transcript would then
-  show a 60 KB file dump instead of `@file`. The CLI doesn't resolve
-  either custom commands or `@`-mentions in `-p` stream-json mode, so the
-  host must.
-- **`creationArgsSchema` now requires `sessionId`** (== entity id; lets
-  the in-process entity `mirrorToDb` live status/`lastEventAt` into the
-  Domo `sessions` row for the rail). An entity persisted in agents-server
-  Postgres *before* this change will fail `creationArgsSchema.parse` on
-  resume — fine in dev (sessions are throwaway; restart/reset), but a
-  reason not to treat dev streams as durable across schema bumps.
-- **Autocomplete nav keys are intercepted at keydown-capture.**
-  `UChatPrompt` binds its own Enter→submit / Esc→blur on the inner
-  textarea. `DomoChatInput`'s wrapper `@keydown.capture` handles
-  Arrow/Tab/Enter/Esc *and* `stopPropagation()` while the popup is open,
-  so the event never reaches the textarea's bubble-phase handlers. Don't
-  move this to a bubble listener — both fire on the same element and the
-  submit would race the selection.
-- **`UChatMessages` is not its own scroll container — it scrolls the
-  nearest ancestor with computed `overflow-y: auto|scroll`** (Nuxt UI
-  `getScrollParent`, `ChatMessages.vue`). In `DomoChat` the transcript
-  wrapper **must** be `overflow-y-auto` (not `overflow-hidden`). It was
-  `overflow-hidden`, so the scroll-parent search walked up to
-  `AppShell`'s center body; but `DomoChat` is `h-full` and clips
-  internally, so that ancestor's `scrollHeight == clientHeight` —
-  nothing scrolled and the transcript was clipped/unreachable. Latent
-  on desktop (short transcripts fit; every prior smoke used a tiny
-  "PONG" exchange), immediately visible on a short mobile viewport
-  ("can't scroll down"). Keep the wrapper a bounded `flex-1 min-h-0
-  overflow-y-auto`; the input + diff-approval cards stay pinned below
-  as `shrink-0`. **Lesson: scroll behaviour must be smoke-tested with a
-  transcript taller than the viewport, at a mobile breakpoint** — a
-  short exchange never exercises the scroll container.
-- **`@`-mentions are plain text tokens, not rich contenteditable chips.**
-  The design mentions "inline chips"; we ship textarea `@token` text with
-  server-side expansion (functionally equivalent, no contenteditable
-  complexity). A future chip UI can layer on without changing the
-  expansion contract.
+  /`UDrawer`** (Reka UI needs both). Nuxt UI's `UDashboardSidebar`
+  mobile slideover renders literal `dashboardSidebar.title` unless you
+  pass `:menu="{title,description}"` (see `app.vue`).
+- **`defineShortcuts` disables a shortcut while an input is focused**
+  unless `usingInput:true` — ⌘S (editor save) and ⌘↵ (commit) must set
+  it or they no-op exactly when used. `meta_*` auto-maps to Ctrl off
+  macOS.
+- **A static `<img src="/public-asset">` build-resolves the asset** —
+  the file must be committed in `public/` or Vite fails the whole SPA
+  build (blank page). Use a bound `:src` for not-yet-committed assets.
+- **Logout must null `me` (unmount `DomoAppShell`) before `clear()`** —
+  else a still-mounted shell child refetches a now-gated procedure and
+  the 401 is an uncatchable console error.
+- **`UTabs` v-model keys off each item's `value`**, not `id` — items
+  with only `{id}` leave the model stuck.
+- **`UDashboardSidebar` collapse floors at 64px** — true-hide via
+  `:ui="{root:'min-w-0 border-e-0 overflow-hidden'}"` only while
+  collapsed; the desktop expand control must live outside the rail
+  (`DomoCenterNavbar`) so it survives the hide.
 - **Native modules** (`better-sqlite3`, `@parcel/watcher`, `esbuild`,
-  `unrs-resolver`, `vue-demi`) require `allowBuilds:` in `pnpm-workspace.yaml` —
-  pnpm 11 won't run install scripts otherwise.
-- **Coast version pinning is still open** (cross-cutting decision 4). Tested
-  against 0.1.53. The daemon API is at `/api/v1/`.
-- **`@durable-streams/*` are pkg.pr.new URL deps, pinned to build 350.**
-  `@electric-ax/agents-*` pull `@durable-streams/{client,server,state}` from
-  `pkg.pr.new` URLs. pnpm 11 blocks URL *subdeps*; we hoist them to top-level
-  `dependencies` + `pnpm.overrides` (build 350) so the global
-  `block-exotic-subdeps` guard stays ON for everything else. Don't "fix" the
-  lint by deleting these — bumping Electric means re-pinning all three URLs.
-- **agents-server requires Postgres** (`DATABASE_URL`, throws without it) —
-  hence `docker-compose.yml`. Durable streams run embedded (no Electric sync
-  service). agents-server auto-migrates Postgres on boot.
-- **Runtime boot is non-fatal & pull-wake.** `server/plugins/electric.ts`
-  fire-and-forgets `startElectricRuntime()`; if agents-server is down Domo
-  still serves P0–2 surfaces. Wake delivery is a long-lived **pull-wake**
-  stream, *not* the `/_electric/builtin-agent-handler` push webhook (design
-  Decided #13). `createRuntimeHandler.onEnter` keeps the webhook a drop-in.
-- **Entity handler model.** One `handler(ctx, wake)` per wake; drain
-  `ctx.db.collections.inbox` past `inboxState.lastProcessedInboxKey`. State
-  via `ctx.db.collections.<c>.get/.toArray` + `ctx.db.actions.<c>_insert/_update`.
-  `event.payload` schema must be `z.looseObject({})` (`z.record` emits
-  JSON-Schema `propertyNames`, which agents-server's validator rejects).
-- **`registry.define` ≠ control-plane registration.** It only registers
-  the entity in-process. `spawnEntity('claude-code-cli', …)` 404s ("entity
-  type not found") until the type is POSTed to agents-server via
-  `runtime.registerTypes()` — `startElectricRuntime()` now does this on
-  boot (after `createRuntimeHandler`, before runner start), mirroring
-  electric-source `agents/src/server.ts → registerBuiltinAgentTypes`.
-  Idempotent (upsert). A dev server started *before* this call was added
-  won't have it active until restarted (the plugin's start is memoized).
-- **No type-default dispatch policy — spawn with an explicit runner
-  target.** agents-server resolves effective dispatch as
-  per-entity ?? parent ?? entity-type-default; there is **no** implicit
-  "route to any enabled local runner" fallback (verified in
-  `agents-server/src/routing/dispatch-policy.ts`). We deliberately do not
-  register a type default (matches electric-source builtin-agents — keeps
-  the type servable by other runtimes), so `sessions.create` passes
-  `dispatch_policy: { targets: [{ type:'runner', runnerId }] }` per spawn
-  (design Decided #16). Recipe proven by
-  `agents-server/test/horton-pull-wake-e2e.test.ts`. agents-server stores
-  the `/send` body's `type` as the inbox row's `message_type` (so the
-  entity's `prompt`/`diff_decision`/`abort` branch keys line up).
-- **`ai` is a types-only devDependency.** `@nuxt/ui`'s
-  `UChatMessages`/`UChatMessage`/`UChatPromptSubmit` `.d.ts` do
-  `import type … from 'ai'`, but `ai` is only a *devDependency of
-  `@nuxt/ui`* (not installed for consumers) — so using those components
-  needs `ai` present for vue-tsc. We install it `-D` for **types only**
-  (Decided #17). Don't `import` runtime values from `ai` in app code
-  *for now* — the claude-cli adapter doesn't use the AI SDK runtime (a
-  future `ai`-based backend may; not a permanent ban). Switch on the part
-  `type` string instead of `ai`'s `isToolUIPart` guards.
-  `import type { UIMessage, ChatStatus } from 'ai'` is fine (erased).
-- **vue-tsc rejects inline `as` casts with type literals in template
-  bindings.** `:x="(p as { t: string }).t"` / `:x="(p as any)"` →
-  `TS1005 ',' expected`. Do the narrowing in `<script>` (a typed
-  `computed`) and keep template expressions cast-free — see
-  `DomoChatMessageContent`.
-- **Retired GitHub runner silently wedged the release pipeline.**
-  `release.yml`'s `darwin-x64` leg ran on `macos-13`, which GitHub
-  **fully retired 2025-12-04**. A job on a dead runner label does not
-  fail — it sits in `queued` forever, and because `release` is
-  `needs: build`, *every* release (v0.1.2, v0.1.3) hung indefinitely
-  with the other three tarballs built but never published. Fix:
-  `darwin-x64` → **`macos-15-intel`** (the free x86_64 replacement,
-  available **until 2027-08**; after that GitHub has **no** x86_64
-  macOS runner and `darwin-x64` must be dropped or cross-built from an
-  arm64 mac). Also bumped the five Node-20-deprecated actions
-  (`checkout@v6`, `pnpm/action-setup@v6`, `setup-node@v6`,
-  `upload-artifact@v7`, `download-artifact@v8`; Node 20 enforced
-  2026-06-02). Lesson: a tag-triggered run uses the workflow **from the
-  tagged commit**, so a workflow fix on `main` does *not* salvage an
-  already-pushed tag — you must cut a fresh tag (this is why v0.1.4
-  exists). Maintainer runbook: `docs/site/releasing.md`.
-
-- **`nuxt-auth-utils` auto-writes a dev `.env` secret — that's why the
-  `$DOMO_HOME/session-secret` plugin "doesn't run" in dev.** In dev with
-  no `NUXT_SESSION_PASSWORD`, the module generates one and persists it to
-  the project-root `.env` (gitignored — `.gitignore:25`), then maps it
-  into `runtimeConfig.session.password`. `server/plugins/00.session-
-  secret.ts` correctly *defers* when a secret already exists, so it
-  no-ops in dev and only owns the **production** path (a built server
-  does NOT auto-gen). Don't "fix" the plugin because no
-  `$DOMO_HOME/session-secret` appears in dev — that's expected.
-  **Corollary (bit us in v0.2.0): the dev `.env` masks the production
-  path in *local* builds too.** `pnpm build` loads the project `.env`,
-  so a local build bakes the dev secret into
-  `runtimeConfig.session.password` and the plugin early-returns — the
-  prod codepath never runs locally. The CI release build has no `.env`,
-  bakes an empty password, runs the plugin for real. v0.2.0 shipped a
-  plugin that did `rc.session.password = secret`, which **throws
-  `TypeError: Cannot assign to read only property 'password'` at
-  startup** because Nitro's production `runtimeConfig` is read-only — a
-  crash no local build could reproduce. Fix: the plugin sets
-  `process.env.NUXT_SESSION_PASSWORD` instead (nuxt-auth-utils resolves
-  `defu({ password: process.env.NUXT_SESSION_PASSWORD },
-  runtimeConfig.session)` lazily on first session use — see
-  `node_modules/nuxt-auth-utils/.../session.js`). **To verify any
-  change to this plugin, build with `.env` moved aside** (replicates the
-  release condition) — a plain `pnpm build` + run will silently
-  early-return. We do NOT write `.env` at install time: Nitro's
-  production server doesn't read `.env`, and the design keeps `$DOMO_HOME
-  /session-secret` as the single auto-managed store (no operator env
-  var, one dir to back up / wipe).
-- **The auth middleware must NOT gate the broad `/api/` prefix.**
-  Framework endpoints live there too — `/api/_auth/session`
-  (nuxt-auth-utils' own session fetch/clear) and `/api/_nuxt_icon/*`
-  (the Nuxt Icon server bundle). Gating all of `/api/` 401s icon loads
-  on the *public* auth screens. `server/middleware/auth.ts` instead
-  enumerates Domo's own non-procedure endpoints (`/api/coast-events`,
-  `/api/terminal`, `/api/envs/`, `/api/projects/`) + `/procedures/**` +
-  `/_agents/**`. Add new Domo `/api/*` endpoints to that list explicitly.
-- **Logout must null `me` (→ unmount the shell) BEFORE `clear()`.**
-  `useAuth().logout()` sets `me.value = null` + `await nextTick()` first
-  so `showShell` flips false and `DomoAppShell` unmounts *before* the
-  awaited session `clear()`. Otherwise a still-mounted shell child
-  refetches a now-gated procedure mid-logout and the (correct) 401
-  surfaces as an **uncatchable** browser console error (a network 401 is
-  logged by the browser even with a JS `.catch`). Same class of bug as
-  the pre-auth `usePanelState` fetch — the fix there was extracting the
-  shell so its composables never run on auth pages.
-- **The session cookie is identity-only by design.** It carries
-  `{id,email,name}`; `role`/`status` are deliberately re-read from the
-  `users` table in every `server/lib/auth.ts` guard. This is what makes
-  admin approve/reject take effect on the user's *next request* with no
-  re-login (a sealed cookie can't be mutated server-side). Don't "cache"
-  role/status in the cookie to save a query — it reintroduces a stale-
-  permission window. `auth.me` is the client's fresh source; `/pending`
-  polls it.
+  `unrs-resolver`, `vue-demi`) need `allowBuilds:` in
+  `pnpm-workspace.yaml` (pnpm 11 won't run install scripts otherwise).
+- **vue-tsc rejects inline `as` casts in template bindings** — narrow in
+  `<script>` (a typed `computed`), keep template expressions cast-free.
 
 ## Updating this file
 
-Any session that lands work touching the topics here should update the
-relevant section in the same change. Examples:
-
-- Phase moves forward → bump "Where we are"
-- A new convention is established → add it to "Layout + conventions"
-- A gotcha is resolved or a new one surfaces → edit "Gotchas"
-- Reference project added/removed → edit that section *and* `docs/initial-design.md`
-
-If a finding contradicts something in `docs/initial-design.md`, update the
-design doc first, then mention it here as a pointer.
+Any session that lands work touching the topics here updates the
+relevant section in the *same* change (phase moves → "Where we are"; new
+convention → "Layout"; gotcha resolved/surfaced → "Gotchas"; reference
+added/removed → that section *and* `initial-design.md`). If a finding
+contradicts `initial-design.md`, fix the design doc first, then point
+here.

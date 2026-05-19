@@ -1,22 +1,83 @@
 # Domo — Task tracker
 
-Index of the per-phase checklists in [`tasks/`](tasks/). Tick items as we land them; add new ones as we discover them.
+> Keep in sync with `initial-design.md`. The pre-2026-05 Electric/Coast
+> build (phases 0–4 + auth Part A) **shipped** and is recorded in
+> [`history.md`](history.md) — not re-tracked here. This tracker covers
+> the **new architecture** build (`initial-design.md` → Build sequence).
+> Per-phase checklist files were retired into `history.md`.
 
-> **Keep this in sync with the design docs.** Whenever a task surfaces a new decision, a contradicted assumption, or a changed scope, update `initial-design.md` (and `project-context.md` if the high-level framing shifts) in the same change — not later. Same rule the other direction: design changes get reflected here as task additions/edits.
+Tick items as they land; add as discovered. Each landed step updates
+`initial-design.md`/`project-context.md`/`CLAUDE.md` in the *same*
+change (doc-sync is a prime directive).
 
-## Phases
+## 1 — Session engine swap
 
-| | File | Covers | Build-seq |
-|-|------|--------|-----------|
-| 0 | [`tasks/phase-0-foundations.md`](tasks/phase-0-foundations.md) | Smoke tests, Nuxt skeleton, Coast adapter | 0–2 |
-| 1 | [`tasks/phase-1-projects-and-envs.md`](tasks/phase-1-projects-and-envs.md) | Project setup flow, env creation + env screen | 3–4 |
-| 2 | [`tasks/phase-2-workspace.md`](tasks/phase-2-workspace.md) | File tree + editor, terminal pane, git changes pane | 5–7 |
-| 3 | [`tasks/phase-3-sessions.md`](tasks/phase-3-sessions.md) | Electric Agents, chat surface, session lifecycle, diff approval | 8–11 |
-| 4 | [`tasks/phase-4-polish.md`](tasks/phase-4-polish.md) | Aborts, shortcuts, dark mode, error/loading, responsive, onboarding | 12 |
-| 5 | [`tasks/phase-5-collab.md`](tasks/phase-5-collab.md) | Multi-user auth (Part A, shipped) + group-chat collaboration (Part B, designed) | post-12 |
+- [ ] `server/lib/sessionEngine`: single-flight per-session `claude`
+      manager (`Map<sessionId,{child?,queue,steer,diffWaiters}>`); reuse
+      `electric/claude.ts` spawn + stdio-permission + steering verbatim.
+- [ ] `session_events(session_id,seq,type,payload,created_at)` SQLite
+      table + append/read; `sessions` row keeps `nativeSessionId`,
+      status, approval mode.
+- [ ] Re-point `sessions.*` procedures off the entity/driver client onto
+      the engine; diff-decision + steer hit the live child directly.
+- [ ] Boot reconcile pass: `running`→`interrupted`, auto-reject orphan
+      `pending` diffs; next prompt `--resume`s.
+- [ ] Delete `server/lib/electric/*`, `/_agents` proxy, agents-server
+      compose + boot-relink patch, `apply-patches.sh`, pkg.pr.new
+      `@durable-streams/*` pins + `pnpm.overrides`.
+- [ ] Verify e2e on isolated `DOMO_HOME` + dev port: create→prompt→tool→
+      assistant; kill mid-turn → restart → no corruption, resumes.
 
-## Cross-cutting
+## 2 — Reactivity spine
 
-- [`tasks/cross-cutting.md`](tasks/cross-cutting.md) — pending decisions, pending discussions carried from `initial-design.md`, public-docs we still owe
+- [ ] In-process change bus; single post-write chokepoint emits
+      `{table,id,op}`.
+- [ ] `GET /api/live` SSE (auth-gated, singleton client); coarse
+      `{table}`→procedure refetch; chat fine path `{session_id,seq}`→
+      append past `lastSeq`; reconnect `?since=`.
+- [ ] `useLiveCall` (or generalize `useCoastEvents`); delete the 4 s rail
+      poll + the browser durable-stream client.
+- [ ] Verify: rail/env/ports update push-live; chat tails incrementally;
+      reconnect lossless; mobile scroll OK with a tall transcript.
 
-The phases are roughly ordered, but they're not strictly serial: pieces of one phase can land out of order if they don't block. The "build sequence" column maps each phase back to the step numbers in `initial-design.md` so the source-of-truth is easy to cross-reference.
+## 3 — Devcontainer environment engine
+
+- [ ] `@devcontainers/cli` lifecycle (`up`/`exec`); rootless DinD
+      baseline chosen + documented.
+- [ ] `Domofile` parse (container source + named ports); project-add &
+      env-create reworked (scaffold heuristics).
+- [ ] `WS /api/terminal` → `docker exec`/`devcontainer exec`; remove the
+      Coast adapter (`server/lib/coast/*`) + `useCoastEvents` Coast bits.
+- [ ] Verify e2e: create env from a real devcontainer, inner `docker
+      compose` up, terminal works.
+
+## 4 — Port forwarding
+
+- [ ] HTTP reverse-proxy (Host/path → `envContainerIP:innerPort`) + raw
+      TCP on-demand listeners; SQLite forward table = source of truth.
+- [ ] `envs.ports` (expose/unexpose), `envs.setCanonical`; env-screen
+      toggles; rebuild forwarders from the table on boot.
+- [ ] Verify: toggle exposes/unexposes with no container recreate;
+      canonical rebinds; restart-safe.
+
+## 5 — Collaboration (Decided #21)
+
+- [ ] Durable `chat` event `{text,author:{userId,userName}}`; engine
+      records every chat msg, runs a turn only on `@agent`/`trigger`,
+      folds un-consumed backlog; mid-turn `@agent` via steering.
+- [ ] Adapter + UI: authored human bubbles distinct from the agent;
+      "Send to agent ▶" + `@agent` autocomplete.
+- [ ] Verify e2e: multi-user chat without turns; trigger sees backlog;
+      restart-safe.
+
+## 6 — Re-polish + docs/site rewrite
+
+- [ ] Sweep aborts/shortcuts/responsive against the new engine.
+- [ ] Rewrite `docs/site/*` (getting-started, securing, releasing) to
+      the devcontainer/own-engine model; cut a new release line.
+
+## Open questions
+
+Tracked in `initial-design.md` → Decisions → Open (restart UX,
+`Domofile` scaffold heuristics, rootless-DinD baseline, service-URL UX,
+concurrent-edit signalling, no-remote projects, per-session ACLs).
