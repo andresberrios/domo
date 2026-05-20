@@ -14,11 +14,11 @@ change (doc-sync is a prime directive).
 
 **Step 1 (engine swap)** landed 2026-05-19 / -20, **Step 2 (reactivity
 spine)** landed 2026-05-20, **Step 3a (devcontainer cutover)** landed
-2026-05-20, **Step 3b (claude into the env container via `docker exec`
-+ shared `~/.claude` per Domo user)** landed 2026-05-20, **Step 4
-(TCP-only "expose externally" port forwarding)** landed 2026-05-20,
-**Step 5 (group-chat collab: `chat` events + `@agent` trigger
-+ backlog fold)** landed 2026-05-20. The session engine is the in-process
+2026-05-20, **Step 3b (claude into the env container via `docker exec`,
+shared `~/.claude` across the install)** landed 2026-05-20, **Step 4
+(TCP-only "expose externally" port forwarding)** landed 2026-05-20.
+**Step 5 (group-chat collab) is deferred** — single-user v1 ships
+without it; design lives on in Decided #13. The session engine is the in-process
 `server/lib/sessionEngine/*` over `session_events` + `pending_diffs` in
 SQLite; the reactivity spine is one auth-gated `/api/live` SSE +
 `server/lib/changeBus.ts`, with a tab-wide singleton browser client
@@ -54,11 +54,11 @@ fresh session in `manual` mode; four extension env vars added alongside
 
 **Next-up build order:**
 
-1. **Step 6** — re-polish + docs/site rewrite + prod reinstall (incl.
-   publishing the Domo claude devcontainer Feature image and pinning
-   the scaffold to it).
+1. **Step 6** — re-polish + prod reinstall (incl. publishing the Domo
+   claude devcontainer Feature image and pinning the scaffold to it).
+   Docs/site rewrite already done.
 2. **Step 7** — billing live-verify (single end-of-build check; runs
-   AFTER 1–6 land; see the note at the top of this file — don't
+   AFTER step 6 lands; see the note at the top of this file — don't
    surface as next-actionable while earlier steps are in flight).
 
 **Fresh-session rules:**
@@ -222,40 +222,40 @@ rail-poll.
       (`ghcr.io/<us>/devcontainer-features/claude`) that installs the
       claude CLI inside any container; version pinned to
       `CLAUDE_AGENT_SDK_VERSION` (literal Domo ships against; bump
-      when re-matching an upstream extension capture). **Deferred:**
-      v1 ships with the scaffolder writing a `postCreateCommand`
-      that `npm install -g @anthropic-ai/claude-code`s the latest
-      release. Pinning lands when the Feature image is published
-      (release-time step).
-- [x] Scaffolder writes `postCreateCommand: "npm install -g
-      @anthropic-ai/claude-code"` + `remoteUser: "vscode"` + the
-      Node LTS feature so the install works. Domo claude Feature
-      reference is left as a TODO comment for the publishing step.
-- [x] `server/lib/sessionEngine/claude.ts` SpawnOpts gains
-      `containerId` + `containerCwd`; when set, spawn becomes
+      when re-matching an upstream extension capture). **Deferred to
+      step 6 release-time:** v1 scaffolder writes a `postCreateCommand`
+      that runs Anthropic's official curl installer.
+- [x] Scaffolder writes
+      `postCreateCommand: "curl -fsSL https://claude.ai/install.sh | bash"`
+      + `remoteUser: "vscode"` + the Docker-in-Docker feature. The
+      installer is platform-detecting and needs no Node feature.
+      Domo claude Feature reference is left as a TODO comment for
+      the publishing step.
+- [x] `server/lib/sessionEngine/claude.ts` SpawnOpts always uses
       `docker exec -i -w <containerCwd> --env K=V … <containerId>
       claude …argv`. Argv unchanged. The 5 pinned env vars +
       `ANTHROPIC_API_KEY` scrub + `<domoHome>/config.json`
-      `claude.env`/`extraPath` merge land in the `--env` flags.
-- [x] Shared `~/.claude` per Domo user: bind-mount
-      `<DOMO_HOME>/claude-home/<userId>/` (mode 0700) into every env
+      `claude.env`/`extraPath` merge land in the `--env` flags. No
+      host-side fallback — a session without an `env.containerId`
+      errors out (`provision it first (Run / Up)`).
+- [x] Installation-wide shared `~/.claude`: bind-mount
+      `<DOMO_HOME>/claude-home/` (mode 0700) into every env
       container's `/home/<remoteUser>/.claude`. `remoteUser` read
-      from the parsed devcontainer.json (default `vscode`). User runs
+      from the parsed devcontainer.json (default `vscode`). Run
       `claude /login` once from any env terminal; OAuth + slash-
-      commands + MCP definitions propagate to every env that user
-      opens.
+      commands + MCP definitions propagate to every env across the
+      install. (Single-user v1 — multi-user mounts are part of the
+      deferred Decided #13 collab work.)
 - [x] Path translation: `/workspaces/<envName>/…` (what in-container
       claude emits) ↔ host worktree path (what `pending_diffs`
       stores + what `readFile` reads on the host). `toHostPath()`
       helper in `engine.ts` translates before file reads; the
       pending_diff row's `path` stays worktree-relative.
-      Adapter-side rendering (the diff card / tool-call UI) still
-      shows whatever the durable row says — worktree-relative.
-- [ ] Drop the host-side claude path entirely (no fallback).
-      **Deferred:** kept as a fallback for legacy env rows (no
-      containerId yet) for the current dev DB. Dropping completely
-      lands once the only path through the engine is via a real
-      containerId — clean-cut to be made before the next release.
+- [x] Custom-workspaceFolder warning: when devcontainer.json sets
+      a non-default `workspaceFolder`, `api/envs/run.post.ts`
+      emits a `warn` progress SSE frame at run time so the operator
+      sees that path translation may show absolute container paths
+      in diff cards / tool-call rendering.
 - [ ] Verify e2e: fresh env, `claude /login` from terminal, send a
       prompt, confirm `apiKeySource:"none"` + `cc_entrypoint=
       claude-vscode` in the spawned process (folded into step 7's
@@ -288,35 +288,14 @@ rail-poll.
       Desktop); expose/unexpose toggles with no recreate; restart-
       safe. Tied to the step 7 end-of-build live-verify run.
 
-## 5 — Collaboration (Decided #13) — LANDED
+## 5 — Collaboration (Decided #13) — DEFERRED (not in v1)
 
-- [x] Durable `chat` event `{text, author:{userId, userName}}`; engine
-      records every chat msg via `sessionEngine.chat()`, runs a turn
-      only on `@agent` (case-insensitive word-boundary match) or
-      explicit `trigger: true`. Backlog fold: `foldChatBacklog()`
-      pulls un-consumed `chat` events (seq > session.lastChatConsumedSeq)
-      into the synthesized prompt body each time a turn starts; the
-      cursor advances on each fold. Mid-turn trigger reuses the
-      existing steer side-channel via `prompt(sessionId, text, author)`.
-- [x] Procedures: `sessions.prompt` now reads `requireActiveUser` and
-      passes `{userId, userName}` to the engine (durable `prompt`
-      event carries the author). New `sessions.chat({id, text,
-      trigger?})` appends a `chat` event without triggering by
-      default; `trigger:true` (or `@agent` in the text) routes
-      through to `prompt`.
-- [x] Adapter: `sessionMessages.ts` projects `chat` events as authored
-      human bubbles (`metadata: {authorName, chatOnly: true}`);
-      `prompt` events also carry `authorName` when present (older
-      pre-step-5 events have no author and render unchanged).
-- [x] Chat input: "Chat only" button next to the approval-mode
-      selector — posts via `sessions.chat` without triggering.
-      Default Enter-to-send via `sessions.prompt` is unchanged
-      (single-user behavior preserved).
-- [ ] **Deferred:** `@agent` autocomplete in `DomoChatAutocomplete`,
-      per-bubble user-name styling polish, mid-turn `@agent` UI cue.
-      v1.5.
-- [ ] Verify e2e: multi-user chat without turns; trigger sees backlog;
-      restart-safe. Tied to the step 7 end-of-build live-verify run.
+Designed in `initial-design.md` Decided #13, but **not implemented**
+for v1. Authoring is single-user; sessions are private to the
+operator. The `chat` event type, `sessions.chat` procedure, backlog
+fold, `@agent` trigger detection, authored bubbles, "Chat only"
+input button — none of it is built. Revisit when a multi-user need
+surfaces.
 
 ## 6 — Re-polish + docs/site rewrite + prod reinstall
 

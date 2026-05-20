@@ -80,12 +80,9 @@ export function getEnvByName(projectId: string, name: string): EnvRow | null {
 }
 
 export function insertEnv(row: EnvRow): void {
-  // `coast_instance_name` lingers as a legacy NOT NULL column with an
-  // empty-string default (db.ts), so we set it explicitly to '' here —
-  // SQLite still enforces the constraint on INSERT.
   db().prepare(`
-    INSERT INTO envs (id, project_id, name, branch, worktree_path, container_id, devcontainer_path, coast_instance_name, status, created_at)
-    VALUES (@id, @projectId, @name, @branch, @worktreePath, @containerId, @devcontainerPath, '', @status, @createdAt)
+    INSERT INTO envs (id, project_id, name, branch, worktree_path, container_id, devcontainer_path, status, created_at)
+    VALUES (@id, @projectId, @name, @branch, @worktreePath, @containerId, @devcontainerPath, @status, @createdAt)
   `).run(row)
   changeBus().emitTableChange({ table: 'envs', id: row.id, op: 'insert' })
 }

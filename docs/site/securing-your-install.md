@@ -41,5 +41,5 @@ This bypasses everything else on your network path — there's no auth in front 
 - [ ] Strong admin password; only people you trust are approved.
 - [ ] Reached via localhost, a tunnel, or an HTTPS proxy — not a public port.
 - [ ] `DOMO_BIND` left unset (or only a trusted private interface).
-- [ ] `~/.domo` has sensible file permissions — it holds your data + every user's OAuth tokens under `~/.domo/claude-home/<userId>/`.
+- [ ] `~/.domo` has sensible file permissions — it holds your data + the shared OAuth tokens under `~/.domo/claude-home/`.
 - [ ] "Expose externally" left off for any port that doesn't have its own auth.

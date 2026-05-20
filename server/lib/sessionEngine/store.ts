@@ -16,10 +16,6 @@
  * SSE seq-tail (`/api/live?sessionId=&since=`) reads `readEvents(id,
  * sinceSeq)` for reconnect / late join. Every row is an INSERT (no
  * UPDATEs), so seq is monotonic and the cursor is naturally idempotent.
- *
- * The `message_id` column lingers from step 1's first cut (when partials
- * were UPDATE-coalesced in place). It's unused now; left in place since
- * SQLite DROP COLUMN is awkward and the storage is negligible.
  */
 import { db } from '../db'
 
@@ -44,8 +40,6 @@ export interface SessionEventRow {
   seq: number
   type: SessionEventType
   payload: Record<string, unknown>
-  /** Unused (legacy column from the partial-upsert cut). Always null on new rows. */
-  messageId: string | null
   createdAt: number
 }
 
@@ -54,7 +48,6 @@ interface SessionEventDbRow {
   seq: number
   type: string
   payload: string
-  message_id: string | null
   created_at: number
 }
 
@@ -76,7 +69,6 @@ function fromDb(r: SessionEventDbRow): SessionEventRow {
     seq: r.seq,
     type: r.type,
     payload: parsePayload(r.payload),
-    messageId: r.message_id,
     createdAt: r.created_at,
   }
 }
@@ -99,14 +91,14 @@ export function appendEvent(args: {
     .prepare(
       `
       INSERT INTO session_events (
-        session_id, seq, type, payload, message_id, created_at
+        session_id, seq, type, payload, created_at
       ) VALUES (
         @sessionId,
         COALESCE(
           (SELECT MAX(seq) + 1 FROM session_events WHERE session_id = @sessionId),
           1
         ),
-        @type, @payload, NULL, @createdAt
+        @type, @payload, @createdAt
       )
       RETURNING seq
       `,
@@ -122,7 +114,6 @@ export function appendEvent(args: {
     seq: seq.seq,
     type: args.type,
     payload: args.payload,
-    messageId: null,
     createdAt,
   }
 }
@@ -145,24 +136,6 @@ export function lastSeq(sessionId: string): number {
     .prepare(`SELECT MAX(seq) AS seq FROM session_events WHERE session_id = ?`)
     .get(sessionId) as { seq: number | null } | undefined
   return r?.seq ?? 0
-}
-
-/**
- * Read every `chat` event newer than `sinceSeq` for a session — the
- * step 5 backlog-fold helper. Ordered ASC so the caller can paste them
- * into the synthesized prompt in send order.
- */
-export function readChatSince(sessionId: string, sinceSeq: number): SessionEventRow[] {
-  const rows = db()
-    .prepare(
-      `
-      SELECT * FROM session_events
-      WHERE session_id = ? AND type = 'chat' AND seq > ?
-      ORDER BY seq ASC
-      `,
-    )
-    .all(sessionId, sinceSeq) as SessionEventDbRow[]
-  return rows.map(fromDb)
 }
 
 // ─── pending_diffs ────────────────────────────────────────────────────────

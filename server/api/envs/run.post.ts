@@ -14,7 +14,6 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { requireActiveUser } from '../../lib/auth'
 import { getEnv, resolveContainerId, updateEnvFields } from '../../lib/envs'
 import { domoHome } from '../../lib/paths'
 import * as portForwarder from '../../lib/portForwarder'
@@ -33,7 +32,6 @@ export default defineEventHandler(async (event) => {
   if (!body?.envId) {
     throw createError({ statusCode: 400, statusMessage: 'envId is required' })
   }
-  const user = await requireActiveUser(event)
 
   const env = getEnv(body.envId)
   if (!env) throw createError({ statusCode: 404, statusMessage: 'env not found' })
@@ -43,12 +41,13 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 500, statusMessage: 'env has no worktree path' })
   }
 
-  // Per-Domo-user shared `~/.claude` (Decided #3 / step 3b). Created on
-  // first up; subsequent ups for the same user reuse it. The user runs
-  // `claude /login` once from inside any env's terminal — OAuth + slash
-  // commands + MCP definitions then propagate to every env they open.
-  // Mode 0700 since it holds OAuth credentials.
-  const claudeHomeHost = join(domoHome(), 'claude-home', user.id)
+  // Installation-wide shared `~/.claude` (Decided #3 — single-user
+  // install for v1). Created on first up; reused for every env.
+  // Domo user runs `claude /login` once from inside any env's
+  // terminal — OAuth + slash commands + MCP definitions then
+  // propagate to every env across the install. Mode 0700 since it
+  // holds OAuth credentials.
+  const claudeHomeHost = join(domoHome(), 'claude-home')
   await mkdir(claudeHomeHost, { recursive: true, mode: 0o700 })
   // The mount target depends on the container's `remoteUser`. We read
   // it from the parsed devcontainer.json below; default to `vscode`
@@ -61,6 +60,7 @@ export default defineEventHandler(async (event) => {
   let publishPorts: { innerPort: number; protocol: 'tcp' | 'udp' }[] = []
   let devcontainerPath: string
   let remoteUser = 'vscode'
+  let workspaceFolderOverride: string | null = null
   try {
     const resolved = await loadDevcontainer(project.rootPath)
     devcontainerPath = resolved.path
@@ -70,6 +70,9 @@ export default defineEventHandler(async (event) => {
     }))
     if (typeof resolved.config.remoteUser === 'string' && resolved.config.remoteUser.length > 0) {
       remoteUser = resolved.config.remoteUser
+    }
+    if (typeof resolved.config.workspaceFolder === 'string' && resolved.config.workspaceFolder.length > 0) {
+      workspaceFolderOverride = resolved.config.workspaceFolder
     }
   } catch (e) {
     if (e instanceof DevcontainerNotFoundError) {
@@ -123,6 +126,19 @@ export default defineEventHandler(async (event) => {
         emitProgress(`Worktree ready`, 'ok')
       }
 
+      if (workspaceFolderOverride) {
+        // Domo's path-translation (the `/workspaces/<envName>` ↔ host
+        // worktree mapping in the engine) assumes the devcontainer-CLI
+        // default mount target. A custom `workspaceFolder` breaks that
+        // assumption — diff-card paths and tool-call rendering may
+        // misbehave until we surface the override at the spawn site.
+        emitProgress(
+          `warning: devcontainer.json sets a custom workspaceFolder (${workspaceFolderOverride}); ` +
+            `Domo's path translation expects the default /workspaces/<envName> convention — ` +
+            `diff-card and tool-call paths may show absolute container paths instead of worktree-relative.`,
+          'warn',
+        )
+      }
       emitProgress('Running `devcontainer up`…')
       const reused = await resolveContainerId(env)
       const result = await up({

@@ -67,16 +67,17 @@ export interface TurnSpec {
 }
 
 export interface SpawnOpts {
-  /** Host worktree path (cwd when running host-side, or `workspaceFolder`
-   * hint for path translation when running in-container). */
+  /** Host worktree path — used as a path-translation hint for
+   * tool-call paths the in-container CLI emits. */
   cwd: string
-  /** When set, spawn `claude` INSIDE this docker container via
-   * `docker exec` — the step 3b behavior. The 5 pinned env vars +
-   * scrub move into `--env` flags; cwd becomes `containerCwd`. */
-  containerId?: string
-  /** Working directory inside the container (when `containerId` is set).
-   * Defaults to `/workspaces/<basename(cwd)>` — the devcontainer CLI's
-   * convention. */
+  /** Docker container id of the env. The CLI spawns INSIDE this
+   * container via `docker exec`; the 5 pinned env vars + scrub
+   * move into `--env` flags. Required (post-step-3b). */
+  containerId: string
+  /** Working directory inside the container. Defaults to
+   * `/workspaces/<basename(cwd)>` — the devcontainer CLI's convention.
+   * Override if the project sets a non-default `workspaceFolder` in
+   * devcontainer.json. */
   containerCwd?: string
   /** `--resume <id>` for a respawn (first-spawn omits). */
   resumeSessionId?: string
@@ -212,35 +213,21 @@ export function spawnClaudeProcess(opts: SpawnOpts): ClaudeProc {
   const env = buildEnv()
   const args = buildArgs(opts)
 
-  // Step 3b: when `containerId` is set, run claude INSIDE the env
-  // container via `docker exec`. The Claude env vars + argv are
-  // identical to the host-side spawn — they just move into
-  // `--env KEY=VAL` flags on the exec command. The container's
-  // `~/.claude` is the shared per-Domo-user bind-mount the `up()`
-  // call attached. Argv + stdio semantics over `docker exec -i` are
-  // a clean pass-through (docker multiplexes stdin/stdout; the
-  // billing-relevant outbound HTTP comes from `claude` itself, which
-  // we still control via env vars).
-  const inContainer = !!opts.containerId
-  const containerCwd = inContainer
-    ? (opts.containerCwd ?? `/workspaces/${basename(opts.cwd)}`)
-    : null
-
-  let child: ChildProcessWithoutNullStreams
-  if (inContainer) {
-    const execArgs: string[] = ['exec', '-i', '-w', containerCwd!]
-    for (const [k, v] of Object.entries(env)) {
-      if (typeof v === 'string') execArgs.push('--env', `${k}=${v}`)
-    }
-    execArgs.push(opts.containerId!, 'claude', ...args)
-    child = spawn('docker', execArgs, { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
-  } else {
-    child = spawn('claude', args, {
-      cwd: opts.cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }) as ChildProcessWithoutNullStreams
+  // Run claude INSIDE the env container via `docker exec`. The 5
+  // pinned env vars + scrub land as `--env KEY=VAL` flags; argv +
+  // stdio semantics over `docker exec -i` are a clean pass-through
+  // (docker multiplexes stdin/stdout; the billing-relevant outbound
+  // HTTP comes from `claude` itself, which we still control via env
+  // vars).
+  const containerCwd = opts.containerCwd ?? `/workspaces/${basename(opts.cwd)}`
+  const execArgs: string[] = ['exec', '-i', '-w', containerCwd]
+  for (const [k, v] of Object.entries(env)) {
+    if (typeof v === 'string') execArgs.push('--env', `${k}=${v}`)
   }
+  execArgs.push(opts.containerId, 'claude', ...args)
+  const child = spawn('docker', execArgs, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }) as ChildProcessWithoutNullStreams
 
   // ─── Per-process state (carried across turns on this child) ────────────
   let exited = false

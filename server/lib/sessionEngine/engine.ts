@@ -42,7 +42,6 @@ import {
   getPendingDiff,
   insertPendingDiff,
   listPendingDiffs,
-  readChatSince,
   rejectAllPending,
   setPendingDiffStatus,
   type PendingDiffRow,
@@ -73,10 +72,9 @@ interface SessionProc {
   sessionId: string
   /** Host worktree path. Tool calls' file paths translate against this. */
   cwd: string
-  /** When the session runs inside a container (step 3b+), the workspace
-   * folder claude sees from inside (`/workspaces/<basename>` by default).
-   * Null = host-side spawn (legacy / pre-step-3b envs). */
-  containerWorkspace: string | null
+  /** The workspace folder claude sees from inside the env container
+   * (`/workspaces/<basename>` by default). */
+  containerWorkspace: string
   proc: ClaudeProc
   /** Active turn's abort controller (SIGTERMs the process). */
   abortCtl: AbortController | null
@@ -110,14 +108,11 @@ function relWorktree(cwd: string, abs: string): string {
 }
 
 /**
- * Translate a path claude emitted (which may be container-side when
- * the session runs inside a devcontainer) to a host filesystem path.
- * For host-side spawns (no `containerWorkspace`), this is identity.
- * For container spawns, the convention is
- *   `<containerWorkspace>/<rel>` ↔ `<hostCwd>/<rel>`.
+ * Translate a container-side path claude emitted (e.g.
+ * `/workspaces/<envName>/foo.js`) to the host filesystem path
+ * (`<env.worktreePath>/foo.js`).
  */
-function toHostPath(sp: { cwd: string; containerWorkspace: string | null }, abs: string): string {
-  if (!sp.containerWorkspace) return abs
+function toHostPath(sp: { cwd: string; containerWorkspace: string }, abs: string): string {
   const prefix = sp.containerWorkspace.endsWith('/') ? sp.containerWorkspace : sp.containerWorkspace + '/'
   if (abs === sp.containerWorkspace) return sp.cwd
   if (abs.startsWith(prefix)) return resolve(sp.cwd, abs.slice(prefix.length))
@@ -128,11 +123,11 @@ function toHostPath(sp: { cwd: string; containerWorkspace: string | null }, abs:
  * Reconstruct the proposed file change from a tool's permission-request
  * input, for the durable `pending_diffs` UI. The CLI itself applies the
  * edit on allow — this is display-only. Path translation handles
- * in-container spawns where the CLI emits `/workspaces/<envName>/foo.js`
- * but the file lives on the host at `<env.worktreePath>/foo.js`.
+ * the `/workspaces/<envName>/foo.js` ↔ host `<env.worktreePath>/foo.js`
+ * round-trip so `readFile` reads the actual file on disk.
  */
 async function proposeEdit(
-  sp: { cwd: string; containerWorkspace: string | null },
+  sp: { cwd: string; containerWorkspace: string },
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<{ path: string; before: string; after: string }> {
@@ -494,28 +489,29 @@ function permissionModeArg(
 }
 
 /**
- * Resolve where to spawn `claude` for a session. Returns the host
- * worktree path (for path translation against absolute tool-call paths
- * the CLI emits) plus the container id when the env has one — when
- * container id is set, the spawn moves into `docker exec` (step 3b
- * behavior); otherwise it falls back to host-side (legacy envs).
+ * Resolve where to spawn `claude` for a session: the host worktree
+ * path (for path translation against absolute tool-call paths the
+ * in-container CLI emits) + the env's docker container id. Throws if
+ * the env hasn't been provisioned yet (no container) — the caller's
+ * error surfaces in the chat UI prompting the user to run `up`.
  *
  * Synchronous: we read the stored `containerId` directly off the env
- * row, no `docker inspect` round-trip per prompt. If the container has
- * been recreated under us, the next `docker exec` will fail and the
- * engine will report `error` for the turn, prompting the user to
- * re-up. Boot reconcile (`plugins/sessionEngine.ts`) is the place that
- * rebinds stale ids via the `domo.envId` label.
+ * row, no `docker inspect` round-trip per prompt. If the container
+ * has been recreated under us, the next `docker exec` will fail and
+ * the engine will report `error` for the turn.
  */
 function resolveSessionContext(sessionId: string): {
   cwd: string
-  containerId: string | null
+  containerId: string
 } {
   const session = getSession(sessionId)
   if (!session) throw new Error(`session ${sessionId} not found`)
   const env = getEnv(session.envId)
   if (!env?.worktreePath) {
     throw new Error('env has no worktree yet — provision it first')
+  }
+  if (!env.containerId) {
+    throw new Error('env has no container yet — provision it first (Run / Up)')
   }
   return { cwd: env.worktreePath, containerId: env.containerId }
 }
@@ -526,11 +522,11 @@ function ensureProc(sessionId: string): SessionProc {
   const ctx = resolveSessionContext(sessionId)
   const approvalMode = effectiveApprovalMode(sessionId)
   const resumeId = getSession(sessionId)?.nativeClaudeSessionId ?? undefined
-  const containerWorkspace = ctx.containerId ? `/workspaces/${basename(ctx.cwd)}` : null
+  const containerWorkspace = `/workspaces/${basename(ctx.cwd)}`
   const proc = spawnClaudeProcess({
     cwd: ctx.cwd,
-    containerId: ctx.containerId ?? undefined,
-    containerCwd: containerWorkspace ?? undefined,
+    containerId: ctx.containerId,
+    containerCwd: containerWorkspace,
     resumeSessionId: resumeId,
     permissionMode: permissionModeArg(approvalMode),
   })
@@ -617,47 +613,6 @@ export interface PromptResult {
   uuid?: string
 }
 
-/** Author info for prompt / chat events. Identity is trusted in-process
- * — the procedure layer reads it from `requireActiveUser(event)`. */
-export interface Author {
-  userId: string
-  userName: string
-}
-
-/**
- * Build the synthesized prompt body for a fresh turn (no steer) by
- * folding any un-consumed `chat` events newer than the session's
- * `lastChatConsumedSeq` into the foreground. Returns `text` unchanged
- * when there's no backlog. Advances `lastChatConsumedSeq` to the max
- * consumed seq so the same chats don't fold again on the next turn.
- */
-function foldChatBacklog(sessionId: string, text: string): string {
-  const session = getSession(sessionId)
-  if (!session) return text
-  const backlog = readChatSince(sessionId, session.lastChatConsumedSeq)
-  if (backlog.length === 0) return text
-  const lines = backlog
-    .map((row) => {
-      const author = (row.payload?.author ?? null) as Author | null
-      const t = String(row.payload?.text ?? '').trim()
-      if (!t) return null
-      const who = author?.userName?.trim() || author?.userId || 'someone'
-      return `[${who} said: ${t}]`
-    })
-    .filter((s): s is string => s != null)
-  if (lines.length === 0) return text
-  const maxSeq = backlog[backlog.length - 1]!.seq
-  updateSession(sessionId, { lastChatConsumedSeq: maxSeq })
-  return `${lines.join('\n')}\n\n${text}`
-}
-
-/** A bare `@agent` mention or an explicit `trigger: true` runs a turn;
- * otherwise the chat is recorded and the agent stays silent. v1: any
- * mention of `@agent` (case-insensitive, word-boundary'd) counts. */
-function chatHasTrigger(text: string): boolean {
-  return /(^|[^\w])@agent(\b|$)/i.test(text)
-}
-
 export const sessionEngine = {
   /**
    * Deliver a user message. If a turn is live: **steer** (inject as a
@@ -669,7 +624,7 @@ export const sessionEngine = {
    * accepted into the queue / started. The turn's *output* flows through
    * `session_events` + the change bus; callers don't await completion.
    */
-  prompt(sessionId: string, text: string, author?: Author): PromptResult {
+  prompt(sessionId: string, text: string): PromptResult {
     const session = getSession(sessionId)
     if (!session) throw new Error('session not found')
 
@@ -678,8 +633,6 @@ export const sessionEngine = {
     if (live && live.steer) {
       const uuid = randomUUID()
       live.steer(text, uuid)
-      // Author goes on the durable `steer_sent` event via the existing
-      // turn handler; we still record the steer prompt body here.
       touchLastEvent(sessionId)
       if (live.idleTimer) clearTimeout(live.idleTimer)
       return { steered: true, uuid }
@@ -701,18 +654,13 @@ export const sessionEngine = {
       sp.queue.push(queuedAt)
       // Record the prompt now so the transcript reflects send order; the
       // turn for it will fire when its predecessor's `result` lands.
-      recordEvent(sessionId, 'prompt', { text, queued: true, author: author ?? null })
+      recordEvent(sessionId, 'prompt', { text, queued: true })
       return { steered: false }
     }
 
-    // Fold any un-consumed `chat` backlog into the synthesized prompt
-    // (step 5 group-chat collab). The durable `prompt` event still
-    // records the raw user text — folding only changes what the CLI
-    // sees, not the transcript.
-    const folded = foldChatBacklog(sessionId, text)
-    recordEvent(sessionId, 'prompt', { text, author: author ?? null })
+    recordEvent(sessionId, 'prompt', { text })
     const approvalMode = effectiveApprovalMode(sessionId)
-    runOneTurn({ sp, prompt: folded, approvalMode })
+    runOneTurn({ sp, prompt: text, approvalMode })
       .catch(() => {
         /* recordEvent('error', …) is already emitted in runOneTurn */
       })
@@ -720,28 +668,6 @@ export const sessionEngine = {
         drainQueue(sp)
       })
     return { steered: false }
-  },
-
-  /**
-   * Append a `chat` event without triggering a turn — the step 5
-   * collab path. If the text contains `@agent`, OR the caller passes
-   * `trigger: true`, we ALSO kick off a turn (which folds the just-
-   * recorded chat into its prompt body). Returns whether a turn was
-   * triggered.
-   */
-  chat(sessionId: string, text: string, author: Author, opts?: { trigger?: boolean }): { triggered: boolean } {
-    const session = getSession(sessionId)
-    if (!session) throw new Error('session not found')
-    recordEvent(sessionId, 'chat', { text, author })
-    const triggered = opts?.trigger === true || chatHasTrigger(text)
-    if (triggered) {
-      // Trigger via the prompt path so steer-vs-fresh-turn / queue
-      // semantics are identical to an explicit prompt. The just-recorded
-      // chat will fold into the synthesized prompt because its seq is
-      // higher than the session's lastChatConsumedSeq.
-      this.prompt(sessionId, text, author)
-    }
-    return { triggered }
   },
 
   /** Abort the in-flight turn (if any). Returns true if a turn was running. */

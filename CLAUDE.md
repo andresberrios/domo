@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b + 4 + 5 landed
+## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b + 4 landed
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -101,22 +101,6 @@ vars added alongside `CLAUDE_CODE_ENTRYPOINT=claude-vscode` —
 `CLAUDE_AGENT_SDK_VERSION=0.3.142` (pinned literal — bump when matching
 a newer extension capture).
 
-**Step 5 (group-chat collab) landed.** Multi-user sessions: any active
-user can post a message. Two procedures: `sessions.prompt` (existing,
-triggers a turn — now carries `requireActiveUser` author info so the
-durable `prompt` event records who sent it) and `sessions.chat` (new,
-records a durable `chat` event without triggering by default; sets
-`trigger:true` or `@agent` in the text to trigger). The engine folds
-every un-consumed `chat` event (seq > `sessions.last_chat_consumed_seq`)
-into the synthesized prompt body whenever a turn IS triggered — the
-agent sees the human conversation that happened between turns,
-attributed by name. Authored bubbles render with `metadata:
-{authorName, chatOnly?}` in the AI-SDK transcript; a "Chat only"
-button on the chat input posts via `sessions.chat`. v1.5: `@agent`
-autocomplete in the input, multi-user bubble styling polish. Per
-Decided #13 / v1, any active user participates in all sessions —
-per-session ACLs deferred.
-
 **Step 4 (TCP-only "expose externally") landed.** `server/lib/
 portForwarder.ts` runs a Node `net.Server` per `env_external_ports`
 SQLite row, listening on `0.0.0.0:<externalPort>` and piping to
@@ -131,26 +115,27 @@ no canonical env in v1 (per Decided #9 amendment). Userland
 forwarders for ad-hoc / runtime-opened ports are deferred — users
 declare ports in `devcontainer.json`'s `forwardPorts` for v1.
 
-**Step 3b (claude into the env container) landed.** `claude` now spawns
+**Step 3b (claude into the env container) landed.** `claude` spawns
 inside the env's devcontainer via `docker exec -i -w
-/workspaces/<envName> --env K=V … <containerId> claude …argv` instead
-of host-side. Argv unchanged (still mirrors VS Code 2.1.142). The 5
-pinned env vars + `ANTHROPIC_API_KEY` scrub + `<domoHome>/config.json`
+/workspaces/<envName> --env K=V … <containerId> claude …argv` — no
+host-side fallback. Argv mirrors VS Code 2.1.142. The 5 pinned env
+vars + `ANTHROPIC_API_KEY` scrub + `<domoHome>/config.json`
 `claude.env`/`extraPath` merge land in the `--env` flags. A shared
-`<DOMO_HOME>/claude-home/<userId>/` directory is bind-mounted into
-every env container at `/home/<remoteUser>/.claude` (remoteUser read
-from the parsed devcontainer.json, default `vscode`) — the user runs
-`claude /login` once from any env's terminal and OAuth + slash-commands
-+ MCP definitions then propagate to every env they open. Path
-translation handles the `/workspaces/<envName>/foo.js` ↔ host
-worktree-relative round-trip for `pending_diffs` reads (`toHostPath()`
-in `engine.ts`). The scaffolder's `devcontainer.json` template adds
-`postCreateCommand: "npm install -g @anthropic-ai/claude-code"` +
-Node LTS feature so `claude` lands inside the container on first up;
-the Domo-owned claude Feature image (version-pinned) is a release-time
-publish step (deferred). Host-side spawn path stays as a legacy
-fallback when an env has no `containerId` yet — to be dropped before
-the next release.
+`<DOMO_HOME>/claude-home/` directory is bind-mounted into every env
+container at `/home/<remoteUser>/.claude` (remoteUser read from the
+parsed devcontainer.json, default `vscode`) — single-user install for
+v1, all envs share one `~/.claude`. `claude /login` runs once from
+any env's terminal; OAuth + slash-commands + MCP propagate to every
+env. Path translation handles `/workspaces/<envName>/foo.js` ↔ host
+worktree-relative round-trip for `pending_diffs` reads
+(`toHostPath()` in `engine.ts`); when devcontainer.json overrides
+`workspaceFolder`, the run-SSE emits a `warn` progress event so the
+operator knows the diff-card paths will show absolute container
+paths instead of worktree-relative. The scaffolder's
+`devcontainer.json` template adds `postCreateCommand: "curl -fsSL
+https://claude.ai/install.sh | bash"` so the CLI lands inside the
+container on first up; the Domo-owned claude Feature image
+(version-pinned) is a release-time publish step (deferred).
 
 **Step 3a (devcontainer cutover) landed.** `server/lib/devcontainer/`
 (`client`/`parser`/`runtime`/`scaffold`) is the new env layer:
@@ -395,15 +380,13 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   turns over one stdin, demux by `result`, idle-reap → exit, next
   prompt respawns with `--resume`) is the engine's actual model
   (spike-proven by `smoke/persistent-session-spike.mjs`). **Step 3b
-  (landed) moved the spawn site from host-side into `docker exec`
-  inside the env container** (same VS Code Dev Containers extension
-  behavior). When an env's row has a `containerId`,
-  `spawnClaudeProcess()` builds `docker exec -i -w
-  /workspaces/<envName> --env K=V … <containerId> claude …argv` —
-  argv unchanged, the 5 env vars + `ANTHROPIC_API_KEY` scrub move
-  into the `--env` flags. The host-side spawn path stays as a legacy
-  fallback for env rows with no `containerId` (pre-step-3b dev DBs);
-  to be dropped before the next release. Memory:
+  moved the spawn into `docker exec` inside the env container** (same
+  VS Code Dev Containers extension behavior). `spawnClaudeProcess()`
+  always builds `docker exec -i -w /workspaces/<envName> --env K=V …
+  <containerId> claude …argv` — argv unchanged, the 5 env vars +
+  `ANTHROPIC_API_KEY` scrub move into the `--env` flags. No
+  host-side fallback; a session without an `env.containerId` errors
+  out with "provision it first (Run / Up)". Memory:
   `project-agent-sdk-billing`. The single end-of-build live-verify is
   tasks.md step 7 — runs *after* all of steps 1–6 land, not before.
 - **Dogfooding/sandbox litter (Claude-inside-Domo only).** If the

@@ -111,36 +111,14 @@ export function projectSessionMessages(
 
   for (const evt of ordered) {
     if (evt.type === 'prompt') {
-      const p = evt.payload as { text?: unknown; author?: { userName?: unknown } | null }
+      const p = evt.payload as { text?: unknown }
       if (typeof p.text !== 'string') continue
-      const authorName = typeof p.author?.userName === 'string' ? p.author.userName : null
       timeline.push({
         ts: evt.createdAt,
         ord: `e:${evt.seq}`,
         message: {
           id: `prompt-${evt.seq}`,
           role: 'user',
-          // `authorName` lets DomoChat render multi-user transcripts
-          // with a name above each human bubble; null when the older
-          // pre-step-5 events have no author attached.
-          metadata: authorName ? { authorName } : undefined,
-          parts: [{ type: 'text', text: p.text, state: 'done' }],
-        },
-      })
-    } else if (evt.type === 'chat') {
-      // Step 5 group-chat events: non-triggering human messages
-      // (someone said something but didn't @agent). Render as authored
-      // bubbles distinct from `prompt` (which IS a trigger).
-      const p = evt.payload as { text?: unknown; author?: { userName?: unknown } | null }
-      if (typeof p.text !== 'string') continue
-      const authorName = typeof p.author?.userName === 'string' ? p.author.userName : 'someone'
-      timeline.push({
-        ts: evt.createdAt,
-        ord: `e:${evt.seq}`,
-        message: {
-          id: `chat-${evt.seq}`,
-          role: 'user',
-          metadata: { authorName, chatOnly: true },
           parts: [{ type: 'text', text: p.text, state: 'done' }],
         },
       })

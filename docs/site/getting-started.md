@@ -52,14 +52,14 @@ When other people open Domo they can sign up too, but their account stays pendin
 
 1. **Add a project** — point Domo at a git repo on your machine. If it has no `.devcontainer/devcontainer.json`, Domo offers to **scaffold a starter** (a basic ubuntu image with Docker-in-Docker for your inner `docker compose` and a hook that installs the Claude Code CLI on first build). If something else is missing (no git, no `.gitignore` entry for `.worktrees/`), Domo offers to fix that too. No git remote needed.
 2. **Create an environment** — Domo creates a dedicated git branch + worktree and brings up its dev container. Each environment is isolated, so you can run several in parallel. The first time can take a minute or two while the image builds.
-3. **Authenticate Claude once** — open the env's **Terminal** view and run `claude /login`. The OAuth credential lives in a Domo-managed folder that all of *your* environments share, so this is a one-time step per Domo user.
+3. **Authenticate Claude once** — open the env's **Terminal** view and run `claude /login`. The OAuth credential lives in a Domo-managed folder that all environments share, so this is a one-time step per install.
 4. **Start a session and send a prompt.** While the agent is working you can keep typing — your message is picked up at the next step, so you can steer it without interrupting.
 
 ## Sharing an instance with others
 
-Open the user menu → **Manage users** to approve other people. By default they can use any project and any environment. The chat surface supports group conversation: anyone can post a message, but the agent only runs a turn when somebody says `@agent` (or hits the regular Send button). The **"Chat only"** button posts without waking the agent — useful for talking with teammates between turns. The agent sees the un-consumed chat backlog the next time it's triggered, attributed by name.
+Open the user menu → **Manage users** to approve other people. By default they can use any project and any environment. v1 treats each session as single-author — multi-user collaboration in a single session (group chat with @agent, etc.) is a design we have but haven't built yet.
 
-Each Domo user has their own `~/.claude` credentials inside their environments — your login isn't shared with other Domo users.
+The Claude OAuth credentials (`~/.claude` inside env containers) are shared installation-wide — one `claude /login` covers every env on this Domo install.
 
 ## Exposing a service to the network
 
@@ -91,7 +91,7 @@ For project-level config (CLAUDE.md, slash commands under `.claude/commands/`, M
 Everything Domo keeps lives under `~/.domo`:
 
 - `state.db` — projects, sessions, the chat transcripts, user accounts.
-- `claude-home/<userId>/` — each Domo user's `~/.claude` (OAuth + slash commands + MCP), bind-mounted into their env containers.
+- `claude-home/` — the shared `~/.claude` (OAuth + slash commands + MCP), bind-mounted into every env container.
 - `session-secret` — auto-managed cookie secret.
 
 Back up: `domo down && tar czf domo-backup.tgz -C ~ .domo`. Start fresh: `domo down && rm -rf ~/.domo`. Change the location with `DOMO_HOME` if you like. Each environment's container is owned by your Docker daemon — `docker ps -a --filter label=domo.envId` lists them.

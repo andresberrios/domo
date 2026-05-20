@@ -97,9 +97,6 @@ export const Session = z.object({
   lastEventAt: z.number().int().nullable(),
   /** deviceId → epoch ms last viewed; drives the new-output dot. */
   viewedAtPerDevice: z.record(z.string(), z.number()),
-  /** Highest `chat`-event seq the engine has consumed into a turn's
-   * synthesized prompt (step 5 group-chat fold). */
-  lastChatConsumedSeq: z.number().int(),
 })
 export type Session = z.infer<typeof Session>
 

@@ -45,15 +45,10 @@ export function renderStarter(opts: ScaffoldOptions): string {
   // Inner Docker-in-Docker so the user's own \`docker compose\` runs
   // isolated per env. The host-side runtime choice (sysbox-runc vs
   // rootless-dind vs privileged) is detected by Domo at \`up\` time.
-  // Node is preinstalled here so \`npm install -g @anthropic-ai/claude-code\`
-  // works on first build (the \`postCreateCommand\` below).
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "version": "latest",
       "moby": false
-    },
-    "ghcr.io/devcontainers/features/node:1": {
-      "version": "lts"
     }
     // TODO: when the Domo claude Feature is published, replace the
     // \`postCreateCommand\` claude install below with a Feature
@@ -62,10 +57,11 @@ export function renderStarter(opts: ScaffoldOptions): string {
   },
 
   // First-build hook — installs the Claude Code CLI inside the
-  // container. Domo runs \`claude\` here (not on the host) so hooks /
-  // CLAUDE.md / MCP servers see the container's tooling. Pin a
-  // specific version when you need reproducibility across rebuilds.
-  "postCreateCommand": "npm install -g @anthropic-ai/claude-code",
+  // container using Anthropic's official installer (auto-detects
+  // platform; no Node dependency on the base image). Domo runs
+  // \`claude\` here (not on the host) so hooks / CLAUDE.md / MCP
+  // servers see the container's tooling.
+  "postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash",
 
   // Ports Domo should publish to the host (random loopback ports).
   // Add entries like 3000 / "5432/tcp" once your services need them;
@@ -74,10 +70,10 @@ export function renderStarter(opts: ScaffoldOptions): string {
   "portsAttributes": {}
 
   // Shared OAuth + slash commands + MCP across envs — Domo bind-mounts
-  // <DOMO_HOME>/claude-home/<userId> to /home/<remoteUser>/.claude
-  // automatically; you don't need to declare a mount for that. Run
-  // \`claude /login\` once from any env's terminal and the credentials
-  // propagate to every env you open.
+  // <DOMO_HOME>/claude-home to /home/<remoteUser>/.claude automatically;
+  // you don't need to declare a mount for that. Run \`claude /login\`
+  // once from any env's terminal and the credentials propagate to every
+  // env across the install.
 }
 `
 }

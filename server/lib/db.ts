@@ -6,14 +6,14 @@ let _db: Database.Database | null = null
 /**
  * Singleton handle to Domo's SQLite metadata DB. Schema is migrated on first
  * access. Holds projects, envs, sessions, the per-session `session_events`
- * transcript log, parked `pending_diffs`, settings, users — every piece of
- * durable state Domo owns (Decided #6: SQLite owns everything).
+ * transcript log, parked `pending_diffs`, settings, users, the per-env
+ * port-forward table — every piece of durable state Domo owns
+ * (Decided #6: SQLite owns everything).
  *
- * The pivot put the engine in-process and made SQLite the authoritative
- * event log. The old Electric Agents durable stream is gone; `session_events`
- * is the chat transcript, `pending_diffs` is the durable diff-approval queue
- * (so a parked edit survives a Domo restart and re-renders the card). Coast
- * still owns container runtime state until step 3 swaps it for devcontainers.
+ * Schema is the post-pivot v0.4 shape — no Coast / Electric legacy columns
+ * linger. SQLite's `ALTER TABLE DROP COLUMN` (3.35+) handles the column
+ * drops if an older DB is opened; new installs get the clean
+ * `CREATE TABLE IF NOT EXISTS` definitions below.
  */
 export function db(): Database.Database {
   if (_db) return _db
@@ -35,7 +35,7 @@ function migrate(d: Database.Database): void {
       name TEXT NOT NULL,
       root_path TEXT NOT NULL UNIQUE,
       default_branch TEXT,
-      has_coastfile INTEGER NOT NULL DEFAULT 0,
+      has_devcontainer INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
 
@@ -45,7 +45,8 @@ function migrate(d: Database.Database): void {
       name TEXT NOT NULL,
       branch TEXT,
       worktree_path TEXT,
-      coast_instance_name TEXT NOT NULL DEFAULT '',
+      container_id TEXT,
+      devcontainer_path TEXT,
       status TEXT,
       created_at INTEGER NOT NULL,
       UNIQUE(project_id, name)
@@ -57,8 +58,6 @@ function migrate(d: Database.Database): void {
       title TEXT,
       status TEXT NOT NULL DEFAULT 'waiting',
       done INTEGER NOT NULL DEFAULT 0,
-      entity_id TEXT,
-      durable_stream_url TEXT,
       native_claude_session_id TEXT,
       approval_mode TEXT,
       created_at INTEGER NOT NULL,
@@ -85,32 +84,22 @@ function migrate(d: Database.Database): void {
       last_login_at INTEGER
     );
 
-    -- Per-session transcript log (the new in-process engine's durable
-    -- truth — replaces the Electric Agents durable stream). One row per
-    -- envelope from the spawned claude process plus a few Domo-synthesized
-    -- types (prompt, steer_sent, pending_diff, diff_decision, aborted,
-    -- error). seq is monotonic per session and primary-keys the row so
-    -- the SSE seq-tail (?since=) is naturally idempotent +
-    -- reconnect-lossless.
-    --
-    -- Streaming assistant deltas are NOT stored — partials live on the
-    -- change bus / SSE only, and the complete assistant envelope (its
-    -- own row here) is the source of truth in the adapter. The
-    -- message_id column lingers from step 1's first cut (when partials
-    -- were UPDATE-coalesced in place); unused now, kept to avoid an
-    -- awkward SQLite column drop.
+    -- Per-session transcript log — the in-process engine's durable
+    -- truth. One row per envelope from the spawned claude process
+    -- plus a few Domo-synthesized types (prompt, steer_sent,
+    -- pending_diff, diff_decision, aborted, error). seq is monotonic
+    -- per session and primary-keys the row so the SSE seq-tail
+    -- (?since=) is naturally idempotent + reconnect-lossless.
+    -- Streaming assistant deltas are NOT stored — partials live on
+    -- the change bus / SSE only.
     CREATE TABLE IF NOT EXISTS session_events (
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       seq INTEGER NOT NULL,
       type TEXT NOT NULL,
       payload TEXT NOT NULL,
-      message_id TEXT,
       created_at INTEGER NOT NULL,
       PRIMARY KEY (session_id, seq)
     );
-    -- Drop the (now dead) partial-row index on existing DBs from the
-    -- first cut. Idempotent, safe on a fresh DB.
-    DROP INDEX IF EXISTS idx_session_events_partial;
 
     -- Durable diff-approval queue. A manual-mode edit parks here so the
     -- card re-renders cross-device and survives restart. The engine's
@@ -130,13 +119,10 @@ function migrate(d: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_pending_diffs_session
       ON pending_diffs(session_id, status);
 
-    -- Step 4: per-env external-port mappings. A row here means
-    -- "expose this declared inner port (already published to
-    -- 127.0.0.1:<random> by the container) on 0.0.0.0:<external_port>
-    -- via a Domo-side TCP forwarder". v1 only covers external
-    -- exposure of declared forwardPorts; ad-hoc runtime ports
-    -- (userland forwarders for ports not in devcontainer.json) are
-    -- deferred. Source of truth for restart-safe rebuild.
+    -- Per-env external-port mappings. A row here means "expose this
+    -- declared inner port (already published to 127.0.0.1:<random> by
+    -- the container) on 0.0.0.0:<external_port> via a Domo-side TCP
+    -- forwarder". Source of truth for restart-safe rebuild.
     CREATE TABLE IF NOT EXISTS env_external_ports (
       env_id TEXT NOT NULL REFERENCES envs(id) ON DELETE CASCADE,
       inner_port INTEGER NOT NULL,
@@ -144,26 +130,28 @@ function migrate(d: Database.Database): void {
       created_at INTEGER NOT NULL,
       PRIMARY KEY (env_id, inner_port)
     );
+
+    -- Drop the (now dead) partial-row index on existing DBs from
+    -- step 1's first cut. Idempotent, safe on a fresh DB.
+    DROP INDEX IF EXISTS idx_session_events_partial;
   `)
 
-  // Additive, idempotent column migrations. `CREATE TABLE IF NOT EXISTS`
-  // above is a no-op on an existing DB, so new columns on existing tables
-  // must be ALTERed in explicitly (guarded by PRAGMA table_info so it is
-  // safe to run on every boot).
+  // Drop legacy columns left over from the pre-pivot Electric/Coast
+  // stack. Requires SQLite 3.35+ (better-sqlite3 11 ships well past
+  // that). Idempotent: SQLite errors on DROP of a missing column, so
+  // we guard with a PRAGMA check. No prod data to migrate — the user
+  // wiped prod before the pivot.
+  dropColumnIfExists(d, 'projects', 'has_coastfile')
+  dropColumnIfExists(d, 'envs', 'coast_instance_name')
+  dropColumnIfExists(d, 'sessions', 'entity_id')
+  dropColumnIfExists(d, 'sessions', 'durable_stream_url')
+  dropColumnIfExists(d, 'session_events', 'message_id')
+
+  // Additive idempotent migrations. `approval_mode` is the only
+  // post-pivot column that didn't exist when this DB was first cut;
+  // every other shape is captured in the `CREATE TABLE IF NOT EXISTS`
+  // above.
   ensureColumn(d, 'sessions', 'approval_mode', 'approval_mode TEXT')
-  // Step 5: group-chat collab — sessions track the highest `chat`-event
-  // seq consumed into a turn's synthesized prompt. Used to fold the
-  // un-consumed chat backlog the next time the agent is triggered.
-  ensureColumn(d, 'sessions', 'last_chat_consumed_seq', 'last_chat_consumed_seq INTEGER NOT NULL DEFAULT 0')
-  // Step 3a: projects gained `has_devcontainer` alongside the lingering
-  // `has_coastfile` (which is no longer read). envs gained
-  // `container_id` (docker container id from `devcontainer up`) and
-  // `devcontainer_path` (absolute path to the devcontainer.json used);
-  // `coast_instance_name` lingers as the old slug — never written, kept
-  // because SQLite DROP COLUMN on a NOT NULL legacy column is messy.
-  ensureColumn(d, 'projects', 'has_devcontainer', 'has_devcontainer INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(d, 'envs', 'container_id', 'container_id TEXT')
-  ensureColumn(d, 'envs', 'devcontainer_path', 'devcontainer_path TEXT')
 
   const row = d.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as
     | { version: number }
@@ -184,5 +172,18 @@ function ensureColumn(
   }[]
   if (!cols.some((c) => c.name === column)) {
     d.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+  }
+}
+
+function dropColumnIfExists(
+  d: Database.Database,
+  table: string,
+  column: string,
+): void {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string
+  }[]
+  if (cols.some((c) => c.name === column)) {
+    d.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`)
   }
 }
