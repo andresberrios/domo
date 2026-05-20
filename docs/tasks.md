@@ -15,8 +15,9 @@ change (doc-sync is a prime directive).
 **Step 1 (engine swap)** landed 2026-05-19 / -20, **Step 2 (reactivity
 spine)** landed 2026-05-20, **Step 3a (devcontainer cutover)** landed
 2026-05-20, **Step 3b (claude into the env container via `docker exec`
-+ shared `~/.claude` per Domo user)** landed 2026-05-20. The session
-engine is the in-process
++ shared `~/.claude` per Domo user)** landed 2026-05-20, **Step 4
+(TCP-only "expose externally" port forwarding)** landed 2026-05-20.
+The session engine is the in-process
 `server/lib/sessionEngine/*` over `session_events` + `pending_diffs` in
 SQLite; the reactivity spine is one auth-gated `/api/live` SSE +
 `server/lib/changeBus.ts`, with a tab-wide singleton browser client
@@ -52,17 +53,12 @@ fresh session in `manual` mode; four extension env vars added alongside
 
 **Next-up build order:**
 
-1. **Step 4** — port forwarding (TCP-only, cross-platform: published
-   random host ports landed with step 3a; what remains is userland
-   forwarders for ad-hoc ports + the "expose externally" toggle
-   spawn/kill listener + the SQLite forward table for restart-safety).
-   No HTTP proxy, no canonical env in v1.
-2. **Step 5** — group-chat collaboration (`chat` events + trigger
+1. **Step 5** — group-chat collaboration (`chat` events + trigger
    detection).
-3. **Step 6** — re-polish + docs/site rewrite + prod reinstall (incl.
+2. **Step 6** — re-polish + docs/site rewrite + prod reinstall (incl.
    publishing the Domo claude devcontainer Feature image and pinning
    the scaffold to it).
-4. **Step 7** — billing live-verify (single end-of-build check; runs
+3. **Step 7** — billing live-verify (single end-of-build check; runs
    AFTER 1–6 land; see the note at the top of this file — don't
    surface as next-actionable while earlier steps are in flight).
 
@@ -266,31 +262,32 @@ rail-poll.
       claude-vscode` in the spawned process (folded into step 7's
       single end-of-build live-verify).
 
-## 4 — Port forwarding
+## 4 — Port forwarding — LANDED
 
-- [ ] At `devcontainer up`, inject `runArgs: ["-p",
-      "127.0.0.1:0:<inner>", …]` for each `forwardPorts` entry;
-      discover assigned host ports via `docker port <container>
-      <inner>` and persist to a SQLite forward table
-      `{env_id, name, inner_port, protocol, host_port, mode:
-      'published'|'userland', external_port|null}`.
-- [ ] Userland forwarder for ad-hoc/runtime ports: Node net listener
-      on `127.0.0.1:<chosen>` piping to `docker exec <container>
-      socat - TCP:localhost:<inner>` (same mechanism VS Code uses);
-      `envs.ports.addAdHoc(envId, innerPort)`.
-- [ ] `envs.ports.expose(forwardId, externalPort)` /
-      `envs.ports.unexpose(forwardId)` spawn/kill a TCP forwarder
-      listening on `0.0.0.0:<externalPort>` piping to
+- [x] At `devcontainer up`, inject `runArgs: ["-p",
+      "127.0.0.1:0:<inner>", …]` for each `forwardPorts` entry
+      (already done in step 3a foundation `client.ts`); discover
+      assigned host ports via `docker port` / the `inspect()`
+      read.
+- [x] `envs.ports.expose({envId, innerPort, externalPort})` /
+      `envs.ports.unexpose({envId, innerPort})` spawn/kill a Node
+      `net` listener on `0.0.0.0:<externalPort>` piping to
       `127.0.0.1:<host_port>`. No container recreate.
-- [ ] Env-screen UI: list each port with label (from
-      `portsAttributes`) + `localhost:<host_port>` + an "expose
-      externally" toggle (when on, show `0.0.0.0:<externalPort>`).
-- [ ] Rebuild userland forwarders + external listeners from the SQLite
-      forward table on boot (published ports survive container restart
-      via Docker; userland + external need the listener respawned).
+- [x] SQLite `env_external_ports` table = single source of truth.
+      `server/plugins/portForwarder.ts` rebuilds every persisted
+      listener on boot; `api/envs/run.post.ts` calls `rebindForEnv`
+      after a successful `up` (container recreate may reassign the
+      random host port; the external port stays stable to users).
+- [x] Env-screen UI: each port row gets an Expose toggle (popup
+      prompts for the public port; on = green badge showing
+      `0.0.0.0:<chosen>`).
+- [ ] **Deferred:** userland forwarders for ad-hoc/runtime ports
+      that aren't in `forwardPorts`. Users must declare ports in
+      `devcontainer.json` for v1. Auto-detection (`ss -tlnp` inside
+      the container) is a v1.5 idea.
 - [ ] Verify: declared ports work cross-platform (Linux + macOS Docker
-      Desktop); expose/unexpose toggles with no recreate; ad-hoc port
-      add works; restart-safe.
+      Desktop); expose/unexpose toggles with no recreate; restart-
+      safe. Tied to the step 7 end-of-build live-verify run.
 
 ## 5 — Collaboration (Decided #13)
 

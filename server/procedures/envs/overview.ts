@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import * as dc from '../../lib/devcontainer'
 import { getEnv, resolveContainerId } from '../../lib/envs'
+import { listExternalForwards } from '../../lib/portForwarder'
 import { getProject } from '../../lib/projects'
 import { Env } from '../../lib/schemas'
 
@@ -14,6 +15,9 @@ const Port = z.object({
   /** Hint from `portsAttributes.protocol` — for UI labelling only
    * (we still TCP-forward everything; no HTTP awareness in v1). */
   appProtocol: z.enum(['http', 'https', 'tcp', 'udp']).nullable(),
+  /** When the operator has exposed this port externally, the public
+   * port the Domo-side TCP forwarder listens on (`0.0.0.0:<external>`). */
+  externalPort: z.number().int().nullable(),
 })
 
 /**
@@ -48,6 +52,8 @@ export default defineProcedure({
     const ports: z.infer<typeof Port>[] = []
     let daemonUnreachable = false
 
+    const externals = new Map(listExternalForwards(env.id).map((r) => [r.innerPort, r.externalPort]))
+
     const cid = await resolveContainerId(env)
     if (!cid) {
       liveStatus = 'missing'
@@ -78,6 +84,7 @@ export default defineProcedure({
             hostPort: p.hostPort,
             protocol: p.protocol,
             appProtocol: hit?.appProtocol ?? null,
+            externalPort: externals.get(p.innerPort) ?? null,
           })
         }
       }

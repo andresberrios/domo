@@ -90,6 +90,28 @@ function badgeColor(status: string | null | undefined): 'neutral' | 'success' | 
 function serviceUrl(port: number): string {
   return `${location.protocol}//${location.hostname}:${port}`
 }
+
+async function toggleExpose(innerPort: number, currentExternalPort: number | null) {
+  if (!env.value) return
+  if (currentExternalPort != null) {
+    try {
+      await apiClient.envs.ports.unexpose.call({ envId: env.value.id, innerPort })
+    } catch (e) {
+      errMsg.value = (e as Error).message
+    }
+    await refreshOverview()
+    return
+  }
+  const raw = prompt(`External port for inner ${innerPort}? (1-65535, e.g. 8080)`)
+  const ext = raw ? Number.parseInt(raw, 10) : NaN
+  if (!Number.isFinite(ext) || ext < 1 || ext > 65535) return
+  try {
+    await apiClient.envs.ports.expose.call({ envId: env.value.id, innerPort, externalPort: ext })
+  } catch (e) {
+    errMsg.value = (e as Error).message
+  }
+  await refreshOverview()
+}
 </script>
 
 <template>
@@ -171,6 +193,9 @@ function serviceUrl(port: number): string {
             <th class="text-left px-3 py-2 font-medium">
               Open
             </th>
+            <th class="text-left px-3 py-2 font-medium">
+              Expose externally
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -197,6 +222,17 @@ function serviceUrl(port: number): string {
                 <UIcon name="i-lucide-external-link" class="size-3" />
               </a>
               <span v-else class="text-muted text-xs">not running</span>
+            </td>
+            <td class="px-3 py-2">
+              <UButton
+                size="xs"
+                :color="p.externalPort != null ? 'success' : 'neutral'"
+                :variant="p.externalPort != null ? 'subtle' : 'ghost'"
+                :icon="p.externalPort != null ? 'i-lucide-radio-tower' : 'i-lucide-radio'"
+                @click="toggleExpose(p.innerPort, p.externalPort)"
+              >
+                {{ p.externalPort != null ? `0.0.0.0:${p.externalPort}` : 'Expose' }}
+              </UButton>
             </td>
           </tr>
         </tbody>

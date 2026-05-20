@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b landed
+## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b + 4 landed
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -101,6 +101,20 @@ vars added alongside `CLAUDE_CODE_ENTRYPOINT=claude-vscode` —
 `CLAUDE_AGENT_SDK_VERSION=0.3.142` (pinned literal — bump when matching
 a newer extension capture).
 
+**Step 4 (TCP-only "expose externally") landed.** `server/lib/
+portForwarder.ts` runs a Node `net.Server` per `env_external_ports`
+SQLite row, listening on `0.0.0.0:<externalPort>` and piping to
+`127.0.0.1:<hostPort>` (the random loopback port `devcontainer up`
+published). New procedures `envs.ports.expose` /
+`envs.ports.unexpose` + a per-port Expose toggle on the env overview
+page. `server/plugins/portForwarder.ts` rebuilds every persisted
+listener at boot; `api/envs/run.post.ts` calls `rebindForEnv` after
+`up` so a container-recreate's reassigned host port stays
+transparent to the user. No HTTP reverse-proxy, no vhost routing,
+no canonical env in v1 (per Decided #9 amendment). Userland
+forwarders for ad-hoc / runtime-opened ports are deferred — users
+declare ports in `devcontainer.json`'s `forwardPorts` for v1.
+
 **Step 3b (claude into the env container) landed.** `claude` now spawns
 inside the env's devcontainer via `docker exec -i -w
 /workspaces/<envName> --env K=V … <containerId> claude …argv` instead
@@ -143,17 +157,13 @@ procedure + canonical-env UI bits, `coastApiUrl` runtimeConfig. Step
 3a kept `claude` host-side — step 3b moves the spawn into `docker
 exec`.
 
-**Next up:** step 4 (TCP-only port forwarding — published random host
-ports landed with step 3a; what remains is the "expose externally"
-toggle that spawns/kills a `0.0.0.0:<chosen>` → `127.0.0.1:<random>`
-forwarder, userland forwarders for ad-hoc ports the user adds at
-runtime, and the SQLite forward table for restart-safe rebuild) →
-steps 5–6 (collab; re-polish + docs/site rewrite + the
-release-time Domo-owned claude Feature publish). Step 7's billing
-live-verify is a **single end-of-build check** scoped by the user to
-*after* all of steps 1–6 land. Don't surface it as a milestone in the
-meantime — just keep the whole build moving so it lands well before
-~2026-06-15.
+**Next up:** step 5 (group-chat collab — durable `chat` events +
+`@agent`/button trigger detection, authored bubbles) → step 6
+(re-polish + docs/site rewrite + prod reinstall + the release-time
+Domo-owned claude Feature publish) → step 7 (single end-of-build
+billing live-verify). Step 7 is scoped by the user to *after* all of
+steps 1–6 land; don't surface it as a milestone in the meantime —
+just keep the whole build moving so it lands well before ~2026-06-15.
 
 ## Running it
 
@@ -274,10 +284,9 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   `table-change` coarse `{table,id,op}` from every helper-layer
   insert/update/delete — `lib/{sessions,envs,projects}.ts` fire on
   every write chokepoint including the engine's per-turn
-  `updateSession`). **Still to build:** the `portForwarder` (step 4 —
-  "expose externally" toggle on top of the published-port mechanism
-  already in `client.ts`); the claude-in-container Feature + shared
-  `~/.claude` bind-mount (step 3b).
+  `updateSession`). `portForwarder.ts` (step 4) runs Node TCP
+  listeners for the "expose externally" toggle, persisted in
+  `env_external_ports`, rebuilt on boot + rebound after each `up`.
 - **Workspace + git are host-side.** `workspace.{tree,read,write}` use
   `node:fs`; `git.*` shells `git -C <worktree>` on the host. Every path
   worktree-relative through `safeResolve` (rejects `..`, abs-outside,

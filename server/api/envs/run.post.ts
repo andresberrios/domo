@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { requireActiveUser } from '../../lib/auth'
 import { getEnv, resolveContainerId, updateEnvFields } from '../../lib/envs'
 import { domoHome } from '../../lib/paths'
+import * as portForwarder from '../../lib/portForwarder'
 import { getProject } from '../../lib/projects'
 import {
   inspect,
@@ -145,6 +146,14 @@ export default defineEventHandler(async (event) => {
       const info = await inspect(result.containerId)
       const liveStatus = info ? dc.toEnvLiveStatus(info.status) : 'unknown'
       updateEnvFields(env.id, { containerId: result.containerId, status: liveStatus })
+
+      // Container's host loopback ports may have changed (recreate
+      // reassigns the random side); rebind any external forwarders for
+      // this env so the user-facing 0.0.0.0:<chosen> listener still
+      // points at the right loopback target.
+      await portForwarder.rebindForEnv(env.id).catch((e) => {
+        emitProgress(`port forwarder rebind warning: ${e instanceof Error ? e.message : String(e)}`, 'warn')
+      })
 
       emitComplete({
         containerId: result.containerId,

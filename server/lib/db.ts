@@ -129,6 +129,21 @@ function migrate(d: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_pending_diffs_session
       ON pending_diffs(session_id, status);
+
+    -- Step 4: per-env external-port mappings. A row here means
+    -- "expose this declared inner port (already published to
+    -- 127.0.0.1:<random> by the container) on 0.0.0.0:<external_port>
+    -- via a Domo-side TCP forwarder". v1 only covers external
+    -- exposure of declared forwardPorts; ad-hoc runtime ports
+    -- (userland forwarders for ports not in devcontainer.json) are
+    -- deferred. Source of truth for restart-safe rebuild.
+    CREATE TABLE IF NOT EXISTS env_external_ports (
+      env_id TEXT NOT NULL REFERENCES envs(id) ON DELETE CASCADE,
+      inner_port INTEGER NOT NULL,
+      external_port INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (env_id, inner_port)
+    );
   `)
 
   // Additive, idempotent column migrations. `CREATE TABLE IF NOT EXISTS`
