@@ -1,6 +1,6 @@
 {
   "name": "domo",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Run many AI coding agents in parallel, each in its own isolated sandbox — chat, review, and commit from one self-hosted app.",
   "type": "module",
   "private": true,
