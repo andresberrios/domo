@@ -11,13 +11,13 @@ Running more than one AI coding agent on the same project usually goes badly: th
 - **Nothing gets lost.** Sessions stay readable even after you tear an environment down.
 - **No surprise bills.** Agents run on your existing Claude subscription, not a metered API key.
 
-Under the hood: Domo is self-hosted (one app you run on your own machine or server). The agents are [Claude Code](https://www.anthropic.com/claude-code); each isolated environment is a [Coast](https://coasts.dev) sandbox. Your code and your credentials stay with you.
+Under the hood: Domo is self-hosted (one app you run on your own machine or server). The agents are [Claude Code](https://www.anthropic.com/claude-code); each isolated environment is a [dev container](https://containers.dev/) running on your local Docker. Your code and your credentials stay with you.
 
-> **v0.2.1** — actively developed.
+> **v0.4.0** — actively developed.
 
 ## Install
 
-You'll need **Docker, [Coast](https://coasts.dev), git, and the `claude` CLI** (logged in once). Node is bundled, so there's nothing else to set up.
+You'll need **Docker, git, and the `claude` CLI** (logged in once, from inside any env's terminal — see the setup guide). Node is bundled, so there's nothing else to set up. Linux hosts also benefit from a rootless inner-Docker runtime (`sysbox` or rootless dind) — the installer probes for it and points out what's missing.
 
 ```bash
 curl -fsSL https://github.com/andresberrios/domo/releases/latest/download/install.sh | sh
@@ -40,8 +40,7 @@ Domo listens on **localhost only** by default, which is safe on your own machine
 
 ```bash
 pnpm install
-docker compose up -d    # Postgres + agents server
-pnpm dev                # http://localhost:7575
+pnpm dev                # http://localhost:7576 (dev port; prod is 7575)
 ```
 
 Also: `pnpm typecheck` · `pnpm lint` · `pnpm build`. Architecture and design notes live in [`docs/`](docs/).

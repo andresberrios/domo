@@ -326,11 +326,19 @@ The user will **reinstall prod after the pivot is implemented**, from
 the new release line — there is no live prod until then (the
 don't-touch-7575 caution is suspended until reinstall).
 
-- [ ] Sweep aborts/shortcuts/responsive against the new engine.
-- [ ] Rewrite `docs/site/*` (getting-started, securing, releasing) to
-      the devcontainer/own-engine model; cut the new release line
-      (no agents-server image; per Build-seq step 1's release/CLI
-      cleanup).
+- [x] Rewrite `docs/site/*` (getting-started, securing, releasing) +
+      `README.md` to the devcontainer / in-process-engine / TCP-only
+      port-forward / group-chat model. References to Coast,
+      `Coastfile`, `agents-server`, the compose stack — all replaced.
+- [ ] Sweep aborts / keyboard shortcuts / responsive against the
+      new engine. Best done with a live runtime — folded into the
+      step 7 end-of-build verification pass.
+- [ ] Publish the Domo-owned claude devcontainer Feature
+      (`ghcr.io/<org>/devcontainer-features/claude`) and update the
+      scaffolder + `releasing.md` to reference it instead of the
+      `postCreateCommand npm install` placeholder. Release-time step.
+- [ ] Cut the new release tag (`v0.4.0+`) — `release.yml` already
+      builds + attaches the tarballs.
 - [ ] User reinstalls prod from the new release; then run step 7's
       billing check against it too (the deadline check must pass on the
       reinstalled prod).

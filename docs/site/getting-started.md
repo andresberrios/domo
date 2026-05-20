@@ -4,12 +4,20 @@ Domo lets you run several AI coding agents at once — each in its own isolated 
 
 ## What you need
 
-Domo installs as a small app on your machine (or VPS) plus a couple of helper containers it manages for you. On the host you need:
+Domo installs as a small app on your machine (or VPS). Each per-env sandbox is a [**dev container**](https://containers.dev/) Domo manages for you.
 
-- **Docker** (with Compose) — on macOS or WSL, Docker Desktop. WSL works as Linux.
-- **[Coast](https://coasts.dev)**, installed and running — Domo uses it to spin up each environment's sandbox.
-- **The Claude Code CLI**, logged in once: run `claude`, then `/login`. Domo bills to your Claude subscription, not an API key.
-- **git**.
+On the host you need:
+
+- **Docker** — on macOS or Windows/WSL, Docker Desktop. WSL counts as Linux.
+- **git** — Domo creates a per-environment worktree off your project.
+- A logged-in **Claude Code CLI**. The first time you open an environment's terminal, run `claude /login`. Domo bills to your Claude subscription, not an API key. (Authentication happens *inside* the env container — see Authenticating Claude below.)
+
+On Linux, for the inner Docker each env runs to behave safely (your `docker compose` inside the sandbox), one of the following:
+
+- **[sysbox](https://github.com/nestybox/sysbox)** — cleanest option. If sysbox-runc is registered with your Docker daemon, Domo will use it automatically. Linux-only.
+- **rootless dind** — works on stock Docker on most modern distros. You need user namespaces enabled (`/proc/sys/kernel/unprivileged_userns_clone=1`), cgroup v2 with delegation, a subuid mapping for your user, and `fuse-overlayfs` installed. The installer probes these and warns about anything missing.
+
+On macOS / Windows Docker Desktop, the VM handles all of this — no setup beyond installing Docker Desktop.
 
 Prebuilt for Linux and macOS (x86-64 and arm64). Node ships inside the release — you don't need to install it.
 
@@ -20,18 +28,19 @@ curl -fsSL https://github.com/andresberrios/domo/releases/latest/download/instal
 domo up
 ```
 
-The installer downloads the right build for your machine, verifies it, and adds a `domo` command. `domo up` starts everything and serves the app at **http://localhost:7575**. The very first `domo up` builds a helper image once (~1–2 min).
+The installer downloads the right build for your machine, verifies it, and adds a `domo` command. `domo up` starts the app at **http://localhost:7575**.
 
 | command | what it does |
 |---|---|
 | `domo up` | start Domo → http://localhost:7575 |
 | `domo down` | stop Domo (your data is kept) |
+| `domo restart` | restart the app |
 | `domo status` | show what's running |
 | `domo logs` | tail the app log |
 | `domo update` | update to the latest release and restart |
 | `domo version` | show the installed version |
 
-> Pin a specific version with `DOMO_VERSION=0.2.0 sh install.sh`, or install without internet using `DOMO_LOCAL_TARBALL=/path/to/domo-<os>-<arch>.tar.gz`.
+> Pin a specific version with `DOMO_VERSION=0.4.0 sh install.sh`, or install without internet using `DOMO_LOCAL_TARBALL=/path/to/domo-<os>-<arch>.tar.gz`.
 
 ## First visit: create your account
 
@@ -41,13 +50,24 @@ When other people open Domo they can sign up too, but their account stays pendin
 
 ## Your first project, environment, and session
 
-1. **Add a project** — point Domo at a git repo on your machine that has a `Coastfile`. If something's missing, Domo offers to set it up for you (init the repo, write a starter Coastfile, ignore the worktrees folder). No git remote needed.
-2. **Create an environment** — Domo spins up a sandbox and a dedicated git branch/worktree for it. Each environment is isolated, so you can run several in parallel.
-3. **Start a session and send a prompt.** While the agent is working you can keep typing — your message is picked up at the next step, so you can steer it without interrupting.
+1. **Add a project** — point Domo at a git repo on your machine. If it has no `.devcontainer/devcontainer.json`, Domo offers to **scaffold a starter** (a basic ubuntu image with Docker-in-Docker for your inner `docker compose` and a hook that installs the Claude Code CLI on first build). If something else is missing (no git, no `.gitignore` entry for `.worktrees/`), Domo offers to fix that too. No git remote needed.
+2. **Create an environment** — Domo creates a dedicated git branch + worktree and brings up its dev container. Each environment is isolated, so you can run several in parallel. The first time can take a minute or two while the image builds.
+3. **Authenticate Claude once** — open the env's **Terminal** view and run `claude /login`. The OAuth credential lives in a Domo-managed folder that all of *your* environments share, so this is a one-time step per Domo user.
+4. **Start a session and send a prompt.** While the agent is working you can keep typing — your message is picked up at the next step, so you can steer it without interrupting.
+
+## Sharing an instance with others
+
+Open the user menu → **Manage users** to approve other people. By default they can use any project and any environment. The chat surface supports group conversation: anyone can post a message, but the agent only runs a turn when somebody says `@agent` (or hits the regular Send button). The **"Chat only"** button posts without waking the agent — useful for talking with teammates between turns. The agent sees the un-consumed chat backlog the next time it's triggered, attributed by name.
+
+Each Domo user has their own `~/.claude` credentials inside their environments — your login isn't shared with other Domo users.
+
+## Exposing a service to the network
+
+Each port declared in your `devcontainer.json`'s `forwardPorts` is automatically published to a random `localhost:<port>` on the host — visible only to you. On the env page, the **Ports** table lists each one with an "Expose externally" toggle: switch it on, pick a public port, and Domo opens a `0.0.0.0:<port>` listener that forwards to the container. Toggle off when you're done. No container restart either way.
 
 ## Optional: extra tools for the agent
 
-`claude` already inherits your shell environment and your `~/.claude` setup (including any MCP servers). If you need to add an environment variable or a `PATH` entry just for the agent, create `~/.domo/config.json`:
+If you need to add an environment variable or a `PATH` entry just for the agent (a token an MCP server needs, a binary path inside the container), create `~/.domo/config.json`:
 
 ```json
 {
@@ -60,18 +80,21 @@ When other people open Domo they can sign up too, but their account stays pendin
 
 It's picked up on the next prompt — no restart. (For safety, this can't override Domo's credential handling, so your subscription billing stays intact.)
 
+For project-level config (CLAUDE.md, slash commands under `.claude/commands/`, MCP servers), put them in the repo as usual — they're inside the dev container's `/workspaces` and the agent sees them with your project tooling.
+
 ## Updating
 
 `domo update` fetches the latest release, swaps it in, and restarts Domo if it was running. Your projects, environments, and sessions are untouched.
 
 ## Your data & backups
 
-Everything Domo keeps lives under `~/.domo` — your projects/sessions database and the session history. It's one folder, so:
+Everything Domo keeps lives under `~/.domo`:
 
-- **Back up:** `domo down && tar czf domo-backup.tgz -C ~ .domo`
-- **Start fresh:** `domo down && rm -rf ~/.domo`
+- `state.db` — projects, sessions, the chat transcripts, user accounts.
+- `claude-home/<userId>/` — each Domo user's `~/.claude` (OAuth + slash commands + MCP), bind-mounted into their env containers.
+- `session-secret` — auto-managed cookie secret.
 
-(Change the location with `DOMO_HOME` if you like.) Each environment's sandbox is managed by Coast separately.
+Back up: `domo down && tar czf domo-backup.tgz -C ~ .domo`. Start fresh: `domo down && rm -rf ~/.domo`. Change the location with `DOMO_HOME` if you like. Each environment's container is owned by your Docker daemon — `docker ps -a --filter label=domo.envId` lists them.
 
 ## Using Domo from other devices
 
