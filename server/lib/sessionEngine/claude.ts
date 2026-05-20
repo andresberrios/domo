@@ -35,7 +35,8 @@
  * `close()` ends stdin (clean idle-reap exit); `kill()` SIGTERMs.
  */
 import { spawn } from 'node:child_process'
-import { delimiter as pathDelimiter } from 'node:path'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { basename, delimiter as pathDelimiter } from 'node:path'
 import { loadDomoConfig } from '../config'
 
 export type PermissionDecision =
@@ -66,7 +67,17 @@ export interface TurnSpec {
 }
 
 export interface SpawnOpts {
+  /** Host worktree path (cwd when running host-side, or `workspaceFolder`
+   * hint for path translation when running in-container). */
   cwd: string
+  /** When set, spawn `claude` INSIDE this docker container via
+   * `docker exec` — the step 3b behavior. The 5 pinned env vars +
+   * scrub move into `--env` flags; cwd becomes `containerCwd`. */
+  containerId?: string
+  /** Working directory inside the container (when `containerId` is set).
+   * Defaults to `/workspaces/<basename(cwd)>` — the devcontainer CLI's
+   * convention. */
+  containerCwd?: string
   /** `--resume <id>` for a respawn (first-spawn omits). */
   resumeSessionId?: string
   /**
@@ -200,11 +211,36 @@ function buildArgs(opts: SpawnOpts): string[] {
 export function spawnClaudeProcess(opts: SpawnOpts): ClaudeProc {
   const env = buildEnv()
   const args = buildArgs(opts)
-  const child = spawn('claude', args, {
-    cwd: opts.cwd,
-    env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
+
+  // Step 3b: when `containerId` is set, run claude INSIDE the env
+  // container via `docker exec`. The Claude env vars + argv are
+  // identical to the host-side spawn — they just move into
+  // `--env KEY=VAL` flags on the exec command. The container's
+  // `~/.claude` is the shared per-Domo-user bind-mount the `up()`
+  // call attached. Argv + stdio semantics over `docker exec -i` are
+  // a clean pass-through (docker multiplexes stdin/stdout; the
+  // billing-relevant outbound HTTP comes from `claude` itself, which
+  // we still control via env vars).
+  const inContainer = !!opts.containerId
+  const containerCwd = inContainer
+    ? (opts.containerCwd ?? `/workspaces/${basename(opts.cwd)}`)
+    : null
+
+  let child: ChildProcessWithoutNullStreams
+  if (inContainer) {
+    const execArgs: string[] = ['exec', '-i', '-w', containerCwd!]
+    for (const [k, v] of Object.entries(env)) {
+      if (typeof v === 'string') execArgs.push('--env', `${k}=${v}`)
+    }
+    execArgs.push(opts.containerId!, 'claude', ...args)
+    child = spawn('docker', execArgs, { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
+  } else {
+    child = spawn('claude', args, {
+      cwd: opts.cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }) as ChildProcessWithoutNullStreams
+  }
 
   // ─── Per-process state (carried across turns on this child) ────────────
   let exited = false

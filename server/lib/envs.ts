@@ -126,13 +126,22 @@ export function defaultWorktreePath(projectRoot: string, envName: string): strin
  * container has been recreated. Returns null when nothing matches —
  * the env exists in DB but no container is live (the normal state
  * for a fresh env until first `up`).
+ *
+ * When the stored id is stale and the label search recovers a fresh
+ * one, we persist the new id back to the row so the engine's hot
+ * path (which reads `env.containerId` directly without an inspect
+ * round-trip) sees the correct value immediately.
  */
 export async function resolveContainerId(env: EnvRow): Promise<string | null> {
   if (env.containerId) {
     const ok = await inspect(env.containerId)
     if (ok) return env.containerId
   }
-  return findByEnvId(env.id)
+  const found = await findByEnvId(env.id)
+  if (found && found !== env.containerId) {
+    updateEnvFields(env.id, { containerId: found })
+  }
+  return found
 }
 
 /**

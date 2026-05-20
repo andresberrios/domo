@@ -469,31 +469,48 @@ function permissionModeArg(
       : 'default'
 }
 
-/** Resolve cwd lazily — env.worktreePath may not exist until provisioning. */
-function resolveCwd(sessionId: string): string {
+/**
+ * Resolve where to spawn `claude` for a session. Returns the host
+ * worktree path (for path translation against absolute tool-call paths
+ * the CLI emits) plus the container id when the env has one — when
+ * container id is set, the spawn moves into `docker exec` (step 3b
+ * behavior); otherwise it falls back to host-side (legacy envs).
+ *
+ * Synchronous: we read the stored `containerId` directly off the env
+ * row, no `docker inspect` round-trip per prompt. If the container has
+ * been recreated under us, the next `docker exec` will fail and the
+ * engine will report `error` for the turn, prompting the user to
+ * re-up. Boot reconcile (`plugins/sessionEngine.ts`) is the place that
+ * rebinds stale ids via the `domo.envId` label.
+ */
+function resolveSessionContext(sessionId: string): {
+  cwd: string
+  containerId: string | null
+} {
   const session = getSession(sessionId)
   if (!session) throw new Error(`session ${sessionId} not found`)
   const env = getEnv(session.envId)
   if (!env?.worktreePath) {
     throw new Error('env has no worktree yet — provision it first')
   }
-  return env.worktreePath
+  return { cwd: env.worktreePath, containerId: env.containerId }
 }
 
 function ensureProc(sessionId: string): SessionProc {
   let sp = procs.get(sessionId)
   if (sp) return sp
-  const cwd = resolveCwd(sessionId)
+  const ctx = resolveSessionContext(sessionId)
   const approvalMode = effectiveApprovalMode(sessionId)
   const resumeId = getSession(sessionId)?.nativeClaudeSessionId ?? undefined
   const proc = spawnClaudeProcess({
-    cwd,
+    cwd: ctx.cwd,
+    containerId: ctx.containerId ?? undefined,
     resumeSessionId: resumeId,
     permissionMode: permissionModeArg(approvalMode),
   })
   sp = {
     sessionId,
-    cwd,
+    cwd: ctx.cwd,
     proc,
     abortCtl: null,
     steer: null,

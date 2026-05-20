@@ -58,6 +58,14 @@ export interface UpOptions {
    * userland forwarder for ad-hoc cases in step 4).
    */
   publishPorts?: { innerPort: number; protocol: 'tcp' | 'udp' }[]
+  /**
+   * Mount `<hostPath>` from the host into `<containerPath>` inside the
+   * container. Step 3b uses this for the per-Domo-user shared
+   * `~/.claude` (`<DOMO_HOME>/claude-home/<userId>` → `~/.claude` in
+   * the env container) so OAuth + slash commands + MCP propagate
+   * across all of one user's envs.
+   */
+  bindMounts?: { hostPath: string; containerPath: string; readOnly?: boolean }[]
   /** Container env vars merged into devcontainer.json's `containerEnv`. */
   containerEnv?: Record<string, string>
   /** AbortSignal for long-running provisioning. */
@@ -121,6 +129,10 @@ export async function up(opts: UpOptions): Promise<UpResult> {
       // `127.0.0.1:0:<inner>/<proto>` — host loopback, random free port.
       ['-p', `127.0.0.1:0:${p.innerPort}/${p.protocol}`],
     ),
+    ...(opts.bindMounts ?? []).flatMap((m) => [
+      '--mount',
+      `type=bind,source=${m.hostPath},target=${m.containerPath}${m.readOnly ? ',readonly' : ''}`,
+    ]),
   ]
 
   const overlay: Record<string, unknown> = { runArgs }

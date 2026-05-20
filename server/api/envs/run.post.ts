@@ -11,7 +11,12 @@
  *
  * Request body: `{ envId: string }`.
  */
+import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+
+import { requireActiveUser } from '../../lib/auth'
 import { getEnv, resolveContainerId, updateEnvFields } from '../../lib/envs'
+import { domoHome } from '../../lib/paths'
 import { getProject } from '../../lib/projects'
 import {
   inspect,
@@ -27,6 +32,7 @@ export default defineEventHandler(async (event) => {
   if (!body?.envId) {
     throw createError({ statusCode: 400, statusMessage: 'envId is required' })
   }
+  const user = await requireActiveUser(event)
 
   const env = getEnv(body.envId)
   if (!env) throw createError({ statusCode: 404, statusMessage: 'env not found' })
@@ -36,11 +42,24 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 500, statusMessage: 'env has no worktree path' })
   }
 
-  // Read forwardPorts from the project's devcontainer.json so we can
-  // publish them at create time (`-p 127.0.0.1:0:<inner>`). If the file
-  // is unreadable we surface the parse error before kicking off `up`.
+  // Per-Domo-user shared `~/.claude` (Decided #3 / step 3b). Created on
+  // first up; subsequent ups for the same user reuse it. The user runs
+  // `claude /login` once from inside any env's terminal — OAuth + slash
+  // commands + MCP definitions then propagate to every env they open.
+  // Mode 0700 since it holds OAuth credentials.
+  const claudeHomeHost = join(domoHome(), 'claude-home', user.id)
+  await mkdir(claudeHomeHost, { recursive: true, mode: 0o700 })
+  // The mount target depends on the container's `remoteUser`. We read
+  // it from the parsed devcontainer.json below; default to `vscode`
+  // (the Microsoft base image's default) when unset.
+  let bindMounts: { hostPath: string; containerPath: string }[] = []
+
+  // Read forwardPorts + remoteUser from the project's devcontainer.json
+  // so we can publish ports at create time and target the right home
+  // directory for the shared `~/.claude` bind-mount.
   let publishPorts: { innerPort: number; protocol: 'tcp' | 'udp' }[] = []
   let devcontainerPath: string
+  let remoteUser = 'vscode'
   try {
     const resolved = await loadDevcontainer(project.rootPath)
     devcontainerPath = resolved.path
@@ -48,12 +67,18 @@ export default defineEventHandler(async (event) => {
       innerPort: p.innerPort,
       protocol: p.protocol,
     }))
+    if (typeof resolved.config.remoteUser === 'string' && resolved.config.remoteUser.length > 0) {
+      remoteUser = resolved.config.remoteUser
+    }
   } catch (e) {
     if (e instanceof DevcontainerNotFoundError) {
       throw createError({ statusCode: 400, statusMessage: 'project has no devcontainer.json' })
     }
     throw e
   }
+  bindMounts = [
+    { hostPath: claudeHomeHost, containerPath: `/home/${remoteUser}/.claude` },
+  ]
 
   setResponseHeader(event, 'Content-Type', 'text/event-stream')
   setResponseHeader(event, 'Cache-Control', 'no-cache')
@@ -104,6 +129,7 @@ export default defineEventHandler(async (event) => {
         envId: env.id,
         projectId: project.id,
         publishPorts,
+        bindMounts,
         onLog: ({ stream: s, text }) => {
           // CLI emits many lines; we forward each non-empty one. The
           // JSON outcome envelope is the final line and is handled by
