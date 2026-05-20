@@ -40,12 +40,18 @@ const DEVCONTAINER_BIN = (() => {
   // unsupported subpath under Node's ESM resolver (and silently throws
   // under Nitro's `createRequire` shim).
   //
-  // Build our own resolver against `import.meta.url` and resolve the
-  // always-present `package.json` subpath (which is always exposed even
-  // without an `exports` map), then join the bin's relative path
-  // against its directory. Survives bundling (Nitro nft-traces both).
+  // Base the resolver on `process.argv[1]` (the actual entry file
+  // path) rather than `import.meta.url`. Nitro bundles all server code
+  // and rewrites `import.meta.url` to the virtual string
+  // `"file:///_entry.js"` — `createRequire` then walks `node_modules`
+  // up from `/` and finds nothing, breaking the release tarball even
+  // when `traceInclude` placed the dep at
+  // `.output/server/node_modules/`. `process.argv[1]` survives the
+  // bundle: it's the path of `index.mjs` (or the file passed to
+  // `node`) at runtime, next to the `node_modules` we want.
   try {
-    const req = createRequire(import.meta.url)
+    const entry = process.argv[1] || import.meta.url
+    const req = createRequire(entry)
     const pkgPath = req.resolve('@devcontainers/cli/package.json')
     // Hard-coded "devcontainer.js" — matches the package's `bin` entry
     // (verified at install time by the dep version pin).

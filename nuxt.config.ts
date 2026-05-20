@@ -46,6 +46,31 @@ export default defineNuxtConfig({
     experimental: {
       websocket: true,
     },
+    // `@devcontainers/cli` is resolved at runtime via
+    // `createRequire(import.meta.url)` in `server/lib/devcontainer/
+    // client.ts` (the package has no `exports`/`main`, only a `bin`).
+    // Nitro/Rollup's static analysis can't see the import, so the
+    // bundle doesn't trace it and release builds fail with "Cannot
+    // find module '@devcontainers/cli/package.json'" (the dev tree
+    // had a hoisted node_modules to fall back on; `.output/server/`
+    // has only the traced deps). `traceInclude` is a list of file
+    // paths nitro hands to `@vercel/nft` as additional roots — we
+    // resolve the cli's devcontainer.js + package.json off the build-
+    // time node_modules tree so they (and their transitive deps) get
+    // copied into `.output/server/node_modules/`.
+    externals: {
+      external: ['@devcontainers/cli'],
+      traceInclude: [
+        new URL(
+          './node_modules/@devcontainers/cli/devcontainer.js',
+          import.meta.url,
+        ).pathname,
+        new URL(
+          './node_modules/@devcontainers/cli/package.json',
+          import.meta.url,
+        ).pathname,
+      ],
+    },
   },
 
   runtimeConfig: {

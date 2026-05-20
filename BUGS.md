@@ -255,6 +255,42 @@ Legend — **Severity**: P0 (broken/blocking) · P1 (significant) · P2 (papercu
   `server/lib/devcontainer/runtime.ts` and surface a warning, or use
   `/var/domo` etc. as alternative bind-mount paths under DinD.
 
+## 17. v0.4.0 release: `@devcontainers/cli` not in `.output`; `createRequire` resolved from a virtual entry path
+
+- **Severity:** P0 · **Status:** FIXED in v0.4.1
+- **Found:** 2026-05-20 — user reinstalled v0.4.0 prod, ran fine on
+  startup but `~/.domo/run/domo.log` showed *"[devcontainer] cli
+  resolve failed: Cannot find module '@devcontainers/cli/package.
+  json'"*. Every env action would have failed downstream.
+- **What:** Two layered bugs in the release path:
+  - Nitro's static analysis can't see Domo's `createRequire(import.
+    meta.url).resolve('@devcontainers/cli/package.json')` (it's
+    dynamic), so the build didn't trace the dep — `.output/server/
+    node_modules/` had ~75 packages but no `@devcontainers/cli`. Dev
+    only worked because pnpm's hoisted tree was reachable.
+  - Even with the dep present, Nitro rewrites `import.meta.url` in
+    the bundled chunks to the virtual string `"file:///_entry.js"`
+    (overwriting the real path via a `globalThis._importMeta_` shim
+    that doesn't carry index.mjs's real URL into the chunks that
+    evaluate before it). `createRequire` then walks `node_modules`
+    up from `/` and finds nothing.
+- **Fix (two parts in `nuxt.config.ts` + `server/lib/devcontainer/
+  client.ts`):**
+  - Add `nitro.externals.traceInclude` for the cli's `devcontainer.js`
+    + `package.json` resolved off the build-time `node_modules/` so
+    `@vercel/nft` pulls them (and transitive deps) into `.output/
+    server/node_modules/`.
+  - Switch `createRequire(import.meta.url)` →
+    `createRequire(process.argv[1] || import.meta.url)`. The argv
+    path is the real entry file at runtime (next to the bundled
+    `node_modules/`); the import.meta.url fallback keeps it working
+    in dev where Nitro doesn't bundle.
+- **Lesson carried forward:** When a server file uses dynamic
+  `createRequire`/`require.resolve`, both halves of the release
+  contract have to be checked: (a) the dep ships in `.output` (trace
+  config), (b) the runtime resolver is rooted at a real path
+  (`process.argv[1]`, not virtualized `import.meta.url`).
+
 ## 4. Domo doesn't provision agent guidance for the env toolchain
 
 - **Severity:** P2 · **Status:** OPEN
