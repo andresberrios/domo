@@ -145,6 +145,25 @@ async function onSubmit() {
   }
 }
 
+// Step 5 group-chat: post the input as a chat event without triggering
+// a turn. Useful when multiple humans are in the session and a comment
+// shouldn't wake the agent (the next @agent / Send catches up via the
+// engine's backlog fold).
+async function onChatOnly() {
+  const text = input.value.trim()
+  if (!text || sending.value) return
+  sending.value = true
+  actionError.value = null
+  try {
+    await apiClient.sessions.chat.call({ id: props.sessionId, text })
+    input.value = ''
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    sending.value = false
+  }
+}
+
 async function onStop() {
   try {
     await apiClient.sessions.abort.call({ id: props.sessionId })
@@ -226,7 +245,18 @@ async function onStop() {
     </div>
 
     <div class="shrink-0 p-3 border-t border-default">
-      <div class="flex items-center justify-end mb-2">
+      <div class="flex items-center justify-between mb-2 gap-2">
+        <UButton
+          size="xs"
+          variant="ghost"
+          color="neutral"
+          icon="i-lucide-message-square"
+          :disabled="sending || !input.trim()"
+          title="Post as chat (don't trigger the agent — @agent or Send does)"
+          @click="onChatOnly"
+        >
+          Chat only
+        </UButton>
         <USelect
           :model-value="approvalValue"
           :items="approvalItems"

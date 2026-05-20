@@ -16,8 +16,9 @@ change (doc-sync is a prime directive).
 spine)** landed 2026-05-20, **Step 3a (devcontainer cutover)** landed
 2026-05-20, **Step 3b (claude into the env container via `docker exec`
 + shared `~/.claude` per Domo user)** landed 2026-05-20, **Step 4
-(TCP-only "expose externally" port forwarding)** landed 2026-05-20.
-The session engine is the in-process
+(TCP-only "expose externally" port forwarding)** landed 2026-05-20,
+**Step 5 (group-chat collab: `chat` events + `@agent` trigger
++ backlog fold)** landed 2026-05-20. The session engine is the in-process
 `server/lib/sessionEngine/*` over `session_events` + `pending_diffs` in
 SQLite; the reactivity spine is one auth-gated `/api/live` SSE +
 `server/lib/changeBus.ts`, with a tab-wide singleton browser client
@@ -53,12 +54,10 @@ fresh session in `manual` mode; four extension env vars added alongside
 
 **Next-up build order:**
 
-1. **Step 5** — group-chat collaboration (`chat` events + trigger
-   detection).
-2. **Step 6** — re-polish + docs/site rewrite + prod reinstall (incl.
+1. **Step 6** — re-polish + docs/site rewrite + prod reinstall (incl.
    publishing the Domo claude devcontainer Feature image and pinning
    the scaffold to it).
-3. **Step 7** — billing live-verify (single end-of-build check; runs
+2. **Step 7** — billing live-verify (single end-of-build check; runs
    AFTER 1–6 land; see the note at the top of this file — don't
    surface as next-actionable while earlier steps are in flight).
 
@@ -289,15 +288,35 @@ rail-poll.
       Desktop); expose/unexpose toggles with no recreate; restart-
       safe. Tied to the step 7 end-of-build live-verify run.
 
-## 5 — Collaboration (Decided #13)
+## 5 — Collaboration (Decided #13) — LANDED
 
-- [ ] Durable `chat` event `{text,author:{userId,userName}}`; engine
-      records every chat msg, runs a turn only on `@agent`/`trigger`,
-      folds un-consumed backlog; mid-turn `@agent` via steering.
-- [ ] Adapter + UI: authored human bubbles distinct from the agent;
-      "Send to agent ▶" + `@agent` autocomplete.
+- [x] Durable `chat` event `{text, author:{userId, userName}}`; engine
+      records every chat msg via `sessionEngine.chat()`, runs a turn
+      only on `@agent` (case-insensitive word-boundary match) or
+      explicit `trigger: true`. Backlog fold: `foldChatBacklog()`
+      pulls un-consumed `chat` events (seq > session.lastChatConsumedSeq)
+      into the synthesized prompt body each time a turn starts; the
+      cursor advances on each fold. Mid-turn trigger reuses the
+      existing steer side-channel via `prompt(sessionId, text, author)`.
+- [x] Procedures: `sessions.prompt` now reads `requireActiveUser` and
+      passes `{userId, userName}` to the engine (durable `prompt`
+      event carries the author). New `sessions.chat({id, text,
+      trigger?})` appends a `chat` event without triggering by
+      default; `trigger:true` (or `@agent` in the text) routes
+      through to `prompt`.
+- [x] Adapter: `sessionMessages.ts` projects `chat` events as authored
+      human bubbles (`metadata: {authorName, chatOnly: true}`);
+      `prompt` events also carry `authorName` when present (older
+      pre-step-5 events have no author and render unchanged).
+- [x] Chat input: "Chat only" button next to the approval-mode
+      selector — posts via `sessions.chat` without triggering.
+      Default Enter-to-send via `sessions.prompt` is unchanged
+      (single-user behavior preserved).
+- [ ] **Deferred:** `@agent` autocomplete in `DomoChatAutocomplete`,
+      per-bubble user-name styling polish, mid-turn `@agent` UI cue.
+      v1.5.
 - [ ] Verify e2e: multi-user chat without turns; trigger sees backlog;
-      restart-safe.
+      restart-safe. Tied to the step 7 end-of-build live-verify run.
 
 ## 6 — Re-polish + docs/site rewrite + prod reinstall
 

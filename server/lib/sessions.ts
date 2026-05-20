@@ -29,6 +29,10 @@ export interface SessionRow {
   createdAt: number
   lastEventAt: number | null
   viewedAtPerDevice: Record<string, number>
+  /** Highest `chat`-event seq the engine has folded into a triggered
+   * turn's synthesized prompt (step 5 group-chat collab). 0 = none
+   * consumed yet. */
+  lastChatConsumedSeq: number
 }
 
 interface SessionDbRow {
@@ -42,6 +46,7 @@ interface SessionDbRow {
   created_at: number
   last_event_at: number | null
   viewed_at_per_device: string
+  last_chat_consumed_seq: number
 }
 
 function parseViewed(json: string): Record<string, number> {
@@ -68,6 +73,7 @@ function fromDb(r: SessionDbRow): SessionRow {
     createdAt: r.created_at,
     lastEventAt: r.last_event_at,
     viewedAtPerDevice: parseViewed(r.viewed_at_per_device),
+    lastChatConsumedSeq: r.last_chat_consumed_seq ?? 0,
   }
 }
 
@@ -128,6 +134,7 @@ export function updateSession(
       | 'approvalMode'
       | 'lastEventAt'
       | 'viewedAtPerDevice'
+      | 'lastChatConsumedSeq'
     >
   >,
 ): void {
@@ -160,6 +167,10 @@ export function updateSession(
   if (fields.viewedAtPerDevice !== undefined) {
     sets.push('viewed_at_per_device = @viewedAtPerDevice')
     params.viewedAtPerDevice = JSON.stringify(fields.viewedAtPerDevice)
+  }
+  if (fields.lastChatConsumedSeq !== undefined) {
+    sets.push('last_chat_consumed_seq = @lastChatConsumedSeq')
+    params.lastChatConsumedSeq = fields.lastChatConsumedSeq
   }
   if (sets.length === 0) return
   db()

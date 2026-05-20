@@ -44,6 +44,7 @@ export default defineProcedure({
       createdAt: Date.now(),
       lastEventAt: null,
       viewedAtPerDevice: {},
+      lastChatConsumedSeq: 0,
     }
     insertSession(row)
     return row

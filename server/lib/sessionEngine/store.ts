@@ -147,6 +147,24 @@ export function lastSeq(sessionId: string): number {
   return r?.seq ?? 0
 }
 
+/**
+ * Read every `chat` event newer than `sinceSeq` for a session — the
+ * step 5 backlog-fold helper. Ordered ASC so the caller can paste them
+ * into the synthesized prompt in send order.
+ */
+export function readChatSince(sessionId: string, sinceSeq: number): SessionEventRow[] {
+  const rows = db()
+    .prepare(
+      `
+      SELECT * FROM session_events
+      WHERE session_id = ? AND type = 'chat' AND seq > ?
+      ORDER BY seq ASC
+      `,
+    )
+    .all(sessionId, sinceSeq) as SessionEventDbRow[]
+  return rows.map(fromDb)
+}
+
 // ─── pending_diffs ────────────────────────────────────────────────────────
 
 export interface PendingDiffRow {

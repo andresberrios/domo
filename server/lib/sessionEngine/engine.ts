@@ -42,6 +42,7 @@ import {
   getPendingDiff,
   insertPendingDiff,
   listPendingDiffs,
+  readChatSince,
   rejectAllPending,
   setPendingDiffStatus,
   type PendingDiffRow,
@@ -616,6 +617,47 @@ export interface PromptResult {
   uuid?: string
 }
 
+/** Author info for prompt / chat events. Identity is trusted in-process
+ * — the procedure layer reads it from `requireActiveUser(event)`. */
+export interface Author {
+  userId: string
+  userName: string
+}
+
+/**
+ * Build the synthesized prompt body for a fresh turn (no steer) by
+ * folding any un-consumed `chat` events newer than the session's
+ * `lastChatConsumedSeq` into the foreground. Returns `text` unchanged
+ * when there's no backlog. Advances `lastChatConsumedSeq` to the max
+ * consumed seq so the same chats don't fold again on the next turn.
+ */
+function foldChatBacklog(sessionId: string, text: string): string {
+  const session = getSession(sessionId)
+  if (!session) return text
+  const backlog = readChatSince(sessionId, session.lastChatConsumedSeq)
+  if (backlog.length === 0) return text
+  const lines = backlog
+    .map((row) => {
+      const author = (row.payload?.author ?? null) as Author | null
+      const t = String(row.payload?.text ?? '').trim()
+      if (!t) return null
+      const who = author?.userName?.trim() || author?.userId || 'someone'
+      return `[${who} said: ${t}]`
+    })
+    .filter((s): s is string => s != null)
+  if (lines.length === 0) return text
+  const maxSeq = backlog[backlog.length - 1]!.seq
+  updateSession(sessionId, { lastChatConsumedSeq: maxSeq })
+  return `${lines.join('\n')}\n\n${text}`
+}
+
+/** A bare `@agent` mention or an explicit `trigger: true` runs a turn;
+ * otherwise the chat is recorded and the agent stays silent. v1: any
+ * mention of `@agent` (case-insensitive, word-boundary'd) counts. */
+function chatHasTrigger(text: string): boolean {
+  return /(^|[^\w])@agent(\b|$)/i.test(text)
+}
+
 export const sessionEngine = {
   /**
    * Deliver a user message. If a turn is live: **steer** (inject as a
@@ -627,7 +669,7 @@ export const sessionEngine = {
    * accepted into the queue / started. The turn's *output* flows through
    * `session_events` + the change bus; callers don't await completion.
    */
-  prompt(sessionId: string, text: string): PromptResult {
+  prompt(sessionId: string, text: string, author?: Author): PromptResult {
     const session = getSession(sessionId)
     if (!session) throw new Error('session not found')
 
@@ -636,6 +678,8 @@ export const sessionEngine = {
     if (live && live.steer) {
       const uuid = randomUUID()
       live.steer(text, uuid)
+      // Author goes on the durable `steer_sent` event via the existing
+      // turn handler; we still record the steer prompt body here.
       touchLastEvent(sessionId)
       if (live.idleTimer) clearTimeout(live.idleTimer)
       return { steered: true, uuid }
@@ -657,13 +701,18 @@ export const sessionEngine = {
       sp.queue.push(queuedAt)
       // Record the prompt now so the transcript reflects send order; the
       // turn for it will fire when its predecessor's `result` lands.
-      recordEvent(sessionId, 'prompt', { text, queued: true })
+      recordEvent(sessionId, 'prompt', { text, queued: true, author: author ?? null })
       return { steered: false }
     }
 
-    recordEvent(sessionId, 'prompt', { text })
+    // Fold any un-consumed `chat` backlog into the synthesized prompt
+    // (step 5 group-chat collab). The durable `prompt` event still
+    // records the raw user text — folding only changes what the CLI
+    // sees, not the transcript.
+    const folded = foldChatBacklog(sessionId, text)
+    recordEvent(sessionId, 'prompt', { text, author: author ?? null })
     const approvalMode = effectiveApprovalMode(sessionId)
-    runOneTurn({ sp, prompt: text, approvalMode })
+    runOneTurn({ sp, prompt: folded, approvalMode })
       .catch(() => {
         /* recordEvent('error', …) is already emitted in runOneTurn */
       })
@@ -671,6 +720,28 @@ export const sessionEngine = {
         drainQueue(sp)
       })
     return { steered: false }
+  },
+
+  /**
+   * Append a `chat` event without triggering a turn — the step 5
+   * collab path. If the text contains `@agent`, OR the caller passes
+   * `trigger: true`, we ALSO kick off a turn (which folds the just-
+   * recorded chat into its prompt body). Returns whether a turn was
+   * triggered.
+   */
+  chat(sessionId: string, text: string, author: Author, opts?: { trigger?: boolean }): { triggered: boolean } {
+    const session = getSession(sessionId)
+    if (!session) throw new Error('session not found')
+    recordEvent(sessionId, 'chat', { text, author })
+    const triggered = opts?.trigger === true || chatHasTrigger(text)
+    if (triggered) {
+      // Trigger via the prompt path so steer-vs-fresh-turn / queue
+      // semantics are identical to an explicit prompt. The just-recorded
+      // chat will fold into the synthesized prompt because its seq is
+      // higher than the session's lastChatConsumedSeq.
+      this.prompt(sessionId, text, author)
+    }
+    return { triggered }
   },
 
   /** Abort the in-flight turn (if any). Returns true if a turn was running. */

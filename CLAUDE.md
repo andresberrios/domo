@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b + 4 landed
+## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b + 4 + 5 landed
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -101,6 +101,22 @@ vars added alongside `CLAUDE_CODE_ENTRYPOINT=claude-vscode` —
 `CLAUDE_AGENT_SDK_VERSION=0.3.142` (pinned literal — bump when matching
 a newer extension capture).
 
+**Step 5 (group-chat collab) landed.** Multi-user sessions: any active
+user can post a message. Two procedures: `sessions.prompt` (existing,
+triggers a turn — now carries `requireActiveUser` author info so the
+durable `prompt` event records who sent it) and `sessions.chat` (new,
+records a durable `chat` event without triggering by default; sets
+`trigger:true` or `@agent` in the text to trigger). The engine folds
+every un-consumed `chat` event (seq > `sessions.last_chat_consumed_seq`)
+into the synthesized prompt body whenever a turn IS triggered — the
+agent sees the human conversation that happened between turns,
+attributed by name. Authored bubbles render with `metadata:
+{authorName, chatOnly?}` in the AI-SDK transcript; a "Chat only"
+button on the chat input posts via `sessions.chat`. v1.5: `@agent`
+autocomplete in the input, multi-user bubble styling polish. Per
+Decided #13 / v1, any active user participates in all sessions —
+per-session ACLs deferred.
+
 **Step 4 (TCP-only "expose externally") landed.** `server/lib/
 portForwarder.ts` runs a Node `net.Server` per `env_external_ports`
 SQLite row, listening on `0.0.0.0:<externalPort>` and piping to
@@ -157,13 +173,12 @@ procedure + canonical-env UI bits, `coastApiUrl` runtimeConfig. Step
 3a kept `claude` host-side — step 3b moves the spawn into `docker
 exec`.
 
-**Next up:** step 5 (group-chat collab — durable `chat` events +
-`@agent`/button trigger detection, authored bubbles) → step 6
-(re-polish + docs/site rewrite + prod reinstall + the release-time
-Domo-owned claude Feature publish) → step 7 (single end-of-build
-billing live-verify). Step 7 is scoped by the user to *after* all of
-steps 1–6 land; don't surface it as a milestone in the meantime —
-just keep the whole build moving so it lands well before ~2026-06-15.
+**Next up:** step 6 (re-polish + docs/site rewrite + prod reinstall +
+publish the Domo-owned claude devcontainer Feature image and pin the
+scaffold to it) → step 7 (single end-of-build billing live-verify).
+Step 7 is scoped by the user to *after* all of steps 1–6 land; don't
+surface it as a milestone in the meantime — just keep the whole build
+moving so it lands well before ~2026-06-15.
 
 ## Running it
 

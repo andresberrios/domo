@@ -151,6 +151,10 @@ function migrate(d: Database.Database): void {
   // must be ALTERed in explicitly (guarded by PRAGMA table_info so it is
   // safe to run on every boot).
   ensureColumn(d, 'sessions', 'approval_mode', 'approval_mode TEXT')
+  // Step 5: group-chat collab — sessions track the highest `chat`-event
+  // seq consumed into a turn's synthesized prompt. Used to fold the
+  // un-consumed chat backlog the next time the agent is triggered.
+  ensureColumn(d, 'sessions', 'last_chat_consumed_seq', 'last_chat_consumed_seq INTEGER NOT NULL DEFAULT 0')
   // Step 3a: projects gained `has_devcontainer` alongside the lingering
   // `has_coastfile` (which is no longer read). envs gained
   // `container_id` (docker container id from `devcontainer up`) and
