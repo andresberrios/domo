@@ -29,9 +29,14 @@ not a fixable bug. **Decision:** replace it with an **in-process engine
 over the existing SQLite** (`session_events` log + single-flight
 **long-lived per-session `claude` process** + `--resume`), a **unified
 change-bus + `/api/live` SSE** reactivity spine, and **devcontainer +
-rootless-DinD** environments with a `Domofile` + in-process port
-forwarding. Engine first, then devcontainers. Full design + build
-sequence in `initial-design.md`.
+rootless-DinD** environments with `devcontainer.json` as the single
+source of truth (no `Domofile`), `claude` running **inside** the env
+container via a Domo-owned devcontainer Feature with a shared
+`~/.claude` per Domo user, and **TCP-only cross-platform port
+forwarding** (published random host ports + on-demand userland
+forwarders + an "expose externally" toggle; no HTTP reverse-proxy, no
+canonical env in v1). Engine first, then devcontainers. Full design +
+build sequence in `initial-design.md`.
 
 **Step 1 (session engine swap) landed.** `server/lib/sessionEngine/{engine,
 claude,store}.ts` owns the session lifecycle: single-flight per-session
@@ -96,12 +101,20 @@ vars added alongside `CLAUDE_CODE_ENTRYPOINT=claude-vscode` —
 `CLAUDE_AGENT_SDK_VERSION=0.3.142` (pinned literal — bump when matching
 a newer extension capture).
 
-**Next up:** step 2 remainder (coarse `/api/live` table path +
-`useLiveCall` + rail-poll deletion), then steps 3–6. Step 7's billing
-live-verify is a **single end-of-build check** scoped by the user to
-*after* all of steps 1–6 land (including the devcontainer swap and the
-release re-cut). Don't surface it as a milestone in the meantime —
-just keep the whole build moving so it lands well before ~2026-06-15.
+**Next up:** step 3a (devcontainer lifecycle off `devcontainer.json`
+directly, rootless-DinD baseline sysbox→rootless-dind→privileged-warn,
+terminal → `docker exec`, Coast adapter removed) → step 3b (`claude`
+spawn site moves from host into `docker exec` inside the env container,
+delivered by a Domo-owned devcontainer Feature, shared
+`<DOMO_HOME>/claude-home/<userId>/` → `~/.claude` bind-mount carrying
+OAuth + slash-commands + MCP across that user's envs) → step 4
+(TCP-only port forwarding: `-p 127.0.0.1:0:<inner>` at create + userland
+forwarders for ad-hoc + "expose externally" toggle) → steps 5–6. Step
+7's billing live-verify is a **single end-of-build check** scoped by
+the user to *after* all of steps 1–6 land (including the devcontainer
+swap and the release re-cut). Don't surface it as a milestone in the
+meantime — just keep the whole build moving so it lands well before
+~2026-06-15.
 
 `server/lib/coast/*` + `app/composables/useCoastEvents.ts` +
 `server/api/coast-events.ts` + the Coast adapter in `envs.*` stay in
@@ -182,7 +195,7 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
 - **Streaming stays classic Nitro** (`server/api/`,
   `defineEventHandler`/`defineWebSocketHandler`): `nuxt-procedures` is
   request/response only. The change-bus/chat SSE (`/api/live`), terminal
-  WS, and env reverse-proxy live here; procedures orchestrate them.
+  WS, and per-env TCP forwarders live here; procedures orchestrate them.
 - **Auth = `nuxt-auth-utils` + one Nitro middleware.**
   `server/middleware/auth.ts` is the real boundary — gates
   `/procedures/**` + Domo's own `/api/*` SSE/WS, allow-lists only
@@ -313,9 +326,14 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   **long-lived per-session process** (one process serves multiple
   turns over one stdin, demux by `result`, idle-reap → exit, next
   prompt respawns with `--resume`) is the engine's actual model
-  (spike-proven by `smoke/persistent-session-spike.mjs`). Memory:
-  `project-agent-sdk-billing`. The single end-of-build live-verify is
-  tasks.md step 7 — runs *after* all of steps 1–6 land, not before.
+  (spike-proven by `smoke/persistent-session-spike.mjs`). **Step 3b
+  moves the spawn site from host-side into `docker exec` inside the env
+  container** (same VS Code Dev Containers extension behavior); argv +
+  the 5 env vars + `ANTHROPIC_API_KEY` scrub move into the `--env` flags
+  of the exec call. Until step 3b lands, the host-side spawn from step 1
+  remains. Memory: `project-agent-sdk-billing`. The single end-of-build
+  live-verify is tasks.md step 7 — runs *after* all of steps 1–6 land,
+  not before.
 - **Dogfooding/sandbox litter (Claude-inside-Domo only).** If the
   operator's `~/.claude` has `permissions.defaultMode:"auto"` *and* the
   Claude Code session is running inside a Domo-spawned env, Claude Code's

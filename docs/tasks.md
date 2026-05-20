@@ -43,14 +43,20 @@ fresh session in `manual` mode; four extension env vars added alongside
 
 **Next-up build order:**
 
-1. **Step 3** — devcontainer + rootless-DinD environments, `Domofile`,
-   terminal → `docker exec`, Coast adapter removed.
-2. **Step 4** — port forwarding (HTTP reverse-proxy + TCP listeners,
-   canonical env binding, SQLite forward table).
-3. **Step 5** — group-chat collaboration (`chat` events + trigger
+1. **Step 3a** — devcontainer + rootless-DinD environments (no
+   Domofile; `devcontainer.json` directly), terminal → `docker exec`,
+   Coast adapter removed.
+2. **Step 3b** — `claude` spawn moves into the env container via a
+   Domo-owned devcontainer Feature + shared `<DOMO_HOME>/claude-home/
+   <userId>/` mount; path translation in diff/tool-call rendering.
+3. **Step 4** — port forwarding (TCP-only, cross-platform: published
+   random host ports + userland forwarders for ad-hoc + "expose
+   externally" toggle; SQLite forward table). No HTTP proxy, no
+   canonical env in v1.
+4. **Step 5** — group-chat collaboration (`chat` events + trigger
    detection).
-4. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
-5. **Step 7** — billing live-verify (single end-of-build check; runs
+5. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
+6. **Step 7** — billing live-verify (single end-of-build check; runs
    AFTER 1–6 land; see the note at the top of this file — don't
    surface as next-actionable while earlier steps are in flight).
 
@@ -181,25 +187,86 @@ rail-poll.
       with a tall transcript). Tied to the step 7 end-of-build
       browser-driven session check — same isolated `DOMO_HOME` run.
 
-## 3 — Devcontainer environment engine
+## 3a — Devcontainer environment engine (container lifecycle)
 
 - [ ] `@devcontainers/cli` lifecycle (`up`/`exec`); rootless DinD
-      baseline chosen + documented.
-- [ ] `Domofile` parse (container source + named ports); project-add &
-      env-create reworked (scaffold heuristics).
+      baseline: prefer sysbox-runc registered with the host Docker
+      daemon, else rootless `dind`, else privileged-with-warning;
+      selected at runtime per-host (not install).
+- [ ] **No Domofile.** Read `devcontainer.json` directly
+      (`forwardPorts`, `portsAttributes`, `runArgs`, etc.).
+      Project-add scaffolder writes a starter
+      `.devcontainer/devcontainer.json` if absent (sensible base
+      image + Domo claude Feature + empty `forwardPorts`); detects a
+      `docker-compose.yml` and writes a compose-based template instead.
 - [ ] `WS /api/terminal` → `docker exec`/`devcontainer exec`; remove the
-      Coast adapter (`server/lib/coast/*`) + `useCoastEvents` Coast bits.
+      Coast adapter (`server/lib/coast/*`) + `useCoastEvents` Coast
+      bits + `server/api/coast-events.ts`.
+- [ ] `install.sh` checks: docker present; on Linux, kernel userns +
+      cgroup v2 delegation + subuid/subgid + fuse-overlayfs (warn on
+      missing); sysbox detection (informational); on macOS, note the
+      Docker Desktop path is the supported one.
 - [ ] Verify e2e: create env from a real devcontainer, inner `docker
-      compose` up, terminal works.
+      compose` up, terminal works, restart-safe.
+
+## 3b — `claude` inside the env container
+
+- [ ] Publish a Domo-owned devcontainer Feature
+      (`ghcr.io/<us>/devcontainer-features/claude`) that installs the
+      claude CLI inside any container; version pinned to
+      `CLAUDE_AGENT_SDK_VERSION` (literal Domo ships against; bump
+      when re-matching an upstream extension capture).
+- [ ] Scaffolder adds the Feature to scaffolded `devcontainer.json`s;
+      user-supplied devcontainers must include it themselves (the
+      env-create flow warns if absent).
+- [ ] `server/lib/sessionEngine/claude.ts`: spawn site changes from
+      host `spawn('claude', argv, { env, cwd })` to `spawn('docker',
+      ['exec', '-i', '-w', '/workspace', '--env', …, '<envContainerId>',
+      'claude', …argv])`. Argv unchanged. The 5 pinned env vars +
+      `ANTHROPIC_API_KEY` scrub + `<domoHome>/config.json`
+      `claude.env`/`extraPath` merge move into the `--env` flags.
+- [ ] Shared `~/.claude` per Domo user: bind-mount
+      `<DOMO_HOME>/claude-home/<userId>/` (created on first env open
+      for that user, mode 0700) into every env container's
+      `/home/<containerUser>/.claude`. Used for OAuth credentials,
+      slash-command discovery, MCP definitions. User runs
+      `claude /login` once from any env terminal.
+- [ ] Path translation: `/workspace/…` (what claude emits) ↔
+      worktree-relative (what UI renders, what `pending_diffs` stores).
+      Adapter in `app/utils/sessionMessages.ts` + the diff card path
+      label; store worktree-relative in SQLite.
+- [ ] Drop the host-side claude path entirely (no fallback). Update
+      `CLAUDE.md` billing gotcha to reflect the spawn-site move.
+- [ ] Verify e2e: fresh env, `claude /login` from terminal, send a
+      prompt, confirm `apiKeySource:"none"` + `cc_entrypoint=
+      claude-vscode` in the spawned process (folded into step 7's
+      single end-of-build live-verify).
 
 ## 4 — Port forwarding
 
-- [ ] HTTP reverse-proxy (Host/path → `envContainerIP:innerPort`) + raw
-      TCP on-demand listeners; SQLite forward table = source of truth.
-- [ ] `envs.ports` (expose/unexpose), `envs.setCanonical`; env-screen
-      toggles; rebuild forwarders from the table on boot.
-- [ ] Verify: toggle exposes/unexposes with no container recreate;
-      canonical rebinds; restart-safe.
+- [ ] At `devcontainer up`, inject `runArgs: ["-p",
+      "127.0.0.1:0:<inner>", …]` for each `forwardPorts` entry;
+      discover assigned host ports via `docker port <container>
+      <inner>` and persist to a SQLite forward table
+      `{env_id, name, inner_port, protocol, host_port, mode:
+      'published'|'userland', external_port|null}`.
+- [ ] Userland forwarder for ad-hoc/runtime ports: Node net listener
+      on `127.0.0.1:<chosen>` piping to `docker exec <container>
+      socat - TCP:localhost:<inner>` (same mechanism VS Code uses);
+      `envs.ports.addAdHoc(envId, innerPort)`.
+- [ ] `envs.ports.expose(forwardId, externalPort)` /
+      `envs.ports.unexpose(forwardId)` spawn/kill a TCP forwarder
+      listening on `0.0.0.0:<externalPort>` piping to
+      `127.0.0.1:<host_port>`. No container recreate.
+- [ ] Env-screen UI: list each port with label (from
+      `portsAttributes`) + `localhost:<host_port>` + an "expose
+      externally" toggle (when on, show `0.0.0.0:<externalPort>`).
+- [ ] Rebuild userland forwarders + external listeners from the SQLite
+      forward table on boot (published ports survive container restart
+      via Docker; userland + external need the listener respawned).
+- [ ] Verify: declared ports work cross-platform (Linux + macOS Docker
+      Desktop); expose/unexpose toggles with no recreate; ad-hoc port
+      add works; restart-safe.
 
 ## 5 — Collaboration (Decided #13)
 
@@ -253,5 +320,6 @@ next-actionable while earlier steps are in flight.
 ## Open questions
 
 Tracked in `initial-design.md` → Decisions → Open (restart UX,
-`Domofile` scaffold heuristics, rootless-DinD baseline, service-URL UX,
-concurrent-edit signalling, no-remote projects, per-session ACLs).
+compose-based devcontainer.json scaffold details, runtime-port auto-
+detection, concurrent-edit signalling, no-remote projects, per-session
+ACLs, canonical-env / stable-host-port UX deferred from v1).

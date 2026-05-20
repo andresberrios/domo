@@ -21,9 +21,9 @@ one workspace:
    per-env git worktree. Multiple agent sessions share an env's worktree.
 
 Data model: **Project → Environment → Session**. A project is a git repo
-with a `Domofile`; an environment is a dev container bound to a per-env
-branch + worktree; a session is one agent conversation. Sessions outlive
-environments and stay readable after teardown.
+with a `devcontainer.json`; an environment is a dev container bound to a
+per-env branch + worktree; a session is one agent conversation. Sessions
+outlive environments and stay readable after teardown.
 
 ## What it is not
 
@@ -54,9 +54,13 @@ responsive (desktop ≡ mobile; a Capacitor wrapper is post-v1).
   (`DOMO_BIND` to widen); remote access via Tailscale / Tunnel / VPN /
   auth-proxy. See `docs/site/securing-your-install.md`.
 - Each environment is a dev container; the user's `docker compose`
-  describes the inner services; a `Domofile` declares the container
-  source + the named ports Domo can expose (toggle per port; one
-  canonical env owns the standard ports/hostname).
+  describes the inner services; **`devcontainer.json` is the single
+  source of truth** (`forwardPorts`/`portsAttributes` for named ports —
+  no separate Domo config file). Each declared port is published to a
+  random host port; an "expose externally" toggle wraps a TCP forwarder
+  on a chosen public port. `claude` runs inside the env container (via
+  a Domo-owned devcontainer Feature) with a per-Domo-user shared
+  `~/.claude` mount carrying OAuth + commands + MCP across envs.
 - Billing rides on the user's existing Claude subscription, not a
   per-token API key.
 
