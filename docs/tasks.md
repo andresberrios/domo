@@ -12,17 +12,23 @@ change (doc-sync is a prime directive).
 
 ## START HERE (fresh session)
 
-**Step 1 (engine swap) landed 2026-05-19 / -20.** The session engine is
-now the in-process `server/lib/sessionEngine/*` over `session_events` +
-`pending_diffs` in SQLite. The reactivity spine's chat fine path is
-live (`/api/live` SSE + `server/lib/changeBus.ts`) on **two SSE event
-types**: `session-event` for every durable row (replayed past `?since=`
-on connect, lossless reconnect) and `partial` for **live-only**
-streaming assistant deltas (NOT persisted — partials are transient by
-design; the complete `assistant` row supersedes them in the adapter).
+**Step 1 (engine swap) landed 2026-05-19 / -20** and **Step 2
+(reactivity spine) landed 2026-05-20.** The session engine is the
+in-process `server/lib/sessionEngine/*` over `session_events` +
+`pending_diffs` in SQLite; the reactivity spine is one auth-gated
+`/api/live` SSE + `server/lib/changeBus.ts`, with a tab-wide
+singleton browser client (`app/composables/liveBus.ts`) multiplexing
+**three SSE event types**: `session-event` (durable rows, replayed past
+`?since=` on connect, lossless reconnect), `partial` (live-only
+coalesced assistant deltas — NOT persisted, the complete `assistant`
+row supersedes them in the adapter), and `table-change` (coarse
+`{table,id,op}` notices fired from every helper-layer write to
+`projects`/`envs`/`sessions`; browser `useLiveRefresh` debounces and
+calls `useCall.refresh()` on a match). The 4 s rail-poll is deleted —
+the rail's session status dot + new-output dot are now push-live.
 The Electric/agents-server/Postgres infra + the `@durable-streams/*`
 pkg.pr.new pins + the `_agents` proxy + the boot-relink patch + the
-`agent-session-protocol` dep (IDE-bridge leftover) are all deleted.
+`agent-session-protocol` dep (IDE-bridge leftover) are all gone.
 The engine owns the **long-lived per-session process** (multi-turn over
 one stdin, demux by `result`, idle-reap ~15 min, `--resume` respawn).
 
@@ -37,17 +43,14 @@ fresh session in `manual` mode; four extension env vars added alongside
 
 **Next-up build order:**
 
-1. **Step 2 remainder** — coarse `{table,id,op}` path on `/api/live` +
-   `useLiveCall` + rail-poll deletion (the chat fine path landed early
-   with step 1).
-2. **Step 3** — devcontainer + rootless-DinD environments, `Domofile`,
+1. **Step 3** — devcontainer + rootless-DinD environments, `Domofile`,
    terminal → `docker exec`, Coast adapter removed.
-3. **Step 4** — port forwarding (HTTP reverse-proxy + TCP listeners,
+2. **Step 4** — port forwarding (HTTP reverse-proxy + TCP listeners,
    canonical env binding, SQLite forward table).
-4. **Step 5** — group-chat collaboration (`chat` events + trigger
+3. **Step 5** — group-chat collaboration (`chat` events + trigger
    detection).
-5. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
-6. **Step 7** — billing live-verify (single end-of-build check; runs
+4. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
+5. **Step 7** — billing live-verify (single end-of-build check; runs
    AFTER 1–6 land; see the note at the top of this file — don't
    surface as next-actionable while earlier steps are in flight).
 
@@ -134,27 +137,49 @@ per-session process**.
       browser-driven session against the new engine has not happened
       yet — see "⚠️ Deadline-critical" above + step 7.
 
-## 2 — Reactivity spine
+## 2 — Reactivity spine — LANDED
 
 The chat fine path + auth-gated `/api/live` + the durable-stream client
-deletion landed with step 1 (the chat needed them to work). What remains
-is the **coarse path** (`{table,id,op}` → procedure refetch) and the
-singleton browser SSE client wrapper.
+deletion landed with step 1 (the chat needed them to work). Step 2
+adds the coarse path (`{table,id,op}` → procedure refetch), unifies
+the browser client on a tab-wide singleton, and deletes the 4 s
+rail-poll.
 
-- [x] In-process change bus (`server/lib/changeBus.ts`) — two topics
-      so far (durable session events + live-only partial frames);
-      extend to `{table,id,op}` here.
-- [x] `GET /api/live` SSE auth-gated (chat fine path only): emits two
-      event types — `session-event` (durable rows past `?since=`, then
-      tailed via the change bus) and `partial` (live-only streaming
-      assistant deltas, not replayed on reconnect).
-- [ ] Extend `/api/live` to also emit `{table,id,op}` notices from the
-      coarse change-bus topic; single browser-side SSE singleton multi-
-      plexes both shapes.
-- [ ] `useLiveCall` (or generalize `useCoastEvents`); delete the 4 s
-      rail poll (`LeftRailTree.vue`).
-- [ ] Verify: rail/env/ports update push-live; chat tails incrementally;
-      reconnect lossless; mobile scroll OK with a tall transcript.
+- [x] In-process change bus (`server/lib/changeBus.ts`) — three topics:
+      durable session events, live-only partial frames, and coarse
+      `{table,id,op}` (`projects`/`envs`/`sessions`). The helper-layer
+      writes in `lib/{sessions,envs,projects}.ts` fire the coarse
+      notice from every insert/update/delete chokepoint (including the
+      engine's per-turn `updateSession` for status + lastEventAt).
+- [x] `GET /api/live` SSE auth-gated, **`sessionId` now optional**:
+      with `sessionId` the connection carries `session-event` +
+      `partial` (chat fine path) plus `table-change` (always on);
+      without `sessionId` it carries `table-change` only — used on
+      pages that don't show a chat. Snapshot replay only emits past
+      `?since=` for session-events; `table-change` has no replay (the
+      consumer's `useCall` data is the snapshot, refetch is the catch-up).
+- [x] `app/composables/liveBus.ts` — tab-wide singleton, lazy-opens on
+      first subscriber, closes on last unsubscribe. `focusSession(id)`
+      restarts the SSE on a new sessionId; `releaseFocusIf(id)` is a
+      CAS so a chat unmount doesn't clobber the next chat's mount
+      (Nuxt page transitions can mount-before-unmount).
+- [x] `app/composables/useLiveRefresh.ts` — binds a `useCall.refresh()`
+      (or any imperative refresh fn) to coarse `table-change` notices,
+      with a 150 ms trailing debounce so a turn's flurry of
+      `updateSession` writes collapses into one SELECT.
+- [x] `useSessionStream` refactored onto the singleton (no more
+      per-component EventSource). Behaviour preserved: snapshot
+      replay → live tail → resume-on-error from high-water.
+- [x] `LeftRailTree`/`LeftRailEnvList`/`LeftRailSessionList`: 4 s
+      `sessionTick` setInterval deleted; `useLiveRefresh` drives each
+      `useCall.refresh()`. Coast events still drive the env runtime
+      overlay (liveStatus/checkout) until step 3 swaps Coast out.
+      Env overview page + project page wired the same way.
+- [x] `pnpm typecheck` + `pnpm lint` green.
+- [ ] Live e2e verify on dev port 7576 (rail dot status push-live,
+      chat tails incrementally, reconnect lossless, mobile scroll OK
+      with a tall transcript). Tied to the step 7 end-of-build
+      browser-driven session check — same isolated `DOMO_HOME` run.
 
 ## 3 — Devcontainer environment engine
 

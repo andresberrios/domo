@@ -121,14 +121,20 @@ mechanisms the old stack used (durable stream + coast WS + 4 s rail poll
 + build/run SSE).
 
 - Every DB mutation funnels through `server/lib/*`; a single post-write
-  chokepoint emits `{ table, id, op }`.
-- `GET /api/live` — one SSE per browser (singleton client connection),
-  auth-gated by `server/middleware/auth.ts`.
+  chokepoint emits `{ table, id, op }`. Wired through every helper-layer
+  insert/update/delete in `lib/{sessions,envs,projects}.ts` — including
+  the engine's per-turn `updateSession` for status + `lastEventAt`.
+- `GET /api/live` — one auth-gated SSE per browser tab; the browser
+  singleton `app/composables/liveBus.ts` owns the single connection and
+  refocuses it on `focusSession(id)`. `?sessionId=` is optional —
+  omit it on pages with no chat and the connection carries only the
+  coarse channel.
 - **Coarse path:** low-frequency UI (sessions list, env status, port
-  toggles, new-output dots) → `{table}` notification → re-`.call()` the
-  affected procedure. Reads stay through procedures, so Zod + superjson
-  + per-user auth filtering are unchanged. The rail's polling tick
-  becomes push and is deleted.
+  toggles, new-output dots) → `table-change` notification → re-`.call()`
+  the affected procedure via `useLiveRefresh(refresh, { tables })`
+  (150 ms trailing debounce). Reads stay through procedures, so Zod +
+  superjson + per-user auth filtering are unchanged. The rail's
+  polling tick is deleted.
 - **Fine path (chat) — two SSE event types:**
   - `session-event` — every durable `session_events` INSERT (no
     UPDATEs). Emits `{ session_id, seq }`; the open transcript appends
@@ -490,12 +496,18 @@ The Electric/Coast phases 0–4 + auth Part A **shipped** (see
    agents-server image build); `release.yml` unchanged (it just calls
    `scripts/build-release.sh`). **Outstanding:** the deadline-critical
    billing live-verify (step 7).
-2. **Reactivity spine (remainder).** Coarse `{table,id,op}` path on the
-   already-built change bus + `/api/live`; singleton browser SSE client
-   that multiplexes coarse + chat (extend `useSessionStream`'s
-   single-connection model); `useLiveCall` (or extend `useCoastEvents`)
-   for procedure refetch; delete the 4 s rail poll in
-   `LeftRailTree.vue`.
+2. **Reactivity spine (remainder) — LANDED.** Coarse `{table,id,op}`
+   channel on `server/lib/changeBus.ts` + `server/api/live.ts` (the
+   endpoint now also accepts no `?sessionId=` and serves `table-change`
+   only). Tab-wide browser singleton `app/composables/liveBus.ts`
+   multiplexes the three event types over one EventSource — chat
+   surface focuses via `liveBus().focusSession(id)`,
+   `useLiveRefresh(refresh, { tables: [...] })` binds a `useCall`
+   refresh to coarse notices with a 150 ms trailing debounce. The 4 s
+   `sessionTick` setInterval in `LeftRailTree.vue` is deleted; the
+   rail's session status dot, new-output dot, and env list are
+   push-live. Coast events still drive the env runtime overlay
+   (`liveStatus`/checkout) until step 3.
 3. **Devcontainer environment engine.** `@devcontainers/cli` lifecycle,
    rootless DinD, `Domofile` parse, project-add / env-create reworked,
    terminal → `docker exec`. Coast adapter removed.

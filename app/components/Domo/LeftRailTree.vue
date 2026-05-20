@@ -3,6 +3,11 @@ import type { CoastEvent } from '~~/server/lib/coast/types'
 
 const { data: projects, refresh: refreshProjects } = await apiClient.projects.list.useCall()
 
+// `projects.list` follows the `projects` table on the coarse change bus
+// (a project add/delete fires `{table:'projects'}`). Coast doesn't touch
+// this row, so coast events aren't needed here.
+useLiveRefresh(() => refreshProjects(), { tables: ['projects'] })
+
 const expanded = useState<Set<string>>('leftRail:expanded', () => new Set())
 const showDone = useState('leftRail:showDone', () => false)
 
@@ -24,35 +29,21 @@ function expand(id: string): void {
   expanded.value = next
 }
 
+// Coast events still drive the env liveStatus badge (the field comes from
+// `coast ls`, not from our `envs` row), so we keep the coast subscription
+// until step 3 swaps Coast out for devcontainers. The coarse table-change
+// bus handles row-shape changes (insert/delete/status persisted to SQLite);
+// coast events add the live runtime status overlay.
 useCoastEvents((e: CoastEvent) => {
-  // Any coast lifecycle event invalidates the env list. We coarsely
-  // refresh; future refinement can scope to the affected project/env.
   if (e.event.startsWith('instance.') || e.event.startsWith('service.') || e.event.startsWith('build.')) {
-    refreshProjects()
-    // Also bump the env-tree subnode keys so they re-fetch.
     envRefreshTick.value++
   }
 })
 
-// Bumping this counter triggers DomoLeftRailEnvList children to refetch.
+// Bumping this counter triggers DomoLeftRailEnvList children to refetch
+// (coast-event overlay only — the table-change channel is wired directly
+// in each child via `useLiveRefresh`).
 const envRefreshTick = useState('leftRail:envRefreshTick', () => 0)
-
-// Sessions have no coast-style event channel to the browser, so the rail
-// can't be notified when a background session produces output / changes
-// status. A single low-frequency tick (paused when the tab is hidden)
-// drives DomoLeftRailSessionList.refresh() — bounded and rail-scoped.
-const sessionTick = useState('leftRail:sessionTick', () => 0)
-if (import.meta.client) {
-  let timer: ReturnType<typeof setInterval> | null = null
-  onMounted(() => {
-    timer = setInterval(() => {
-      if (document.visibilityState === 'visible') sessionTick.value++
-    }, 4000)
-  })
-  onBeforeUnmount(() => {
-    if (timer) clearInterval(timer)
-  })
-}
 </script>
 
 <template>

@@ -16,6 +16,11 @@ async function refreshEnvs() {
 await refreshEnvs()
 watch(() => project.value?.id, refreshEnvs)
 
+// Refetch envs on any envs-table write (coarse change-bus). Projects
+// list is already reactive through its own `useCall`-driven cache;
+// the listening composable below covers row-shape writes to envs only.
+useLiveRefresh(() => refreshEnvs(), { tables: ['envs'] })
+
 const showAddEnv = useState('project:showAddEnv', () => false)
 const showBuild = ref(false)
 

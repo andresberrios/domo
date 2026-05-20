@@ -36,6 +36,13 @@ useCoastEvents((e) => {
   }
 })
 
+// Push-live refetch on row-shape writes. The Coast event stream still
+// drives the live runtime overlay (status/ports) — step 3 swaps it
+// out for devcontainers, at which point this composable owns the lot.
+useLiveRefresh(() => Promise.all([refreshOverview(), refreshEnvs(), refreshProjects()]), {
+  tables: ['envs', 'projects'],
+})
+
 const busy = ref<null | 'stop' | 'start' | 'restart' | 'checkout' | 'release' | 'delete'>(null)
 const errMsg = ref<string | null>(null)
 const router = useRouter()

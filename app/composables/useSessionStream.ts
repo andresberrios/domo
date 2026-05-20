@@ -1,18 +1,23 @@
 /**
- * Subscribe to a session's `/api/live` SSE — the in-process engine's
+ * Subscribe to a session's `/api/live` stream — the in-process engine's
  * change-bus / chat seq-tail (Decided #8). Exposes the transcript and
  * derived view-state as Vue-reactive refs.
  *
- * Wire model: two SSE event types share one connection.
+ * Wire model: three SSE event types share one tab-wide connection
+ * (`liveBus()`):
  *
  *  - `session-event` (durable rows): replayed once at connect since
- *    `?since=0`, then streamed live as the engine appends. `seq` is the
- *    primary key; reconnect with `?since=<lastSeq>` is lossless.
+ *    `?since=<lastSeq>`, then streamed live as the engine appends. `seq`
+ *    is the primary key; reconnect after a transient error resumes
+ *    losslessly from the current high-water.
  *  - `partial` (live-only): the latest coalesced streaming assistant
  *    delta. Not replayed on reconnect — partials are transient by design;
  *    the complete `assistant` event arrives on the durable channel and
- *    supersedes the partial bubble in the adapter (matched by
- *    Anthropic `message.id`).
+ *    supersedes the partial bubble in the adapter (matched by Anthropic
+ *    `message.id`).
+ *  - `table-change` (tab-wide coarse): not consumed here — drives the
+ *    rail's `useLiveRefresh`. Shares the same connection so we don't
+ *    pay for two SSE sockets per tab.
  *
  * The session **status** + the **pending-diff** queue are *derived from
  * events client-side* (no extra procedure call): `pending_diff` adds a
@@ -37,22 +42,6 @@ export interface SessionStream {
   status: Ref<ChatSessionStatus>
   ready: Ref<boolean>
   error: Ref<string | null>
-}
-
-interface WireEvent {
-  sessionId?: string
-  seq: number
-  type: string
-  payload: Record<string, unknown>
-  createdAt: number
-}
-
-interface WirePartial {
-  sessionId?: string
-  messageId: string
-  text: string
-  thinking: string
-  createdAt: number
 }
 
 /**
@@ -135,9 +124,10 @@ export function useSessionStream(
   const error = shallowRef<string | null>(null)
 
   let disposed = false
+  /** Per-session teardown for the singleton subscriptions. */
   let teardown: (() => void) | null = null
 
-  // Per-connection scratch state (rebuilt on every (re)connect).
+  // Per-session scratch state (rebuilt on every session switch).
   let bySeq: Map<number, EventRow> | null = null
   let diffMap: Map<string, PendingDiffRow> | null = null
   let finalizedMsgIds: Set<string> | null = null
@@ -166,7 +156,12 @@ export function useSessionStream(
     status.value = deriveStatus(sorted, diffMap)
   }
 
-  function applyRow(wire: WireEvent): void {
+  function applyRow(wire: {
+    seq: number
+    type: string
+    payload: Record<string, unknown>
+    createdAt: number
+  }): void {
     if (!bySeq || !diffMap || !finalizedMsgIds) return
     const row: EventRow = {
       seq: wire.seq,
@@ -194,7 +189,12 @@ export function useSessionStream(
     }
   }
 
-  function applyPartial(wire: WirePartial): void {
+  function applyPartial(wire: {
+    messageId: string
+    text: string
+    thinking: string
+    createdAt: number
+  }): void {
     if (!finalizedMsgIds) return
     // Final already landed — ignore a late partial for that message.
     if (finalizedMsgIds.has(wire.messageId)) return
@@ -206,87 +206,62 @@ export function useSessionStream(
     }
   }
 
+  /** id we last asked the singleton to focus on — used for safe release. */
+  let claimedId: string | null = null
+
   function connect(id: string): void {
     if (!import.meta.client) return
     bySeq = new Map<number, EventRow>()
     diffMap = new Map<string, PendingDiffRow>()
     finalizedMsgIds = new Set<string>()
-    let highWater = 0
-    let es: EventSource | null = null
 
-    const open = (since: number): EventSource => {
-      const url = `/api/live?sessionId=${encodeURIComponent(id)}&since=${since}`
-      const source = new EventSource(url, { withCredentials: true })
-      source.addEventListener('session-event', (ev) => {
-        if (disposed || sessionId.value !== id) return
-        let wire: WireEvent | null = null
-        try {
-          wire = JSON.parse((ev as MessageEvent).data) as WireEvent
-        } catch {
-          return
-        }
-        if (!wire || typeof wire.seq !== 'number') return
-        if (wire.seq > highWater) highWater = wire.seq
-        applyRow(wire)
-        publish()
-      })
-      source.addEventListener('partial', (ev) => {
-        if (disposed || sessionId.value !== id) return
-        let wire: WirePartial | null = null
-        try {
-          wire = JSON.parse((ev as MessageEvent).data) as WirePartial
-        } catch {
-          return
-        }
-        if (!wire || typeof wire.messageId !== 'string') return
-        applyPartial(wire)
-      })
-      source.addEventListener('snapshot-end', () => {
-        if (disposed || sessionId.value !== id) return
-        ready.value = true
-        publish()
-      })
-      source.addEventListener('error', () => {
-        if (disposed || sessionId.value !== id) return
-        // EventSource auto-reconnects; expose the transient error but
-        // don't tear down. If the connection stays broken `ready` stays
-        // true (we already have the snapshot) and `error` is visible.
-        error.value = 'live connection interrupted; retrying…'
-        // Force a manual restart with the latest high-water so we don't
-        // re-replay the whole transcript on every blip.
-        try {
-          source.close()
-        } catch {
-          /* already closed */
-        }
-        if (!disposed && sessionId.value === id) {
-          setTimeout(() => {
-            if (disposed || sessionId.value !== id) return
-            es = open(highWater)
-          }, 1000)
-        }
-      })
-      source.onopen = () => {
-        if (!disposed && sessionId.value === id) error.value = null
-      }
-      return source
-    }
+    const bus = liveBus()
+    // Register handlers BEFORE refocusing so we don't miss the snapshot
+    // replay that fires as soon as the SSE opens with this sessionId.
+    const offEvent = bus.onSessionEvent(id, (frame) => {
+      if (disposed || sessionId.value !== id) return
+      applyRow(frame)
+      publish()
+    })
+    const offPartial = bus.onPartial(id, (frame) => {
+      if (disposed || sessionId.value !== id) return
+      applyPartial(frame)
+    })
+    const offSnapshotEnd = bus.onSnapshotEnd(id, () => {
+      if (disposed || sessionId.value !== id) return
+      ready.value = true
+      publish()
+    })
+    const offError = bus.onError((msg) => {
+      if (disposed || sessionId.value !== id) return
+      error.value = msg
+    })
 
-    es = open(0)
+    bus.focusSession(id)
+    claimedId = id
+
     teardown = () => {
-      try {
-        es?.close()
-      } catch {
-        /* already closed */
-      }
+      offEvent()
+      offPartial()
+      offSnapshotEnd()
+      offError()
     }
   }
 
   watch(
     sessionId,
-    (id) => {
+    (id, prev) => {
       reset()
-      if (id) connect(id)
+      if (id) {
+        connect(id)
+      } else if (prev && claimedId) {
+        // We were focused on a session; let the singleton know nothing
+        // else here cares so it can close down to the table-change-only
+        // mode (or close entirely if no other subscribers). CAS: only
+        // releases if the focus is still ours.
+        liveBus().releaseFocusIf(claimedId)
+        claimedId = null
+      }
     },
     { immediate: true },
   )
@@ -294,6 +269,10 @@ export function useSessionStream(
   onScopeDispose(() => {
     disposed = true
     teardown?.()
+    if (claimedId) {
+      liveBus().releaseFocusIf(claimedId)
+      claimedId = null
+    }
   })
 
   return { events, partial, pendingDiffs, status, ready, error }

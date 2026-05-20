@@ -5,16 +5,11 @@
  * Lifecycle UI:
  *  - status dot (waiting / active / pending-approval / error) — the
  *    authoritative value is the in-process engine's per-turn write to the
- *    `sessions.status` cache (see server/lib/sessionEngine), refreshed
- *    here on the rail's tick;
+ *    `sessions.status` cache (see server/lib/sessionEngine), pushed here
+ *    on the coarse `table-change` channel via `useLiveRefresh`;
  *  - a new-output dot when this device hasn't seen the latest activity
  *    (`lastEventAt` newer than `viewed_at_per_device[deviceId]`);
  *  - per-row kebab: rename (inline), mark done / not done, delete.
- *
- * The rail has no server→client push channel for sessions yet (step 2 of
- * the new-architecture build adds it via the coarse path on `/api/live`),
- * so a single low-frequency tick (owned by DomoLeftRailTree, paused when
- * the tab is hidden) drives `refresh()`.
  */
 type Session = Awaited<
   ReturnType<typeof apiClient.sessions.list.call>
@@ -33,10 +28,11 @@ const { data: sessions, refresh } = await apiClient.sessions.list.useCall({
 })
 watch(() => props.refreshKey, () => refresh())
 
-// Low-frequency liveness tick (see DomoLeftRailTree). Watching it here —
-// rather than threading another prop — keeps the env-list wiring untouched.
-const sessionTick = useState('leftRail:sessionTick', () => 0)
-watch(sessionTick, () => refresh())
+// Push-live refetch on any session-row write: insert/delete from
+// create/done/rename/delete, and per-turn `updateSession` (status +
+// lastEventAt) from the engine. The composable debounces a burst of
+// in-turn updates into one SELECT.
+useLiveRefresh(() => refresh(), { tables: ['sessions'] })
 
 const visible = computed(() =>
   (sessions.value ?? []).filter((s) => props.showDone || !s.done),

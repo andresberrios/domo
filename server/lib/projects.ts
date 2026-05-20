@@ -13,6 +13,7 @@ import { existsSync } from 'node:fs'
 import { readFile, writeFile, appendFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
+import { changeBus } from './changeBus'
 import { db } from './db'
 
 const execFile = promisify(execFileCb)
@@ -70,10 +71,12 @@ export function insertProject(row: ProjectRow): void {
     ...row,
     hasCoastfile: row.hasCoastfile ? 1 : 0,
   })
+  changeBus().emitTableChange({ table: 'projects', id: row.id, op: 'insert' })
 }
 
 export function deleteProject(id: string): void {
   db().prepare(`DELETE FROM projects WHERE id = ?`).run(id)
+  changeBus().emitTableChange({ table: 'projects', id, op: 'delete' })
 }
 
 // --- Git detection / init -------------------------------------------------

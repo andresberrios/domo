@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot, step 1 landed
+## Where we are — mid-pivot, steps 1 + 2 landed
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -42,19 +42,36 @@ host spawn moved verbatim from `electric/claude.ts` (billing argv +
 steering + partial-stream coalescer). `session_events(session_id,seq,
 type,payload,message_id,created_at)` + `pending_diffs` SQLite tables are
 the durable truth — every row an INSERT (no UPDATEs), monotonic `seq`
-the cursor. The reactivity spine's **chat fine path** is live on two
-SSE event types: `session-event` for durable rows
-(`server/api/live.ts` SSE, auth-gated; replay past `?since=` on connect
-then tail via the change bus, idempotent reconnect) and `partial` for
-**live-only** coalesced streaming deltas (NOT persisted — the complete
-`assistant` row supersedes them in the adapter, matched by Anthropic
-`message.id`). `useSessionStream` consumes both,
-`sessionMessages.ts(events, partial)` projects to `UIMessage[]`. Boot
-reconcile (`plugins/sessionEngine.ts`) flips stale `active`/
-`pending-approval` cached statuses to `waiting` and auto-rejects orphan
-`pending` diffs with a `diff_decision { reason:'runtime restarted' }`
+the cursor. Boot reconcile (`plugins/sessionEngine.ts`) flips stale
+`active`/`pending-approval` cached statuses to `waiting` and auto-rejects
+orphan `pending` diffs with a `diff_decision { reason:'runtime restarted' }`
 event so cards clear cross-device — the "no corruption mode" property
 the old stack couldn't have.
+
+**Step 2 (reactivity spine) landed.** One auth-gated SSE endpoint
+(`server/api/live.ts`), one tab-wide browser singleton
+(`app/composables/liveBus.ts`), three event types on the same wire:
+`session-event` for durable `session_events` rows (replayed past
+`?since=` on connect then tailed via the change bus, idempotent
+reconnect), `partial` for **live-only** coalesced streaming deltas
+(NOT persisted — the complete `assistant` row supersedes them in the
+adapter, matched by Anthropic `message.id`), and `table-change` for
+coarse `{table,id,op}` notices fired from every helper-layer write to
+`projects`/`envs`/`sessions` in `lib/{sessions,envs,projects}.ts`
+(including the engine's per-turn `updateSession` for status +
+`lastEventAt`). `?sessionId=` is optional — without it the connection
+only carries `table-change` (landing / project / env-overview pages).
+The chat surface uses `useSessionStream` (now consuming the singleton —
+no per-component EventSource); the rail + overview pages use
+`useLiveRefresh(refresh, { tables: [...] })`, which binds a
+`useCall.refresh()` to matching `table-change` frames with a 150 ms
+trailing debounce so a turn's flurry of `updateSession` writes
+collapses into one SELECT. The 4 s rail-poll (`LeftRailTree`'s
+`sessionTick` setInterval) is **deleted** — the rail's session
+status dot, new-output dot, and env list are push-live. Coast events
+still drive the env runtime overlay (`liveStatus`/checkout — those
+come from `coast ls`, not our SQLite row) until step 3 swaps Coast
+out.
 
 **Deleted with step 1** (don't try to import or revive): `server/lib/
 electric/*`, `server/routes/_agents/*`, `server/plugins/electric.ts`,
@@ -193,14 +210,17 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   `git.ts` (injection-safe `execFile git -C`), `settings.ts` (UX prefs),
   `config.ts` (`<domoHome>/config.json` operator host config, read fresh;
   `claude.env`/`extraPath` merged **before** the security scrub —
-  cannot reintroduce `ANTHROPIC_API_KEY`), and (post-step-1):
+  cannot reintroduce `ANTHROPIC_API_KEY`), and (post-steps-1+2):
   `sessionEngine/{engine,claude,store}.ts` (single-flight long-lived
   per-session `claude` manager; `session_events` + `pending_diffs`
   durable log; the host `claude` spawn moved from `electric/claude.ts`)
-  and `changeBus.ts` (in-process emitter the chat SSE consumes).
-  **Still to build:** the change bus's coarse path + `useLiveCall`
-  (step 2), the devcontainer client + `portForwarder` (steps 3–4).
-  **Still legacy (step 3 swap):** `coast/*`.
+  and `changeBus.ts` (in-process emitter with three channels:
+  `session-event` durable rows, `session-partial` live deltas,
+  `table-change` coarse `{table,id,op}` from every helper-layer
+  insert/update/delete — `lib/{sessions,envs,projects}.ts` fire on
+  every write chokepoint including the engine's per-turn
+  `updateSession`). **Still to build:** the devcontainer client +
+  `portForwarder` (steps 3–4). **Still legacy (step 3 swap):** `coast/*`.
 - **Workspace + git are host-side.** `workspace.{tree,read,write}` use
   `node:fs`; `git.*` shells `git -C <worktree>` on the host. Every path
   worktree-relative through `safeResolve` (rejects `..`, abs-outside,
@@ -214,18 +234,30 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   input `DomoChatInput`+`DomoChatAutocomplete` (nav keys intercepted at
   keydown-**capture** so they never reach `UChatPrompt`'s Enter/Esc).
   Per-session approval modes (`manual`/`auto`/`passthrough`, plain read
-  per turn). **The browser tails the engine via `/api/live`** on two
-  SSE event types: `session-event` (durable `session_events` rows,
-  replayed past `?since=` on connect → idempotent reconnect, never
-  UPDATEd) and `partial` (live-only coalesced assistant deltas, NOT
-  persisted — the complete `assistant` row arrives on the durable
-  channel and supersedes the partial bubble in the adapter, joined by
-  Anthropic `message.id`). `useSessionStream` opens one EventSource per
-  focused session; `projectSessionMessages(events, partial)` renders the
-  streaming bubble in place. The pending-diff queue + the chat status
-  are **derived client-side** from the event stream (`pending_diff` +
-  `diff_decision` events fold into a map; `prompt`/assistant activity →
-  `active`, `result`/`aborted` → `waiting`, `error` → `error`).
+  per turn). **The browser tails the engine via `/api/live`** through a
+  **tab-wide singleton** (`app/composables/liveBus.ts`) that
+  multiplexes three SSE event types over one connection:
+  `session-event` (durable `session_events` rows, replayed past
+  `?since=` on connect → idempotent reconnect, never UPDATEd),
+  `partial` (live-only coalesced assistant deltas, NOT persisted — the
+  complete `assistant` row arrives on the durable channel and
+  supersedes the partial bubble in the adapter, joined by Anthropic
+  `message.id`), and `table-change` (coarse `{table,id,op}`).
+  `?sessionId=` is optional — without it the connection carries only
+  `table-change`. `useSessionStream` consumes the singleton (the chat
+  surface calls `liveBus().focusSession(id)`; `releaseFocusIf(id)` is
+  a CAS so page-transition mount-before-unmount doesn't clobber the
+  next chat's focus). `projectSessionMessages(events, partial)`
+  renders the streaming bubble in place. The pending-diff queue + the
+  chat status are **derived client-side** from the event stream
+  (`pending_diff` + `diff_decision` events fold into a map;
+  `prompt`/assistant activity → `active`, `result`/`aborted` →
+  `waiting`, `error` → `error`). Rails and overview pages refetch via
+  `useLiveRefresh(refresh, { tables: [...] })` — bound to the coarse
+  `table-change` channel, 150 ms trailing debounce so a turn's flurry
+  of `updateSession` writes collapses into one SELECT. The 4 s
+  rail-poll is gone; coast events still drive the env runtime
+  overlay (`liveStatus`/checkout) until step 3 swaps Coast out.
 - **CodeMirror/xterm/Comark are client-only** — dynamic-import in
   `onMounted`, lazy grammars (`app/utils/language.ts`). `DomoCodeEditor`,
   `DomoDiffView` (`@codemirror/merge`; split ≥md, inline below — the

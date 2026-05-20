@@ -12,6 +12,7 @@
  * the TS row and the procedure schema. The chat surface subscribes via the
  * new `/api/live` SSE keyed by the Domo session id.
  */
+import { changeBus } from './changeBus'
 import { db } from './db'
 import type { ApprovalMode, SessionStatus } from './schemas'
 
@@ -112,6 +113,7 @@ export function insertSession(row: SessionRow): void {
       approvalMode: row.approvalMode ?? null,
       viewedAtPerDevice: JSON.stringify(row.viewedAtPerDevice),
     })
+  changeBus().emitTableChange({ table: 'sessions', id: row.id, op: 'insert' })
 }
 
 export function updateSession(
@@ -163,6 +165,7 @@ export function updateSession(
   db()
     .prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE id = @id`)
     .run(params)
+  changeBus().emitTableChange({ table: 'sessions', id, op: 'update' })
 }
 
 /**
@@ -186,4 +189,5 @@ export function markSessionViewed(
 
 export function deleteSession(id: string): void {
   db().prepare(`DELETE FROM sessions WHERE id = ?`).run(id)
+  changeBus().emitTableChange({ table: 'sessions', id, op: 'delete' })
 }

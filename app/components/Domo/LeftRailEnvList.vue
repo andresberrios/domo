@@ -2,7 +2,7 @@
 const props = defineProps<{
   projectId: string
   projectName: string
-  /** Bumped by parent to force re-fetch on coast events. */
+  /** Bumped by parent to refetch on coast events (live runtime status). */
   refreshKey: number
   showDone: boolean
 }>()
@@ -11,6 +11,12 @@ const props = defineProps<{
 // cache and re-runs the fetch. We also call refresh() in a watcher.
 const { data: envs, refresh } = await apiClient.envs.list.useCall({ projectId: props.projectId })
 watch(() => props.refreshKey, () => { refresh() })
+
+// Row-shape updates land on the table-change channel: create/delete or
+// any cached-status write to an env row. We don't try to filter by
+// projectId — the notice carries only `{table,id,op}`, and refetching
+// one project's env list per any-env change is cheap.
+useLiveRefresh(() => refresh(), { tables: ['envs'] })
 
 function badgeColor(status: string | null | undefined): 'neutral' | 'success' | 'warning' | 'error' | 'primary' {
   if (!status) return 'neutral'

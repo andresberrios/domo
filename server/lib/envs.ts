@@ -7,6 +7,7 @@
  * name are all the same string.
  */
 import { join } from 'node:path'
+import { changeBus } from './changeBus'
 import { db } from './db'
 import { coast } from './coast'
 import type { InstanceStatus } from './coast/types'
@@ -70,10 +71,12 @@ export function insertEnv(row: EnvRow): void {
     INSERT INTO envs (id, project_id, name, branch, worktree_path, coast_instance_name, status, created_at)
     VALUES (@id, @projectId, @name, @branch, @worktreePath, @coastInstanceName, @status, @createdAt)
   `).run(row)
+  changeBus().emitTableChange({ table: 'envs', id: row.id, op: 'insert' })
 }
 
 export function updateEnvStatus(id: string, status: string | null): void {
   db().prepare(`UPDATE envs SET status = ? WHERE id = ?`).run(status, id)
+  changeBus().emitTableChange({ table: 'envs', id, op: 'update' })
 }
 
 export function updateEnvFields(
@@ -87,10 +90,12 @@ export function updateEnvFields(
   if (fields.status !== undefined) { sets.push('status = @status'); params.status = fields.status }
   if (sets.length === 0) return
   db().prepare(`UPDATE envs SET ${sets.join(', ')} WHERE id = @id`).run(params)
+  changeBus().emitTableChange({ table: 'envs', id, op: 'update' })
 }
 
 export function deleteEnv(id: string): void {
   db().prepare(`DELETE FROM envs WHERE id = ?`).run(id)
+  changeBus().emitTableChange({ table: 'envs', id, op: 'delete' })
 }
 
 export function defaultWorktreePath(projectRoot: string, envName: string): string {
