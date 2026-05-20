@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot, steps 1 + 2 landed
+## Where we are — mid-pivot, steps 1 + 2 + 3a landed
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -101,24 +101,40 @@ vars added alongside `CLAUDE_CODE_ENTRYPOINT=claude-vscode` —
 `CLAUDE_AGENT_SDK_VERSION=0.3.142` (pinned literal — bump when matching
 a newer extension capture).
 
-**Next up:** step 3a (devcontainer lifecycle off `devcontainer.json`
-directly, rootless-DinD baseline sysbox→rootless-dind→privileged-warn,
-terminal → `docker exec`, Coast adapter removed) → step 3b (`claude`
-spawn site moves from host into `docker exec` inside the env container,
-delivered by a Domo-owned devcontainer Feature, shared
-`<DOMO_HOME>/claude-home/<userId>/` → `~/.claude` bind-mount carrying
-OAuth + slash-commands + MCP across that user's envs) → step 4
-(TCP-only port forwarding: `-p 127.0.0.1:0:<inner>` at create + userland
-forwarders for ad-hoc + "expose externally" toggle) → steps 5–6. Step
-7's billing live-verify is a **single end-of-build check** scoped by
-the user to *after* all of steps 1–6 land (including the devcontainer
-swap and the release re-cut). Don't surface it as a milestone in the
-meantime — just keep the whole build moving so it lands well before
-~2026-06-15.
+**Step 3a (devcontainer cutover) landed.** `server/lib/devcontainer/`
+(`client`/`parser`/`runtime`/`scaffold`) is the new env layer:
+`@devcontainers/cli` for `up` (via subprocess + `--override-config`
+overlay carrying our `runArgs` — `domo.envId`/`domo.projectId` labels
++ `-p 127.0.0.1:0:<inner>` for each `forwardPorts` entry + the
+sysbox-runc selection), `docker inspect/start/stop/rm` for the rest of
+lifecycle, `docker exec` for the terminal WS. All env procedures
+(`start`/`stop`/`restart`/`delete`/`list`/`get`/`overview`/`create`)
+rewritten. `projects.add` reads/parses/scaffolds `devcontainer.json`
+in place of `Coastfile`. The host runtime selection cascades sysbox →
+rootless-dind → privileged-with-warning; selected per-host at runtime
+(`server/lib/devcontainer/runtime.ts`), not at install. `install.sh`
+gained Linux-only advisory checks (userns, cgroup v2, subuid,
+fuse-overlayfs) plus sysbox detection. **All Coast deleted:**
+`server/lib/coast/`, `server/api/coast-events.ts`,
+`app/composables/useCoastEvents.ts`, `server/procedures/coastSmoke.ts`,
+the project-level build SSE + `BuildProgress.vue`, the checkout
+procedure + canonical-env UI bits, `coastApiUrl` runtimeConfig. Step
+3a kept `claude` host-side — step 3b moves the spawn into `docker
+exec`.
 
-`server/lib/coast/*` + `app/composables/useCoastEvents.ts` +
-`server/api/coast-events.ts` + the Coast adapter in `envs.*` stay in
-the tree — they're step 3's swap (devcontainers). Don't extend them.
+**Next up:** step 3b (`claude` spawn site moves from host into
+`docker exec` inside the env container, delivered by a Domo-owned
+devcontainer Feature published at `ghcr.io/<us>/devcontainer-features/
+claude`, shared `<DOMO_HOME>/claude-home/<userId>/` → `~/.claude`
+bind-mount carrying OAuth + slash-commands + MCP across that user's
+envs) → step 4 (TCP-only port forwarding: `-p 127.0.0.1:0:<inner>` at
+create already done; what remains is the "expose externally" toggle +
+userland forwarders for ad-hoc ports + SQLite forward table for
+restart-safety) → steps 5–6. Step 7's billing live-verify is a
+**single end-of-build check** scoped by the user to *after* all of
+steps 1–6 land (including step 3b and the release re-cut). Don't
+surface it as a milestone in the meantime — just keep the whole build
+moving so it lands well before ~2026-06-15.
 
 ## Running it
 
@@ -214,26 +230,35 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   mirroring the server input (inline per-field errors pre-submit).
 - **Server libs** `server/lib/`: `paths.ts`, `db.ts` (better-sqlite3
   singleton + `CREATE TABLE IF NOT EXISTS` migrate + `ensureColumn`),
-  `schemas.ts` (shared Zod), `users.ts`+`auth.ts`, `projects.ts`,
-  `envs.ts`, `sessions.ts` (Domo session pointer: title/done/per-device
-  viewed/cached status), `claudeCommands.ts`/`mentions.ts`/`promptExpand.ts`
-  (slash + `@` discovery & **expansion at execution time, not in
-  `sessions.prompt`** — transcript keeps raw text), `workspace.ts`
+  `schemas.ts` (shared Zod), `users.ts`+`auth.ts`, `projects.ts`
+  (devcontainer detection, scaffold consent flow, git helpers),
+  `envs.ts` (typed CRUD + `listEnvsEnriched` folds `docker inspect`
+  status into each row), `sessions.ts` (Domo session pointer:
+  title/done/per-device viewed/cached status),
+  `claudeCommands.ts`/`mentions.ts`/`promptExpand.ts` (slash + `@`
+  discovery & **expansion at execution time, not in `sessions.prompt`**
+  — transcript keeps raw text), `workspace.ts`
   (`resolveEnvWorktree`+`safeResolve` — the path-safety chokepoint),
   `git.ts` (injection-safe `execFile git -C`), `settings.ts` (UX prefs),
   `config.ts` (`<domoHome>/config.json` operator host config, read fresh;
   `claude.env`/`extraPath` merged **before** the security scrub —
-  cannot reintroduce `ANTHROPIC_API_KEY`), and (post-steps-1+2):
+  cannot reintroduce `ANTHROPIC_API_KEY`), and (post-steps-1/2/3a):
   `sessionEngine/{engine,claude,store}.ts` (single-flight long-lived
   per-session `claude` manager; `session_events` + `pending_diffs`
-  durable log; the host `claude` spawn moved from `electric/claude.ts`)
-  and `changeBus.ts` (in-process emitter with three channels:
+  durable log; host-side `claude` spawn — step 3b wraps it in
+  `docker exec`), `devcontainer/{client,parser,runtime,scaffold,types}.ts`
+  (the new env runtime: `@devcontainers/cli` subprocess with
+  `--override-config` overlay; `docker inspect` for status + ports;
+  starter `devcontainer.json` writer; sysbox→rootless-dind→privileged
+  selection), and `changeBus.ts` (in-process emitter with three channels:
   `session-event` durable rows, `session-partial` live deltas,
   `table-change` coarse `{table,id,op}` from every helper-layer
   insert/update/delete — `lib/{sessions,envs,projects}.ts` fire on
   every write chokepoint including the engine's per-turn
-  `updateSession`). **Still to build:** the devcontainer client +
-  `portForwarder` (steps 3–4). **Still legacy (step 3 swap):** `coast/*`.
+  `updateSession`). **Still to build:** the `portForwarder` (step 4 —
+  "expose externally" toggle on top of the published-port mechanism
+  already in `client.ts`); the claude-in-container Feature + shared
+  `~/.claude` bind-mount (step 3b).
 - **Workspace + git are host-side.** `workspace.{tree,read,write}` use
   `node:fs`; `git.*` shells `git -C <worktree>` on the host. Every path
   worktree-relative through `safeResolve` (rejects `..`, abs-outside,

@@ -12,21 +12,28 @@ change (doc-sync is a prime directive).
 
 ## START HERE (fresh session)
 
-**Step 1 (engine swap) landed 2026-05-19 / -20** and **Step 2
-(reactivity spine) landed 2026-05-20.** The session engine is the
-in-process `server/lib/sessionEngine/*` over `session_events` +
-`pending_diffs` in SQLite; the reactivity spine is one auth-gated
-`/api/live` SSE + `server/lib/changeBus.ts`, with a tab-wide
-singleton browser client (`app/composables/liveBus.ts`) multiplexing
-**three SSE event types**: `session-event` (durable rows, replayed past
-`?since=` on connect, lossless reconnect), `partial` (live-only
-coalesced assistant deltas — NOT persisted, the complete `assistant`
-row supersedes them in the adapter), and `table-change` (coarse
-`{table,id,op}` notices fired from every helper-layer write to
-`projects`/`envs`/`sessions`; browser `useLiveRefresh` debounces and
-calls `useCall.refresh()` on a match). The 4 s rail-poll is deleted —
-the rail's session status dot + new-output dot are now push-live.
-The Electric/agents-server/Postgres infra + the `@durable-streams/*`
+**Step 1 (engine swap)** landed 2026-05-19 / -20, **Step 2 (reactivity
+spine)** landed 2026-05-20, **Step 3a (devcontainer cutover, host-side
+`claude`)** landed 2026-05-20. The session engine is the in-process
+`server/lib/sessionEngine/*` over `session_events` + `pending_diffs` in
+SQLite; the reactivity spine is one auth-gated `/api/live` SSE +
+`server/lib/changeBus.ts`, with a tab-wide singleton browser client
+(`app/composables/liveBus.ts`) multiplexing **three SSE event types**:
+`session-event` (durable rows, replayed past `?since=` on connect,
+lossless reconnect), `partial` (live-only coalesced assistant deltas —
+NOT persisted), and `table-change` (coarse `{table,id,op}` notices from
+every helper-layer write). The 4 s rail-poll is deleted — the rail is
+push-live.
+
+Step 3a swapped the Coast adapter for a devcontainer-driven env layer
+(`server/lib/devcontainer/`): `@devcontainers/cli` for lifecycle,
+`docker inspect` for status + published-port discovery, `docker exec`
+for the terminal WS, `docker rm -f` + `git worktree remove` for env
+delete, and a starter-`devcontainer.json` scaffolder on project add.
+Coast is deleted (`server/lib/coast/`, `server/api/coast-events.ts`,
+`useCoastEvents`, `server/procedures/coastSmoke.ts`, the project
+build SSE + BuildProgress component, canonical-env / checkout — all
+gone). The Electric/agents-server/Postgres infra + the `@durable-streams/*`
 pkg.pr.new pins + the `_agents` proxy + the boot-relink patch + the
 `agent-session-protocol` dep (IDE-bridge leftover) are all gone.
 The engine owns the **long-lived per-session process** (multi-turn over
@@ -43,20 +50,17 @@ fresh session in `manual` mode; four extension env vars added alongside
 
 **Next-up build order:**
 
-1. **Step 3a** — devcontainer + rootless-DinD environments (no
-   Domofile; `devcontainer.json` directly), terminal → `docker exec`,
-   Coast adapter removed.
-2. **Step 3b** — `claude` spawn moves into the env container via a
+1. **Step 3b** — `claude` spawn moves into the env container via a
    Domo-owned devcontainer Feature + shared `<DOMO_HOME>/claude-home/
    <userId>/` mount; path translation in diff/tool-call rendering.
-3. **Step 4** — port forwarding (TCP-only, cross-platform: published
+2. **Step 4** — port forwarding (TCP-only, cross-platform: published
    random host ports + userland forwarders for ad-hoc + "expose
    externally" toggle; SQLite forward table). No HTTP proxy, no
    canonical env in v1.
-4. **Step 5** — group-chat collaboration (`chat` events + trigger
+3. **Step 5** — group-chat collaboration (`chat` events + trigger
    detection).
-5. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
-6. **Step 7** — billing live-verify (single end-of-build check; runs
+4. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
+5. **Step 7** — billing live-verify (single end-of-build check; runs
    AFTER 1–6 land; see the note at the top of this file — don't
    surface as next-actionable while earlier steps are in flight).
 
@@ -187,27 +191,33 @@ rail-poll.
       with a tall transcript). Tied to the step 7 end-of-build
       browser-driven session check — same isolated `DOMO_HOME` run.
 
-## 3a — Devcontainer environment engine (container lifecycle)
+## 3a — Devcontainer environment engine (container lifecycle) — LANDED
 
-- [ ] `@devcontainers/cli` lifecycle (`up`/`exec`); rootless DinD
-      baseline: prefer sysbox-runc registered with the host Docker
-      daemon, else rootless `dind`, else privileged-with-warning;
-      selected at runtime per-host (not install).
-- [ ] **No Domofile.** Read `devcontainer.json` directly
-      (`forwardPorts`, `portsAttributes`, `runArgs`, etc.).
-      Project-add scaffolder writes a starter
-      `.devcontainer/devcontainer.json` if absent (sensible base
-      image + Domo claude Feature + empty `forwardPorts`); detects a
-      `docker-compose.yml` and writes a compose-based template instead.
-- [ ] `WS /api/terminal` → `docker exec`/`devcontainer exec`; remove the
-      Coast adapter (`server/lib/coast/*`) + `useCoastEvents` Coast
-      bits + `server/api/coast-events.ts`.
-- [ ] `install.sh` checks: docker present; on Linux, kernel userns +
-      cgroup v2 delegation + subuid/subgid + fuse-overlayfs (warn on
-      missing); sysbox detection (informational); on macOS, note the
-      Docker Desktop path is the supported one.
+- [x] `@devcontainers/cli` lifecycle (`up` via subprocess +
+      `--override-config` overlay for Domo's `runArgs`); `docker
+      inspect`/`start`/`stop`/`rm -f` for the rest of the lifecycle.
+      Rootless-DinD selection: sysbox-runc when registered, else
+      rootless-dind, else privileged-with-warning (operator opt-in);
+      selected at runtime per-host (`server/lib/devcontainer/runtime.ts`),
+      not install.
+- [x] **No Domofile.** Reads `devcontainer.json` directly
+      (`forwardPorts`, `portsAttributes`, `runArgs`, etc.). Project-add
+      scaffolder writes a starter `.devcontainer/devcontainer.json` if
+      absent — sensible base image (ubuntu-22.04) + Docker-in-Docker
+      feature + a TODO comment for the Domo claude Feature (lands step
+      3b). Compose-aware variant of the scaffold deferred.
+- [x] `WS /api/terminal` → `docker exec -i -t bash -l` against the env
+      container. Removed Coast (`server/lib/coast/*`, `useCoastEvents`,
+      `server/api/coast-events.ts`, `coastSmoke`, project-level build
+      SSE, `BuildProgress.vue`, checkout procedure, `coastApiUrl`
+      runtimeConfig). Terminal resize is dropped for v1 (a follow-up
+      can wire dockerode for `POST /containers/<id>/exec/<exec_id>/resize`).
+- [x] `install.sh` checks: docker present, kernel userns + cgroup v2
+      + subuid/subgid + fuse-overlayfs (Linux, warn-on-missing), sysbox
+      detection (informational), macOS-supported note.
 - [ ] Verify e2e: create env from a real devcontainer, inner `docker
-      compose` up, terminal works, restart-safe.
+      compose` up, terminal works, restart-safe. Tied to the step 7
+      end-of-build live-verify run.
 
 ## 3b — `claude` inside the env container
 

@@ -41,6 +41,39 @@ have docker || err "warning: Docker not found — needed at runtime for devconta
 have git    || err "warning: git not found — Domo shells host git for worktrees."
 have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
 
+# --- rootless-DinD prereq probe (Linux only, advisory) -------------------
+# Domo runs the user's `docker compose` inside each env container — that
+# needs a way to run Docker-in-Docker safely. Three viable runtimes,
+# preferred order: sysbox-runc → rootless-dind → privileged (warned).
+# Selected per-host at runtime by `server/lib/devcontainer/runtime.ts`;
+# these checks just surface what the host supports so the operator
+# knows what to expect.
+if [ "$OS" = linux ] && have docker; then
+  if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q 'sysbox-runc'; then
+    err "sysbox-runc detected — env containers will use it (cleanest nested-Docker UX)."
+  else
+    # No sysbox → we'll try rootless-dind images. The kernel features
+    # below are what those images need. Warn (don't fail) if missing —
+    # the actual error surfaces clearly at `devcontainer up` time.
+    if [ -r /proc/sys/kernel/unprivileged_userns_clone ] && \
+       [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" != 1 ]; then
+      err "warning: unprivileged_userns_clone is 0 — rootless-dind needs it enabled (echo 1 | sudo tee /proc/sys/kernel/unprivileged_userns_clone)."
+    fi
+    if [ -d /sys/fs/cgroup ] && [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then
+      err "warning: host appears to use cgroup v1; rootless-dind works best on cgroup v2 with delegation."
+    fi
+    if ! have fuse-overlayfs; then
+      err "warning: fuse-overlayfs not found — rootless-dind uses it as the storage driver (apt install fuse-overlayfs)."
+    fi
+    if ! grep -q "^$(id -un):" /etc/subuid 2>/dev/null; then
+      err "warning: no subuid mapping for $(id -un) in /etc/subuid — rootless-dind needs one."
+    fi
+  fi
+fi
+if [ "$OS" = darwin ] && have docker; then
+  err "macOS Docker Desktop path is supported; the rootless-DinD baseline is automatic via the VM."
+fi
+
 # --- resolve data/app dir (must match server/lib/paths.ts) --------------
 if [ -n "${DOMO_HOME:-}" ]; then HOME_DIR="$DOMO_HOME";
 elif [ -n "${XDG_DATA_HOME:-}" ]; then HOME_DIR="$XDG_DATA_HOME/domo";

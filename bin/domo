@@ -66,7 +66,6 @@ cmd_app_start() {
 cmd_up() {
   [ -x "$NODE" ] || have node || die "no Node runtime (bundled binary missing and no system node)."
   have docker || err "warning: 'docker' not found — needed for the devcontainer-backed env containers."
-  have coast  || err "warning: 'coast' not found — projects/envs still use Coast on this release line."
   have claude || err "warning: 'claude' not found — log in once with the Claude Code CLI."
   cmd_app_start
 }
