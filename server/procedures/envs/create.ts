@@ -4,11 +4,12 @@ import { getProject } from '../../lib/projects'
 import { defaultWorktreePath, getEnvByName, insertEnv } from '../../lib/envs'
 
 /**
- * Create the env DB row. Does NOT call coastd. The follow-up
- * `POST /api/envs/run` streams Coast's `run` progress and flips the
- * row's status to `running` / `error` when it completes.
+ * Create the env DB row. Does NOT call the docker daemon. The
+ * follow-up `POST /api/envs/run` streams `devcontainer up` progress
+ * and flips the row's status to a live container state when it
+ * completes.
  *
- * Splitting create from run keeps the procedure shape clean (no
+ * Splitting create from run keeps this procedure shape clean (no
  * streaming) while still letting the UI render the new node in the
  * left-rail tree the moment the user submits.
  */
@@ -35,7 +36,8 @@ export default defineProcedure({
       name: input.name,
       branch: input.baseBranch ?? project.defaultBranch ?? null,
       worktreePath: defaultWorktreePath(project.rootPath, input.name),
-      coastInstanceName: input.name,
+      containerId: null as string | null,
+      devcontainerPath: null as string | null,
       status: 'provisioning' as string | null,
       createdAt: Date.now(),
     }

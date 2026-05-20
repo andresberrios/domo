@@ -1,30 +1,27 @@
 import { z } from 'zod'
-import { coast, CoastError } from '../../lib/coast'
-import { getEnv } from '../../lib/envs'
+import * as dc from '../../lib/devcontainer'
+import { getEnv, resolveContainerId } from '../../lib/envs'
 import { getProject } from '../../lib/projects'
 import { Env } from '../../lib/schemas'
 
-const Service = z.object({
-  name: z.string(),
-  status: z.string(),
-  ports: z.string(),
-  image: z.string(),
-  kind: z.string().nullable().optional(),
-})
-
 const Port = z.object({
-  logicalName: z.string(),
-  canonicalPort: z.number().int(),
-  dynamicPort: z.number().int(),
-  isPrimary: z.boolean(),
+  /** Label from `portsAttributes`, or a `port-<inner>` fallback. */
+  name: z.string(),
+  innerPort: z.number().int(),
+  /** Random host loopback port assigned at create time; null when not running. */
+  hostPort: z.number().int().nullable(),
+  protocol: z.enum(['tcp', 'udp']),
+  /** Hint from `portsAttributes.protocol` — for UI labelling only
+   * (we still TCP-forward everything; no HTTP awareness in v1). */
+  appProtocol: z.enum(['http', 'https', 'tcp', 'udp']).nullable(),
 })
 
 /**
- * One-shot data for the env overview screen — env row (with live status),
- * services from `coast ps`, ports from `coast ports`, project metadata.
- *
- * Folded into a single procedure so the page can render with one round
- * trip instead of three.
+ * One-shot data for the env overview screen — env row (with live
+ * status), project metadata, and the published-port list discovered
+ * from the running container. v1 has no services breakdown (Coast's
+ * `ps` was free; with arbitrary `docker compose` inside the env we'd
+ * need to shell into the container to enumerate services — deferred).
  */
 export default defineProcedure({
   input: z.object({ id: z.string() }),
@@ -35,12 +32,9 @@ export default defineProcedure({
       name: z.string(),
       rootPath: z.string(),
     }),
-    services: z.array(Service),
     ports: z.array(Port),
-    /** Set if coastd was reachable but the instance wasn't found there. */
-    coastUnknown: z.boolean(),
-    /** Set if coastd was unreachable; cached row is still returned. */
-    coastUnreachable: z.boolean(),
+    /** True if the docker daemon was unreachable. */
+    daemonUnreachable: z.boolean(),
   }),
   handler: async ({ input }) => {
     const env = getEnv(input.id)
@@ -50,60 +44,50 @@ export default defineProcedure({
 
     const projectMeta = { id: project.id, name: project.name, rootPath: project.rootPath }
 
-    let liveStatus: string | null = null
-    let checkedOut = false
-    let services: z.infer<typeof Service>[] = []
-    let ports: z.infer<typeof Port>[] = []
-    let coastUnknown = false
-    let coastUnreachable = false
+    let liveStatus: 'running' | 'stopped' | 'starting' | 'missing' | 'error' | 'unknown' | null = null
+    const ports: z.infer<typeof Port>[] = []
+    let daemonUnreachable = false
 
-    try {
-      const ls = await coast().ls(project.name)
-      const instance = ls.instances.find((i) => i.name === env.coastInstanceName)
-      if (!instance) {
-        coastUnknown = true
+    const cid = await resolveContainerId(env)
+    if (!cid) {
+      liveStatus = 'missing'
+    } else {
+      const info = await dc.inspect(cid)
+      if (!info) {
+        // Inspect failed — could be daemon down or container vanished.
+        daemonUnreachable = true
       } else {
-        liveStatus = instance.status
-        checkedOut = instance.checked_out
+        liveStatus = dc.toEnvLiveStatus(info.status)
+        // Cross-reference with the parsed devcontainer.json so we get
+        // labels from `portsAttributes`. If the file is unreadable we
+        // still show the published ports, just with generic names.
+        let labelled: ReturnType<typeof dc.resolveForwardPorts> = []
+        if (env.worktreePath) {
+          try {
+            const { config } = await dc.loadDevcontainer(env.worktreePath)
+            labelled = dc.resolveForwardPorts(config)
+          } catch {
+            // devcontainer.json gone / malformed — fall through with empty labels.
+          }
+        }
+        for (const p of info.publishedPorts) {
+          const hit = labelled.find((l) => l.innerPort === p.innerPort && l.protocol === p.protocol)
+          ports.push({
+            name: hit?.name ?? `port-${p.innerPort}`,
+            innerPort: p.innerPort,
+            hostPort: p.hostPort,
+            protocol: p.protocol,
+            appProtocol: hit?.appProtocol ?? null,
+          })
+        }
       }
-    } catch (e) {
-      if (e instanceof CoastError) {
-        coastUnreachable = true
-      } else {
-        throw e
-      }
-    }
-
-    if (!coastUnreachable && !coastUnknown) {
-      try {
-        const psRes = await coast().ps(env.coastInstanceName, project.name)
-        services = psRes.services.map((s) => ({
-          name: s.name,
-          status: s.status,
-          ports: s.ports,
-          image: s.image,
-          kind: s.kind ?? null,
-        }))
-      } catch { /* services unknown is fine */ }
-
-      try {
-        const portsRes = await coast().ports(env.coastInstanceName, project.name)
-        ports = portsRes.ports.map((p) => ({
-          logicalName: p.logical_name,
-          canonicalPort: p.canonical_port,
-          dynamicPort: p.dynamic_port,
-          isPrimary: p.is_primary,
-        }))
-      } catch { /* ports unknown is fine */ }
     }
 
     return {
-      env: { ...env, liveStatus, checkedOut },
+      env: { ...env, liveStatus },
       project: projectMeta,
-      services,
       ports,
-      coastUnknown,
-      coastUnreachable,
+      daemonUnreachable,
     }
   },
 })

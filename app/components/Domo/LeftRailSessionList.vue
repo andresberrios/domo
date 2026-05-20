@@ -20,13 +20,11 @@ const props = defineProps<{
   envName: string
   envId: string
   showDone: boolean
-  refreshKey: number
 }>()
 
 const { data: sessions, refresh } = await apiClient.sessions.list.useCall({
   envId: props.envId,
 })
-watch(() => props.refreshKey, () => refresh())
 
 // Push-live refetch on any session-row write: insert/delete from
 // create/done/rename/delete, and per-turn `updateSession` (status +

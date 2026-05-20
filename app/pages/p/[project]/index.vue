@@ -22,14 +22,14 @@ watch(() => project.value?.id, refreshEnvs)
 useLiveRefresh(() => refreshEnvs(), { tables: ['envs'] })
 
 const showAddEnv = useState('project:showAddEnv', () => false)
-const showBuild = ref(false)
 
 function badgeColor(status: string | null | undefined) {
   if (!status) return 'neutral'
   switch (status) {
-    case 'running': case 'checked_out': return 'success'
-    case 'provisioning': case 'starting': case 'stopping': case 'assigning': case 'unassigning': return 'warning'
-    case 'stopped': case 'idle': case 'enqueued': return 'neutral'
+    case 'running': return 'success'
+    case 'provisioning': case 'starting': return 'warning'
+    case 'stopped': return 'neutral'
+    case 'error': case 'missing': return 'error'
     default: return 'primary'
   }
 }
@@ -51,7 +51,7 @@ function badgeColor(status: string | null | undefined) {
     <header class="space-y-1">
       <h2 class="text-xl font-semibold flex items-center gap-2">
         {{ project.name }}
-        <UTooltip v-if="!project.hasCoastfile" text="Missing Coastfile">
+        <UTooltip v-if="!project.hasDevcontainer" text="Missing devcontainer.json">
           <UIcon name="i-lucide-triangle-alert" class="size-4 text-warning" />
         </UTooltip>
       </h2>
@@ -62,9 +62,6 @@ function badgeColor(status: string | null | undefined) {
       <div class="flex gap-2 pt-2">
         <UButton size="xs" color="primary" icon="i-lucide-plus" @click="showAddEnv = true">
           Env
-        </UButton>
-        <UButton size="xs" variant="ghost" icon="i-lucide-hammer" @click="showBuild = true">
-          Rebuild
         </UButton>
       </div>
     </header>
@@ -88,12 +85,6 @@ function badgeColor(status: string | null | undefined) {
               <span v-if="e.branch" class="text-xs text-muted">on <code>{{ e.branch }}</code></span>
             </div>
             <div class="flex items-center gap-2">
-              <UIcon
-                v-if="e.checkedOut"
-                name="i-lucide-star"
-                class="size-3.5 text-warning"
-                title="Checked out"
-              />
               <UBadge :color="badgeColor(e.liveStatus ?? e.status)" variant="subtle" size="xs">
                 {{ e.liveStatus ?? e.status ?? 'unknown' }}
               </UBadge>
@@ -110,21 +101,5 @@ function badgeColor(status: string | null | undefined) {
       @created="refreshEnvs()"
       @cancelled="refreshEnvs()"
     />
-
-    <UModal
-      v-model:open="showBuild"
-      title="Rebuild project"
-      description="Re-run the project's Coast build."
-      :ui="{ content: 'max-w-2xl' }"
-    >
-      <template #body>
-        <DomoBuildProgress
-          v-if="showBuild"
-          :project-id="project.id"
-          @done="showBuild = false"
-          @cancelled="showBuild = false"
-        />
-      </template>
-    </UModal>
   </div>
 </template>

@@ -4,7 +4,7 @@ import type { Project } from '~~/server/lib/schemas'
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ added: [project: Project] }>()
 
-type Step = 'pick' | 'confirms' | 'build' | 'error'
+type Step = 'pick' | 'confirms' | 'error'
 const step = ref<Step>('pick')
 const pickedPath = ref<string | null>(null)
 const pending = ref(false)
@@ -18,7 +18,7 @@ const lastResp = ref<AddResp | null>(null)
 // Confirms granted so far. Re-sent on each retry.
 const confirms = reactive({
   confirmGitInit: false,
-  confirmCoastfileInit: false,
+  confirmDevcontainerInit: false,
   confirmGitignoreAddWorktrees: false,
 })
 
@@ -34,7 +34,7 @@ function reset() {
   addedProject.value = null
   lastResp.value = null
   confirms.confirmGitInit = false
-  confirms.confirmCoastfileInit = false
+  confirms.confirmDevcontainerInit = false
   confirms.confirmGitignoreAddWorktrees = false
 }
 
@@ -51,7 +51,10 @@ async function attemptAdd(): Promise<void> {
     if (resp.status === 'ok') {
       addedProject.value = resp.project
       emit('added', resp.project)
-      step.value = 'build'
+      // Devcontainer-based projects don't pre-build at add time — the
+      // image gets built (or pulled + features applied) on the first
+      // `devcontainer up` in env-create. Close the modal.
+      open.value = false
     } else {
       step.value = 'confirms'
     }
@@ -72,7 +75,7 @@ function acceptCurrentPrompt() {
   if (!lastResp.value) return
   switch (lastResp.value.status) {
     case 'missing-git': confirms.confirmGitInit = true; break
-    case 'missing-coastfile': confirms.confirmCoastfileInit = true; break
+    case 'missing-devcontainer': confirms.confirmDevcontainerInit = true; break
     case 'missing-gitignore-worktrees': confirms.confirmGitignoreAddWorktrees = true; break
   }
   attemptAdd()
@@ -88,7 +91,7 @@ function cancelFlow() {
     v-model:open="open"
     :ui="{ content: 'max-w-2xl' }"
     title="Add project"
-    description="Register a git repo with a Coastfile as a Domo project."
+    description="Register a git repo with a devcontainer as a Domo project."
   >
     <template #body>
       <!-- Step 1: pick directory -->
@@ -111,21 +114,23 @@ function cancelFlow() {
           </p>
         </template>
 
-        <template v-else-if="lastResp.status === 'missing-coastfile'">
+        <template v-else-if="lastResp.status === 'missing-devcontainer'">
           <p>
-            This project has no Coastfile. Domo will
-            <strong>initialize a starter Coastfile</strong> named
+            This project has no <code>devcontainer.json</code>. Domo will
+            <strong>scaffold a starter</strong> at
+            <code>.devcontainer/devcontainer.json</code> named
             <code>{{ lastResp.suggestedName }}</code> (the folder name).
           </p>
           <p v-if="lastResp.composeDetected" class="text-xs text-muted">
             <UIcon name="i-lucide-info" class="size-3 inline mr-1" />
-            <code>docker-compose.yml</code> detected — the starter will reference it.
+            <code>docker-compose.yml</code> detected — you can edit the
+            scaffold afterward to reference it via <code>dockerComposeFile</code>.
           </p>
         </template>
 
         <template v-else-if="lastResp.status === 'missing-gitignore-worktrees'">
           <p>
-            Coast puts per-env worktrees under <code>.worktrees/</code>.
+            Domo puts per-env worktrees under <code>.worktrees/</code>.
             <strong>Add it to <code>.gitignore</code></strong>?
           </p>
         </template>
@@ -145,7 +150,7 @@ function cancelFlow() {
             Cancel
           </UButton>
           <UButton
-            v-if="lastResp.status === 'missing-git' || lastResp.status === 'missing-coastfile' || lastResp.status === 'missing-gitignore-worktrees'"
+            v-if="lastResp.status === 'missing-git' || lastResp.status === 'missing-devcontainer' || lastResp.status === 'missing-gitignore-worktrees'"
             size="sm"
             color="primary"
             :loading="pending"
@@ -163,14 +168,6 @@ function cancelFlow() {
           </UButton>
         </div>
       </div>
-
-      <!-- Step 3: build -->
-      <DomoBuildProgress
-        v-else-if="step === 'build' && addedProject"
-        :project-id="addedProject.id"
-        @done="cancelFlow"
-        @cancelled="cancelFlow"
-      />
 
       <!-- Error fallback -->
       <div v-else-if="step === 'error'" class="space-y-3">

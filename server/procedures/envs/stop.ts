@@ -1,18 +1,23 @@
 import { z } from 'zod'
-import { coast } from '../../lib/coast'
-import { getEnv, updateEnvStatus } from '../../lib/envs'
-import { getProject } from '../../lib/projects'
+import * as dc from '../../lib/devcontainer'
+import { getEnv, resolveContainerId, updateEnvStatus } from '../../lib/envs'
 
 export default defineProcedure({
   input: z.object({ id: z.string() }),
-  output: z.object({ ok: z.boolean() }),
+  output: z.object({ ok: z.boolean(), liveStatus: z.string().nullable() }),
   handler: async ({ input }) => {
     const env = getEnv(input.id)
     if (!env) throw createError({ statusCode: 404, statusMessage: 'env not found' })
-    const project = getProject(env.projectId)
-    if (!project) throw createError({ statusCode: 500, statusMessage: 'project missing' })
-    await coast().stop(env.coastInstanceName, project.name)
-    updateEnvStatus(env.id, 'stopped')
-    return { ok: true }
+    const cid = await resolveContainerId(env)
+    if (!cid) {
+      // Nothing to stop — already missing. Surface as a soft no-op.
+      updateEnvStatus(env.id, 'missing')
+      return { ok: true, liveStatus: 'missing' }
+    }
+    await dc.stop(cid)
+    const after = await dc.inspect(cid)
+    const live = after ? dc.toEnvLiveStatus(after.status) : 'missing'
+    updateEnvStatus(env.id, live)
+    return { ok: true, liveStatus: live }
   },
 })

@@ -13,10 +13,22 @@ export const Project = z.object({
   name: z.string(),
   rootPath: z.string(),
   defaultBranch: z.string().nullable(),
-  hasCoastfile: z.boolean(),
+  hasDevcontainer: z.boolean(),
   createdAt: z.number().int(),
 })
 export type Project = z.infer<typeof Project>
+
+/** Live container state, derived from `docker inspect` and projected
+ * into a UI-friendly enum (see `lib/devcontainer/types.ts`). */
+export const EnvLiveStatus = z.enum([
+  'running',
+  'stopped',
+  'starting',
+  'missing',
+  'error',
+  'unknown',
+])
+export type EnvLiveStatus = z.infer<typeof EnvLiveStatus>
 
 export const Env = z.object({
   id: z.string(),
@@ -24,12 +36,14 @@ export const Env = z.object({
   name: z.string(),
   branch: z.string().nullable(),
   worktreePath: z.string().nullable(),
-  coastInstanceName: z.string(),
-  /** Cached status from coastd `/ls`; nullable for newly-created envs. */
+  /** Docker container id from `devcontainer up`; null until first up. */
+  containerId: z.string().nullable(),
+  /** devcontainer.json path used at `up` time; null until first up. */
+  devcontainerPath: z.string().nullable(),
+  /** Cached status; nullable for newly-created envs. */
   status: z.string().nullable(),
-  /** Live values folded in from a fresh `/ls` lookup when present. */
-  liveStatus: z.string().nullable().optional(),
-  checkedOut: z.boolean().optional(),
+  /** Live container status folded in by `listEnvsEnriched` / `get`. */
+  liveStatus: EnvLiveStatus.nullable().optional(),
   createdAt: z.number().int(),
 })
 export type Env = z.infer<typeof Env>

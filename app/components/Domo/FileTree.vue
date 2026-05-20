@@ -32,10 +32,10 @@ async function load() {
 
 watch(() => props.envId, load, { immediate: true })
 
-useCoastEvents((e) => {
-  // An agent run / git op can change the tree; refresh the root cheaply.
-  if (e.event === 'project.git_changed') load()
-})
+// Coast's `project.git_changed` push event went away with step 3a. The
+// workspace tree no longer auto-refreshes on agent edits; users hit the
+// refresh control or the parent calls `refresh()`. A host-side file
+// watcher is a follow-up (step 4+).
 
 defineExpose({ refresh: load })
 </script>

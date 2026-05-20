@@ -46,3 +46,6 @@ export {
   DevcontainerUpError,
 } from './client'
 export type { UpOptions, UpResult, ExecOptions } from './client'
+
+export { renderStarter, scaffoldDevcontainer } from './scaffold'
+export type { ScaffoldOptions, ScaffoldResult } from './scaffold'

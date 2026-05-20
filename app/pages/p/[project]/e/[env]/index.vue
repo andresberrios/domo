@@ -28,22 +28,15 @@ async function refreshOverview() {
 await refreshOverview()
 watch(env, () => refreshOverview())
 
-useCoastEvents((e) => {
-  if (e.event.startsWith('instance.') || e.event.startsWith('service.') || e.event.startsWith('port.')) {
-    refreshOverview()
-    refreshEnvs()
-    refreshProjects()
-  }
-})
-
-// Push-live refetch on row-shape writes. The Coast event stream still
-// drives the live runtime overlay (status/ports) — step 3 swaps it
-// out for devcontainers, at which point this composable owns the lot.
+// Push-live refetch on row-shape writes. With Coast gone (step 3a), the
+// live status overlay is folded into `envs.list` / `envs.overview`
+// (both call `docker inspect` server-side) — `table-change` for `envs`
+// triggers a refetch and we see the new state on the next snapshot.
 useLiveRefresh(() => Promise.all([refreshOverview(), refreshEnvs(), refreshProjects()]), {
   tables: ['envs', 'projects'],
 })
 
-const busy = ref<null | 'stop' | 'start' | 'restart' | 'checkout' | 'release' | 'delete'>(null)
+const busy = ref<null | 'stop' | 'start' | 'restart' | 'delete' | 'run'>(null)
 const errMsg = ref<string | null>(null)
 const router = useRouter()
 
@@ -56,10 +49,17 @@ async function action(kind: NonNullable<typeof busy.value>) {
       case 'stop': await apiClient.envs.stop.call({ id: env.value.id }); break
       case 'start': await apiClient.envs.start.call({ id: env.value.id }); break
       case 'restart': await apiClient.envs.restart.call({ id: env.value.id }); break
-      case 'checkout': await apiClient.envs.checkout.call({ id: env.value.id }); break
-      case 'release': await apiClient.envs.checkout.call({ id: null, projectId: project.value.id }); break
+      case 'run':
+        // Re-run `devcontainer up` — used to (re-)provision after editing
+        // devcontainer.json or after a container disappears.
+        await fetch('/api/envs/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ envId: env.value.id }),
+        })
+        break
       case 'delete':
-        if (!confirm(`Delete env "${env.value.name}"? Coast instance and worktree will be removed.`)) {
+        if (!confirm(`Delete env "${env.value.name}"? The container and worktree will be removed.`)) {
           busy.value = null
           return
         }
@@ -79,9 +79,10 @@ async function action(kind: NonNullable<typeof busy.value>) {
 function badgeColor(status: string | null | undefined): 'neutral' | 'success' | 'warning' | 'error' | 'primary' {
   if (!status) return 'neutral'
   switch (status) {
-    case 'running': case 'checked_out': return 'success'
-    case 'provisioning': case 'starting': case 'stopping': case 'assigning': case 'unassigning': return 'warning'
-    case 'stopped': case 'idle': case 'enqueued': return 'neutral'
+    case 'running': return 'success'
+    case 'provisioning': case 'starting': return 'warning'
+    case 'stopped': return 'neutral'
+    case 'error': case 'missing': return 'error'
     default: return 'primary'
   }
 }
@@ -107,12 +108,6 @@ function serviceUrl(port: number): string {
     <header class="space-y-1">
       <h2 class="text-xl font-semibold flex items-center gap-2">
         {{ env.name }}
-        <UIcon
-          v-if="overview.env.checkedOut"
-          name="i-lucide-star"
-          class="size-4 text-warning"
-          title="Checked out (canonical ports)"
-        />
         <UBadge :color="badgeColor(overview.env.liveStatus ?? overview.env.status)" variant="subtle" size="sm">
           {{ overview.env.liveStatus ?? overview.env.status ?? 'unknown' }}
         </UBadge>
@@ -121,11 +116,11 @@ function serviceUrl(port: number): string {
         <span v-if="env.branch">branch <code>{{ env.branch }}</code> · </span>
         <span v-if="env.worktreePath">worktree <code>{{ env.worktreePath }}</code></span>
       </p>
-      <p v-if="overview.coastUnreachable" class="text-xs text-error">
-        coastd is unreachable — showing cached data only.
+      <p v-if="overview.daemonUnreachable" class="text-xs text-error">
+        Docker daemon unreachable — showing cached data only.
       </p>
-      <p v-else-if="overview.coastUnknown" class="text-xs text-warning">
-        Coast doesn't know about this instance yet. Run it (Start) to provision.
+      <p v-else-if="overview.env.liveStatus === 'missing'" class="text-xs text-warning">
+        No container for this env yet. Click <strong>Run / Up</strong> to provision.
       </p>
 
       <div class="flex flex-wrap gap-2 pt-2">
@@ -138,11 +133,8 @@ function serviceUrl(port: number): string {
         <UButton size="xs" icon="i-lucide-rotate-cw" variant="ghost" :loading="busy === 'restart'" :disabled="!!busy" @click="action('restart')">
           Restart
         </UButton>
-        <UButton v-if="!overview.env.checkedOut" size="xs" icon="i-lucide-star" variant="ghost" :loading="busy === 'checkout'" :disabled="!!busy" @click="action('checkout')">
-          Check out
-        </UButton>
-        <UButton v-else size="xs" icon="i-lucide-star-off" variant="ghost" :loading="busy === 'release'" :disabled="!!busy" @click="action('release')">
-          Release checkout
+        <UButton size="xs" icon="i-lucide-rocket" variant="ghost" :loading="busy === 'run'" :disabled="!!busy" @click="action('run')">
+          Run / Up
         </UButton>
         <UButton size="xs" icon="i-lucide-trash-2" variant="ghost" color="error" :loading="busy === 'delete'" :disabled="!!busy" @click="action('delete')">
           Delete
@@ -160,46 +152,6 @@ function serviceUrl(port: number): string {
       />
     </header>
 
-    <section v-if="overview.services.length > 0">
-      <h3 class="text-sm font-semibold mb-2">
-        Services
-      </h3>
-      <table class="w-full text-sm border border-default rounded overflow-hidden">
-        <thead class="bg-elevated/50">
-          <tr>
-            <th class="text-left px-3 py-2 font-medium">
-              Name
-            </th>
-            <th class="text-left px-3 py-2 font-medium">
-              Status
-            </th>
-            <th class="text-left px-3 py-2 font-medium">
-              Image
-            </th>
-            <th class="text-left px-3 py-2 font-medium">
-              Ports
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="s in overview.services" :key="s.name" class="border-t border-default">
-            <td class="px-3 py-2">
-              {{ s.name }}
-            </td>
-            <td class="px-3 py-2">
-              {{ s.status }}
-            </td>
-            <td class="px-3 py-2 font-mono text-xs">
-              {{ s.image }}
-            </td>
-            <td class="px-3 py-2 font-mono text-xs">
-              {{ s.ports }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
     <section v-if="overview.ports.length > 0">
       <h3 class="text-sm font-semibold mb-2">
         Ports
@@ -208,13 +160,13 @@ function serviceUrl(port: number): string {
         <thead class="bg-elevated/50">
           <tr>
             <th class="text-left px-3 py-2 font-medium">
-              Logical
+              Name
             </th>
             <th class="text-left px-3 py-2 font-medium">
-              Canonical
+              Container
             </th>
             <th class="text-left px-3 py-2 font-medium">
-              Dynamic
+              Host
             </th>
             <th class="text-left px-3 py-2 font-medium">
               Open
@@ -222,27 +174,29 @@ function serviceUrl(port: number): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in overview.ports" :key="p.logicalName" class="border-t border-default">
+          <tr v-for="p in overview.ports" :key="p.name + ':' + p.innerPort" class="border-t border-default">
             <td class="px-3 py-2">
-              {{ p.logicalName }}
-              <UIcon v-if="p.isPrimary" name="i-lucide-star" class="size-3 inline ml-1 text-warning" title="Primary port" />
+              {{ p.name }}
+              <span v-if="p.appProtocol" class="text-xs text-muted ml-1">({{ p.appProtocol }})</span>
             </td>
             <td class="px-3 py-2 font-mono text-xs">
-              {{ p.canonicalPort }}
+              {{ p.innerPort }}/{{ p.protocol }}
             </td>
             <td class="px-3 py-2 font-mono text-xs">
-              {{ p.dynamicPort }}
+              {{ p.hostPort ?? '—' }}
             </td>
             <td class="px-3 py-2">
               <a
-                :href="serviceUrl(p.dynamicPort)"
+                v-if="p.hostPort"
+                :href="serviceUrl(p.hostPort)"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="text-primary hover:underline inline-flex items-center gap-1"
               >
-                {{ p.dynamicPort }}
+                localhost:{{ p.hostPort }}
                 <UIcon name="i-lucide-external-link" class="size-3" />
               </a>
+              <span v-else class="text-muted text-xs">not running</span>
             </td>
           </tr>
         </tbody>
@@ -265,16 +219,7 @@ function serviceUrl(port: number): string {
         >
           <strong>Terminal</strong>
         </NuxtLink>
-        view opens a shell inside this env.
-      </p>
-    </section>
-
-    <section>
-      <h3 class="text-sm font-semibold mb-2">
-        Logs
-      </h3>
-      <p class="text-sm text-muted">
-        Logs preview / follow is deferred to a later polish pass.
+        view opens a shell inside this env's container.
       </p>
     </section>
   </div>

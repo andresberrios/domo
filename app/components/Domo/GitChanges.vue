@@ -30,9 +30,9 @@ async function load() {
 }
 
 watch(() => props.envId, load, { immediate: true })
-useCoastEvents((e) => {
-  if (e.event === 'project.git_changed') load()
-})
+// `project.git_changed` push events went away with Coast (step 3a). The
+// Git changes panel now refreshes on manual control / parent refresh
+// only; a host-side file watcher is a follow-up.
 
 const canCommit = computed(
   () => !!status.value && status.value.staged.length > 0 && message.value.trim().length > 0,

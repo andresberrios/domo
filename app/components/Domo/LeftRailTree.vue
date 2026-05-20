@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import type { CoastEvent } from '~~/server/lib/coast/types'
-
 const { data: projects, refresh: refreshProjects } = await apiClient.projects.list.useCall()
 
 // `projects.list` follows the `projects` table on the coarse change bus
-// (a project add/delete fires `{table:'projects'}`). Coast doesn't touch
-// this row, so coast events aren't needed here.
+// (a project add/delete fires `{table:'projects'}`). The env live-status
+// badge now reads `liveStatus` straight out of `envs.list`, which is
+// itself refetched on `table-change` for the `envs` table — no separate
+// runtime-event channel needed (Coast events removed step 3a).
 useLiveRefresh(() => refreshProjects(), { tables: ['projects'] })
 
 const expanded = useState<Set<string>>('leftRail:expanded', () => new Set())
@@ -28,22 +28,6 @@ function expand(id: string): void {
   next.add(id)
   expanded.value = next
 }
-
-// Coast events still drive the env liveStatus badge (the field comes from
-// `coast ls`, not from our `envs` row), so we keep the coast subscription
-// until step 3 swaps Coast out for devcontainers. The coarse table-change
-// bus handles row-shape changes (insert/delete/status persisted to SQLite);
-// coast events add the live runtime status overlay.
-useCoastEvents((e: CoastEvent) => {
-  if (e.event.startsWith('instance.') || e.event.startsWith('service.') || e.event.startsWith('build.')) {
-    envRefreshTick.value++
-  }
-})
-
-// Bumping this counter triggers DomoLeftRailEnvList children to refetch
-// (coast-event overlay only — the table-change channel is wired directly
-// in each child via `useLiveRefresh`).
-const envRefreshTick = useState('leftRail:envRefreshTick', () => 0)
 </script>
 
 <template>
@@ -78,7 +62,7 @@ const envRefreshTick = useState('leftRail:envRefreshTick', () => 0)
             @click="expand(p.id)"
           >
             <span class="font-medium truncate">{{ p.name }}</span>
-            <UTooltip v-if="!p.hasCoastfile" text="Missing Coastfile">
+            <UTooltip v-if="!p.hasDevcontainer" text="Missing devcontainer.json">
               <UIcon name="i-lucide-triangle-alert" class="size-3 text-warning shrink-0 ml-auto" />
             </UTooltip>
           </NuxtLink>
@@ -88,7 +72,6 @@ const envRefreshTick = useState('leftRail:envRefreshTick', () => 0)
           v-if="isExpanded(p.id)"
           :project-id="p.id"
           :project-name="p.name"
-          :refresh-key="envRefreshTick"
           :show-done="showDone"
         />
       </li>

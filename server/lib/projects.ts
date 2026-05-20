@@ -1,12 +1,13 @@
 /**
- * Project helpers — git / Coastfile detection, starter-Coastfile writer,
- * `.gitignore` patcher, and typed CRUD against the `projects` table.
+ * Project helpers — git detection, devcontainer detection + starter
+ * write, `.gitignore` patcher, and typed CRUD against the `projects`
+ * table.
  *
- * Coast identifies projects by the `[coast] name = "..."` field in the
- * Coastfile. We extract that on add and store it as the project row's
- * `name` so subsequent calls to coastd (`/ls`, `/run`, ...) pass through
- * the right identifier. If parsing fails we fall back to the directory
- * basename, which matches Coast's own default behavior.
+ * Post-pivot: projects are identified by their `name` (a slug derived
+ * from `devcontainer.json`'s `name` field or the directory basename).
+ * The container layer is whatever `devcontainer.json` declares —
+ * `image` / `build` / `dockerComposeFile` — Domo doesn't impose a
+ * format of its own (no `Domofile` / `Coastfile`).
  */
 import { execFile as execFileCb } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -15,6 +16,7 @@ import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 import { changeBus } from './changeBus'
 import { db } from './db'
+import { findDevcontainer, loadDevcontainer } from './devcontainer'
 
 const execFile = promisify(execFileCb)
 
@@ -23,7 +25,7 @@ export interface ProjectRow {
   name: string
   rootPath: string
   defaultBranch: string | null
-  hasCoastfile: boolean
+  hasDevcontainer: boolean
   createdAt: number
 }
 
@@ -32,7 +34,7 @@ interface ProjectDbRow {
   name: string
   root_path: string
   default_branch: string | null
-  has_coastfile: number
+  has_devcontainer: number
   created_at: number
 }
 
@@ -42,7 +44,7 @@ function fromDb(r: ProjectDbRow): ProjectRow {
     name: r.name,
     rootPath: r.root_path,
     defaultBranch: r.default_branch,
-    hasCoastfile: r.has_coastfile === 1,
+    hasDevcontainer: r.has_devcontainer === 1,
     createdAt: r.created_at,
   }
 }
@@ -65,11 +67,11 @@ export function getProjectByRoot(rootPath: string): ProjectRow | null {
 
 export function insertProject(row: ProjectRow): void {
   db().prepare(`
-    INSERT INTO projects (id, name, root_path, default_branch, has_coastfile, created_at)
-    VALUES (@id, @name, @rootPath, @defaultBranch, @hasCoastfile, @createdAt)
+    INSERT INTO projects (id, name, root_path, default_branch, has_devcontainer, created_at)
+    VALUES (@id, @name, @rootPath, @defaultBranch, @hasDevcontainer, @createdAt)
   `).run({
     ...row,
-    hasCoastfile: row.hasCoastfile ? 1 : 0,
+    hasDevcontainer: row.hasDevcontainer ? 1 : 0,
   })
   changeBus().emitTableChange({ table: 'projects', id: row.id, op: 'insert' })
 }
@@ -104,21 +106,19 @@ export async function detectDefaultBranch(rootPath: string): Promise<string | nu
   }
 }
 
-// --- Coastfile detection / init / parse -----------------------------------
+// --- Devcontainer detection ----------------------------------------------
 
-export interface CoastfileInfo {
-  path: string | null  // absolute path to detected Coastfile, or null if missing
-  composeDetected: boolean  // is there a ./docker-compose.yml or compose.yml?
-  parsedName: string | null  // [coast].name from the Coastfile, if present
+export interface DevcontainerInfo {
+  /** Absolute path to detected devcontainer.json, or null if missing. */
+  path: string | null
+  /** Is there a ./docker-compose.yml or compose.yml? Informational. */
+  composeDetected: boolean
+  /** `name` field parsed from the devcontainer.json, if present. */
+  parsedName: string | null
 }
 
-export async function inspectCoastfile(rootPath: string): Promise<CoastfileInfo> {
-  const candidates = ['Coastfile', 'Coastfile.toml']
-  let path: string | null = null
-  for (const c of candidates) {
-    const p = join(rootPath, c)
-    if (existsSync(p)) { path = p; break }
-  }
+export async function inspectDevcontainer(rootPath: string): Promise<DevcontainerInfo> {
+  const path = await findDevcontainer(rootPath)
 
   const composeCandidates = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']
   const composeDetected = composeCandidates.some((c) => existsSync(join(rootPath, c)))
@@ -126,47 +126,15 @@ export async function inspectCoastfile(rootPath: string): Promise<CoastfileInfo>
   let parsedName: string | null = null
   if (path) {
     try {
-      const content = await readFile(path, 'utf8')
-      parsedName = parseCoastfileName(content)
-    } catch { /* ignore */ }
+      const { config } = await loadDevcontainer(rootPath)
+      parsedName = typeof config.name === 'string' ? config.name : null
+    } catch {
+      // Malformed JSONC — leave parsedName null; the procedure layer
+      // surfaces parse errors separately if it needs to.
+    }
   }
 
   return { path, composeDetected, parsedName }
-}
-
-/**
- * Cheap TOML probe for `[coast] name = "..."`. Coastfile is TOML, but we
- * don't pull a full parser in here — we just need the project name, and a
- * regex over the `[coast]` table is enough. Falls back to null on any
- * surprise; callers handle the fallback.
- */
-export function parseCoastfileName(content: string): string | null {
-  const sectionMatch = content.match(/^\s*\[coast\]\s*\r?\n([\s\S]*?)(?=^\s*\[|$(?![\r\n]))/m)
-  if (!sectionMatch) return null
-  const body = sectionMatch[1] ?? ''
-  const nameMatch = body.match(/^\s*name\s*=\s*"([^"\r\n]+)"\s*$/m)
-  return nameMatch?.[1] ?? null
-}
-
-export async function writeStarterCoastfile(
-  rootPath: string,
-  opts: { name: string; composeDetected: boolean },
-): Promise<string> {
-  const composeLine = opts.composeDetected
-    ? `compose = "./docker-compose.yml"\n`
-    : `# compose = "./docker-compose.yml"  # uncomment when you have a compose file\n`
-
-  const content =
-    `[coast]\n` +
-    `name = "${opts.name}"\n` +
-    composeLine +
-    `\n` +
-    `[ports]\n` +
-    `# logical_name = canonical_port\n`
-
-  const path = join(rootPath, 'Coastfile')
-  await writeFile(path, content, 'utf8')
-  return path
 }
 
 // --- .gitignore patch -----------------------------------------------------
@@ -195,7 +163,7 @@ export async function addWorktreesToGitignore(rootPath: string): Promise<void> {
 
 // --- Naming convenience ---------------------------------------------------
 
-/** Derive a default coast project name from the directory basename. */
+/** Derive a default project name from the directory basename. */
 export function defaultProjectName(rootPath: string): string {
   return basename(rootPath)
 }

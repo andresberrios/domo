@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { existsSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
+
 import { Project } from '../../lib/schemas'
 import {
   addWorktreesToGitignore,
@@ -11,31 +12,31 @@ import {
   gitInit,
   gitignoreCoversWorktrees,
   insertProject,
-  inspectCoastfile,
-  writeStarterCoastfile,
+  inspectDevcontainer,
 } from '../../lib/projects'
+import { scaffoldDevcontainer } from '../../lib/devcontainer'
 
 /**
  * Multi-step project add. Returns a discriminated union — each non-`ok`
- * variant tells the UI what to prompt next, and the UI re-invokes with the
- * corresponding `confirm*` flag set.
+ * variant tells the UI what to prompt next, and the UI re-invokes with
+ * the corresponding `confirm*` flag set.
  *
  * Flow:
- *   1. `missing-git`             → user confirms `git init`
- *   2. `missing-coastfile`       → user confirms starter Coastfile write
- *   3. `missing-gitignore-worktrees` → user confirms `.worktrees/` in `.gitignore`
- *   4. `ok`                      → project inserted; UI can kick off `coast build` next
+ *   1. `missing-git`                   → user confirms `git init`
+ *   2. `missing-devcontainer`          → user confirms starter devcontainer.json
+ *   3. `missing-gitignore-worktrees`   → user confirms `.worktrees/` in `.gitignore`
+ *   4. `ok`                            → project row inserted
  *
- * `already-exists` short-circuits if the path is already registered. The
- * UI offers to focus the existing project.
+ * `already-exists` short-circuits if the path is already registered.
+ * The UI offers to focus the existing project.
  */
 export default defineProcedure({
   input: z.object({
     rootPath: z.string(),
-    /** Optional override for the coast project name; defaults to dir basename. */
+    /** Optional override for the project name; defaults to dir basename. */
     name: z.string().optional(),
     confirmGitInit: z.boolean().optional(),
-    confirmCoastfileInit: z.boolean().optional(),
+    confirmDevcontainerInit: z.boolean().optional(),
     confirmGitignoreAddWorktrees: z.boolean().optional(),
   }),
   output: z.discriminatedUnion('status', [
@@ -48,7 +49,7 @@ export default defineProcedure({
       rootPath: z.string(),
     }),
     z.object({
-      status: z.literal('missing-coastfile'),
+      status: z.literal('missing-devcontainer'),
       rootPath: z.string(),
       composeDetected: z.boolean(),
       suggestedName: z.string(),
@@ -93,23 +94,24 @@ export default defineProcedure({
       }
     }
 
-    // 2. Coastfile
-    let coast = await inspectCoastfile(rootPath)
-    if (!coast.path) {
-      const suggestedName = input.name?.trim() || defaultProjectName(rootPath)
-      if (!input.confirmCoastfileInit) {
+    // 2. devcontainer.json
+    let devc = await inspectDevcontainer(rootPath)
+    const suggestedName = input.name?.trim() || defaultProjectName(rootPath)
+    if (!devc.path) {
+      if (!input.confirmDevcontainerInit) {
         return {
-          status: 'missing-coastfile' as const,
+          status: 'missing-devcontainer' as const,
           rootPath,
-          composeDetected: coast.composeDetected,
+          composeDetected: devc.composeDetected,
           suggestedName,
         }
       }
-      await writeStarterCoastfile(rootPath, {
+      await scaffoldDevcontainer({
+        workspaceFolder: rootPath,
         name: suggestedName,
-        composeDetected: coast.composeDetected,
+        composeDetected: devc.composeDetected,
       })
-      coast = await inspectCoastfile(rootPath)
+      devc = await inspectDevcontainer(rootPath)
     }
 
     // 3. .gitignore
@@ -122,14 +124,14 @@ export default defineProcedure({
     }
 
     // 4. Insert
-    const coastName = coast.parsedName || input.name?.trim() || defaultProjectName(rootPath)
+    const projectName = devc.parsedName || input.name?.trim() || defaultProjectName(rootPath)
     const defaultBranch = await detectDefaultBranch(rootPath)
     const row = {
       id: crypto.randomUUID(),
-      name: coastName,
+      name: projectName,
       rootPath,
       defaultBranch,
-      hasCoastfile: true,
+      hasDevcontainer: true,
       createdAt: Date.now(),
     }
     insertProject(row)

@@ -5,7 +5,7 @@ import { requireActiveUser } from '../lib/auth'
  * access is actually enforced, in front of the whole backend: every
  * `nuxt-procedures` call (`/procedures/**`) plus Domo's own streaming/WS
  * endpoints under `/api/*` (the chat seq-tail `/api/live`, the terminal
- * WS, the build/run progress SSEs, the coast events WS — until step 3).
+ * WS, the `devcontainer up` progress SSE).
  *
  * Public (no auth): the auth procedures needed to bootstrap/sign in, plus
  * nuxt-auth-utils' own session endpoint (`useUserSession` fetch + the
@@ -25,7 +25,6 @@ import { requireActiveUser } from '../lib/auth'
  */
 const GATED_PREFIXES = [
   '/procedures/',
-  '/api/coast-events',
   '/api/terminal',
   '/api/envs/',
   '/api/projects/',

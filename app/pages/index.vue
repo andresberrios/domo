@@ -46,7 +46,7 @@ const hasProjects = computed(() => (projects.value?.length ?? 0) > 0)
           <div class="min-w-0">
             <div class="font-medium truncate flex items-center gap-1.5">
               {{ p.name }}
-              <UTooltip v-if="!p.hasCoastfile" text="Missing Coastfile">
+              <UTooltip v-if="!p.hasDevcontainer" text="Missing devcontainer.json">
                 <UIcon
                   name="i-lucide-triangle-alert"
                   class="size-3.5 text-warning"

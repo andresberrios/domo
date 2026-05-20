@@ -45,7 +45,7 @@ function migrate(d: Database.Database): void {
       name TEXT NOT NULL,
       branch TEXT,
       worktree_path TEXT,
-      coast_instance_name TEXT NOT NULL,
+      coast_instance_name TEXT NOT NULL DEFAULT '',
       status TEXT,
       created_at INTEGER NOT NULL,
       UNIQUE(project_id, name)
@@ -136,6 +136,15 @@ function migrate(d: Database.Database): void {
   // must be ALTERed in explicitly (guarded by PRAGMA table_info so it is
   // safe to run on every boot).
   ensureColumn(d, 'sessions', 'approval_mode', 'approval_mode TEXT')
+  // Step 3a: projects gained `has_devcontainer` alongside the lingering
+  // `has_coastfile` (which is no longer read). envs gained
+  // `container_id` (docker container id from `devcontainer up`) and
+  // `devcontainer_path` (absolute path to the devcontainer.json used);
+  // `coast_instance_name` lingers as the old slug — never written, kept
+  // because SQLite DROP COLUMN on a NOT NULL legacy column is messy.
+  ensureColumn(d, 'projects', 'has_devcontainer', 'has_devcontainer INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(d, 'envs', 'container_id', 'container_id TEXT')
+  ensureColumn(d, 'envs', 'devcontainer_path', 'devcontainer_path TEXT')
 
   const row = d.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as
     | { version: number }

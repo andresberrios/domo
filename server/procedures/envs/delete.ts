@@ -1,13 +1,21 @@
+import { execFile as execFileCb } from 'node:child_process'
+import { promisify } from 'node:util'
 import { z } from 'zod'
-import { coast, CoastError } from '../../lib/coast'
-import { deleteEnv, getEnv } from '../../lib/envs'
+
+import * as dc from '../../lib/devcontainer'
+import { deleteEnv, getEnv, resolveContainerId } from '../../lib/envs'
 import { getProject } from '../../lib/projects'
 
+const execFile = promisify(execFileCb)
+
 /**
- * Tear down the Coast instance and remove the env row.
+ * Tear down the env: force-remove the container (if any), drop the
+ * git worktree from the project repo, then delete the env row.
  *
- * coastd's `/rm` cleans up the container + the worktree it manages. We do
- * not separately delete the on-disk worktree dir — coast owns that path.
+ * Unlike Coast, the devcontainer CLI doesn't own the on-disk worktree
+ * — Domo created it with `git worktree add`, so Domo cleans it up
+ * with `git worktree remove`. Best-effort; a stale worktree dir
+ * doesn't block deleting the env row.
  */
 export default defineProcedure({
   input: z.object({ id: z.string() }),
@@ -15,16 +23,24 @@ export default defineProcedure({
   handler: async ({ input }) => {
     const env = getEnv(input.id)
     if (!env) return { deleted: false }
+
+    const cid = await resolveContainerId(env)
+    if (cid) {
+      await dc.remove(cid).catch(() => {
+        // Already gone or daemon unreachable — soft no-op; the env row
+        // delete below still runs so the UI clears the entry.
+      })
+    }
+
     const project = getProject(env.projectId)
-    if (project) {
+    if (project && env.worktreePath) {
       try {
-        await coast().rm(env.coastInstanceName, project.name)
-      } catch (e) {
-        // If the instance is already gone from coastd's side, that's fine;
-        // surface any other failure so the user can retry.
-        if (!(e instanceof CoastError) || e.status !== 404) throw e
+        await execFile('git', ['-C', project.rootPath, 'worktree', 'remove', '--force', env.worktreePath])
+      } catch {
+        // The worktree may already be detached or absent — not fatal.
       }
     }
+
     deleteEnv(env.id)
     return { deleted: true }
   },

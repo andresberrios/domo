@@ -51,7 +51,6 @@ export default defineNuxtConfig({
   runtimeConfig: {
     // Server-side only. Override via DOMO_HOME (data dir for SQLite + state).
     domoHome: process.env.DOMO_HOME || '',
-    coastApiUrl: process.env.DOMO_COAST_API_URL || 'http://127.0.0.1:31415',
     // nuxt-auth-utils sealed-cookie session. `password` is left empty here
     // and filled at runtime by `server/plugins/00.session-secret.ts` from
     // an auto-generated, persisted `$DOMO_HOME/session-secret` (so the
