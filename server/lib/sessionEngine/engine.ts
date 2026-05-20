@@ -29,7 +29,7 @@
  *     next prompt and may re-propose a fresh, actionable diff.
  */
 import { randomUUID } from 'node:crypto'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import {
   spawnClaudeProcess,
@@ -70,7 +70,12 @@ interface QueuedPrompt {
 
 interface SessionProc {
   sessionId: string
+  /** Host worktree path. Tool calls' file paths translate against this. */
   cwd: string
+  /** When the session runs inside a container (step 3b+), the workspace
+   * folder claude sees from inside (`/workspaces/<basename>` by default).
+   * Null = host-side spawn (legacy / pre-step-3b envs). */
+  containerWorkspace: string | null
   proc: ClaudeProc
   /** Active turn's abort controller (SIGTERMs the process). */
   abortCtl: AbortController | null
@@ -104,19 +109,37 @@ function relWorktree(cwd: string, abs: string): string {
 }
 
 /**
+ * Translate a path claude emitted (which may be container-side when
+ * the session runs inside a devcontainer) to a host filesystem path.
+ * For host-side spawns (no `containerWorkspace`), this is identity.
+ * For container spawns, the convention is
+ *   `<containerWorkspace>/<rel>` ↔ `<hostCwd>/<rel>`.
+ */
+function toHostPath(sp: { cwd: string; containerWorkspace: string | null }, abs: string): string {
+  if (!sp.containerWorkspace) return abs
+  const prefix = sp.containerWorkspace.endsWith('/') ? sp.containerWorkspace : sp.containerWorkspace + '/'
+  if (abs === sp.containerWorkspace) return sp.cwd
+  if (abs.startsWith(prefix)) return resolve(sp.cwd, abs.slice(prefix.length))
+  return abs
+}
+
+/**
  * Reconstruct the proposed file change from a tool's permission-request
  * input, for the durable `pending_diffs` UI. The CLI itself applies the
- * edit on allow — this is display-only.
+ * edit on allow — this is display-only. Path translation handles
+ * in-container spawns where the CLI emits `/workspaces/<envName>/foo.js`
+ * but the file lives on the host at `<env.worktreePath>/foo.js`.
  */
 async function proposeEdit(
-  cwd: string,
+  sp: { cwd: string; containerWorkspace: string | null },
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<{ path: string; before: string; after: string }> {
   const rawPath = String(
     input.file_path ?? input.notebook_path ?? input.path ?? '',
   )
-  const abs = isAbsolute(rawPath) ? rawPath : resolve(cwd, rawPath)
+  const absMaybeContainer = isAbsolute(rawPath) ? rawPath : resolve(sp.cwd, rawPath)
+  const abs = toHostPath(sp, absMaybeContainer)
   let before = ''
   try {
     before = await readFile(abs, 'utf8')
@@ -147,7 +170,7 @@ async function proposeEdit(
   } else if (toolName === 'NotebookEdit') {
     after = String(input.new_source ?? before)
   }
-  return { path: relWorktree(cwd, abs), before, after }
+  return { path: relWorktree(sp.cwd, abs), before, after }
 }
 
 /** Append + emit on the change bus. Single chokepoint for SSE delivery. */
@@ -322,7 +345,7 @@ async function runOneTurn({
     }
     const callId = req.requestId
     const { path, before, after } = await proposeEdit(
-      sp.cwd,
+      sp,
       req.toolName,
       req.input,
     )
@@ -502,15 +525,18 @@ function ensureProc(sessionId: string): SessionProc {
   const ctx = resolveSessionContext(sessionId)
   const approvalMode = effectiveApprovalMode(sessionId)
   const resumeId = getSession(sessionId)?.nativeClaudeSessionId ?? undefined
+  const containerWorkspace = ctx.containerId ? `/workspaces/${basename(ctx.cwd)}` : null
   const proc = spawnClaudeProcess({
     cwd: ctx.cwd,
     containerId: ctx.containerId ?? undefined,
+    containerCwd: containerWorkspace ?? undefined,
     resumeSessionId: resumeId,
     permissionMode: permissionModeArg(approvalMode),
   })
   sp = {
     sessionId,
     cwd: ctx.cwd,
+    containerWorkspace,
     proc,
     abortCtl: null,
     steer: null,

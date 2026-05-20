@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot, steps 1 + 2 + 3a landed
+## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b landed
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -101,6 +101,27 @@ vars added alongside `CLAUDE_CODE_ENTRYPOINT=claude-vscode` —
 `CLAUDE_AGENT_SDK_VERSION=0.3.142` (pinned literal — bump when matching
 a newer extension capture).
 
+**Step 3b (claude into the env container) landed.** `claude` now spawns
+inside the env's devcontainer via `docker exec -i -w
+/workspaces/<envName> --env K=V … <containerId> claude …argv` instead
+of host-side. Argv unchanged (still mirrors VS Code 2.1.142). The 5
+pinned env vars + `ANTHROPIC_API_KEY` scrub + `<domoHome>/config.json`
+`claude.env`/`extraPath` merge land in the `--env` flags. A shared
+`<DOMO_HOME>/claude-home/<userId>/` directory is bind-mounted into
+every env container at `/home/<remoteUser>/.claude` (remoteUser read
+from the parsed devcontainer.json, default `vscode`) — the user runs
+`claude /login` once from any env's terminal and OAuth + slash-commands
++ MCP definitions then propagate to every env they open. Path
+translation handles the `/workspaces/<envName>/foo.js` ↔ host
+worktree-relative round-trip for `pending_diffs` reads (`toHostPath()`
+in `engine.ts`). The scaffolder's `devcontainer.json` template adds
+`postCreateCommand: "npm install -g @anthropic-ai/claude-code"` +
+Node LTS feature so `claude` lands inside the container on first up;
+the Domo-owned claude Feature image (version-pinned) is a release-time
+publish step (deferred). Host-side spawn path stays as a legacy
+fallback when an env has no `containerId` yet — to be dropped before
+the next release.
+
 **Step 3a (devcontainer cutover) landed.** `server/lib/devcontainer/`
 (`client`/`parser`/`runtime`/`scaffold`) is the new env layer:
 `@devcontainers/cli` for `up` (via subprocess + `--override-config`
@@ -122,19 +143,17 @@ procedure + canonical-env UI bits, `coastApiUrl` runtimeConfig. Step
 3a kept `claude` host-side — step 3b moves the spawn into `docker
 exec`.
 
-**Next up:** step 3b (`claude` spawn site moves from host into
-`docker exec` inside the env container, delivered by a Domo-owned
-devcontainer Feature published at `ghcr.io/<us>/devcontainer-features/
-claude`, shared `<DOMO_HOME>/claude-home/<userId>/` → `~/.claude`
-bind-mount carrying OAuth + slash-commands + MCP across that user's
-envs) → step 4 (TCP-only port forwarding: `-p 127.0.0.1:0:<inner>` at
-create already done; what remains is the "expose externally" toggle +
-userland forwarders for ad-hoc ports + SQLite forward table for
-restart-safety) → steps 5–6. Step 7's billing live-verify is a
-**single end-of-build check** scoped by the user to *after* all of
-steps 1–6 land (including step 3b and the release re-cut). Don't
-surface it as a milestone in the meantime — just keep the whole build
-moving so it lands well before ~2026-06-15.
+**Next up:** step 4 (TCP-only port forwarding — published random host
+ports landed with step 3a; what remains is the "expose externally"
+toggle that spawns/kills a `0.0.0.0:<chosen>` → `127.0.0.1:<random>`
+forwarder, userland forwarders for ad-hoc ports the user adds at
+runtime, and the SQLite forward table for restart-safe rebuild) →
+steps 5–6 (collab; re-polish + docs/site rewrite + the
+release-time Domo-owned claude Feature publish). Step 7's billing
+live-verify is a **single end-of-build check** scoped by the user to
+*after* all of steps 1–6 land. Don't surface it as a milestone in the
+meantime — just keep the whole build moving so it lands well before
+~2026-06-15.
 
 ## Running it
 
@@ -352,13 +371,17 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   turns over one stdin, demux by `result`, idle-reap → exit, next
   prompt respawns with `--resume`) is the engine's actual model
   (spike-proven by `smoke/persistent-session-spike.mjs`). **Step 3b
-  moves the spawn site from host-side into `docker exec` inside the env
-  container** (same VS Code Dev Containers extension behavior); argv +
-  the 5 env vars + `ANTHROPIC_API_KEY` scrub move into the `--env` flags
-  of the exec call. Until step 3b lands, the host-side spawn from step 1
-  remains. Memory: `project-agent-sdk-billing`. The single end-of-build
-  live-verify is tasks.md step 7 — runs *after* all of steps 1–6 land,
-  not before.
+  (landed) moved the spawn site from host-side into `docker exec`
+  inside the env container** (same VS Code Dev Containers extension
+  behavior). When an env's row has a `containerId`,
+  `spawnClaudeProcess()` builds `docker exec -i -w
+  /workspaces/<envName> --env K=V … <containerId> claude …argv` —
+  argv unchanged, the 5 env vars + `ANTHROPIC_API_KEY` scrub move
+  into the `--env` flags. The host-side spawn path stays as a legacy
+  fallback for env rows with no `containerId` (pre-step-3b dev DBs);
+  to be dropped before the next release. Memory:
+  `project-agent-sdk-billing`. The single end-of-build live-verify is
+  tasks.md step 7 — runs *after* all of steps 1–6 land, not before.
 - **Dogfooding/sandbox litter (Claude-inside-Domo only).** If the
   operator's `~/.claude` has `permissions.defaultMode:"auto"` *and* the
   Claude Code session is running inside a Domo-spawned env, Claude Code's

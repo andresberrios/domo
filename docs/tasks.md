@@ -13,8 +13,10 @@ change (doc-sync is a prime directive).
 ## START HERE (fresh session)
 
 **Step 1 (engine swap)** landed 2026-05-19 / -20, **Step 2 (reactivity
-spine)** landed 2026-05-20, **Step 3a (devcontainer cutover, host-side
-`claude`)** landed 2026-05-20. The session engine is the in-process
+spine)** landed 2026-05-20, **Step 3a (devcontainer cutover)** landed
+2026-05-20, **Step 3b (claude into the env container via `docker exec`
++ shared `~/.claude` per Domo user)** landed 2026-05-20. The session
+engine is the in-process
 `server/lib/sessionEngine/*` over `session_events` + `pending_diffs` in
 SQLite; the reactivity spine is one auth-gated `/api/live` SSE +
 `server/lib/changeBus.ts`, with a tab-wide singleton browser client
@@ -50,17 +52,17 @@ fresh session in `manual` mode; four extension env vars added alongside
 
 **Next-up build order:**
 
-1. **Step 3b** — `claude` spawn moves into the env container via a
-   Domo-owned devcontainer Feature + shared `<DOMO_HOME>/claude-home/
-   <userId>/` mount; path translation in diff/tool-call rendering.
-2. **Step 4** — port forwarding (TCP-only, cross-platform: published
-   random host ports + userland forwarders for ad-hoc + "expose
-   externally" toggle; SQLite forward table). No HTTP proxy, no
-   canonical env in v1.
-3. **Step 5** — group-chat collaboration (`chat` events + trigger
+1. **Step 4** — port forwarding (TCP-only, cross-platform: published
+   random host ports landed with step 3a; what remains is userland
+   forwarders for ad-hoc ports + the "expose externally" toggle
+   spawn/kill listener + the SQLite forward table for restart-safety).
+   No HTTP proxy, no canonical env in v1.
+2. **Step 5** — group-chat collaboration (`chat` events + trigger
    detection).
-4. **Step 6** — re-polish + docs/site rewrite + prod reinstall.
-5. **Step 7** — billing live-verify (single end-of-build check; runs
+3. **Step 6** — re-polish + docs/site rewrite + prod reinstall (incl.
+   publishing the Domo claude devcontainer Feature image and pinning
+   the scaffold to it).
+4. **Step 7** — billing live-verify (single end-of-build check; runs
    AFTER 1–6 land; see the note at the top of this file — don't
    surface as next-actionable while earlier steps are in flight).
 
@@ -219,34 +221,46 @@ rail-poll.
       compose` up, terminal works, restart-safe. Tied to the step 7
       end-of-build live-verify run.
 
-## 3b — `claude` inside the env container
+## 3b — `claude` inside the env container — LANDED
 
 - [ ] Publish a Domo-owned devcontainer Feature
       (`ghcr.io/<us>/devcontainer-features/claude`) that installs the
       claude CLI inside any container; version pinned to
       `CLAUDE_AGENT_SDK_VERSION` (literal Domo ships against; bump
-      when re-matching an upstream extension capture).
-- [ ] Scaffolder adds the Feature to scaffolded `devcontainer.json`s;
-      user-supplied devcontainers must include it themselves (the
-      env-create flow warns if absent).
-- [ ] `server/lib/sessionEngine/claude.ts`: spawn site changes from
-      host `spawn('claude', argv, { env, cwd })` to `spawn('docker',
-      ['exec', '-i', '-w', '/workspace', '--env', …, '<envContainerId>',
-      'claude', …argv])`. Argv unchanged. The 5 pinned env vars +
+      when re-matching an upstream extension capture). **Deferred:**
+      v1 ships with the scaffolder writing a `postCreateCommand`
+      that `npm install -g @anthropic-ai/claude-code`s the latest
+      release. Pinning lands when the Feature image is published
+      (release-time step).
+- [x] Scaffolder writes `postCreateCommand: "npm install -g
+      @anthropic-ai/claude-code"` + `remoteUser: "vscode"` + the
+      Node LTS feature so the install works. Domo claude Feature
+      reference is left as a TODO comment for the publishing step.
+- [x] `server/lib/sessionEngine/claude.ts` SpawnOpts gains
+      `containerId` + `containerCwd`; when set, spawn becomes
+      `docker exec -i -w <containerCwd> --env K=V … <containerId>
+      claude …argv`. Argv unchanged. The 5 pinned env vars +
       `ANTHROPIC_API_KEY` scrub + `<domoHome>/config.json`
-      `claude.env`/`extraPath` merge move into the `--env` flags.
-- [ ] Shared `~/.claude` per Domo user: bind-mount
-      `<DOMO_HOME>/claude-home/<userId>/` (created on first env open
-      for that user, mode 0700) into every env container's
-      `/home/<containerUser>/.claude`. Used for OAuth credentials,
-      slash-command discovery, MCP definitions. User runs
-      `claude /login` once from any env terminal.
-- [ ] Path translation: `/workspace/…` (what claude emits) ↔
-      worktree-relative (what UI renders, what `pending_diffs` stores).
-      Adapter in `app/utils/sessionMessages.ts` + the diff card path
-      label; store worktree-relative in SQLite.
-- [ ] Drop the host-side claude path entirely (no fallback). Update
-      `CLAUDE.md` billing gotcha to reflect the spawn-site move.
+      `claude.env`/`extraPath` merge land in the `--env` flags.
+- [x] Shared `~/.claude` per Domo user: bind-mount
+      `<DOMO_HOME>/claude-home/<userId>/` (mode 0700) into every env
+      container's `/home/<remoteUser>/.claude`. `remoteUser` read
+      from the parsed devcontainer.json (default `vscode`). User runs
+      `claude /login` once from any env terminal; OAuth + slash-
+      commands + MCP definitions propagate to every env that user
+      opens.
+- [x] Path translation: `/workspaces/<envName>/…` (what in-container
+      claude emits) ↔ host worktree path (what `pending_diffs`
+      stores + what `readFile` reads on the host). `toHostPath()`
+      helper in `engine.ts` translates before file reads; the
+      pending_diff row's `path` stays worktree-relative.
+      Adapter-side rendering (the diff card / tool-call UI) still
+      shows whatever the durable row says — worktree-relative.
+- [ ] Drop the host-side claude path entirely (no fallback).
+      **Deferred:** kept as a fallback for legacy env rows (no
+      containerId yet) for the current dev DB. Dropping completely
+      lands once the only path through the engine is via a real
+      containerId — clean-cut to be made before the next release.
 - [ ] Verify e2e: fresh env, `claude /login` from terminal, send a
       prompt, confirm `apiKeySource:"none"` + `cc_entrypoint=
       claude-vscode` in the spawned process (folded into step 7's
