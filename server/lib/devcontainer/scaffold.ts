@@ -61,7 +61,12 @@ export function renderStarter(opts: ScaffoldOptions): string {
   // platform; no Node dependency on the base image). Domo runs
   // \`claude\` here (not on the host) so hooks / CLAUDE.md / MCP
   // servers see the container's tooling.
-  "postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash",
+  //
+  // \`bubblewrap\` is a hard requirement for Claude Code's subprocess
+  // env scrubbing / sandbox path (\`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1\`
+  // — Domo's billing pin requires it). It's not in the Microsoft base
+  // image, so we install it here in the same step as the CLI.
+  "postCreateCommand": "sudo apt-get update -y && sudo apt-get install -y bubblewrap && curl -fsSL https://claude.ai/install.sh | bash",
 
   // Ports Domo should publish to the host (random loopback ports).
   // Add entries like 3000 / "5432/tcp" once your services need them;

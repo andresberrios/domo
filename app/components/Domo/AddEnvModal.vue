@@ -96,12 +96,12 @@ async function cancelProvisioning() {
   <UModal
     v-model:open="open"
     title="Create environment"
-    description="Provision a new Coast environment and git worktree."
+    description="Provision a new devcontainer environment and git worktree."
     :ui="{ content: 'max-w-xl' }"
   >
     <template #body>
       <div v-if="!createdEnv" class="space-y-3">
-        <UFormField label="Name" hint="Used as branch, worktree, and coast instance name">
+        <UFormField label="Name" hint="Used as branch, worktree, and devcontainer name">
           <UInput v-model="name" size="sm" placeholder="feature-x" />
         </UFormField>
         <UFormField label="Base branch" :hint="defaultBranch ? `Default: ${defaultBranch}` : ''">

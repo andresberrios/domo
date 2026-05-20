@@ -52,6 +52,209 @@ Legend — **Severity**: P0 (broken/blocking) · P1 (significant) · P2 (papercu
   on the scrub list (`electric/claude.ts` env build / the new
   `sessionEngine` spawn). Pairs with #4.
 
+## 5. Worktree-add for new env collided with project root's checked-out base branch
+
+- **Severity:** P0 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3a live verify (first env create).
+- **What:** `server/procedures/envs/create.ts` stored the user-selected
+  base branch (default `master`) into `env.branch`; `server/api/envs/
+  run.post.ts` then ran `git worktree add -B master <path>` — which git
+  refused with *"'master' is already used by worktree at <projectRoot>"*.
+- **Fix:** Split `branch`/`baseBranch`. `env.branch == env.name` (the new
+  branch we create per env); `env.baseBranch` records the fork point.
+  Added `envs.base_branch` column (idempotent `ensureColumn`), updated
+  the Zod schema + helpers, and swapped the run-step to
+  `git worktree add -b <env.name> <path> <baseBranch>`.
+
+## 6. `@devcontainers/cli` resolution failed under Nitro's ESM context
+
+- **Severity:** P0 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3a live verify.
+- **What:** `server/lib/devcontainer/client.ts` resolved the CLI bin with
+  `require.resolve('@devcontainers/cli/devcontainer.js')` at module
+  load. Two layered problems: (a) Nitro's pure-ESM dev runtime exposes
+  no global `require` (the IIFE threw `require is not defined` and
+  silently returned null); (b) even with a proper `createRequire`,
+  `@devcontainers/cli` has no `exports` map and no `main` — only `bin`
+  — so the `devcontainer.js` subpath is unresolvable.
+- **Fix:** `import { createRequire } from 'node:module'` at module top,
+  resolve `'@devcontainers/cli/package.json'` (always exposed), then
+  `join(pkgPath, '..', 'devcontainer.js')`. Surfaced the previously-
+  swallowed resolve failure via a one-shot `console.error` so the next
+  symptom isn't invisible.
+
+## 7. `devcontainer up --override-config` doesn't deep-merge with the project devcontainer.json
+
+- **Severity:** P0 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3a live verify (after #6).
+- **What:** `client.ts`'s `up()` wrote a tiny overlay (`{ runArgs,
+  containerEnv? }`) and passed it via `--override-config`, on the
+  assumption that the CLI deep-merges with the project's
+  `devcontainer.json`. v0.87.0 *replaces* — the CLI saw only the
+  overlay and failed with *"missing one of image, dockerFile or
+  dockerComposeFile"*.
+- **Fix:** Load the parent config via `loadDevcontainer()`, splice
+  Domo's `runArgs`/`containerEnv` onto it (Domo entries last so our
+  labels/ports/mounts win on Docker's last-flag-wins semantics), drop
+  the parser's synthetic `extra` field, write the merged result to the
+  temp dir, then `--override-config` against that. The CLI gets the
+  full picture and `up` proceeds.
+
+## 8. Stale "Coast"/"Coastfile"/"coast instance" copy in user-facing UI
+
+- **Severity:** P2 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3a live verify.
+- **What:** `app/pages/index.vue` welcome copy still said "Coast
+  environments… Coastfile"; `app/components/Domo/AddEnvModal.vue`
+  description said "Provision a new Coast environment" and a form
+  hint said "coast instance name"; `app/pages/p/[project]/e/[env]/
+  terminal.vue` empty-state said "shell inside its Coast instance".
+  Step 3a swept the server-side but missed these client-side strings.
+- **Fix:** Updated all four copy strings to the
+  devcontainer/devcontainer-environment vocabulary.
+
+## 9. Container `docker exec -t` rejected from Nitro (no host TTY)
+
+- **Severity:** P0 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3a terminal verify.
+- **What:** `server/api/terminal.ts` spawned `docker exec -i -t …`.
+  Nitro's piped stdio isn't a TTY, so Docker rejected with *"cannot
+  attach stdin to a TTY-enabled container because stdin is not a
+  terminal"* — the WS terminal opened, printed the error, and exited
+  code 1.
+- **Fix:** Drop `-t` on the host side and wrap the in-container shell
+  with `script -qfc 'bash -l' /dev/null` (util-linux's `script`,
+  present in every devcontainer base image) so bash sees a real PTY
+  inside the container. Bytes flow through `docker exec`'s pipe.
+  Also added `-u <remoteUser>` so the shell runs as `vscode` (so
+  `$HOME` matches the shared `~/.claude` bind-mount target) and
+  `-w /workspaces/<envName>` instead of the bare `/workspaces`.
+
+## 10. Engine spawn ran claude as root with host `$HOME` forwarded into container
+
+- **Severity:** P0 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3b prompt verify.
+- **What:** `server/lib/sessionEngine/claude.ts`'s `docker exec`
+  invocation (a) had no `-u <remoteUser>` (so claude ran as the
+  container's USER — usually root), and (b) the bare `claude` command
+  wasn't on root's default `PATH` (the curl installer puts it at
+  `~/.local/bin`). After plumbing remoteUser through, the spawn
+  *still* failed because `buildEnv()` forwarded the entire host
+  `process.env` via `--env` flags — including `HOME=/home/<host-user>`
+  — overriding the container's per-user HOME and pointing claude at a
+  nonexistent settings.json on the host's user path inside the
+  container.
+- **Fix:** Three layered changes to `claude.ts`:
+  - SpawnOpts now requires `remoteUser`; the engine parses
+    `devcontainer.json`'s `remoteUser` (sync `readFileSync` per spawn
+    — small file, infrequent path) and passes it through, defaulting
+    to `vscode`. The docker-exec argv carries `-u <remoteUser>`.
+  - The spawn uses the absolute path `/home/<remoteUser>/.local/bin/
+    claude` instead of bare `claude` (matches the scaffold's curl
+    installer).
+  - `buildEnv()` no longer copies `process.env` wholesale — only the
+    5 pinned VS Code extension vars + the operator's
+    `config.json.claude.env` extension. `docker exec -u <user>` sets
+    HOME from `/etc/passwd` automatically.
+
+## 11. Claude requires bubblewrap inside the container
+
+- **Severity:** P0 · **Status:** FIXED (this verify pass; scaffold-only)
+- **Found:** 2026-05-20 during step 3b live prompt verify (after #10).
+- **What:** With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` (Domo pins it for
+  subprocess isolation), claude inside the container fails on the
+  first spawn with *"bubblewrap is required for subprocess env
+  scrubbing and isolation. Install with: sudo apt-get install -y
+  bubblewrap…"*. The Microsoft `devcontainers/base:ubuntu-22.04`
+  image doesn't ship `bubblewrap`.
+- **Fix:** Updated the scaffolder's starter `devcontainer.json`
+  `postCreateCommand` to also `sudo apt-get install -y bubblewrap`
+  before running the claude installer:
+  `sudo apt-get update -y && sudo apt-get install -y bubblewrap &&
+  curl -fsSL https://claude.ai/install.sh | bash`.
+- **Follow-up:** When the Domo-owned claude devcontainer Feature
+  publishes (deferred post-v1), bake `bubblewrap` into that image so
+  the scaffold can drop the curl + apt step.
+
+## 12. Worktree git operations fail inside container (absolute gitdir path unreachable)
+
+- **Severity:** P1 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3a terminal verify.
+- **What:** `git worktree add` writes an absolute-host-path gitdir
+  pointer into the worktree's `.git` file (`gitdir: <host>/.git/
+  worktrees/<env>`). Inside the env container only `/workspaces/
+  <envName>` is bind-mounted from the worktree — the project's `.git/`
+  is unreachable, so every `git …` command inside the container fails
+  with *"fatal: not a git repository"*. `claude` runs `git status` /
+  `git diff` as part of its workflow → cascading failures.
+- **Fix:** Added a second bind-mount in `server/api/envs/run.post.ts`
+  for `<projectRoot>/.git` to the *same* host path inside the
+  container. The worktree's absolute gitdir resolves; the gitdir's
+  `commondir` is relative (`../..`) so the main `.git` data is also
+  reachable. Confirmed: `git status` / `git log` inside the container
+  see the project history.
+- **Trade-off:** Container can list the project's `.git/worktrees/`
+  (other envs' refs of the same project visible) — info disclosure
+  across envs of one project, not privilege escalation. Acceptable
+  for single-user v1; hardening if/when multi-tenant envs land.
+
+## 13. `git worktree add -B <branch>` collided with project root's checked-out base branch
+
+- **Severity:** P0 · **Status:** FIXED (this verify pass)
+- **Found:** 2026-05-20 during step 3a first env create.
+- **What:** Storing `baseBranch` into `env.branch` made the run-step
+  call `git worktree add -B master <path>`, which tries to reset
+  `master` to HEAD and check it out into the new worktree —
+  but `master` is already checked out at the project root, so git
+  refused.
+- **Fix:** Split `branch` / `baseBranch` in the `envs` schema (added
+  `base_branch` column via idempotent `ensureColumn`); `env.branch ==
+  env.name` (a fresh branch we create per env), `env.baseBranch`
+  records the fork point. The run-step now does `git worktree add
+  -b <env.name> <path> <baseBranch>` — creates a new branch from the
+  base + checks it out into the worktree.
+- **Plus:** `envs.delete` also runs `git branch -D <env.branch>` so
+  recreating an env with the same name doesn't trip *"a branch named
+  '<env>' already exists"*.
+
+## 14. `@devcontainers/cli` resolve + `--override-config` semantics tripped two bugs at once
+
+- **Severity:** P0 · **Status:** see #6 + #7
+
+## 15. Re-prompting on an errored session is blocked by `UChatPromptSubmit`
+
+- **Severity:** P2 · **Status:** OPEN
+- **Found:** 2026-05-20 during step 3b verify pass (after fixing the
+  engine's earlier crashes, prior errored sessions couldn't be
+  reused).
+- **What:** Nuxt UI's `UChatPromptSubmit` with `status="error"`
+  doesn't emit `submit` on click — so once a session has any
+  `error` event the Send button effectively no-ops. Recovering means
+  abandoning the session and starting a new one (which works fine).
+- **Fix idea:** map `error` to a chat-status that re-arms the
+  submit (`ready`?), or render an explicit "Retry" affordance that
+  clears the error state and resends. Pairs with whatever
+  status-mapping `app/components/Domo/Chat.vue:58` does.
+
+## 16. devcontainer-on-tmpfs (Linux /tmp) breaks bind-mount visibility under DinD entrypoint
+
+- **Severity:** P2 · **Status:** OPEN (documented workaround)
+- **Found:** 2026-05-20 during step 3a verify with project under `/tmp`.
+- **What:** When the project root lives on a host `/tmp` that itself
+  is a tmpfs, Docker's bind-mount sources resolve correctly at
+  `docker run` time but the docker-in-docker feature's entrypoint
+  (`/usr/local/share/docker-init.sh`) appears to re-mount `/tmp`
+  inside the container, wiping the auto-created parent dirs that
+  Docker used as bind-mount targets. The mounts still show in
+  `/proc/self/mountinfo` but the parent paths inside `/tmp/...`
+  are unreachable — `ls` says "No such file or directory".
+- **Workaround:** Put project roots and `DOMO_HOME` outside `/tmp`
+  (e.g. `$HOME/...`). `install.sh` defaults already do this; the
+  verify pass moved off `/tmp` after hitting it.
+- **Fix idea:** detect the host-side tmpfs source in
+  `server/lib/devcontainer/runtime.ts` and surface a warning, or use
+  `/var/domo` etc. as alternative bind-mount paths under DinD.
+
 ## 4. Domo doesn't provision agent guidance for the env toolchain
 
 - **Severity:** P2 · **Status:** OPEN

@@ -34,7 +34,10 @@ export const Env = z.object({
   id: z.string(),
   projectId: z.string(),
   name: z.string(),
+  /** The env's own branch (== `name`). */
   branch: z.string().nullable(),
+  /** Branch the env was forked from at `up` time. */
+  baseBranch: z.string().nullable(),
   worktreePath: z.string().nullable(),
   /** Docker container id from `devcontainer up`; null until first up. */
   containerId: z.string().nullable(),

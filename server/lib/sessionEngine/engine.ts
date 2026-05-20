@@ -29,8 +29,11 @@
  *     next prompt and may re-propose a fresh, actionable diff.
  */
 import { randomUUID } from 'node:crypto'
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
+
+import { devcontainerPaths, parseDevcontainerJsonc } from '../devcontainer/parser'
 import {
   spawnClaudeProcess,
   type ClaudeProc,
@@ -503,6 +506,7 @@ function permissionModeArg(
 function resolveSessionContext(sessionId: string): {
   cwd: string
   containerId: string
+  remoteUser: string
 } {
   const session = getSession(sessionId)
   if (!session) throw new Error(`session ${sessionId} not found`)
@@ -513,7 +517,25 @@ function resolveSessionContext(sessionId: string): {
   if (!env.containerId) {
     throw new Error('env has no container yet — provision it first (Run / Up)')
   }
-  return { cwd: env.worktreePath, containerId: env.containerId }
+  // Parse remoteUser from the worktree's devcontainer.json each spawn —
+  // small file, infrequent call, no schema change. Default to `vscode`
+  // (the Microsoft base image's user, what our scaffold writes) on any
+  // read/parse failure. Sync read keeps the caller's prompt() path
+  // synchronous (Domo's session-engine API contract).
+  let remoteUser = 'vscode'
+  try {
+    for (const p of devcontainerPaths(env.worktreePath)) {
+      if (!existsSync(p)) continue
+      const cfg = parseDevcontainerJsonc(readFileSync(p, 'utf8'), p)
+      if (typeof cfg.remoteUser === 'string' && cfg.remoteUser.length > 0) {
+        remoteUser = cfg.remoteUser
+      }
+      break
+    }
+  } catch {
+    // missing or unparseable — fall back to default
+  }
+  return { cwd: env.worktreePath, containerId: env.containerId, remoteUser }
 }
 
 function ensureProc(sessionId: string): SessionProc {
@@ -527,6 +549,7 @@ function ensureProc(sessionId: string): SessionProc {
     cwd: ctx.cwd,
     containerId: ctx.containerId,
     containerCwd: containerWorkspace,
+    remoteUser: ctx.remoteUser,
     resumeSessionId: resumeId,
     permissionMode: permissionModeArg(approvalMode),
   })

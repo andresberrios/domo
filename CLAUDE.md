@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — mid-pivot, steps 1 + 2 + 3a + 3b + 4 landed
+## Where we are — verify pass landed (steps 1–4 + 7 verified end-to-end)
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -158,12 +158,22 @@ procedure + canonical-env UI bits, `coastApiUrl` runtimeConfig. Step
 3a kept `claude` host-side — step 3b moves the spawn into `docker
 exec`.
 
-**Next up:** step 6 (re-polish + docs/site rewrite + prod reinstall +
-publish the Domo-owned claude devcontainer Feature image and pin the
-scaffold to it) → step 7 (single end-of-build billing live-verify).
-Step 7 is scoped by the user to *after* all of steps 1–6 land; don't
-surface it as a milestone in the meantime — just keep the whole build
-moving so it lands well before ~2026-06-15.
+**Verify pass landed 2026-05-20.** Single end-to-end run against
+`pnpm dev` on 7576 / isolated `DOMO_HOME=$HOME/domo-verify` retired
+every deferred verify item across steps 1, 2, 3a, 3b, 4, and 7.
+Bugs found + fixed in the same change land in BUGS.md #5–#16 and are
+called out in Gotchas below. Highlights: `apiKeySource:'none'` +
+`CLAUDE_CODE_ENTRYPOINT=claude-vscode` confirmed in the spawn argv +
+durable `system` init event; kill-mid-session + restart → next
+prompt's argv carries `--resume <nativeClaudeSessionId>` and claude
+recalls prior turns; TCP forwarder rebinds on boot; mobile-breakpoint
+scroll works against a tall transcript. **Decided 2026-05-20:** the
+Domo-owned claude devcontainer Feature image **publish is deferred
+post-v1** — the v1 scaffolder's `apt-get install -y bubblewrap &&
+curl https://claude.ai/install.sh | bash` postCreateCommand is the
+mechanism; **prod reinstall is also deferred** until after the
+`v0.4.0+` release tag. Anthropic's billing change ~2026-06-15 means
+the tag + reinstall need to land before then.
 
 ## Running it
 
@@ -433,6 +443,57 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   `pnpm-workspace.yaml` (pnpm 11 won't run install scripts otherwise).
 - **vue-tsc rejects inline `as` casts in template bindings** — narrow in
   `<script>` (a typed `computed`), keep template expressions cast-free.
+- **Env branch model post-2026-05-20:** `env.branch == env.name` (a
+  fresh branch we create per env), `env.baseBranch` is the fork point
+  (project default unless overridden). `git worktree add` always uses
+  `-b <env.name> <path> <baseBranch>` — never `-B`. `envs.delete` also
+  drops the branch so re-creating an env with the same name works.
+  BUGS.md #5.
+- **`@devcontainers/cli` resolves via `package.json` + a
+  `createRequire(import.meta.url)` import**, not bare `require`. Pure-
+  ESM Nitro has no global `require`, and the package has no
+  `exports`/`main` — only a `bin`. See `server/lib/devcontainer/
+  client.ts`. BUGS.md #6.
+- **`devcontainer up --override-config` replaces, doesn't merge.**
+  `client.ts` reads the parent `devcontainer.json` itself, splices in
+  Domo's `runArgs` / `containerEnv` / labels / mounts (Domo entries
+  last so docker last-flag-wins favors ours), and writes the merged
+  result. BUGS.md #7.
+- **Terminal: `docker exec -t` doesn't work from Nitro** (parent
+  stdio isn't a TTY). `server/api/terminal.ts` drops `-t` host-side
+  and wraps the shell with `script -qfc 'bash -l' /dev/null` to
+  allocate a PTY inside the container; spawn carries `-u
+  <remoteUser>` + `-w /workspaces/<envName>`. BUGS.md #9.
+- **Engine spawn doesn't forward host `process.env`.** `sessionEngine/
+  claude.ts`'s `buildEnv()` builds a fresh env from scratch (the 5
+  pinned VS Code extension vars + the operator's config.json
+  extension); `docker exec -u <remoteUser>` sets `HOME` from
+  `/etc/passwd`. The bin is absolute (`/home/<remoteUser>/.local/bin/
+  claude`). Forwarding host `HOME`/`PATH` made claude look for
+  settings in nonexistent container paths. BUGS.md #10.
+- **`bubblewrap` is required inside the container.** With
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` pinned, the bare ubuntu base
+  image fails on first spawn with "bubblewrap is required". The
+  scaffolder's `postCreateCommand` installs it before the claude
+  curl-installer. The future Domo-owned Feature image should bake it
+  in. BUGS.md #11.
+- **Worktree git inside container needs the project's `.git/`
+  bind-mounted at its host path** — `git worktree add` writes an
+  absolute-host-path gitdir into the worktree's `.git` file; without
+  the extra bind mount that absolute path is unreachable inside the
+  container and every `git …` fails. `server/api/envs/run.post.ts`
+  adds `<projectRoot>/.git` → `<projectRoot>/.git` (same path).
+  Trade-off: container can see other envs' refs (info disclosure
+  across one project's envs, not privilege escalation). BUGS.md #12.
+- **Re-prompting on an `error`-status session is blocked.**
+  `UChatPromptSubmit` with `status="error"` doesn't fire `submit` on
+  click → Send no-ops. Workaround: start a new session. BUGS.md #15.
+- **Don't put projects / `DOMO_HOME` on a host tmpfs (Linux `/tmp`)
+  when using DinD.** The docker-in-docker feature's entrypoint
+  re-mounts `/tmp` inside the container and wipes the auto-created
+  parent dirs Docker used as bind-mount targets — the bind mounts
+  still exist in `/proc/self/mountinfo` but the paths are unreachable.
+  `install.sh` defaults already steer toward `$HOME`. BUGS.md #16.
 
 ## Updating this file
 

@@ -82,6 +82,21 @@ export default defineEventHandler(async (event) => {
   }
   bindMounts = [
     { hostPath: claudeHomeHost, containerPath: `/home/${remoteUser}/.claude` },
+    // Mount the project's `.git/` at the same host path inside the
+    // container. `git worktree add` writes an absolute-host-path gitdir
+    // pointer into the worktree's `.git` file; without this mount that
+    // pointer is unreachable from inside the container and every
+    // `git ...` command (including the ones `claude` runs as part of a
+    // turn) fails with "fatal: not a git repository". The gitdir's own
+    // `commondir` is relative (`../..`), so this single mount makes
+    // the worktree's git operations fully functional.
+    //
+    // Side-effects (acceptable for v1): the container can see every
+    // env's worktree refs via the project's `.git/worktrees/` —
+    // information disclosure across envs of the same project, not
+    // privilege escalation. Per-env isolation of `.git/worktrees/<x>/`
+    // is a hardening follow-up if/when multi-tenant envs land.
+    { hostPath: `${project.rootPath}/.git`, containerPath: `${project.rootPath}/.git` },
   ]
 
   setResponseHeader(event, 'Content-Type', 'text/event-stream')
@@ -113,6 +128,14 @@ export default defineEventHandler(async (event) => {
     try {
       // Make sure a worktree exists on disk. `devcontainer up` itself
       // doesn't create git worktrees — Domo does.
+      //
+      // Branch model: `env.branch` (== `env.name`) is a NEW branch
+      // forked from `env.baseBranch` (the project default, unless
+      // overridden at create time). `-B` would *reset* an existing
+      // branch to HEAD and check it out — which collides with the
+      // base branch being checked out at the project root. We use
+      // `-b <branch> <path> <baseBranch>` instead: create branch,
+      // start-point fork, check out into the new worktree.
       const { existsSync } = await import('node:fs')
       if (!existsSync(env.worktreePath!)) {
         emitProgress(`Creating worktree at ${env.worktreePath}`, 'started')
@@ -120,8 +143,12 @@ export default defineEventHandler(async (event) => {
         const { promisify } = await import('node:util')
         const execFile = promisify(execFileCb)
         const args = ['-C', project.rootPath, 'worktree', 'add']
-        if (env.branch) args.push('-B', env.branch, env.worktreePath!)
-        else args.push(env.worktreePath!)
+        if (env.branch) {
+          args.push('-b', env.branch, env.worktreePath!)
+          if (env.baseBranch) args.push(env.baseBranch)
+        } else {
+          args.push(env.worktreePath!)
+        }
         await execFile('git', args)
         emitProgress(`Worktree ready`, 'ok')
       }

@@ -40,6 +40,19 @@ export default defineProcedure({
         // The worktree may already be detached or absent — not fatal.
       }
     }
+    // Also drop the env's own branch so re-creating an env with the same
+    // name doesn't trip "fatal: a branch named '<env>' already exists"
+    // on the next `git worktree add -b`. The branch is per-env (env.name
+    // == env.branch in the post-2026-05-20 branch model) so deleting it
+    // is the right cleanup — its history merges into the user's regular
+    // workflow (or doesn't), independent of the env lifecycle.
+    if (project && env.branch) {
+      try {
+        await execFile('git', ['-C', project.rootPath, 'branch', '-D', env.branch])
+      } catch {
+        // Branch missing/unborn — safe to ignore.
+      }
+    }
 
     deleteEnv(env.id)
     return { deleted: true }

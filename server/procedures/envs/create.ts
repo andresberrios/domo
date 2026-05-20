@@ -30,11 +30,16 @@ export default defineProcedure({
     if (existing) {
       throw createError({ statusCode: 409, statusMessage: 'env already exists in this project' })
     }
+    // Each env gets its own branch — named after the env, forked from
+    // the chosen base. The base goes in `baseBranch` so the run-step's
+    // `git worktree add -b <branch> <path> <baseBranch>` is
+    // restart-recoverable.
     const row = {
       id: crypto.randomUUID(),
       projectId: project.id,
       name: input.name,
-      branch: input.baseBranch ?? project.defaultBranch ?? null,
+      branch: input.name,
+      baseBranch: input.baseBranch ?? project.defaultBranch ?? null,
       worktreePath: defaultWorktreePath(project.rootPath, input.name),
       containerId: null as string | null,
       devcontainerPath: null as string | null,

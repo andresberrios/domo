@@ -563,16 +563,19 @@ The Electric/Coast phases 0–4 + auth Part A **shipped** (see
    (sysbox → rootless dind → privileged-warn), project-add /
    env-create reworked off `devcontainer.json` directly (no Domofile),
    scaffolder writes a starter `.devcontainer/devcontainer.json` when
-   absent (with the Domo claude Feature + sensible base), terminal →
+   absent (sensible base + the Anthropic curl-installer
+   `postCreateCommand` for the claude CLI — the Domo-owned Feature
+   image publish is **deferred post-v1** per 2026-05-20), terminal →
    `docker exec`, Coast adapter removed. **3b** — `claude` spawn
    moves from host-side into `docker exec` inside the env container;
-   Domo-owned devcontainer Feature
+   v1 lands claude via the scaffolder's curl installer
+   (`postCreateCommand`); shared `<DOMO_HOME>/claude-home/` → container
+   `~/.claude` bind-mount carries OAuth + slash-commands + MCP across
+   envs (single-user v1); path translation `/workspaces/<envName>/…` ↔
+   worktree-relative in the pending-diffs + tool-call renderers. The
+   Domo-owned Feature image
    (`ghcr.io/<us>/devcontainer-features/claude`, pinned to
-   `CLAUDE_AGENT_SDK_VERSION`) ships the binary inside; shared
-   `<DOMO_HOME>/claude-home/<userId>/` → container `~/.claude`
-   bind-mount carries OAuth + slash-commands + MCP across envs for one
-   Domo user; path translation `/workspace/…` ↔ worktree-relative in
-   the pending-diffs + tool-call renderers.
+   `CLAUDE_AGENT_SDK_VERSION`) is a v1.x release-engineering follow-up.
 4. **Port forwarding.** TCP-only, cross-platform. Read
    `forwardPorts`/`portsAttributes` from `devcontainer.json`; inject
    `runArgs` for `-p 127.0.0.1:0:<inner>` at `devcontainer up`;

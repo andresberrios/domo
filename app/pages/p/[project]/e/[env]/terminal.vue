@@ -18,14 +18,14 @@ const { envId, projectName, envName } = useSelectedEnv()
         <template v-if="envId">{{ projectName }} / {{ envName }}</template>
         <template v-else>Terminal</template>
       </span>
-      <span class="text-xs text-muted">(coast exec)</span>
+      <span class="text-xs text-muted">(docker exec)</span>
     </div>
 
     <div class="flex-1 min-h-0">
       <DomoTerminal v-if="envId" :key="envId" :env-id="envId" />
       <div v-else class="p-6 text-sm text-muted">
         No environment selected. Open an env from the left rail to get a
-        shell inside its Coast instance.
+        shell inside its devcontainer.
       </div>
     </div>
   </div>

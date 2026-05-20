@@ -44,6 +44,7 @@ function migrate(d: Database.Database): void {
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       branch TEXT,
+      base_branch TEXT,
       worktree_path TEXT,
       container_id TEXT,
       devcontainer_path TEXT,
@@ -147,11 +148,16 @@ function migrate(d: Database.Database): void {
   dropColumnIfExists(d, 'sessions', 'durable_stream_url')
   dropColumnIfExists(d, 'session_events', 'message_id')
 
-  // Additive idempotent migrations. `approval_mode` is the only
-  // post-pivot column that didn't exist when this DB was first cut;
-  // every other shape is captured in the `CREATE TABLE IF NOT EXISTS`
-  // above.
+  // Additive idempotent migrations. Columns added after the post-pivot
+  // initial cut land here; every other shape is captured in the
+  // `CREATE TABLE IF NOT EXISTS` above. Order doesn't matter — each
+  // ensureColumn is a no-op once the column exists.
   ensureColumn(d, 'sessions', 'approval_mode', 'approval_mode TEXT')
+  // `branch` is the env's own branch (== env.name); `base_branch` is
+  // the branch it was created from. Without this split, `git worktree
+  // add -B <branch>` collided with the project root having the base
+  // branch already checked out. See server/api/envs/run.post.ts.
+  ensureColumn(d, 'envs', 'base_branch', 'base_branch TEXT')
 
   const row = d.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as
     | { version: number }

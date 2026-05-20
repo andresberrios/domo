@@ -79,6 +79,11 @@ export interface SpawnOpts {
    * Override if the project sets a non-default `workspaceFolder` in
    * devcontainer.json. */
   containerCwd?: string
+  /** Devcontainer `remoteUser` (e.g. `vscode`). Passed to `docker exec
+   * -u` so the in-container claude sees the matching `$HOME` and the
+   * bind-mounted `~/.claude` (which lives at `/home/<remoteUser>/
+   * .claude` per step 3b). */
+  remoteUser: string
   /** `--resume <id>` for a respawn (first-spawn omits). */
   resumeSessionId?: string
   /**
@@ -117,19 +122,21 @@ const SCRUB_ENV = new Set([
 ])
 
 function buildEnv(): NodeJS.ProcessEnv {
+  // Step 3b: `claude` runs INSIDE the env container via `docker exec`.
+  // We MUST NOT forward Domo's host process.env wholesale — `HOME`,
+  // `USER`, `XDG_*`, host-specific `PATH`, `NVM_*` etc. all refer to
+  // host paths that don't exist inside the container and that broke
+  // claude's startup (it looked for `/home/<host-user>/.claude/
+  // settings.json` and exited 1). Build a minimal, container-safe env
+  // from scratch and let `docker exec -u <remoteUser>` set `HOME` /
+  // `USER` from the container's `/etc/passwd`.
   const env: NodeJS.ProcessEnv = {}
-  for (const [k, v] of Object.entries(process.env)) {
-    if (!SCRUB_ENV.has(k)) env[k] = v
-  }
 
   // Operator's declarative env extension (`<domoHome>/config.json`,
-  // Decided #19). The host install means `claude` already inherits the
-  // service env; this is the no-restart, survives-update knob for extra
-  // vars / PATH (e.g. a runtime an MCP server needs). Scrubbed keys are
-  // skipped here, not deleted later — `env` was built *without* them
-  // above, so refusing to set them keeps the scrub the final word
-  // (the knob can't reintroduce e.g. ANTHROPIC_API_KEY and silently flip
-  // subscription→API billing). `PATH` isn't scrubbed.
+  // Decided #19). This is the no-restart, survives-update knob for
+  // extra vars / PATH (e.g. a runtime an MCP server needs). Scrubbed
+  // keys are filtered so the knob can't reintroduce e.g.
+  // `ANTHROPIC_API_KEY` and silently flip subscription→API billing.
   const claudeCfg = loadDomoConfig().claude
   if (claudeCfg?.env) {
     for (const [k, v] of Object.entries(claudeCfg.env)) {
@@ -137,9 +144,9 @@ function buildEnv(): NodeJS.ProcessEnv {
     }
   }
   if (claudeCfg?.extraPath?.length) {
-    env.PATH = [...claudeCfg.extraPath, env.PATH]
-      .filter(Boolean)
-      .join(pathDelimiter)
+    // Prepend; if the operator didn't provide a base, fall through to
+    // the container's default PATH (don't carry the host's PATH in).
+    env.PATH = claudeCfg.extraPath.filter(Boolean).join(pathDelimiter)
   }
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1'
   // Billing lever (spike-proven, smoke/no-print-lifecycle-spike.mjs):
@@ -220,11 +227,18 @@ export function spawnClaudeProcess(opts: SpawnOpts): ClaudeProc {
   // HTTP comes from `claude` itself, which we still control via env
   // vars).
   const containerCwd = opts.containerCwd ?? `/workspaces/${basename(opts.cwd)}`
-  const execArgs: string[] = ['exec', '-i', '-w', containerCwd]
+  const execArgs: string[] = ['exec', '-i', '-u', opts.remoteUser, '-w', containerCwd]
   for (const [k, v] of Object.entries(env)) {
     if (typeof v === 'string') execArgs.push('--env', `${k}=${v}`)
   }
-  execArgs.push(opts.containerId, 'claude', ...args)
+  // Absolute path to claude — the curl installer's `postCreateCommand`
+  // lands the binary at `~/.local/bin/claude`, which isn't on the
+  // default non-interactive `docker exec` PATH. Hard-coding the path
+  // is simpler than rewriting PATH (and only depends on the install
+  // location, which the scaffold + the published Feature image both
+  // own).
+  const claudeBin = `/home/${opts.remoteUser}/.local/bin/claude`
+  execArgs.push(opts.containerId, claudeBin, ...args)
   const child = spawn('docker', execArgs, {
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams

@@ -22,23 +22,40 @@
 import { execFile, spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { mkdtemp, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { detectHostRuntime } from './runtime'
+import { loadDevcontainer, parseForwardPort } from './parser'
 import type { ContainerInfo, DevcontainerConfig, ForwardPortEntry } from './types'
-import { parseForwardPort } from './parser'
 
 const exec = promisify(execFile)
 
 const DEVCONTAINER_BIN = (() => {
-  // Resolve the packaged CLI binary. The package's `bin` entry is
-  // `devcontainer.js` at its root; require.resolve gives an absolute
-  // path that survives bundling (Nitro nft-traces this).
+  // Resolve the packaged CLI binary. The package declares no `exports`
+  // or `main` — only `bin: { devcontainer: "devcontainer.js" }` — so
+  // `require.resolve('@devcontainers/cli/devcontainer.js')` is an
+  // unsupported subpath under Node's ESM resolver (and silently throws
+  // under Nitro's `createRequire` shim).
+  //
+  // Build our own resolver against `import.meta.url` and resolve the
+  // always-present `package.json` subpath (which is always exposed even
+  // without an `exports` map), then join the bin's relative path
+  // against its directory. Survives bundling (Nitro nft-traces both).
   try {
-    return require.resolve('@devcontainers/cli/devcontainer.js')
-  } catch {
+    const req = createRequire(import.meta.url)
+    const pkgPath = req.resolve('@devcontainers/cli/package.json')
+    // Hard-coded "devcontainer.js" — matches the package's `bin` entry
+    // (verified at install time by the dep version pin).
+    return join(pkgPath, '..', 'devcontainer.js')
+  } catch (e) {
+    // Log once at module load so we know the resolve failed (Nitro's
+    // bundled require.resolve doesn't always find the same paths as a
+    // plain node REPL; the surfaced error gives `install.sh` /
+    // troubleshooting docs a concrete hook).
+    console.error('[devcontainer] cli resolve failed:', (e as Error)?.message ?? e)
     return null
   }
 })()
@@ -117,11 +134,23 @@ export async function up(opts: UpOptions): Promise<UpResult> {
   const runtime = await detectHostRuntime()
 
   // `devcontainer up` does not take freeform run-args on its CLI — they
-  // live in devcontainer.json's `runArgs` field. We write an overlay
-  // JSON (`--override-config <path>`) that the CLI deep-merges with the
-  // project's devcontainer.json, carrying our labels + published ports
-  // + runtime selection. The overlay is a temp file we clean up after.
-  const runArgs: string[] = [
+  // live in devcontainer.json's `runArgs` field. `--override-config`
+  // *replaces* (not merges) the project's devcontainer.json — so we
+  // load the parent ourselves, splice our `runArgs`/`containerEnv` /
+  // labels into a copy, and hand the merged result to the CLI. (An
+  // earlier version of this code assumed deep-merge; the v0.87.0 CLI
+  // surfaced the bug as "missing one of image/dockerFile/
+  // dockerComposeFile" — our overlay-only config was being treated as
+  // the whole thing.)
+  const { config: parent } = await loadDevcontainer(opts.workspaceFolder)
+  const extra = (parent as { extra?: Record<string, unknown> }).extra ?? {}
+  const parentRunArgs = Array.isArray(parent.runArgs) ? parent.runArgs : []
+  const parentContainerEnv =
+    parent.containerEnv && typeof parent.containerEnv === 'object'
+      ? (parent.containerEnv as Record<string, string>)
+      : {}
+
+  const domoRunArgs: string[] = [
     '--label', `domo.envId=${opts.envId}`,
     '--label', `domo.projectId=${opts.projectId}`,
     ...runtime.extraRunArgs,
@@ -135,14 +164,22 @@ export async function up(opts: UpOptions): Promise<UpResult> {
     ]),
   ]
 
-  const overlay: Record<string, unknown> = { runArgs }
-  if (opts.containerEnv && Object.keys(opts.containerEnv).length > 0) {
-    overlay.containerEnv = opts.containerEnv
+  // Domo's runArgs go AFTER the user's so our labels/ports/mounts win
+  // on docker-cli last-wins flags. The same applies to containerEnv
+  // (Domo's overlay overrides the user's for our pinned keys).
+  const merged: Record<string, unknown> = {
+    ...extra,
+    ...(parent as unknown as Record<string, unknown>),
+    runArgs: [...parentRunArgs, ...domoRunArgs],
+    containerEnv: { ...parentContainerEnv, ...(opts.containerEnv ?? {}) },
   }
+  // `extra` was a parser-only field; don't leak it into the on-disk
+  // config we hand the CLI.
+  delete (merged as { extra?: unknown }).extra
 
   const tmp = await mkdtemp(join(tmpdir(), 'domo-dc-'))
   const overlayPath = join(tmp, 'devcontainer.json')
-  await writeFile(overlayPath, JSON.stringify(overlay, null, 2), 'utf8')
+  await writeFile(overlayPath, JSON.stringify(merged, null, 2), 'utf8')
 
   const args: string[] = [
     bin,

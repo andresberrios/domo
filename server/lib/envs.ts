@@ -5,11 +5,13 @@
  * §Environments / Decided #9).
  *
  * Worktree convention: `<project.rootPath>/.worktrees/<env.name>`.
- * The branch name and worktree directory name are the same string;
- * the docker container id (`containerId`) is what we use against the
- * docker daemon for inspect/exec/lifecycle. Pre-step-3a rows linger
- * with a stale `coast_instance_name` (the column lives on as a NULL
- * default — see db.ts).
+ * `branch` is the env's own branch — created at `up` time as a fresh
+ * branch named after the env (`env.name`); `baseBranch` records the
+ * branch it was forked from (e.g. the project default), so we know
+ * what start-point to pass to `git worktree add -b <env.name>
+ * <worktreePath> <baseBranch>`. The docker container id
+ * (`containerId`) is what we use against the docker daemon for
+ * inspect/exec/lifecycle.
  */
 import { join } from 'node:path'
 import { changeBus } from './changeBus'
@@ -21,7 +23,14 @@ export interface EnvRow {
   id: string
   projectId: string
   name: string
+  /** The env's own branch (== `name` — the new branch we create at
+   * `worktree add -b` time). */
   branch: string | null
+  /** Branch this env was forked from (the project default, unless the
+   * creator overrode it). Stored so the `worktree add` start-point is
+   * recoverable across restarts; the env's branch evolves
+   * independently afterward. Null on pre-`base_branch`-migration rows. */
+  baseBranch: string | null
   worktreePath: string | null
   /** Docker container id from the most recent `devcontainer up`. Null
    * until the env has been started for the first time. */
@@ -39,6 +48,7 @@ interface EnvDbRow {
   project_id: string
   name: string
   branch: string | null
+  base_branch: string | null
   worktree_path: string | null
   container_id: string | null
   devcontainer_path: string | null
@@ -46,12 +56,16 @@ interface EnvDbRow {
   created_at: number
 }
 
+const SELECT_COLS =
+  'id, project_id, name, branch, base_branch, worktree_path, container_id, devcontainer_path, status, created_at'
+
 function fromDb(r: EnvDbRow): EnvRow {
   return {
     id: r.id,
     projectId: r.project_id,
     name: r.name,
     branch: r.branch,
+    baseBranch: r.base_branch,
     worktreePath: r.worktree_path,
     containerId: r.container_id,
     devcontainerPath: r.devcontainer_path,
@@ -62,27 +76,27 @@ function fromDb(r: EnvDbRow): EnvRow {
 
 export function listEnvs(projectId?: string): EnvRow[] {
   const stmt = projectId
-    ? db().prepare(`SELECT id, project_id, name, branch, worktree_path, container_id, devcontainer_path, status, created_at FROM envs WHERE project_id = ? ORDER BY created_at ASC`).all(projectId)
-    : db().prepare(`SELECT id, project_id, name, branch, worktree_path, container_id, devcontainer_path, status, created_at FROM envs ORDER BY created_at ASC`).all()
+    ? db().prepare(`SELECT ${SELECT_COLS} FROM envs WHERE project_id = ? ORDER BY created_at ASC`).all(projectId)
+    : db().prepare(`SELECT ${SELECT_COLS} FROM envs ORDER BY created_at ASC`).all()
   return (stmt as EnvDbRow[]).map(fromDb)
 }
 
 export function getEnv(id: string): EnvRow | null {
-  const r = db().prepare(`SELECT id, project_id, name, branch, worktree_path, container_id, devcontainer_path, status, created_at FROM envs WHERE id = ?`).get(id) as EnvDbRow | undefined
+  const r = db().prepare(`SELECT ${SELECT_COLS} FROM envs WHERE id = ?`).get(id) as EnvDbRow | undefined
   return r ? fromDb(r) : null
 }
 
 export function getEnvByName(projectId: string, name: string): EnvRow | null {
   const r = db()
-    .prepare(`SELECT id, project_id, name, branch, worktree_path, container_id, devcontainer_path, status, created_at FROM envs WHERE project_id = ? AND name = ?`)
+    .prepare(`SELECT ${SELECT_COLS} FROM envs WHERE project_id = ? AND name = ?`)
     .get(projectId, name) as EnvDbRow | undefined
   return r ? fromDb(r) : null
 }
 
 export function insertEnv(row: EnvRow): void {
   db().prepare(`
-    INSERT INTO envs (id, project_id, name, branch, worktree_path, container_id, devcontainer_path, status, created_at)
-    VALUES (@id, @projectId, @name, @branch, @worktreePath, @containerId, @devcontainerPath, @status, @createdAt)
+    INSERT INTO envs (id, project_id, name, branch, base_branch, worktree_path, container_id, devcontainer_path, status, created_at)
+    VALUES (@id, @projectId, @name, @branch, @baseBranch, @worktreePath, @containerId, @devcontainerPath, @status, @createdAt)
   `).run(row)
   changeBus().emitTableChange({ table: 'envs', id: row.id, op: 'insert' })
 }
@@ -94,11 +108,12 @@ export function updateEnvStatus(id: string, status: string | null): void {
 
 export function updateEnvFields(
   id: string,
-  fields: Partial<Pick<EnvRow, 'branch' | 'worktreePath' | 'containerId' | 'devcontainerPath' | 'status'>>,
+  fields: Partial<Pick<EnvRow, 'branch' | 'baseBranch' | 'worktreePath' | 'containerId' | 'devcontainerPath' | 'status'>>,
 ): void {
   const sets: string[] = []
   const params: Record<string, unknown> = { id }
   if (fields.branch !== undefined) { sets.push('branch = @branch'); params.branch = fields.branch }
+  if (fields.baseBranch !== undefined) { sets.push('base_branch = @baseBranch'); params.baseBranch = fields.baseBranch }
   if (fields.worktreePath !== undefined) { sets.push('worktree_path = @worktreePath'); params.worktreePath = fields.worktreePath }
   if (fields.containerId !== undefined) { sets.push('container_id = @containerId'); params.containerId = fields.containerId }
   if (fields.devcontainerPath !== undefined) { sets.push('devcontainer_path = @devcontainerPath'); params.devcontainerPath = fields.devcontainerPath }

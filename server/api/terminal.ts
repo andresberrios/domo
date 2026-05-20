@@ -58,6 +58,23 @@ async function pickShell(containerId: string): Promise<string> {
   return 'bash'
 }
 
+/** Read `remoteUser` from the env's worktree devcontainer.json; default
+ * to `vscode` (the Microsoft base image's default user) when absent or
+ * unreadable. */
+async function resolveRemoteUser(worktreePath: string | null): Promise<string> {
+  if (!worktreePath) return 'vscode'
+  try {
+    const { loadDevcontainer } = await import('../lib/devcontainer/parser')
+    const { config } = await loadDevcontainer(worktreePath)
+    if (typeof config.remoteUser === 'string' && config.remoteUser.length > 0) {
+      return config.remoteUser
+    }
+  } catch {
+    // Missing or unparseable — fall through to the default.
+  }
+  return 'vscode'
+}
+
 export default defineWebSocketHandler({
   async open(peer) {
     const envId = envIdFromPeer(peer)
@@ -80,9 +97,26 @@ export default defineWebSocketHandler({
     }
 
     const shell = await pickShell(containerId)
+    // The Nitro parent has piped stdio (not a TTY), so `docker exec -t`
+    // refuses with "cannot attach stdin to a TTY-enabled container".
+    // Drop `-t` on the host side and instead allocate a PTY *inside*
+    // the container by wrapping the shell with `script` (util-linux,
+    // present in every devcontainer base image we ship). bash sees a
+    // real TTY, so PS1/readline/job control all work; docker exec
+    // shuffles bytes through as a pipe.
+    //
+    // `-u <remoteUser>` matches the devcontainer's `remoteUser` so
+    // `$HOME` (and therefore the shared `~/.claude` bind-mount) lands
+    // in the right place. `-w /workspaces/<envName>` drops us into the
+    // env's workspace folder — the devcontainer-CLI mount target.
+    const remoteUser = await resolveRemoteUser(env.worktreePath)
+    const workdir = `/workspaces/${env.name}`
     const child = spawn(
       'docker',
-      ['exec', '-i', '-t', '-w', '/workspaces', containerId, shell, '-l'],
+      [
+        'exec', '-i', '-u', remoteUser, '-w', workdir, containerId,
+        'script', '-qfc', `${shell} -l`, '/dev/null',
+      ],
       { stdio: ['pipe', 'pipe', 'pipe'] },
     ) as ChildProcessWithoutNullStreams
 
