@@ -38,7 +38,7 @@ async function streamRun(envId: string): Promise<void> {
     signal: abort.signal,
   })
   if (!res.ok || !res.body) {
-    errMsg.value = `coast run failed (${res.status})`
+    errMsg.value = `run failed (${res.status})`
     streaming.value = false
     return
   }
@@ -75,9 +75,9 @@ function close() { open.value = false }
 
 /**
  * Abort an in-flight provisioning: stop reading the stream *and* tear the
- * half-provisioned env back down (coastd `rm`), distinct from "Run in
- * background" which deliberately keeps it provisioning. Best-effort —
- * coastd may already be mid-teardown; the row is removed regardless.
+ * half-provisioned env back down, distinct from "Run in background" which
+ * deliberately keeps it provisioning. Best-effort — the daemon may
+ * already be mid-teardown; the row is removed regardless.
  */
 async function cancelProvisioning() {
   if (!createdEnv.value || cancelling.value) return
@@ -85,7 +85,7 @@ async function cancelProvisioning() {
   abort?.abort()
   try {
     await apiClient.envs.delete.call({ id: createdEnv.value.id })
-  } catch { /* coastd unreachable / already gone — row drop still happens */ }
+  } catch { /* daemon unreachable / already gone — row drop still happens */ }
   cancelling.value = false
   emit('cancelled')
   open.value = false

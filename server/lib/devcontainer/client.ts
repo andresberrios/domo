@@ -27,8 +27,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
+import { hashResolvedConfig, resolveDevcontainerConfig } from './defaults'
 import { detectHostRuntime } from './runtime'
-import { loadDevcontainer, parseForwardPort } from './parser'
+import { parseForwardPort } from './parser'
 import type { ContainerInfo, DevcontainerConfig, ForwardPortEntry } from './types'
 
 const exec = promisify(execFile)
@@ -67,10 +68,19 @@ const DEVCONTAINER_BIN = (() => {
 })()
 
 export interface UpOptions {
-  /** Host worktree path bound into the container as the workspace. */
+  /** Host worktree path bound into the container as the workspace.
+   * For the root env (step 8) this is `project.rootPath` directly;
+   * for non-root envs it's the freshly-created git worktree. */
   workspaceFolder: string
   /** Domo env id — also written as a container label for reconciliation. */
   envId: string
+  /** Domo env name — used to pin `workspaceFolder: /workspaces/<envName>`
+   * in the merged config so the engine's path-translation
+   * (`toHostPath()` + friends) stays stable regardless of the host
+   * directory basename. Without this, root env's container mount
+   * target would default to `basename(project.rootPath)` and break
+   * the convention. Step 8 decision #8. */
+  envName: string
   /** Domo project id — container label for grouping. */
   projectId: string
   /**
@@ -101,6 +111,18 @@ export interface UpOptions {
 export interface UpResult {
   containerId: string
   outcome: 'success' | 'error'
+  /** sha256 of the merged config we handed the CLI. Persisted on the
+   * env row as `devcontainer_config_hash`; drift detection (step 8)
+   * recomputes this on overview load and surfaces a Rebuild banner
+   * when it differs. */
+  configHash: string
+  /** Path to the project's `devcontainer.json` that was used, or null
+   * when the Domo default config was applied. Persisted so the UI can
+   * surface "(default config)" on the env overview. */
+  devcontainerPath: string | null
+  /** True iff the merged config was built on top of the Domo default
+   * rather than the project's `devcontainer.json`. */
+  usedDefaultConfig: boolean
   /** Raw `devcontainer up` JSON envelope, kept for debugging. */
   raw: unknown
 }
@@ -148,7 +170,12 @@ export async function up(opts: UpOptions): Promise<UpResult> {
   // surfaced the bug as "missing one of image/dockerFile/
   // dockerComposeFile" — our overlay-only config was being treated as
   // the whole thing.)
-  const { config: parent } = await loadDevcontainer(opts.workspaceFolder)
+  //
+  // Step 8: `devcontainer.json` is optional. `resolveDevcontainerConfig`
+  // returns the project's config if present, the Domo default
+  // otherwise. The merged config is identical in shape either way.
+  const resolved = await resolveDevcontainerConfig(opts.workspaceFolder, opts.envName)
+  const parent = resolved.config
   const extra = (parent as { extra?: Record<string, unknown> }).extra ?? {}
   const parentRunArgs = Array.isArray(parent.runArgs) ? parent.runArgs : []
   const parentContainerEnv =
@@ -173,9 +200,25 @@ export async function up(opts: UpOptions): Promise<UpResult> {
   // Domo's runArgs go AFTER the user's so our labels/ports/mounts win
   // on docker-cli last-wins flags. The same applies to containerEnv
   // (Domo's overlay overrides the user's for our pinned keys).
+  //
+  // `workspaceMount` + `workspaceFolder` are pinned to
+  // `/workspaces/<envName>` regardless of any user override. Without
+  // both, the CLI defaults `workspaceMount` to
+  // `/workspaces/<basename(hostPath)>` — fine for non-root envs (host
+  // basename == env.name) but wrong for the root env (host basename
+  // == project dir). The engine's path translation
+  // (`toHostPath()` in `server/lib/sessionEngine/engine.ts`) assumes
+  // the `/workspaces/<envName>` convention everywhere. Step 8 decision
+  // #8 — supersedes the earlier "warn on workspaceFolder override"
+  // behavior. `workspaceFolder` alone is not enough: it sets the cwd
+  // inside the container but doesn't move the bind-mount target;
+  // `workspaceMount` is the lever for that.
+  const containerWorkspace = `/workspaces/${opts.envName}`
   const merged: Record<string, unknown> = {
     ...extra,
     ...(parent as unknown as Record<string, unknown>),
+    workspaceMount: `source=${opts.workspaceFolder},target=${containerWorkspace},type=bind`,
+    workspaceFolder: containerWorkspace,
     runArgs: [...parentRunArgs, ...domoRunArgs],
     containerEnv: { ...parentContainerEnv, ...(opts.containerEnv ?? {}) },
   }
@@ -183,9 +226,17 @@ export async function up(opts: UpOptions): Promise<UpResult> {
   // config we hand the CLI.
   delete (merged as { extra?: unknown }).extra
 
+  const overlayJson = JSON.stringify(merged, null, 2)
+  // Drift hash tracks the user's intent — the resolved devcontainer
+  // config (project's or Domo default), not the merged overlay. The
+  // overlay carries Domo-side runtime info (labels, ports, mounts,
+  // env) that's deterministic per env and shouldn't surface as drift.
+  // Step 8 decision #6.
+  const configHash = hashResolvedConfig(resolved.config)
+
   const tmp = await mkdtemp(join(tmpdir(), 'domo-dc-'))
   const overlayPath = join(tmp, 'devcontainer.json')
-  await writeFile(overlayPath, JSON.stringify(merged, null, 2), 'utf8')
+  await writeFile(overlayPath, overlayJson, 'utf8')
 
   const args: string[] = [
     bin,
@@ -195,19 +246,34 @@ export async function up(opts: UpOptions): Promise<UpResult> {
   ]
 
   try {
-    return await runCli(args, opts.onLog, opts.signal)
+    const r = await runCli(args, opts.onLog, opts.signal)
+    return {
+      ...r,
+      configHash,
+      devcontainerPath: resolved.path,
+      usedDefaultConfig: resolved.isDefault,
+    }
   } finally {
     // Best-effort cleanup; the temp dir isn't load-bearing.
     void exec('rm', ['-rf', tmp], { timeout: 5000 }).catch(() => {})
   }
 }
 
+/** The subset of `UpResult` that depends on the CLI subprocess output —
+ * the rest of the fields (configHash, devcontainerPath, etc.) are
+ * computed at the call site in `up()`. */
+interface CliRunResult {
+  containerId: string
+  outcome: 'success'
+  raw: unknown
+}
+
 async function runCli(
   args: string[],
   onLog: UpOptions['onLog'],
   signal: AbortSignal | undefined,
-): Promise<UpResult> {
-  return new Promise<UpResult>((resolve, reject) => {
+): Promise<CliRunResult> {
+  return new Promise<CliRunResult>((resolve, reject) => {
     const child = spawn(process.execPath, args, { signal })
     let stdout = ''
     let stderr = ''

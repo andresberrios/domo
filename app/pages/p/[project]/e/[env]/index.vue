@@ -36,7 +36,7 @@ useLiveRefresh(() => Promise.all([refreshOverview(), refreshEnvs(), refreshProje
   tables: ['envs', 'projects'],
 })
 
-const busy = ref<null | 'stop' | 'start' | 'restart' | 'delete' | 'run'>(null)
+const busy = ref<null | 'stop' | 'start' | 'restart' | 'delete' | 'teardown' | 'run'>(null)
 const errMsg = ref<string | null>(null)
 const router = useRouter()
 
@@ -66,6 +66,19 @@ async function action(kind: NonNullable<typeof busy.value>) {
         await apiClient.envs.delete.call({ id: env.value.id })
         await router.push(`/p/${project.value.name}`)
         return
+      case 'teardown':
+        // Root env (step 8) can't be deleted; teardown stops + removes
+        // the container only. Project files stay on disk; the env row
+        // stays so Start can spin a new container later.
+        if (!confirm(
+          `Tear down ${env.value.name}? The container will be stopped and removed. ` +
+          `Project files at ${project.value.rootPath} stay on disk.`,
+        )) {
+          busy.value = null
+          return
+        }
+        await apiClient.envs.teardown.call({ id: env.value.id })
+        break
     }
     await refreshOverview()
     await refreshEnvs()
@@ -144,6 +157,36 @@ async function toggleExpose(innerPort: number, currentExternalPort: number | nul
       <p v-else-if="overview.env.liveStatus === 'missing'" class="text-xs text-warning">
         No container for this env yet. Click <strong>Run / Up</strong> to provision.
       </p>
+      <p v-if="overview.env.devcontainerPath" class="text-xs text-muted">
+        Using <code>{{ overview.env.devcontainerPath }}</code>
+      </p>
+      <p v-else-if="overview.env.devcontainerConfigHash" class="text-xs text-muted">
+        Using Domo default devcontainer config
+        <span class="ml-1">(no <code>devcontainer.json</code> in this {{ env.isRoot ? 'project' : 'worktree' }})</span>
+      </p>
+
+      <UAlert
+        v-if="overview.drift?.drifted"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-refresh-cw"
+        title="Devcontainer config changed since last build"
+        description="Rebuild this env to apply the new configuration."
+        class="mt-2"
+      >
+        <template #actions>
+          <UButton
+            size="xs"
+            color="warning"
+            icon="i-lucide-rotate-cw"
+            :loading="busy === 'run'"
+            :disabled="!!busy"
+            @click="action('run')"
+          >
+            Rebuild
+          </UButton>
+        </template>
+      </UAlert>
 
       <div class="flex flex-wrap gap-2 pt-2">
         <UButton size="xs" icon="i-lucide-square" variant="ghost" :loading="busy === 'stop'" :disabled="!!busy" @click="action('stop')">
@@ -158,7 +201,32 @@ async function toggleExpose(innerPort: number, currentExternalPort: number | nul
         <UButton size="xs" icon="i-lucide-rocket" variant="ghost" :loading="busy === 'run'" :disabled="!!busy" @click="action('run')">
           Run / Up
         </UButton>
-        <UButton size="xs" icon="i-lucide-trash-2" variant="ghost" color="error" :loading="busy === 'delete'" :disabled="!!busy" @click="action('delete')">
+        <UTooltip
+          v-if="env.isRoot"
+          :text="`Stops + removes the container. Project files at ${project.rootPath} are not deleted — only a regular env's Delete does that.`"
+        >
+          <UButton
+            size="xs"
+            icon="i-lucide-power-off"
+            variant="ghost"
+            color="error"
+            :loading="busy === 'teardown'"
+            :disabled="!!busy"
+            @click="action('teardown')"
+          >
+            Tear down
+          </UButton>
+        </UTooltip>
+        <UButton
+          v-else
+          size="xs"
+          icon="i-lucide-trash-2"
+          variant="ghost"
+          color="error"
+          :loading="busy === 'delete'"
+          :disabled="!!busy"
+          @click="action('delete')"
+        >
           Delete
         </UButton>
       </div>

@@ -23,22 +23,39 @@ export interface EnvRow {
   id: string
   projectId: string
   name: string
-  /** The env's own branch (== `name` — the new branch we create at
-   * `worktree add -b` time). */
+  /** The env's own branch. For non-root envs == `name` (the new branch
+   * created at `worktree add -b` time). NULL on the root env, which
+   * has no branch of its own — it tracks whatever the host has checked
+   * out at `project.rootPath` (step 8). */
   branch: string | null
   /** Branch this env was forked from (the project default, unless the
    * creator overrode it). Stored so the `worktree add` start-point is
    * recoverable across restarts; the env's branch evolves
-   * independently afterward. Null on pre-`base_branch`-migration rows. */
+   * independently afterward. NULL on the root env + on pre-
+   * `base_branch`-migration rows. */
   baseBranch: string | null
+  /** Host path the env's container has at `/workspaces/<name>`. For
+   * non-root envs this is `<projectRoot>/.worktrees/<name>` (a git
+   * worktree we create); for the root env it is `project.rootPath`
+   * directly (no worktree — step 8). */
   worktreePath: string | null
   /** Docker container id from the most recent `devcontainer up`. Null
    * until the env has been started for the first time. */
   containerId: string | null
-  /** Path to the devcontainer.json used at `up` time. Stored so we
-   * can re-up against the same config even if the user later edits
-   * their repo. Null until first up. */
+  /** Path to the devcontainer.json used at `up` time, or NULL when the
+   * Domo default config was applied (step 8 — devcontainer.json is
+   * optional). UI surfaces "(default config)" on the env overview
+   * when null. */
   devcontainerPath: string | null
+  /** sha256 of the merged config the last successful `up` handed the
+   * CLI. Drift detection (step 8 decision #6) recomputes this on
+   * overview load and surfaces a Rebuild banner when it differs. NULL
+   * on envs that haven't been `up`'d yet. */
+  devcontainerConfigHash: string | null
+  /** True for the auto-created root env per project. Bind-mounts
+   * `project.rootPath` directly; cannot be deleted (only "torn down").
+   * Reserved name `'root'`. Step 8. */
+  isRoot: boolean
   status: string | null
   createdAt: number
 }
@@ -52,12 +69,14 @@ interface EnvDbRow {
   worktree_path: string | null
   container_id: string | null
   devcontainer_path: string | null
+  devcontainer_config_hash: string | null
+  is_root: number
   status: string | null
   created_at: number
 }
 
 const SELECT_COLS =
-  'id, project_id, name, branch, base_branch, worktree_path, container_id, devcontainer_path, status, created_at'
+  'id, project_id, name, branch, base_branch, worktree_path, container_id, devcontainer_path, devcontainer_config_hash, is_root, status, created_at'
 
 function fromDb(r: EnvDbRow): EnvRow {
   return {
@@ -69,6 +88,8 @@ function fromDb(r: EnvDbRow): EnvRow {
     worktreePath: r.worktree_path,
     containerId: r.container_id,
     devcontainerPath: r.devcontainer_path,
+    devcontainerConfigHash: r.devcontainer_config_hash,
+    isRoot: r.is_root === 1,
     status: r.status,
     createdAt: r.created_at,
   }
@@ -95,9 +116,17 @@ export function getEnvByName(projectId: string, name: string): EnvRow | null {
 
 export function insertEnv(row: EnvRow): void {
   db().prepare(`
-    INSERT INTO envs (id, project_id, name, branch, base_branch, worktree_path, container_id, devcontainer_path, status, created_at)
-    VALUES (@id, @projectId, @name, @branch, @baseBranch, @worktreePath, @containerId, @devcontainerPath, @status, @createdAt)
-  `).run(row)
+    INSERT INTO envs (
+      id, project_id, name, branch, base_branch, worktree_path,
+      container_id, devcontainer_path, devcontainer_config_hash,
+      is_root, status, created_at
+    )
+    VALUES (
+      @id, @projectId, @name, @branch, @baseBranch, @worktreePath,
+      @containerId, @devcontainerPath, @devcontainerConfigHash,
+      @isRoot, @status, @createdAt
+    )
+  `).run({ ...row, isRoot: row.isRoot ? 1 : 0 })
   changeBus().emitTableChange({ table: 'envs', id: row.id, op: 'insert' })
 }
 
@@ -108,7 +137,10 @@ export function updateEnvStatus(id: string, status: string | null): void {
 
 export function updateEnvFields(
   id: string,
-  fields: Partial<Pick<EnvRow, 'branch' | 'baseBranch' | 'worktreePath' | 'containerId' | 'devcontainerPath' | 'status'>>,
+  fields: Partial<Pick<EnvRow,
+    'branch' | 'baseBranch' | 'worktreePath' | 'containerId'
+    | 'devcontainerPath' | 'devcontainerConfigHash' | 'status'
+  >>,
 ): void {
   const sets: string[] = []
   const params: Record<string, unknown> = { id }
@@ -117,6 +149,7 @@ export function updateEnvFields(
   if (fields.worktreePath !== undefined) { sets.push('worktree_path = @worktreePath'); params.worktreePath = fields.worktreePath }
   if (fields.containerId !== undefined) { sets.push('container_id = @containerId'); params.containerId = fields.containerId }
   if (fields.devcontainerPath !== undefined) { sets.push('devcontainer_path = @devcontainerPath'); params.devcontainerPath = fields.devcontainerPath }
+  if (fields.devcontainerConfigHash !== undefined) { sets.push('devcontainer_config_hash = @devcontainerConfigHash'); params.devcontainerConfigHash = fields.devcontainerConfigHash }
   if (fields.status !== undefined) { sets.push('status = @status'); params.status = fields.status }
   if (sets.length === 0) return
   db().prepare(`UPDATE envs SET ${sets.join(', ')} WHERE id = @id`).run(params)

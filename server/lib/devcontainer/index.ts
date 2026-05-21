@@ -49,3 +49,10 @@ export type { UpOptions, UpResult, ExecOptions } from './client'
 
 export { renderStarter, scaffoldDevcontainer } from './scaffold'
 export type { ScaffoldOptions, ScaffoldResult } from './scaffold'
+
+export {
+  domoDefaultConfig,
+  hashResolvedConfig,
+  resolveDevcontainerConfig,
+} from './defaults'
+export type { ResolvedDevcontainer } from './defaults'

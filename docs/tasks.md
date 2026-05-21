@@ -398,6 +398,107 @@ before that.
       `persistent-session-spike.mjs` are the reusable A/B harness.
       Memory: `project-agent-sdk-billing`.
 
+## 8 — Devcontainer-optional + root env + drift detection
+
+Decided 2026-05-21 (supersedes BUGS.md #18). Three intertwined changes
+land together because none of them is complete without the others.
+
+**Decisions:**
+
+1. **`devcontainer.json` is no longer required.** Domo ships a built-in
+   default config (ubuntu base + DinD feature + `bubblewrap` apt + the
+   claude curl-installer postCreateCommand). `client.ts:up()` resolves
+   the project's `devcontainer.json` if present; falls back to the
+   default otherwise. Malformed devcontainer.json is still a hard
+   error (don't silently downgrade — masks config bugs).
+2. **Root env per project, bind-mounted at `project.rootPath`.** Auto-
+   created in `projects.add` after `insertProject`. Reserved name
+   `'root'`. `worktree_path = project.rootPath`, `is_root = 1`,
+   `branch = null`, `base_branch = null` — the root env has no branch
+   of its own; it tracks whatever the host has checked out at the
+   project root. `envs/run` skips `git worktree add` and the BUGS.md
+   #12 extra `.git/` bind-mount for root (the project's `.git/`
+   already lives inside the mounted directory).
+3. **Lazy first `up`.** `projects.add` inserts the root env row but
+   doesn't spin a container. The user clicks Start on the empty
+   overview when they're ready. Avoids a docker daemon hit + base-
+   image pull on every project add.
+4. **Approval mode: no special-casing for root.** Same project default,
+   same per-session overrides as any other env.
+5. **"Tear down" instead of "Delete" for root env.** Stops + removes
+   the container, clears `containerId`, leaves the row + the project
+   files intact. Tooltip explains the difference vs deleting a regular
+   env. The destructive "delete env record" path is hidden on root.
+6. **Drift detection.** Persist `envs.devcontainer_config_hash` —
+   sha256 of the merged config we hand `devcontainer up`. On env
+   overview load, recompute and compare; surface a "config changed —
+   rebuild to apply" banner with a diff link + one-click Rebuild
+   button. Covers both "user edited devcontainer.json" and "user added
+   a devcontainer.json to a project that previously used the Domo
+   default."
+7. **Cut the scaffold prompt from `projects.add`.** No more
+   `missing-devcontainer` status. The `scaffoldDevcontainer` helper
+   stays available behind a deferred "Customize devcontainer" button
+   on the root env overview (post-v1 surface).
+8. **Explicit `workspaceFolder: '/workspaces/<envName>'` in the merged
+   config.** The CLI defaults the container mount target to
+   `basename(hostPath)`; for the root env that's the project dir
+   basename, breaking `engine.ts`'s `/workspaces/<envName>` path-
+   translation assumption. Pin the override in `client.ts` so the
+   convention holds across both root and worktree envs.
+
+**Files to touch:**
+
+- `server/lib/devcontainer/defaults.ts` (NEW) — returns the default
+  `DevcontainerConfig` object.
+- `server/lib/devcontainer/client.ts` — `up()` falls back to the
+  default, pins `workspaceFolder`, returns the merged-config hash.
+- `server/lib/devcontainer/scaffold.ts` — keep for a deferred
+  customize-button; not called from `projects.add` anymore.
+- `server/lib/db.ts` — `ensureColumn(envs, is_root, integer default 0)`
+  + `ensureColumn(envs, devcontainer_config_hash, text)`.
+- `server/lib/envs.ts` — type + CRUD updates for the two new fields;
+  `isRoot` flag plumbed through `getEnv`/`listEnvs`.
+- `server/procedures/projects/add.ts` — drop the missing-devcontainer
+  discriminated-union branch; insert root env after project row.
+- `server/procedures/envs/create.ts` — refuse `name === 'root'`.
+- `server/procedures/envs/delete.ts` — refuse `isRoot` (the row stays;
+  "Tear down" is a different procedure).
+- `server/procedures/envs/teardown.ts` (NEW) — stops + removes
+  container, clears `containerId`, keeps row.
+- `server/api/envs/run.post.ts` — guard worktree-add + `.git/` extra
+  mount on `!isRoot`; persist `devcontainerConfigHash` after `up`.
+- `server/procedures/envs/overview.ts` — include drift state
+  (`{currentHash, persistedHash, drifted: boolean}`) in the response.
+- `app/components/Domo/AddEnvModal.vue` — no scaffold-related logic
+  needed (already reverted).
+- `app/components/Domo/EnvOverview.vue` (or wherever the overview
+  lives) — drift banner + Rebuild button; root env shows "Tear down"
+  in place of "Delete" with tooltip.
+- `app/components/Domo/LeftRailTree.vue` — distinct icon/label for
+  root env.
+
+**Verify (single end-to-end pass, after the build):**
+
+- [ ] Fresh project with **no** `devcontainer.json` → `projects.add`
+      succeeds with no scaffold prompt → root env row exists in the
+      rail → click Start → container comes up from Domo default →
+      claude inside the env can read/edit files at `project.rootPath`
+      → terminal exec works → env terminal can `git add` + `git
+      commit` against the project's actual repo.
+- [ ] Fresh project with a **valid** `devcontainer.json` → root env
+      uses the project's config → drift hash captured.
+- [ ] Edit `devcontainer.json` inside the root env → save → overview
+      shows drift banner → click Rebuild → container recreated with
+      new config → banner clears.
+- [ ] Create a non-root env on a project that has no committed
+      `devcontainer.json` → env uses Domo default → up succeeds (the
+      BUGS.md #18 failure mode is gone).
+- [ ] "Tear down" on root env → container stopped + removed → row
+      stays → Start brings it back. "Delete" button is absent on
+      root.
+- [ ] `envs.create` refuses `name === 'root'` with a clear 409.
+
 ## Open questions
 
 Tracked in `initial-design.md` → Decisions → Open (restart UX,

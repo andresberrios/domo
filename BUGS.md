@@ -291,6 +291,56 @@ Legend — **Severity**: P0 (broken/blocking) · P1 (significant) · P2 (papercu
   config), (b) the runtime resolver is rooted at a real path
   (`process.argv[1]`, not virtualized `import.meta.url`).
 
+## 18. Env create fails when scaffolded `devcontainer.json` is uncommitted
+
+- **Severity:** P0 · **Status:** WONTFIX — superseded by step 8 (2026-05-21)
+- **Found:** 2026-05-21 (user-reported).
+- **What:** `projects.add` scaffolded `.devcontainer/devcontainer.json`
+  into the project's working tree uncommitted. `envs.create` → `git
+  worktree add -b <envName> <path> <baseBranch>` forks from the
+  committed tip of `baseBranch`, so the worktree had no
+  `devcontainer.json` and `up` threw `DevcontainerNotFoundError`.
+- **Disposition:** A preflight + "Commit it for me" fix was landed and
+  then reverted same-day in favor of step 8 (devcontainer-optional +
+  root env). Step 8 makes the entire failure mode unreachable:
+  - `projects.add` no longer scaffolds (or requires) a devcontainer.
+  - The auto-created root env bind-mounts `project.rootPath` directly
+    — no worktree, no committed-tip dependency. Users edit/commit
+    `devcontainer.json` from inside that env using the normal env
+    machinery.
+  - Non-root envs fall back to the Domo default devcontainer config
+    when the project (or its `baseBranch` tip) has none, so the
+    "missing in worktree" path returns a working container instead of
+    an error.
+- **Lesson carried forward:** verify-pass test plan needs an explicit
+  "fresh project, no prior devcontainer" path alongside the
+  "already-set-up project" path. Step 8's verify includes it.
+
+## 19. `devcontainer up` ENOENT on `devcontainer-lock.json` when project has no `.devcontainer/`
+
+- **Severity:** P0 · **Status:** FIXED (2026-05-21, step 8 verify pass)
+- **Found:** 2026-05-21 during the step 8 verify pass — first attempt
+  at `Run / Up` against a fresh project with no `devcontainer.json`
+  (the new optional-devcontainer code path).
+- **What:** `@devcontainers/cli` (v0.87.0) writes
+  `devcontainer-lock.json` to `<workspaceFolder>/.devcontainer/`
+  while resolving Feature dependencies, even when `--override-config`
+  points at a config outside the workspace. Projects that take the
+  step 8 "no devcontainer.json" path don't have a `.devcontainer/`
+  directory, so the write fails with `ENOENT: no such file or
+  directory, open '<rootPath>/.devcontainer/devcontainer-lock.json'`
+  before any container action.
+- **Fix:** `server/api/envs/run.post.ts` pre-creates
+  `<env.worktreePath>/.devcontainer/` via `mkdir({recursive:true})`
+  before calling `up`. Empty dir; the CLI's lock file lands inside.
+  Side-effect: an otherwise-empty `.devcontainer/` appears in the
+  project (Domo-managed). Users who care can `.gitignore` the
+  lockfile; the dir itself is harmless.
+- **Lesson:** `--override-config` doesn't fully decouple the CLI from
+  the workspace-folder `.devcontainer/` path — verify that side-effect
+  paths (lock files, feature caches) work with whatever workspace
+  shape we hand it.
+
 ## 4. Domo doesn't provision agent guidance for the env toolchain
 
 - **Severity:** P2 · **Status:** OPEN

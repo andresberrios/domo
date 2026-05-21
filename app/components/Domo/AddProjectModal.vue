@@ -18,7 +18,6 @@ const lastResp = ref<AddResp | null>(null)
 // Confirms granted so far. Re-sent on each retry.
 const confirms = reactive({
   confirmGitInit: false,
-  confirmDevcontainerInit: false,
   confirmGitignoreAddWorktrees: false,
 })
 
@@ -34,7 +33,6 @@ function reset() {
   addedProject.value = null
   lastResp.value = null
   confirms.confirmGitInit = false
-  confirms.confirmDevcontainerInit = false
   confirms.confirmGitignoreAddWorktrees = false
 }
 
@@ -75,7 +73,6 @@ function acceptCurrentPrompt() {
   if (!lastResp.value) return
   switch (lastResp.value.status) {
     case 'missing-git': confirms.confirmGitInit = true; break
-    case 'missing-devcontainer': confirms.confirmDevcontainerInit = true; break
     case 'missing-gitignore-worktrees': confirms.confirmGitignoreAddWorktrees = true; break
   }
   attemptAdd()
@@ -91,7 +88,7 @@ function cancelFlow() {
     v-model:open="open"
     :ui="{ content: 'max-w-2xl' }"
     title="Add project"
-    description="Register a git repo with a devcontainer as a Domo project."
+    description="Register any git repo as a Domo project. devcontainer.json is optional — a default is used if absent."
   >
     <template #body>
       <!-- Step 1: pick directory -->
@@ -111,20 +108,6 @@ function cancelFlow() {
           <p>
             This directory is not a git repository.
             <strong>Initialize one</strong> with <code>git init</code>?
-          </p>
-        </template>
-
-        <template v-else-if="lastResp.status === 'missing-devcontainer'">
-          <p>
-            This project has no <code>devcontainer.json</code>. Domo will
-            <strong>scaffold a starter</strong> at
-            <code>.devcontainer/devcontainer.json</code> named
-            <code>{{ lastResp.suggestedName }}</code> (the folder name).
-          </p>
-          <p v-if="lastResp.composeDetected" class="text-xs text-muted">
-            <UIcon name="i-lucide-info" class="size-3 inline mr-1" />
-            <code>docker-compose.yml</code> detected — you can edit the
-            scaffold afterward to reference it via <code>dockerComposeFile</code>.
           </p>
         </template>
 
@@ -150,7 +133,7 @@ function cancelFlow() {
             Cancel
           </UButton>
           <UButton
-            v-if="lastResp.status === 'missing-git' || lastResp.status === 'missing-devcontainer' || lastResp.status === 'missing-gitignore-worktrees'"
+            v-if="lastResp.status === 'missing-git' || lastResp.status === 'missing-gitignore-worktrees'"
             size="sm"
             color="primary"
             :loading="pending"

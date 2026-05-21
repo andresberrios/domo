@@ -23,6 +23,15 @@ export default defineProcedure({
   handler: async ({ input }) => {
     const env = getEnv(input.id)
     if (!env) return { deleted: false }
+    // Root env is per-project and undeletable (step 8). The UI uses
+    // `envs.teardown` instead, which stops + removes the container
+    // but leaves the row + the project files alone.
+    if (env.isRoot) {
+      throw createError({
+        statusCode: 409,
+        statusMessage: 'root env cannot be deleted; use Tear down instead',
+      })
+    }
 
     const cid = await resolveContainerId(env)
     if (cid) {

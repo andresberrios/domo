@@ -15,7 +15,7 @@ const hasProjects = computed(() => (projects.value?.length ?? 0) > 0)
     v-if="!hasProjects"
     icon="i-lucide-folder-git-2"
     title="Welcome to Domo"
-    description="Run parallel Claude Code agents in isolated devcontainer environments. Add a project (any git repo — a devcontainer.json will be scaffolded if it doesn't have one) to get started."
+    description="Run parallel Claude Code agents in isolated devcontainer environments. Add a project (any git repo — devcontainer.json is optional; Domo ships a default) to get started."
   >
     <UButton
       color="primary"

@@ -19,7 +19,7 @@ converts to Apache-2.0 after 2 years. Contributions need a DCO sign-off
 (`git commit -s`) + the grant in `CONTRIBUTING.md`. Keep landed commits
 signed off.
 
-## Where we are — verify pass landed (steps 1–4 + 7 verified end-to-end)
+## Where we are — verify pass landed (steps 1–4 + 7); step 8 implemented, pending verify
 
 Phases 0–4 + multi-user auth Part A **shipped** on an **Electric Agents
 session engine + Coast environments** stack (last release **v0.3.0**;
@@ -29,9 +29,9 @@ not a fixable bug. **Decision:** replace it with an **in-process engine
 over the existing SQLite** (`session_events` log + single-flight
 **long-lived per-session `claude` process** + `--resume`), a **unified
 change-bus + `/api/live` SSE** reactivity spine, and **devcontainer +
-rootless-DinD** environments with `devcontainer.json` as the single
-source of truth (no `Domofile`), `claude` running **inside** the env
-container via a Domo-owned devcontainer Feature with a shared
+rootless-DinD** environments with `devcontainer.json` as **optional**
+(Domo ships a default config; step 8), `claude` running **inside** the
+env container via a Domo-owned devcontainer Feature with a shared
 `~/.claude` per Domo user, and **TCP-only cross-platform port
 forwarding** (published random host ports + on-demand userland
 forwarders + an "expose externally" toggle; no HTTP reverse-proxy, no
@@ -157,6 +157,50 @@ the project-level build SSE + `BuildProgress.vue`, the checkout
 procedure + canonical-env UI bits, `coastApiUrl` runtimeConfig. Step
 3a kept `claude` host-side — step 3b moves the spawn into `docker
 exec`.
+
+**Step 8 (devcontainer-optional + root env + drift detection)
+implemented 2026-05-21 — pending end-to-end verify.**
+`devcontainer.json` is no longer required; `server/lib/devcontainer/
+defaults.ts` exports `domoDefaultConfig(name)` (ubuntu base + DinD +
+bubblewrap + claude install) + `resolveDevcontainerConfig(rootPath,
+envName)` (project's config if present, default otherwise — malformed
+still throws hard, never silent downgrade). `client.ts:up()` uses the
+resolver, pins `workspaceMount` + `workspaceFolder` to
+`/workspaces/<envName>` in the merged config (so the engine's path
+translation works for root env too, whose host basename is the
+project dir not the env name), and returns
+`{configHash, devcontainerPath, usedDefaultConfig}` alongside the
+container id. `envs.is_root INTEGER NOT NULL DEFAULT 0` +
+`envs.devcontainer_config_hash TEXT` columns added (idempotent
+`ensureColumn`); `EnvRow` carries `isRoot: boolean` and
+`devcontainerConfigHash: string | null`. **Root env is auto-created
+in `projects.add`** after the project row lands — `name: 'root'`,
+`worktreePath: project.rootPath` (bind-mounts the project root
+directly; no `git worktree add`), `branch/baseBranch: null` (tracks
+the host's checked-out branch). The `'root'` env name is reserved
+(`envs.create` 409s); `envs.delete` 409s on root (`statusMessage:
+'root env cannot be deleted; use Tear down instead'`). New procedure
+`envs.teardown` stops + removes the container, clears `container_id`
++ `devcontainer_config_hash`, sets `status: 'stopped'` — used by the
+"Tear down" button (with tooltip explaining project files aren't
+touched) that replaces "Delete" on the root env overview. Drift
+detection: `envs.overview` returns
+`drift: { drifted, currentHash, usedDefaultConfig } | null` — hashes
+the *resolved* config (user's intent, not the merged overlay) via a
+canonicalized JSON pass (sorted keys, undefined-skipped) so
+whitespace/key-order edits don't trigger spurious rebuild prompts.
+The env overview surfaces a yellow `UAlert` with a "Rebuild" button
+when `drift.drifted` is true. **Scaffold prompt removed from
+`projects.add`** (the `missing-devcontainer` discriminated-union
+variant is gone); `scaffoldDevcontainer` helper still exists for a
+deferred "Customize devcontainer" button on the root env overview.
+`server/api/envs/run.post.ts` guards `git worktree add` and the
+BUGS.md #12 `.git/` bind-mount on `!env.isRoot` (root env's
+`.git/` lives inside the mounted project root naturally), persists
+`devcontainerPath + devcontainerConfigHash` after `up`, and no
+longer warns about a `workspaceFolder` override (we now own the
+convention via `workspaceMount`). Verify items pending in tasks.md
+§8.
 
 **Verify pass landed 2026-05-20.** Single end-to-end run against
 `pnpm dev` on 7576 / isolated `DOMO_HOME=$HOME/domo-verify` retired
@@ -285,11 +329,14 @@ clean up seeded rows after (they pollute the real `~/.domo/state.db`).
   `sessionEngine/{engine,claude,store}.ts` (single-flight long-lived
   per-session `claude` manager; `session_events` + `pending_diffs`
   durable log; host-side `claude` spawn — step 3b wraps it in
-  `docker exec`), `devcontainer/{client,parser,runtime,scaffold,types}.ts`
+  `docker exec`), `devcontainer/{client,parser,runtime,scaffold,defaults,types}.ts`
   (the new env runtime: `@devcontainers/cli` subprocess with
   `--override-config` overlay; `docker inspect` for status + ports;
   starter `devcontainer.json` writer; sysbox→rootless-dind→privileged
-  selection), and `changeBus.ts` (in-process emitter with three channels:
+  selection; step 8's `defaults.ts` exports `domoDefaultConfig()` +
+  `resolveDevcontainerConfig()` + `hashResolvedConfig()` — the
+  built-in fallback when a project has no `devcontainer.json` plus
+  the canonical-JSON hash used by drift detection), and `changeBus.ts` (in-process emitter with three channels:
   `session-event` durable rows, `session-partial` live deltas,
   `table-change` coarse `{table,id,op}` from every helper-layer
   insert/update/delete — `lib/{sessions,envs,projects}.ts` fire on

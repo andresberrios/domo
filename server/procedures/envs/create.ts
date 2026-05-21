@@ -26,6 +26,17 @@ export default defineProcedure({
     if (!project) {
       throw createError({ statusCode: 404, statusMessage: 'project not found' })
     }
+    // `'root'` is reserved for the auto-created per-project root env
+    // (step 8) — it bind-mounts `project.rootPath` directly and is
+    // inserted as part of `projects.add`. Refusing it here keeps the
+    // (project_id, name) UNIQUE constraint coherent with the
+    // reservation.
+    if (input.name === 'root') {
+      throw createError({
+        statusCode: 409,
+        statusMessage: '`root` is reserved for the project root env (already created automatically)',
+      })
+    }
     const existing = getEnvByName(project.id, input.name)
     if (existing) {
       throw createError({ statusCode: 409, statusMessage: 'env already exists in this project' })
@@ -43,6 +54,8 @@ export default defineProcedure({
       worktreePath: defaultWorktreePath(project.rootPath, input.name),
       containerId: null as string | null,
       devcontainerPath: null as string | null,
+      devcontainerConfigHash: null as string | null,
+      isRoot: false,
       status: 'provisioning' as string | null,
       createdAt: Date.now(),
     }

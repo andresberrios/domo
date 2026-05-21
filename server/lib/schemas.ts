@@ -34,15 +34,27 @@ export const Env = z.object({
   id: z.string(),
   projectId: z.string(),
   name: z.string(),
-  /** The env's own branch (== `name`). */
+  /** The env's own branch (== `name` for non-root; NULL for the root
+   * env which tracks the host's checked-out branch — step 8). */
   branch: z.string().nullable(),
-  /** Branch the env was forked from at `up` time. */
+  /** Branch the env was forked from at `up` time. NULL for the root env. */
   baseBranch: z.string().nullable(),
+  /** Host path mounted at `/workspaces/<name>`. For non-root envs:
+   * `<projectRoot>/.worktrees/<name>`. For the root env:
+   * `project.rootPath` directly (step 8). */
   worktreePath: z.string().nullable(),
   /** Docker container id from `devcontainer up`; null until first up. */
   containerId: z.string().nullable(),
-  /** devcontainer.json path used at `up` time; null until first up. */
+  /** devcontainer.json path used at `up` time; null when the Domo
+   * default config was applied (step 8 — devcontainer.json is
+   * optional) or before the first up. */
   devcontainerPath: z.string().nullable(),
+  /** sha256 of the merged config the last successful `up` handed the
+   * CLI. Drift detection compares against a recompute on overview
+   * load. Null until first up. */
+  devcontainerConfigHash: z.string().nullable(),
+  /** True for the auto-created root env per project. Step 8. */
+  isRoot: z.boolean(),
   /** Cached status; nullable for newly-created envs. */
   status: z.string().nullable(),
   /** Live container status folded in by `listEnvsEnriched` / `get`. */

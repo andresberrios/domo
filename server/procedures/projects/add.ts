@@ -14,18 +14,23 @@ import {
   insertProject,
   inspectDevcontainer,
 } from '../../lib/projects'
-import { scaffoldDevcontainer } from '../../lib/devcontainer'
+import { insertEnv } from '../../lib/envs'
 
 /**
  * Multi-step project add. Returns a discriminated union — each non-`ok`
  * variant tells the UI what to prompt next, and the UI re-invokes with
  * the corresponding `confirm*` flag set.
  *
- * Flow:
+ * Flow (post step 8):
  *   1. `missing-git`                   → user confirms `git init`
- *   2. `missing-devcontainer`          → user confirms starter devcontainer.json
- *   3. `missing-gitignore-worktrees`   → user confirms `.worktrees/` in `.gitignore`
- *   4. `ok`                            → project row inserted
+ *   2. `missing-gitignore-worktrees`   → user confirms `.worktrees/` in `.gitignore`
+ *   3. `ok`                            → project row inserted, root env auto-created
+ *
+ * `devcontainer.json` is **no longer required** — Domo ships a default
+ * config used when the project has none (step 8). The
+ * `scaffoldDevcontainer` helper stays available for a deferred
+ * "Customize devcontainer" button on the root env overview, but is no
+ * longer wired into this flow.
  *
  * `already-exists` short-circuits if the path is already registered.
  * The UI offers to focus the existing project.
@@ -36,7 +41,6 @@ export default defineProcedure({
     /** Optional override for the project name; defaults to dir basename. */
     name: z.string().optional(),
     confirmGitInit: z.boolean().optional(),
-    confirmDevcontainerInit: z.boolean().optional(),
     confirmGitignoreAddWorktrees: z.boolean().optional(),
   }),
   output: z.discriminatedUnion('status', [
@@ -47,12 +51,6 @@ export default defineProcedure({
     z.object({
       status: z.literal('missing-git'),
       rootPath: z.string(),
-    }),
-    z.object({
-      status: z.literal('missing-devcontainer'),
-      rootPath: z.string(),
-      composeDetected: z.boolean(),
-      suggestedName: z.string(),
     }),
     z.object({
       status: z.literal('missing-gitignore-worktrees'),
@@ -94,27 +92,7 @@ export default defineProcedure({
       }
     }
 
-    // 2. devcontainer.json
-    let devc = await inspectDevcontainer(rootPath)
-    const suggestedName = input.name?.trim() || defaultProjectName(rootPath)
-    if (!devc.path) {
-      if (!input.confirmDevcontainerInit) {
-        return {
-          status: 'missing-devcontainer' as const,
-          rootPath,
-          composeDetected: devc.composeDetected,
-          suggestedName,
-        }
-      }
-      await scaffoldDevcontainer({
-        workspaceFolder: rootPath,
-        name: suggestedName,
-        composeDetected: devc.composeDetected,
-      })
-      devc = await inspectDevcontainer(rootPath)
-    }
-
-    // 3. .gitignore
+    // 2. .gitignore
     const ignoreOk = await gitignoreCoversWorktrees(rootPath)
     if (!ignoreOk) {
       if (!input.confirmGitignoreAddWorktrees) {
@@ -123,18 +101,46 @@ export default defineProcedure({
       await addWorktreesToGitignore(rootPath)
     }
 
-    // 4. Insert
+    // 3. Insert. `inspectDevcontainer` only used here to pull a `name`
+    // from a user-provided devcontainer.json if one exists; absence is
+    // fine — Domo's default config handles it.
+    const devc = await inspectDevcontainer(rootPath)
     const projectName = devc.parsedName || input.name?.trim() || defaultProjectName(rootPath)
     const defaultBranch = await detectDefaultBranch(rootPath)
     const row = {
       id: crypto.randomUUID(),
       name: projectName,
       rootPath,
+      // `hasDevcontainer` retained for legacy/UI use, but no longer
+      // gates project creation. True iff the project has a
+      // devcontainer.json on disk at add time; informational only.
+      hasDevcontainer: !!devc.path,
       defaultBranch,
-      hasDevcontainer: true,
       createdAt: Date.now(),
     }
     insertProject(row)
+
+    // 4. Auto-create the root env (step 8 — every project has one).
+    // Bind-mounts `project.rootPath` directly: no worktree, no branch
+    // of its own (tracks the host's checked-out branch), can't be
+    // deleted (only "torn down"). Lazy first `up` — the row exists,
+    // the container doesn't, until the user clicks Start on the env
+    // overview. Reserved name `'root'`.
+    insertEnv({
+      id: crypto.randomUUID(),
+      projectId: row.id,
+      name: 'root',
+      branch: null,
+      baseBranch: null,
+      worktreePath: rootPath,
+      containerId: null,
+      devcontainerPath: null,
+      devcontainerConfigHash: null,
+      isRoot: true,
+      status: 'waiting',
+      createdAt: Date.now(),
+    })
+
     return { status: 'ok' as const, project: row }
   },
 })

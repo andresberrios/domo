@@ -5,6 +5,20 @@ import { listExternalForwards } from '../../lib/portForwarder'
 import { getProject } from '../../lib/projects'
 import { Env } from '../../lib/schemas'
 
+const Drift = z.object({
+  /** True iff a container has been `up`'d for this env AND the resolved
+   * config hash now differs from what was persisted at that `up` time. */
+  drifted: z.boolean(),
+  /** Hash of the resolved config as it would be `up`'d right now. Null
+   * if the env's `worktreePath` isn't readable (rare — usually the env
+   * has been deleted from disk). */
+  currentHash: z.string().nullable(),
+  /** True iff the resolution falls back to Domo's default — surfaced
+   * so the env overview can label the env "(default config)" without
+   * re-resolving. */
+  usedDefaultConfig: z.boolean().nullable(),
+})
+
 const Port = z.object({
   /** Label from `portsAttributes`, or a `port-<inner>` fallback. */
   name: z.string(),
@@ -39,6 +53,9 @@ export default defineProcedure({
     ports: z.array(Port),
     /** True if the docker daemon was unreachable. */
     daemonUnreachable: z.boolean(),
+    /** Drift detection (step 8 decision #6) — null when no `up` has
+     * happened yet (nothing to compare against). */
+    drift: Drift.nullable(),
   }),
   handler: async ({ input }) => {
     const env = getEnv(input.id)
@@ -90,11 +107,38 @@ export default defineProcedure({
       }
     }
 
+    // Drift check: resolve the config right now, hash it, compare with
+    // the hash persisted on the last successful `up`. Surfaces a
+    // "Rebuild to apply config changes" banner in the UI when they
+    // differ. Skipped when the env hasn't been `up`'d yet
+    // (`devcontainerConfigHash == null`) — nothing to compare against.
+    // Skipped on `worktreePath` resolution errors (e.g. the directory
+    // has been removed); the banner suppression is fine because the
+    // env can't be `up`'d in that state either.
+    let drift: z.infer<typeof Drift> | null = null
+    if (env.worktreePath && env.devcontainerConfigHash) {
+      try {
+        const resolved = await dc.resolveDevcontainerConfig(env.worktreePath, env.name)
+        const currentHash = dc.hashResolvedConfig(resolved.config)
+        drift = {
+          drifted: currentHash !== env.devcontainerConfigHash,
+          currentHash,
+          usedDefaultConfig: resolved.isDefault,
+        }
+      } catch {
+        // Malformed devcontainer or missing worktree — report null hash
+        // and don't drift; the UI shows the malformed-config error at
+        // the actual run-time path, not here.
+        drift = { drifted: false, currentHash: null, usedDefaultConfig: null }
+      }
+    }
+
     return {
       env: { ...env, liveStatus },
       project: projectMeta,
       ports,
       daemonUnreachable,
+      drift,
     }
   },
 })

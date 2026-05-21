@@ -50,6 +50,8 @@ function migrate(d: Database.Database): void {
       devcontainer_path TEXT,
       status TEXT,
       created_at INTEGER NOT NULL,
+      is_root INTEGER NOT NULL DEFAULT 0,
+      devcontainer_config_hash TEXT,
       UNIQUE(project_id, name)
     );
 
@@ -158,6 +160,15 @@ function migrate(d: Database.Database): void {
   // add -B <branch>` collided with the project root having the base
   // branch already checked out. See server/api/envs/run.post.ts.
   ensureColumn(d, 'envs', 'base_branch', 'base_branch TEXT')
+  // Step 8 (2026-05-21). `is_root = 1` marks the auto-created root env
+  // per project: bind-mounts `project.rootPath` directly (no worktree),
+  // can't be deleted (only "torn down"), reserved name `root`. Default
+  // 0 keeps every existing env row as non-root.
+  ensureColumn(d, 'envs', 'is_root', 'is_root INTEGER NOT NULL DEFAULT 0')
+  // sha256 of the merged config the last successful `up` handed the
+  // CLI; drift detection compares against a fresh recompute. NULL on
+  // envs that haven't been `up`'d yet.
+  ensureColumn(d, 'envs', 'devcontainer_config_hash', 'devcontainer_config_hash TEXT')
 
   const row = d.prepare(`SELECT version FROM schema_version LIMIT 1`).get() as
     | { version: number }

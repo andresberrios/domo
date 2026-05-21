@@ -20,10 +20,9 @@ import * as portForwarder from '../../lib/portForwarder'
 import { getProject } from '../../lib/projects'
 import {
   inspect,
-  loadDevcontainer,
+  resolveDevcontainerConfig,
   resolveForwardPorts,
   up,
-  DevcontainerNotFoundError,
 } from '../../lib/devcontainer'
 import * as dc from '../../lib/devcontainer'
 
@@ -54,50 +53,49 @@ export default defineEventHandler(async (event) => {
   // (the Microsoft base image's default) when unset.
   let bindMounts: { hostPath: string; containerPath: string }[] = []
 
-  // Read forwardPorts + remoteUser from the project's devcontainer.json
-  // so we can publish ports at create time and target the right home
-  // directory for the shared `~/.claude` bind-mount.
-  let publishPorts: { innerPort: number; protocol: 'tcp' | 'udp' }[] = []
-  let devcontainerPath: string
-  let remoteUser = 'vscode'
-  let workspaceFolderOverride: string | null = null
-  try {
-    const resolved = await loadDevcontainer(project.rootPath)
-    devcontainerPath = resolved.path
-    publishPorts = resolveForwardPorts(resolved.config).map((p) => ({
-      innerPort: p.innerPort,
-      protocol: p.protocol,
-    }))
-    if (typeof resolved.config.remoteUser === 'string' && resolved.config.remoteUser.length > 0) {
-      remoteUser = resolved.config.remoteUser
-    }
-    if (typeof resolved.config.workspaceFolder === 'string' && resolved.config.workspaceFolder.length > 0) {
-      workspaceFolderOverride = resolved.config.workspaceFolder
-    }
-  } catch (e) {
-    if (e instanceof DevcontainerNotFoundError) {
-      throw createError({ statusCode: 400, statusMessage: 'project has no devcontainer.json' })
-    }
-    throw e
-  }
+  // Read forwardPorts + remoteUser from the project's devcontainer.json,
+  // falling back to the Domo default when the project has none (step 8).
+  // We resolve here in addition to `client.ts:up()` because the
+  // publishPorts + remoteUser-derived bind-mount target are needed
+  // BEFORE the up call — the up itself re-resolves to build the
+  // merged config. Two reads, both cached by the FS layer, cheap.
+  const resolved = await resolveDevcontainerConfig(env.worktreePath!, env.name)
+  const devcontainerPath = resolved.path
+  const publishPorts = resolveForwardPorts(resolved.config).map((p) => ({
+    innerPort: p.innerPort,
+    protocol: p.protocol,
+  }))
+  const remoteUser =
+    typeof resolved.config.remoteUser === 'string' && resolved.config.remoteUser.length > 0
+      ? resolved.config.remoteUser
+      : 'vscode'
   bindMounts = [
     { hostPath: claudeHomeHost, containerPath: `/home/${remoteUser}/.claude` },
-    // Mount the project's `.git/` at the same host path inside the
-    // container. `git worktree add` writes an absolute-host-path gitdir
-    // pointer into the worktree's `.git` file; without this mount that
-    // pointer is unreachable from inside the container and every
-    // `git ...` command (including the ones `claude` runs as part of a
-    // turn) fails with "fatal: not a git repository". The gitdir's own
-    // `commondir` is relative (`../..`), so this single mount makes
-    // the worktree's git operations fully functional.
+  ]
+  if (!env.isRoot) {
+    // Non-root envs bind-mount a `git worktree add`-created directory,
+    // whose `.git` file points at an absolute host-path gitdir inside
+    // the project's main `.git/worktrees/<name>/`. That absolute path
+    // is unreachable from inside the container without the extra
+    // mount; every `git ...` command (including the ones `claude` runs
+    // as part of a turn) fails with "fatal: not a git repository".
+    // The gitdir's own `commondir` is relative (`../..`), so this
+    // single mount makes the worktree's git operations fully functional.
     //
     // Side-effects (acceptable for v1): the container can see every
     // env's worktree refs via the project's `.git/worktrees/` —
     // information disclosure across envs of the same project, not
-    // privilege escalation. Per-env isolation of `.git/worktrees/<x>/`
-    // is a hardening follow-up if/when multi-tenant envs land.
-    { hostPath: `${project.rootPath}/.git`, containerPath: `${project.rootPath}/.git` },
-  ]
+    // privilege escalation.
+    //
+    // The root env (step 8) skips this mount: its `worktreePath` IS
+    // `project.rootPath`, so `.git/` already lives inside the
+    // workspace bind-mount as a normal subdirectory — no second
+    // mount needed.
+    bindMounts.push({
+      hostPath: `${project.rootPath}/.git`,
+      containerPath: `${project.rootPath}/.git`,
+    })
+  }
 
   setResponseHeader(event, 'Content-Type', 'text/event-stream')
   setResponseHeader(event, 'Cache-Control', 'no-cache')
@@ -126,8 +124,9 @@ export default defineEventHandler(async (event) => {
   // Fire-and-forget the up call; the stream is the user-facing channel.
   ;(async () => {
     try {
-      // Make sure a worktree exists on disk. `devcontainer up` itself
-      // doesn't create git worktrees — Domo does.
+      // Non-root envs need a git worktree on disk before `devcontainer
+      // up`. Root env (step 8) skips this — its `worktreePath` IS the
+      // project root, which obviously already exists.
       //
       // Branch model: `env.branch` (== `env.name`) is a NEW branch
       // forked from `env.baseBranch` (the project default, unless
@@ -136,41 +135,42 @@ export default defineEventHandler(async (event) => {
       // base branch being checked out at the project root. We use
       // `-b <branch> <path> <baseBranch>` instead: create branch,
       // start-point fork, check out into the new worktree.
-      const { existsSync } = await import('node:fs')
-      if (!existsSync(env.worktreePath!)) {
-        emitProgress(`Creating worktree at ${env.worktreePath}`, 'started')
-        const { execFile: execFileCb } = await import('node:child_process')
-        const { promisify } = await import('node:util')
-        const execFile = promisify(execFileCb)
-        const args = ['-C', project.rootPath, 'worktree', 'add']
-        if (env.branch) {
-          args.push('-b', env.branch, env.worktreePath!)
-          if (env.baseBranch) args.push(env.baseBranch)
-        } else {
-          args.push(env.worktreePath!)
+      if (!env.isRoot) {
+        const { existsSync } = await import('node:fs')
+        if (!existsSync(env.worktreePath!)) {
+          emitProgress(`Creating worktree at ${env.worktreePath}`, 'started')
+          const { execFile: execFileCb } = await import('node:child_process')
+          const { promisify } = await import('node:util')
+          const execFile = promisify(execFileCb)
+          const args = ['-C', project.rootPath, 'worktree', 'add']
+          if (env.branch) {
+            args.push('-b', env.branch, env.worktreePath!)
+            if (env.baseBranch) args.push(env.baseBranch)
+          } else {
+            args.push(env.worktreePath!)
+          }
+          await execFile('git', args)
+          emitProgress(`Worktree ready`, 'ok')
         }
-        await execFile('git', args)
-        emitProgress(`Worktree ready`, 'ok')
       }
 
-      if (workspaceFolderOverride) {
-        // Domo's path-translation (the `/workspaces/<envName>` ↔ host
-        // worktree mapping in the engine) assumes the devcontainer-CLI
-        // default mount target. A custom `workspaceFolder` breaks that
-        // assumption — diff-card paths and tool-call rendering may
-        // misbehave until we surface the override at the spawn site.
-        emitProgress(
-          `warning: devcontainer.json sets a custom workspaceFolder (${workspaceFolderOverride}); ` +
-            `Domo's path translation expects the default /workspaces/<envName> convention — ` +
-            `diff-card and tool-call paths may show absolute container paths instead of worktree-relative.`,
-          'warn',
-        )
-      }
+      // `@devcontainers/cli` writes `devcontainer-lock.json` to
+      // `<workspaceFolder>/.devcontainer/` while resolving Feature
+      // dependencies — even when `--override-config` points to a
+      // config outside the workspace. If the project has no
+      // `.devcontainer/` (the step 8 "devcontainer.json optional"
+      // case), the CLI fails with ENOENT before any container action.
+      // Pre-create the directory so the lock can land. Mode 0755;
+      // the lock file is harmless and small. (User can `.gitignore`
+      // it if they prefer.) BUGS.md #19.
+      await mkdir(join(env.worktreePath!, '.devcontainer'), { recursive: true })
+
       emitProgress('Running `devcontainer up`…')
       const reused = await resolveContainerId(env)
       const result = await up({
         workspaceFolder: env.worktreePath!,
         envId: env.id,
+        envName: env.name,
         projectId: project.id,
         publishPorts,
         bindMounts,
@@ -188,7 +188,20 @@ export default defineEventHandler(async (event) => {
 
       const info = await inspect(result.containerId)
       const liveStatus = info ? dc.toEnvLiveStatus(info.status) : 'unknown'
-      updateEnvFields(env.id, { containerId: result.containerId, status: liveStatus })
+      updateEnvFields(env.id, {
+        containerId: result.containerId,
+        // `devcontainerPath` is null when the Domo default config was
+        // used (step 8). Persisting the null is important: the env
+        // overview reads this field to decide whether to label the
+        // env as "Using project's devcontainer.json" or "(default
+        // config)", and drift detection re-resolves against the same
+        // origin we used last time.
+        devcontainerPath: result.devcontainerPath,
+        // sha256 of the merged config we just handed the CLI — drift
+        // detection compares against a recompute on overview load.
+        devcontainerConfigHash: result.configHash,
+        status: liveStatus,
+      })
 
       // Container's host loopback ports may have changed (recreate
       // reassigns the random side); rebind any external forwarders for
