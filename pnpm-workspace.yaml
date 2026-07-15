@@ -1,0 +1,9 @@
+allowBuilds:
+  '@google/genai': true
+  '@parcel/watcher': false
+  '@tailwindcss/oxide': false
+  better-sqlite3: true
+  esbuild: false
+  protobufjs: true
+  unrs-resolver: false
+  vue-demi: false
