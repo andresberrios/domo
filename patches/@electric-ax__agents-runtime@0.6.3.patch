@@ -1,0 +1,68 @@
+diff --git a/dist/use-chat-DipEcsf6.js b/dist/use-chat-DipEcsf6.js
+index 1f8dfadd253704bfa5d933440a560c8950ada96d..ddcc38272171ececdc3ba0266bbd314f7cf6e722 100644
+--- a/dist/use-chat-DipEcsf6.js
++++ b/dist/use-chat-DipEcsf6.js
+@@ -388,7 +388,8 @@ function buildInboxMessages(inbox) {
+ 		status: message.status ?? `processed`,
+ 		position: message.position,
+ 		processed_at: message.processed_at,
+-		cancelled_at: message.cancelled_at
++		cancelled_at: message.cancelled_at,
++		message_type: message.message_type
+ 	}));
+ }
+ function buildWakeMessages(wakes) {
+@@ -579,7 +580,8 @@ const getEntityInboxCollection = cachedCollectionFactory((db) => createLiveQuery
+ 		status: coalesce(inbox.status, `processed`),
+ 		position: inbox.position,
+ 		processed_at: inbox.processed_at,
+-		cancelled_at: inbox.cancelled_at
++		cancelled_at: inbox.cancelled_at,
++		message_type: inbox.message_type
+ 	}))
+ }));
+ const getEntityWakesCollection = cachedCollectionFactory((db) => createLiveQueryCollection({
+@@ -891,7 +893,8 @@ function createEntityIncludesQuery(db) {
+ 			status: inbox.status,
+ 			position: inbox.position,
+ 			processed_at: inbox.processed_at,
+-			cancelled_at: inbox.cancelled_at
++			cancelled_at: inbox.cancelled_at,
++			message_type: inbox.message_type
+ 		}))),
+ 		wakes: toArray(q.from({ wake: wakesCollection }).where(({ wake }) => eq(wake.timelineKey, timeline.key)).orderBy(({ wake }) => wake.order).select(({ wake }) => ({
+ 			key: wake.key,
+diff --git a/dist/use-chat-Q_iND6J4.cjs b/dist/use-chat-Q_iND6J4.cjs
+index 989ee7d52d48748c05ed84af40e43542354a54fa..3dbc06ba8c27a8af5beb5c1d88161b414f005efd 100644
+--- a/dist/use-chat-Q_iND6J4.cjs
++++ b/dist/use-chat-Q_iND6J4.cjs
+@@ -390,7 +390,8 @@ function buildInboxMessages(inbox) {
+ 		status: message.status ?? `processed`,
+ 		position: message.position,
+ 		processed_at: message.processed_at,
+-		cancelled_at: message.cancelled_at
++		cancelled_at: message.cancelled_at,
++		message_type: message.message_type
+ 	}));
+ }
+ function buildWakeMessages(wakes) {
+@@ -581,7 +582,8 @@ const getEntityInboxCollection = cachedCollectionFactory((db) => (0, __durable_s
+ 		status: (0, __durable_streams_state_db.coalesce)(inbox.status, `processed`),
+ 		position: inbox.position,
+ 		processed_at: inbox.processed_at,
+-		cancelled_at: inbox.cancelled_at
++		cancelled_at: inbox.cancelled_at,
++		message_type: inbox.message_type
+ 	}))
+ }));
+ const getEntityWakesCollection = cachedCollectionFactory((db) => (0, __durable_streams_state_db.createLiveQueryCollection)({
+@@ -893,7 +895,8 @@ function createEntityIncludesQuery(db) {
+ 			status: inbox.status,
+ 			position: inbox.position,
+ 			processed_at: inbox.processed_at,
+-			cancelled_at: inbox.cancelled_at
++			cancelled_at: inbox.cancelled_at,
++			message_type: inbox.message_type
+ 		}))),
+ 		wakes: (0, __durable_streams_state_db.toArray)(q.from({ wake: wakesCollection }).where(({ wake }) => (0, __durable_streams_state_db.eq)(wake.timelineKey, timeline.key)).orderBy(({ wake }) => wake.order).select(({ wake }) => ({
+ 			key: wake.key,

@@ -3,7 +3,17 @@ allowBuilds:
   '@parcel/watcher': false
   '@tailwindcss/oxide': false
   better-sqlite3: true
+  cpu-features: true
   esbuild: false
   protobufjs: true
+  ssh2: true
   unrs-resolver: false
   vue-demi: false
+# dockerode's optional native transports — not needed (docker over unix
+# socket). Acknowledge so `pnpm install` doesn't exit 1 with
+# ERR_PNPM_IGNORED_BUILDS, which aborts `nuxt dev`'s pre-start deps check.
+ignoredBuiltDependencies:
+  - cpu-features
+  - ssh2
+patchedDependencies:
+  '@electric-ax/agents-runtime@0.6.3': patches/@electric-ax__agents-runtime@0.6.3.patch
