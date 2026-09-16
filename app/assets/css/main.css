@@ -1,0 +1,50 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+@theme static {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  /* Domo accent: a calm signal-green that reads well while talking. */
+  --color-domo-50: #ecfdf6;
+  --color-domo-100: #d1fae8;
+  --color-domo-200: #a7f3d4;
+  --color-domo-300: #6ee7bb;
+  --color-domo-400: #34d399;
+  --color-domo-500: #10b981;
+  --color-domo-600: #059669;
+  --color-domo-700: #047857;
+  --color-domo-800: #065f46;
+  --color-domo-900: #064e3b;
+  --color-domo-950: #022c22;
+}
+
+/* Markdown rendered by MarkdownView — scoped, minimal, theme-aware. */
+.md-body {
+  @apply text-sm leading-relaxed text-default;
+}
+.md-body > * + * {
+  @apply mt-3;
+}
+.md-body h1 { @apply text-lg font-semibold mt-5; }
+.md-body h2 { @apply text-base font-semibold mt-5; }
+.md-body h3 { @apply text-sm font-semibold mt-4; }
+.md-body p { @apply whitespace-pre-wrap; }
+.md-body ul { @apply list-disc ps-5 space-y-1; }
+.md-body ol { @apply list-decimal ps-5 space-y-1; }
+.md-body a { @apply text-primary underline underline-offset-2; }
+.md-body blockquote { @apply border-s-2 border-accented ps-3 text-muted italic; }
+.md-body code:not(pre code) {
+  @apply rounded bg-elevated px-1 py-0.5 font-mono text-[0.8em];
+}
+.md-body pre {
+  @apply overflow-x-auto rounded-lg border border-default bg-elevated/60 p-3 text-xs font-mono;
+}
+.md-body table { @apply w-full text-xs border-collapse; }
+.md-body th, .md-body td { @apply border border-default px-2 py-1 text-start; }
+.md-body hr { @apply border-default; }
+
+/* Thin scrollbars everywhere: this app is mostly long scrolling logs. */
+* {
+  scrollbar-width: thin;
+}

@@ -1,0 +1,46 @@
+# Backing services for Domo: Postgres (source of truth) and ElectricSQL
+# (real-time sync to the browser).
+#
+#   docker compose up -d
+#
+name: domo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: domo
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - '54321:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command:
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=logical
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d domo']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  electric:
+    image: electricsql/electric:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/domo?sslmode=disable
+      # Local, single-user app: Electric is only reachable on loopback and the
+      # Nuxt server proxies every shape request. Do not do this in production.
+      ELECTRIC_INSECURE: 'true'
+    ports:
+      - '30000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

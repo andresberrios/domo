@@ -1,0 +1,23 @@
+# dependencies
+node_modules
+
+# nuxt
+.nuxt
+.output
+.nitro
+.cache
+dist
+
+# local data (PGlite database lives here)
+.data
+*.log
+
+# env
+.env
+.env.*
+!.env.example
+
+# editors / os
+.DS_Store
+.idea
+.vscode
