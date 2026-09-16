@@ -184,9 +184,7 @@ function roleMeta(role: string) {
                     :class="message.role === 'system' ? 'text-muted italic' : ''"
                   >
                     <MarkdownView v-if="message.role === 'assistant'" :text="message.text" />
-                    <p v-else class="whitespace-pre-wrap">
-                      {{ message.text }}
-                    </p>
+                    <p v-else class="whitespace-pre-wrap">{{ message.text }}</p>
                   </div>
                 </div>
               </div>
@@ -196,13 +194,11 @@ function roleMeta(role: string) {
                 <div class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-elevated">
                   <UIcon name="i-lucide-user" class="size-3.5 text-muted" />
                 </div>
-                <div>
+                <div class="min-w-0 flex-1">
                   <p class="mb-0.5 text-xs text-dimmed">
                     You · speaking
                   </p>
-                  <p class="whitespace-pre-wrap text-sm">
-                    {{ voice.liveUserText.value }}
-                  </p>
+                  <p class="whitespace-pre-wrap text-sm">{{ voice.liveUserText.value }}</p>
                 </div>
               </div>
 
@@ -210,13 +206,11 @@ function roleMeta(role: string) {
                 <div class="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
                   <UIcon name="i-lucide-audio-lines" class="size-3.5 text-primary" />
                 </div>
-                <div>
+                <div class="min-w-0 flex-1">
                   <p class="mb-0.5 text-xs text-dimmed">
                     Domo · speaking
                   </p>
-                  <p class="whitespace-pre-wrap text-sm">
-                    {{ voice.liveAssistantText.value }}
-                  </p>
+                  <MarkdownView :text="voice.liveAssistantText.value" />
                 </div>
               </div>
             </div>

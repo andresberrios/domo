@@ -73,6 +73,17 @@ things that are easy to get wrong.
   the mic sends ~8 chunks a second and would otherwise turn one bad key into an
   error storm. The client stops the mic on the first fatal error.
 
+- **Editing `server/` under `pnpm dev` kills every coding agent.** Nitro reloads,
+  its `close` hook runs `acpManager.shutdown()`, and each adapter logs
+  `ACP connection closed` + `adapter-exit` (code 0) — including the agent that
+  made the edit. The Live socket drops too, and any tool call in flight never
+  gets its response. When Domo works on itself, stage `server/` edits outside
+  the tree (a worktree or a patch) and apply them when no turn is running.
+- **Voice tool calls run off the message inbox with a timeout.** The model waits
+  on every tool response, so a hung handler (e.g. an adapter that never answers
+  `session/new`) used to leave the voice agent silent; agent notes are held until
+  the response has gone out.
+
 ## Verification notes
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` all run clean; keep them that way.
