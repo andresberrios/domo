@@ -121,9 +121,21 @@ class AgentRuntime {
   private turn: { cancel: () => void } | null = null
   /** Buffer of the current streaming assistant message, flushed into events. */
   private textBuffer = ''
+  /**
+   * The ACP SDK dispatches notifications without awaiting the previous handler,
+   * so concurrent inserts would take `seq` values out of arrival order and
+   * scramble streamed text. Every event write goes through this chain.
+   */
+  private writes: Promise<unknown> = Promise.resolve()
 
   constructor(agentSessionId: string) {
     this.agentSessionId = agentSessionId
+  }
+
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.writes.then(fn, fn)
+    this.writes = run.catch(() => {})
+    return run
   }
 
   get sessionId() {
@@ -306,11 +318,12 @@ class AgentRuntime {
       this.textBuffer += update.content.text
     }
 
-    await appendAgentEvent(this.agentSessionId, kind, update)
-
-    if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk' || kind === 'tool_call') {
-      await updateAgentSession(this.agentSessionId, { status: 'thinking', touch: true })
-    }
+    await this.serial(async () => {
+      await appendAgentEvent(this.agentSessionId, kind, update)
+      if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk' || kind === 'tool_call') {
+        await updateAgentSession(this.agentSessionId, { status: 'thinking', touch: true })
+      }
+    })
   }
 
   private async onPermission(params: any): Promise<any> {
@@ -322,15 +335,18 @@ class AgentRuntime {
     }))
     const title: string = params.toolCall?.title || params.toolCall?.rawInput?.description || 'Tool call'
 
-    const permission = await createPermission({
-      agentSessionId: this.agentSessionId,
-      toolCallId: params.toolCall?.toolCallId ?? null,
-      title,
-      options,
-      toolCall: params.toolCall ?? null
+    const permission = await this.serial(async () => {
+      const row = await createPermission({
+        agentSessionId: this.agentSessionId,
+        toolCallId: params.toolCall?.toolCallId ?? null,
+        title,
+        options,
+        toolCall: params.toolCall ?? null
+      })
+      await appendAgentEvent(this.agentSessionId, 'permission_request', { permissionId: row.id, ...params })
+      await updateAgentSession(this.agentSessionId, { status: 'awaiting-permission', touch: true })
+      return row
     })
-    await appendAgentEvent(this.agentSessionId, 'permission_request', { permissionId: permission.id, ...params })
-    await updateAgentSession(this.agentSessionId, { status: 'awaiting-permission', touch: true })
 
     if (settings.autoApprovePermissions) {
       const auto =
@@ -370,8 +386,10 @@ class AgentRuntime {
     if (!this.connection || !this.acpSessionId) throw new Error('agent not started')
 
     this.textBuffer = ''
-    await appendAgentEvent(this.agentSessionId, 'user_message', { content })
-    await updateAgentSession(this.agentSessionId, { status: 'thinking', touch: true })
+    await this.serial(async () => {
+      await appendAgentEvent(this.agentSessionId, 'user_message', { content })
+      await updateAgentSession(this.agentSessionId, { status: 'thinking', touch: true })
+    })
 
     const controller = new AbortController()
     this.turn = { cancel: () => controller.abort() }
@@ -382,17 +400,22 @@ class AgentRuntime {
         { sessionId: this.acpSessionId, prompt: content } as any,
         { signal: controller.signal } as any
       )) as any
-      await appendAgentEvent(this.agentSessionId, 'turn_end', { stopReason: response?.stopReason, usage: response?.usage })
-      await updateAgentSession(this.agentSessionId, {
-        status: 'idle',
-        touch: true,
-        summary: this.textBuffer.trim().slice(-1200) || undefined
+      // Queued behind any chunk writes still in flight, so the turn closes last.
+      await this.serial(async () => {
+        await appendAgentEvent(this.agentSessionId, 'turn_end', { stopReason: response?.stopReason, usage: response?.usage })
+        await updateAgentSession(this.agentSessionId, {
+          status: 'idle',
+          touch: true,
+          summary: this.textBuffer.trim().slice(-1200) || undefined
+        })
       })
       return { stopReason: response?.stopReason ?? 'end_turn' }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      await appendAgentEvent(this.agentSessionId, 'error', { message })
-      await updateAgentSession(this.agentSessionId, { status: 'error', lastError: message, touch: true })
+      await this.serial(async () => {
+        await appendAgentEvent(this.agentSessionId, 'error', { message })
+        await updateAgentSession(this.agentSessionId, { status: 'error', lastError: message, touch: true })
+      })
       throw error
     } finally {
       this.turn = null
@@ -407,8 +430,10 @@ class AgentRuntime {
     for (const waiter of this.waiters.values()) waiter.resolve(null)
     this.waiters.clear()
     this.turn?.cancel()
-    await appendAgentEvent(this.agentSessionId, 'cancelled', {})
-    await updateAgentSession(this.agentSessionId, { status: 'idle', touch: true })
+    await this.serial(async () => {
+      await appendAgentEvent(this.agentSessionId, 'cancelled', {})
+      await updateAgentSession(this.agentSessionId, { status: 'idle', touch: true })
+    })
   }
 
   async setMode(modeId: string): Promise<void> {
