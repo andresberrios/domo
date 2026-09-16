@@ -1,0 +1,15 @@
+# HTTPS front for `pnpm dev`. Browsers only expose the microphone on secure
+# origins, so this is what lets you open Domo from another device.
+#
+# Caddy issues the certificate from its local CA; run `caddy trust` once so the
+# browser accepts it. Override the address with DOMO_HTTPS_ADDRESS, e.g.
+# `DOMO_HTTPS_ADDRESS=my-mac.local:3443 pnpm dev`.
+{
+	admin off
+	skip_install_trust
+}
+
+{$DOMO_HTTPS_ADDRESS:localhost:3443} {
+	tls internal
+	reverse_proxy localhost:{$DOMO_DEV_PORT:3000}
+}

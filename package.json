@@ -7,7 +7,8 @@
   "license": "SEE LICENSE IN LICENSE.md",
   "scripts": {
     "build": "nuxt build",
-    "dev": "nuxt dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:http": "nuxt dev",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",

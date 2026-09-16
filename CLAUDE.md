@@ -84,6 +84,12 @@ things that are easy to get wrong.
   `session/new`) used to leave the voice agent silent; agent notes are held until
   the response has gone out.
 
+- **`pnpm dev` is `scripts/dev.mjs`**: Nuxt on `DOMO_DEV_PORT` (pinned, so the
+  proxy target can't drift) plus Caddy on `DOMO_HTTPS_ADDRESS`. The Caddyfile
+  sets `admin off` (no clash with another Caddy on :2019) and
+  `skip_install_trust` (no sudo prompt mid-startup — run `caddy trust` once).
+  A non-`localhost` address may also need Vite `server.allowedHosts`.
+
 ## Verification notes
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` all run clean; keep them that way.
