@@ -40,10 +40,12 @@ function configure() {
       code(token: any) {
         return token.escaped ? token.text : `<pre><code>${escapeHtml(token.text ?? '')}</code></pre>`
       },
-      link(token: any) {
+      link(this: any, token: any) {
         const href = escapeHtml(token.href ?? '')
         const title = token.title ? ` title="${escapeHtml(token.title)}"` : ''
-        return `<a href="${href}"${title} target="_blank" rel="noreferrer noopener">${token.text}</a>`
+        // `token.text` is the raw source; the inline tokens carry bold/code/etc.
+        const label = this.parser.parseInline(token.tokens ?? [])
+        return `<a href="${href}"${title} target="_blank" rel="noreferrer noopener">${label}</a>`
       }
     }
   })

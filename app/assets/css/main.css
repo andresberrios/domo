@@ -29,7 +29,6 @@
 .md-body h1 { @apply text-lg font-semibold mt-5; }
 .md-body h2 { @apply text-base font-semibold mt-5; }
 .md-body h3 { @apply text-sm font-semibold mt-4; }
-.md-body p { @apply whitespace-pre-wrap; }
 .md-body ul { @apply list-disc ps-5 space-y-1; }
 .md-body ol { @apply list-decimal ps-5 space-y-1; }
 .md-body a { @apply text-primary underline underline-offset-2; }

@@ -145,7 +145,6 @@ export function buildTranscript(
 
       case 'plan':
       case 'plan_update': {
-        closeText()
         const entries = event.payload?.entries
           ?? event.payload?.content?.entries
           ?? event.payload?.content?.items
@@ -161,8 +160,14 @@ export function buildTranscript(
             priority: entry.priority
           }))
         }
-        if (existing >= 0) items[existing] = planItem
-        else items.push(planItem)
+        // Updating the plan in place must not split the bubble that is streaming
+        // below it; only a newly appended plan ends the current text run.
+        if (existing >= 0) {
+          items[existing] = planItem
+        } else {
+          closeText()
+          items.push(planItem)
+        }
         break
       }
 
