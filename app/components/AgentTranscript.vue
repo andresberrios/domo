@@ -117,10 +117,14 @@ function itemOf(message: any): TranscriptItem {
         :entries="(itemOf(message) as any).entries"
       />
 
-      <PermissionCard
+      <!-- The actionable card is pinned above the composer; inline is a marker only. -->
+      <div
         v-else-if="itemOf(message).kind === 'permission' && pendingById.get((itemOf(message) as any).permissionId)"
-        :permission="pendingById.get((itemOf(message) as any).permissionId)!"
-      />
+        class="flex items-center gap-2 text-xs text-warning"
+      >
+        <UIcon name="i-lucide-shield-question" class="size-3.5 shrink-0" />
+        <span>Waiting for permission: {{ (itemOf(message) as any).title }}</span>
+      </div>
 
       <div
         v-else-if="itemOf(message).kind === 'notice'"
