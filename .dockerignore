@@ -1,7 +1,0 @@
-*
-!docker
-!docker/dev-environment.Dockerfile
-!docker/dev-environment-entrypoint.sh
-!server
-!server/mcp
-!server/mcp/agent-mesh.mjs

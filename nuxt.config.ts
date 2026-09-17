@@ -34,8 +34,13 @@ export default defineNuxtConfig({
     externals: {
       external: [
         'pg',
+        '@devcontainers/cli',
         '@agentclientprotocol/claude-agent-acp',
         '@agentclientprotocol/sdk'
+      ],
+      traceInclude: [
+        new URL('./node_modules/@devcontainers/cli/devcontainer.js', import.meta.url).pathname,
+        new URL('./node_modules/@devcontainers/cli/package.json', import.meta.url).pathname
       ]
     }
   },

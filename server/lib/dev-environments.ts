@@ -1,86 +1,59 @@
-import { spawn } from 'node:child_process'
-import { access } from 'node:fs/promises'
-import { join } from 'node:path'
+import { access, cp, mkdir, rm } from 'node:fs/promises'
+import { join, relative, resolve, sep } from 'node:path'
 
+import type { DevEnvironment } from '../../shared/types'
 import { newId } from './db'
+import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
+import { resolveDevcontainerConfig, resolveForwardPorts } from './devcontainer/config'
+import { devcontainerUp, inspectContainer, run } from './devcontainer/client'
+import { dataDir } from './paths'
 import {
   createDevEnvironmentRow,
   deleteDevEnvironmentRow,
   getDevEnvironment,
   getProject,
-  updateDevEnvironment
+  updateDevEnvironment,
+  upsertDevEnvironmentPort
 } from './repo'
-import type { DevEnvironment } from '../../shared/types'
 
-const IMAGE = process.env.NUXT_DEV_ENV_IMAGE || 'domo-dev-environment:latest'
-const WORKSPACE = '/workspace/repo'
-
-interface CommandOptions {
-  cwd?: string
-  input?: string
-  allowFailure?: boolean
-  trimOutput?: boolean
+function environmentRoot(id: string): string {
+  return join(dataDir(), 'dev-environments', id)
 }
 
-async function command(program: string, args: string[], options: CommandOptions = {}): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(program, args, {
-      cwd: options.cwd,
-      stdio: ['pipe', 'pipe', 'pipe']
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    child.stdout.on('data', chunk => (stdout += chunk))
-    child.stderr.on('data', chunk => (stderr += chunk))
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code === 0 || options.allowFailure) {
-        return resolvePromise(options.trimOutput === false ? stdout : stdout.trim())
-      }
-      reject(new Error(`${program} ${args[0] ?? ''} failed: ${stderr.trim() || `exit ${code}`}`))
-    })
-    if (options.input !== undefined) child.stdin.end(options.input)
-    else child.stdin.end()
+function safeEnvironmentName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase()
+}
+
+function containerReference(environment: DevEnvironment): string {
+  return environment.containerId || environment.containerName
+}
+
+async function copyRepository(source: string, destination: string): Promise<void> {
+  const excluded = resolve(dataDir())
+  await mkdir(destination, { recursive: true })
+  await cp(source, destination, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (path) => {
+      const absolute = resolve(path)
+      return absolute !== excluded && !absolute.startsWith(`${excluded}${sep}`)
+    }
   })
 }
 
-let imageBuild: Promise<void> | null = null
-
-async function ensureImage(): Promise<void> {
-  try {
-    await command('docker', ['image', 'inspect', IMAGE])
-    return
-  } catch {
-    // Build once when several environment requests arrive together.
+async function installDomoRuntime(containerId: string, remoteUser: string | null, workspacePath: string): Promise<void> {
+  await run('docker', ['exec', '--user', 'root', containerId, 'npm', 'install', '--global', '@agentclientprotocol/claude-agent-acp@0.78.0'])
+  const meshEntry = process.env.NUXT_DOMO_MCP_ENTRY
+  if (meshEntry) {
+    await run('docker', ['exec', '--user', 'root', containerId, 'mkdir', '-p', '/opt/domo'])
+    await run('docker', ['cp', meshEntry, `${containerId}:/opt/domo/agent-mesh.mjs`])
+    await run('docker', ['exec', '--user', 'root', containerId, 'chmod', '755', '/opt/domo/agent-mesh.mjs'])
   }
-  if (!imageBuild) {
-    imageBuild = command('docker', [
-      'build',
-      '--file',
-      join(process.cwd(), 'docker/dev-environment.Dockerfile'),
-      '--tag',
-      IMAGE,
-      process.cwd()
-    ]).then(() => undefined).finally(() => {
-      imageBuild = null
-    })
-  }
-  await imageBuild
-}
-
-function containerName(id: string): string {
-  return `domo-dev-${id.replace(/[^a-zA-Z0-9_.-]/g, '-')}`.toLowerCase()
-}
-
-async function containerRunning(name: string): Promise<boolean> {
-  const value = await command(
-    'docker',
-    ['inspect', '--format', '{{.State.Running}}', name],
-    { allowFailure: true }
-  )
-  return value === 'true'
+  const args = ['exec']
+  if (remoteUser) args.push('--user', remoteUser)
+  const home = !remoteUser || remoteUser === 'root' ? '/root' : `/home/${remoteUser}`
+  args.push('--env', `HOME=${home}`, containerId, 'git', 'config', '--global', '--add', 'safe.directory', workspacePath)
+  await run('docker', args)
 }
 
 export async function createEnvironment(input: {
@@ -92,53 +65,75 @@ export async function createEnvironment(input: {
   await access(join(project.repoPath, '.git'))
 
   const id = newId('env')
-  const name = containerName(id)
-  const environment = await createDevEnvironmentRow({
+  const safeName = safeEnvironmentName(input.name) || id
+  const hostWorkspace = join(environmentRoot(id), 'repo')
+  const workspacePath = `/workspaces/${safeName}`
+  await createDevEnvironmentRow({
     id,
     projectId: project.id,
     name: input.name.trim(),
-    containerName: name,
-    workspacePath: WORKSPACE
+    containerName: `domo-dev-${id}`,
+    workspacePath,
+    hostWorkspacePath: hostWorkspace
   })
 
   try {
-    await ensureImage()
-    const volume = `${name}-workspace`
-    const args = [
-      'run', '--detach', '--privileged',
-      '--name', name,
-      '--hostname', name,
-      '--label', `com.domo.dev-environment=${environment.id}`,
-      '--add-host', 'host.docker.internal:host-gateway',
-      '--volume', `${volume}:/workspace`,
-      '--env', 'DOCKER_TLS_CERTDIR=',
-      '--env', `DOMO_AGENT_UID=${typeof process.getuid === 'function' ? process.getuid() : 1000}`,
-      '--env', `DOMO_AGENT_GID=${typeof process.getgid === 'function' ? process.getgid() : 1000}`,
-      IMAGE
-    ]
-    const claudeConfig = process.env.NUXT_CLAUDE_CONFIG_DIR
-      || (process.env.HOME ? join(process.env.HOME, '.claude') : '')
-    if (claudeConfig) {
-      await access(claudeConfig).then(() => {
-        args.splice(args.length - 1, 0, '--volume', `${claudeConfig}:/home/node/.claude`)
-      }).catch(() => {})
+    await copyRepository(project.repoPath, hostWorkspace)
+    const resolved = await resolveDevcontainerConfig(hostWorkspace, input.name.trim())
+    const declaredPorts = resolveForwardPorts(resolved.config)
+    for (const port of declaredPorts) {
+      await upsertDevEnvironmentPort({
+        environmentId: id,
+        ...port,
+        source: 'declared'
+      })
     }
-    await command('docker', args)
-    await command('docker', ['exec', name, 'docker', 'info'])
-    await command('docker', ['cp', `${project.repoPath}/.`, `${name}:${WORKSPACE}`])
-    const uid = typeof process.getuid === 'function' ? process.getuid() : 1000
-    const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
-    await command('docker', ['exec', name, 'chown', '-R', `${uid}:${gid}`, '/workspace'])
-    await command('docker', [
-      'exec', '--user', `${uid}:${gid}`, '--env', 'HOME=/home/node', name,
-      'git', 'config', '--global', '--add', 'safe.directory', WORKSPACE
-    ])
-    return (await updateDevEnvironment(environment.id, { status: 'running', lastError: null }))!
+    const configuredClaudeDir = process.env.NUXT_CLAUDE_CONFIG_DIR
+      || (process.env.HOME ? join(process.env.HOME, '.claude') : null)
+    const claudeConfigDir = configuredClaudeDir
+      ? await access(configuredClaudeDir).then(() => configuredClaudeDir).catch(() => null)
+      : null
+    const result = await devcontainerUp({
+      resolved,
+      environmentId: id,
+      projectId: project.id,
+      environmentName: input.name.trim(),
+      hostWorkspace,
+      ports: declaredPorts,
+      claudeConfigDir
+    })
+    const inspection = await inspectContainer(result.containerId)
+    if (!inspection) throw new Error('The Dev Container was created but could not be inspected.')
+    await updateDevEnvironment(id, {
+      containerId: result.containerId,
+      containerName: inspection.name,
+      hostWorkspacePath: hostWorkspace,
+      workspacePath: result.workspacePath,
+      configSource: resolved.source,
+      configPath: resolved.displayPath,
+      remoteUser: result.remoteUser
+    })
+    await installDomoRuntime(result.containerId, result.remoteUser, result.workspacePath)
+    const environment = (await updateDevEnvironment(id, {
+      status: 'running',
+      lastError: null
+    }))!
+    await refreshEnvironmentPorts(id)
+    return (await getDevEnvironment(id)) ?? environment
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    await updateDevEnvironment(environment.id, { status: 'error', lastError: message })
-    await command('docker', ['rm', '--force', name], { allowFailure: true }).catch(() => {})
-    await command('docker', ['volume', 'rm', `${name}-workspace`], { allowFailure: true }).catch(() => {})
+    await updateDevEnvironment(id, { status: 'error', lastError: message })
+    const current = await getDevEnvironment(id)
+    if (current?.containerId) {
+      await run('docker', ['rm', '--force', '--volumes', current.containerId], { allowFailure: true }).catch(() => {})
+    } else {
+      const found = await run('docker', [
+        'ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`
+      ], { allowFailure: true }).catch(() => ({ stdout: '', stderr: '' }))
+      for (const containerId of found.stdout.split('\n').filter(Boolean)) {
+        await run('docker', ['rm', '--force', '--volumes', containerId], { allowFailure: true }).catch(() => {})
+      }
+    }
     throw error
   }
 }
@@ -146,25 +141,28 @@ export async function createEnvironment(input: {
 export async function startEnvironment(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
-  if (!(await containerRunning(environment.containerName))) {
-    await command('docker', ['start', environment.containerName])
-  }
-  return (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
+  const inspection = await inspectContainer(containerReference(environment))
+  if (!inspection) throw new Error('The environment container no longer exists. Delete and recreate the environment.')
+  if (!inspection.running) await run('docker', ['start', inspection.id])
+  const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
+  await refreshEnvironmentPorts(id)
+  return updated
 }
 
 export async function stopEnvironment(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
-  if (await containerRunning(environment.containerName)) {
-    await command('docker', ['stop', environment.containerName])
-  }
+  const inspection = await inspectContainer(containerReference(environment))
+  stopEnvironmentForwarders(id)
+  if (inspection?.running) await run('docker', ['stop', inspection.id])
   return (await updateDevEnvironment(id, { status: 'stopped' }))!
 }
 
 export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
-  if (await containerRunning(environment.containerName)) {
+  const inspection = await inspectContainer(containerReference(environment))
+  if (inspection?.running) {
     if (environment.status !== 'running') {
       return (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     }
@@ -176,30 +174,36 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
 export async function removeEnvironment(id: string): Promise<void> {
   const environment = await getDevEnvironment(id)
   if (!environment) return
-  await command('docker', ['rm', '--force', '--volumes', environment.containerName], { allowFailure: true }).catch(() => {})
-  await command('docker', ['volume', 'rm', `${environment.containerName}-workspace`], { allowFailure: true }).catch(() => {})
+  stopEnvironmentForwarders(id)
+  await run('docker', ['rm', '--force', '--volumes', containerReference(environment)], { allowFailure: true }).catch(() => {})
+  if (!environment.containerId) {
+    await run('docker', ['volume', 'rm', `${environment.containerName}-workspace`], { allowFailure: true }).catch(() => {})
+  }
+  const root = resolve(environmentRoot(id))
+  const environmentsDir = resolve(join(dataDir(), 'dev-environments'))
+  const relativeRoot = relative(environmentsDir, root)
+  if (relativeRoot && !relativeRoot.startsWith('..') && !relativeRoot.startsWith(sep)) {
+    await rm(root, { recursive: true, force: true })
+  }
   await deleteDevEnvironmentRow(id)
 }
 
 export function containerExecArgs(environment: DevEnvironment, env: NodeJS.ProcessEnv = {}): string[] {
-  const uid = typeof process.getuid === 'function' ? process.getuid() : 1000
-  const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
-  const args = ['exec', '--interactive', '--user', `${uid}:${gid}`, '--workdir', environment.workspacePath]
+  const args = ['exec', '--interactive']
+  if (environment.remoteUser) args.push('--user', environment.remoteUser)
+  args.push('--workdir', environment.workspacePath)
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) args.push('--env', `${key}=${value}`)
   }
-  args.push(environment.containerName)
+  args.push(containerReference(environment))
   return args
 }
 
 export async function readEnvironmentFile(environment: DevEnvironment, path: string): Promise<string> {
-  const uid = typeof process.getuid === 'function' ? process.getuid() : 1000
-  const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
-  return command(
-    'docker',
-    ['exec', '--user', `${uid}:${gid}`, environment.containerName, 'cat', path],
-    { trimOutput: false }
-  )
+  const args = ['exec']
+  if (environment.remoteUser) args.push('--user', environment.remoteUser)
+  args.push(containerReference(environment), 'cat', path)
+  return (await run('docker', args, { trimOutput: false })).stdout
 }
 
 export async function writeEnvironmentFile(
@@ -207,10 +211,11 @@ export async function writeEnvironmentFile(
   path: string,
   content: string
 ): Promise<void> {
-  const uid = typeof process.getuid === 'function' ? process.getuid() : 1000
-  const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
-  await command('docker', [
-    'exec', '--interactive', '--user', `${uid}:${gid}`, environment.containerName,
+  const args = ['exec', '--interactive']
+  if (environment.remoteUser) args.push('--user', environment.remoteUser)
+  args.push(
+    containerReference(environment),
     'sh', '-c', 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', 'sh', path
-  ], { input: content })
+  )
+  await run('docker', args, { input: content })
 }

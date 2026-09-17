@@ -67,17 +67,37 @@ export interface Project {
 }
 
 export type DevEnvironmentStatus = 'creating' | 'running' | 'stopped' | 'error'
+export type DevEnvironmentConfigSource = 'devcontainer' | 'domo' | 'default'
 
 export interface DevEnvironment {
   id: string
   projectId: string
   name: string
   containerName: string
+  containerId: string | null
   workspacePath: string
+  hostWorkspacePath: string | null
+  configSource: DevEnvironmentConfigSource
+  configPath: string | null
+  remoteUser: string | null
   status: DevEnvironmentStatus
   lastError: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface DevEnvironmentPort {
+  id: string
+  devEnvironmentId: string
+  innerPort: number
+  protocol: 'tcp' | 'udp'
+  appProtocol: 'http' | 'https' | 'tcp' | 'udp' | null
+  label: string | null
+  source: 'declared' | 'detected'
+  hostPort: number | null
+  listening: boolean
+  forwarded: boolean
+  url: string | null
 }
 
 export interface SessionModeInfo {

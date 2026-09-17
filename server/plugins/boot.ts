@@ -6,6 +6,10 @@ import { getDb, query } from '../lib/db'
 import { dataDir } from '../lib/paths'
 import { acpManager } from '../lib/acp/manager'
 import { voiceManager } from '../lib/voice/runtime'
+import {
+  rebuildEnvironmentForwarders,
+  stopAllEnvironmentForwarders
+} from '../lib/dev-environment-ports'
 
 /**
  * Make sure the mesh MCP server exists on disk outside the bundle, so spawned
@@ -47,9 +51,11 @@ export default defineNitroPlugin(async (nitro) => {
   }
 
   await installMeshServer().catch(error => console.error('[domo] mesh install failed', error))
+  await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
 
   nitro.hooks.hook('close', async () => {
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
+    stopAllEnvironmentForwarders()
   })
 })

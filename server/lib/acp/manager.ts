@@ -169,8 +169,8 @@ class AgentRuntime {
       environment = await ensureEnvironmentRunning(session.devEnvironmentId)
       this.containerName = environment.containerName
       this.containerPidFile = `/tmp/domo-agent-${this.agentSessionId}.pid`
-      env.HOME = '/home/node'
-      env.USER = typeof process.getuid === 'function' && process.getuid() === 0 ? 'root' : 'domo-agent'
+      env.USER = environment.remoteUser ?? 'root'
+      env.HOME = env.USER === 'root' ? '/root' : `/home/${env.USER}`
       env.LOGNAME = env.USER
       proc = spawn('docker', [
         ...containerExecArgs(environment, env),

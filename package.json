@@ -16,6 +16,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.78.0",
     "@agentclientprotocol/sdk": "^1.4.0",
+    "@devcontainers/cli": "^0.89.0",
     "@electric-sql/client": "^1.5.28",
     "@google/genai": "^2.22.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -24,6 +25,7 @@
     "@tanstack/electric-db-collection": "^0.4.10",
     "@tanstack/vue-db": "^0.2.1",
     "@vueuse/core": "^14.4.0",
+    "jsonc-parser": "^3.3.1",
     "marked": "^18.0.13",
     "nuxt": "^4.5.2",
     "pg": "^8.23.0",

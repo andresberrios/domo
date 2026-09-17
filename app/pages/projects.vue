@@ -136,36 +136,40 @@ async function deleteProject(project: Project) {
 
           <div class="space-y-3 p-4">
             <div v-if="environmentsFor(project.id).length" class="space-y-2">
-              <div v-for="environment in environmentsFor(project.id)" :key="environment.id" class="flex items-center gap-3 rounded-md bg-elevated/50 p-3">
-                <StatusDot :status="environment.status === 'running' ? 'idle' : environment.status" />
-                <div class="min-w-0 flex-1">
+              <div v-for="environment in environmentsFor(project.id)" :key="environment.id" class="rounded-md bg-elevated/50 p-3">
+                <div class="flex items-center gap-3">
+                  <StatusDot :status="environment.status === 'running' ? 'idle' : environment.status" />
+                  <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2">
                     <span class="truncate text-sm font-medium">{{ environment.name }}</span>
                     <UBadge size="sm" color="neutral" variant="subtle" :label="`${agentCount(environment.id)} agents`" />
                     <UBadge size="sm" :color="environment.status === 'running' ? 'success' : environment.status === 'error' ? 'error' : 'neutral'" variant="subtle" :label="environment.status" />
+                    <UBadge size="sm" color="neutral" variant="outline" :label="environment.configPath || `${environment.configSource} config`" />
                   </div>
                   <p class="mt-0.5 truncate font-mono text-xs text-dimmed">{{ environment.containerName }} · {{ environment.workspacePath }}</p>
                   <p v-if="environment.lastError" class="mt-1 text-xs text-error">{{ environment.lastError }}</p>
+                  </div>
+                  <UButton
+                    v-if="environment.status === 'running'"
+                    icon="i-lucide-square"
+                    color="neutral"
+                    variant="ghost"
+                    size="sm"
+                    :loading="busy[environment.id]"
+                    @click="environmentAction(environment, 'stop')"
+                  />
+                  <UButton
+                    v-else
+                    icon="i-lucide-play"
+                    color="neutral"
+                    variant="ghost"
+                    size="sm"
+                    :loading="busy[environment.id]"
+                    @click="environmentAction(environment, 'start')"
+                  />
+                  <UButton icon="i-lucide-trash-2" color="error" variant="ghost" size="sm" @click="deleteEnvironment(environment)" />
                 </div>
-                <UButton
-                  v-if="environment.status === 'running'"
-                  icon="i-lucide-square"
-                  color="neutral"
-                  variant="ghost"
-                  size="sm"
-                  :loading="busy[environment.id]"
-                  @click="environmentAction(environment, 'stop')"
-                />
-                <UButton
-                  v-else
-                  icon="i-lucide-play"
-                  color="neutral"
-                  variant="ghost"
-                  size="sm"
-                  :loading="busy[environment.id]"
-                  @click="environmentAction(environment, 'start')"
-                />
-                <UButton icon="i-lucide-trash-2" color="error" variant="ghost" size="sm" @click="deleteEnvironment(environment)" />
+                <DevEnvironmentPorts :environment="environment" />
               </div>
             </div>
 

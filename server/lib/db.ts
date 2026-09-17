@@ -69,6 +69,31 @@ create table if not exists dev_environments (
 );
 create index if not exists dev_environments_project on dev_environments(project_id);
 
+alter table dev_environments add column if not exists container_id text;
+alter table dev_environments add column if not exists host_workspace_path text;
+alter table dev_environments add column if not exists config_source text not null default 'default';
+alter table dev_environments add column if not exists config_path text;
+alter table dev_environments add column if not exists remote_user text;
+update dev_environments set remote_user = 'node'
+where remote_user is null and container_id is null and workspace_path = '/workspace/repo';
+
+create table if not exists dev_environment_ports (
+  id text primary key,
+  dev_environment_id text not null references dev_environments(id) on delete cascade,
+  inner_port integer not null,
+  protocol text not null default 'tcp',
+  app_protocol text,
+  label text,
+  source text not null,
+  host_port integer,
+  listening boolean not null default false,
+  forwarded boolean not null default false,
+  created_at text not null,
+  updated_at text not null,
+  unique (dev_environment_id, inner_port, protocol)
+);
+create index if not exists dev_environment_ports_environment on dev_environment_ports(dev_environment_id);
+
 create table if not exists agent_sessions (
   id text primary key,
   voice_session_id text references voice_sessions(id) on delete set null,
@@ -140,6 +165,7 @@ alter table mcp_servers replica identity full;
 alter table settings replica identity full;
 alter table projects replica identity full;
 alter table dev_environments replica identity full;
+alter table dev_environment_ports replica identity full;
 `
 
 let pool: pg.Pool | null = null

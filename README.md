@@ -59,18 +59,53 @@ failing tests"*.
 
 For isolated work, open **Projects**, add a local Git checkout, create a
 development environment, then select that environment when starting agents.
-The first environment builds the `domo-dev-environment:latest` image. Later
-environments reuse it.
+Domo resolves the environment definition in this order:
+
+1. `.devcontainer/devcontainer.json` or `.devcontainer.json` — the standard
+   Dev Container definition, launched with the official Dev Container CLI.
+2. `.domo.json` — a small fallback for projects that only need to select a
+   prebuilt image.
+3. Domo's built-in Ubuntu Dev Container definition.
+
+For example, a repository can use a prebuilt image without adding a full
+Dev Container definition:
+
+```json
+{
+  "devEnvironment": {
+    "image": "ghcr.io/acme/my-project-dev:latest",
+    "remoteUser": "vscode",
+    "forwardPorts": [3000],
+    "portsAttributes": {
+      "3000": { "label": "Web app", "protocol": "http" }
+    }
+  }
+}
+```
+
+Domo preserves the project's Dev Container image/build/Compose definition,
+Features, mounts, environment variables, lifecycle commands, and user. It adds
+Node, Docker-in-Docker, its agent adapter, and the labels and mounts needed to
+manage the environment.
 
 Each environment:
 
-- copies the full source checkout (including its Git metadata) into a private
-  Docker volume at `/workspace/repo`;
+- copies the full source checkout (including its Git metadata) into Domo's data
+  directory and bind-mounts that copy at `/workspaces/<environment>`;
 - can run multiple Claude Code ACP sessions against that same copy;
 - runs privileged with its own nested Docker daemon, so agents can use
   `docker compose` without sharing stacks with the host or other environments;
 - persists its checkout and nested containers across stop/start, and removes
   both when the environment is deleted.
+
+### Forwarding application ports
+
+`forwardPorts` and `portsAttributes` in `devcontainer.json` (or `.domo.json`)
+are shown automatically in the environment card and bound to a random free
+port on `127.0.0.1`. Domo also scans running environments for listening TCP
+ports every five seconds. Undeclared ports appear in the same card and can be
+forwarded with one click, without VS Code and without recreating the container.
+The **Open** action launches the forwarded address in the host browser.
 
 ## Configuration
 
@@ -84,8 +119,8 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
 | `NUXT_DEFAULT_CWD` | Default workspace for new coding agents |
-| `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
-| `NUXT_DEV_ENV_IMAGE` | Override the managed development-environment image |
+| `NUXT_DATA_DIR` | Where copied dev environments and uploads are stored (default `./.data`) |
+| `NUXT_DEV_ENV_IMAGE` | Override Domo's built-in fallback Dev Container image |
 | `NUXT_CLAUDE_CONFIG_DIR` | Claude config directory mounted into environments (defaults to `~/.claude`) |
 
 ### About the Live model id
