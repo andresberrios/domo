@@ -48,7 +48,7 @@ const TOOLS = [
         prompt: { type: 'string', description: 'The task to hand to the new agent.' },
         cwd: {
           type: 'string',
-          description: 'Absolute working directory. Defaults to the spawning agent’s directory.'
+          description: 'Absolute working directory for host sessions. Agents in a dev environment always spawn their peer in the same environment.'
         }
       },
       required: ['title', 'prompt'],

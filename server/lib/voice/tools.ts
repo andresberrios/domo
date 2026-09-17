@@ -5,9 +5,11 @@ import { Type, type FunctionDeclaration } from '@google/genai'
 import { acpManager, normalizeCwd } from '../acp/manager'
 import {
   getAgentSession,
+  listDevEnvironments,
   listAgentEvents,
   listAgentSessions,
   listPermissions,
+  listProjects,
   updateAgentSession
 } from '../repo'
 import { getSettings } from '../settings'
@@ -117,6 +119,7 @@ export const voiceTools: Record<string, VoiceTool> = {
           id: session.id,
           title: session.title,
           cwd: session.cwd,
+          devEnvironmentId: session.devEnvironmentId,
           status: session.status,
           mode: session.modeId,
           lastActivityAt: session.lastActivityAt,
@@ -140,6 +143,10 @@ export const voiceTools: Record<string, VoiceTool> = {
           cwd: {
             type: Type.STRING,
             description: 'Absolute path of the repository to work in. Omit to use the configured default workspace.'
+          },
+          devEnvironmentId: {
+            type: Type.STRING,
+            description: 'Development environment id from list_dev_environments. Prefer this over cwd.'
           }
         },
         required: ['title']
@@ -149,6 +156,7 @@ export const voiceTools: Record<string, VoiceTool> = {
       const session = await acpManager.create({
         title: args.title,
         cwd: args.cwd,
+        devEnvironmentId: args.devEnvironmentId,
         voiceSessionId: ctx.voiceSessionId,
         initialPrompt: args.task
       })
@@ -158,6 +166,37 @@ export const voiceTools: Record<string, VoiceTool> = {
         cwd: session.cwd,
         status: session.status,
         started: !!args.task
+      }
+    }
+  },
+
+  list_dev_environments: {
+    declaration: {
+      name: 'list_dev_environments',
+      description: 'List projects and their isolated development environments. Each environment can host multiple coding agents and its own Docker Compose stacks.',
+      parameters: { type: Type.OBJECT, properties: {} }
+    },
+    handler: async () => {
+      const [projects, environments, agents] = await Promise.all([
+        listProjects(),
+        listDevEnvironments(),
+        listAgentSessions()
+      ])
+      return {
+        projects: projects.map(project => ({
+          id: project.id,
+          name: project.name,
+          sourceRepository: project.repoPath,
+          environments: environments
+            .filter(environment => environment.projectId === project.id)
+            .map(environment => ({
+              id: environment.id,
+              name: environment.name,
+              status: environment.status,
+              workspace: environment.workspacePath,
+              agentCount: agents.filter(agent => agent.devEnvironmentId === environment.id).length
+            }))
+        }))
       }
     }
   },

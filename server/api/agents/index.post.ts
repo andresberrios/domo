@@ -6,6 +6,7 @@ export default defineEventHandler(async (event) => {
     cwd?: string
     voiceSessionId?: string | null
     modeId?: string | null
+    devEnvironmentId?: string | null
     initialPrompt?: string
   }>(event)
 
@@ -14,6 +15,7 @@ export default defineEventHandler(async (event) => {
     cwd: body?.cwd,
     voiceSessionId: body?.voiceSessionId ?? null,
     modeId: body?.modeId ?? null,
+    devEnvironmentId: body?.devEnvironmentId ?? null,
     initialPrompt: body?.initialPrompt
   })
 })

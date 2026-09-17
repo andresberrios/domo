@@ -8,6 +8,7 @@ const toast = useToast()
 const agentId = computed(() => route.params.id as string)
 
 const { sessions } = useAgentSessions()
+const { environments } = useDevEnvironments()
 const { events } = useAgentEvents(agentId)
 const { permissions, pending } = usePermissions(agentId)
 
@@ -19,6 +20,9 @@ const { data: fetched, refresh } = await useFetch<AgentSession>(
 /** Live-synced row wins; the fetch is only there for the first paint. */
 const session = computed<AgentSession | null>(
   () => sessions.value.find(item => item.id === agentId.value) ?? fetched.value ?? null
+)
+const environment = computed(() =>
+  environments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
 )
 
 const renaming = ref(false)
@@ -140,6 +144,15 @@ const menuItems = computed(() => [
             {{ session?.cwd }}
           </UBadge>
           <UBadge color="neutral" variant="subtle" size="sm" label="Claude Code · ACP" />
+          <UBadge
+            v-if="environment"
+            color="primary"
+            variant="subtle"
+            size="sm"
+            :label="environment.name"
+          >
+            <template #leading><UIcon name="i-lucide-container" class="size-3" /></template>
+          </UBadge>
         </template>
         <template #right>
           <span class="text-xs text-dimmed">{{ relativeTime(session?.lastActivityAt) }}</span>

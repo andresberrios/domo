@@ -12,12 +12,24 @@ const task = ref('')
 const submitting = ref(false)
 
 const { data: settings } = await useFetch('/api/settings', { lazy: true })
+const { environments } = useDevEnvironments()
+const { projects } = useProjects()
+
+const devEnvironmentId = ref('')
+const environmentItems = computed(() => [
+  { label: 'Local host directory', value: '' },
+  ...environments.value.map(environment => ({
+    label: `${projects.value.find(project => project.id === environment.projectId)?.name ?? 'Project'} / ${environment.name}`,
+    value: environment.id
+  }))
+])
 
 watch(open, async (value) => {
   if (!value) return
   title.value = ''
   task.value = ''
   cwd.value = settings.value?.defaultCwd ?? ''
+  devEnvironmentId.value = environments.value.find(environment => environment.status === 'running')?.id ?? ''
 })
 
 async function create() {
@@ -29,6 +41,7 @@ async function create() {
       body: {
         title: title.value.trim() || task.value.trim().slice(0, 60),
         cwd: cwd.value.trim() || undefined,
+        devEnvironmentId: devEnvironmentId.value || undefined,
         voiceSessionId: props.voiceSessionId ?? null,
         initialPrompt: task.value.trim() || undefined
       }
@@ -51,7 +64,7 @@ async function create() {
   <UModal
     v-model:open="open"
     title="New coding agent"
-    description="Starts a Claude Code session over ACP in the directory you choose."
+    description="Starts a Claude Code session in an isolated development environment."
   >
     <template #body>
       <div class="space-y-4">
@@ -59,7 +72,22 @@ async function create() {
           <UInput v-model="title" placeholder="auth refactor" class="w-full" autofocus />
         </UFormField>
 
-        <UFormField label="Working directory">
+        <UFormField label="Development environment">
+          <USelectMenu
+            v-model="devEnvironmentId"
+            :items="environmentItems"
+            value-key="value"
+            class="w-full"
+          />
+          <template #help>
+            <span class="text-xs text-muted">
+              Environments can be shared by multiple agents.
+              <NuxtLink to="/projects" class="text-primary">Manage environments</NuxtLink>
+            </span>
+          </template>
+        </UFormField>
+
+        <UFormField v-if="!devEnvironmentId" label="Working directory">
           <DirectoryPicker v-model="cwd" />
         </UFormField>
 

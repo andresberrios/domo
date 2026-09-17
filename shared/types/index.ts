@@ -45,6 +45,7 @@ export interface AgentSession {
   acpSessionId: string | null
   title: string
   cwd: string
+  devEnvironmentId: string | null
   status: AgentSessionStatus
   modeId: string | null
   modes: SessionModeInfo[] | null
@@ -55,6 +56,28 @@ export interface AgentSession {
   archived: boolean
   /** Rolling summary of the agent's most recent output, for the voice agent. */
   summary: string | null
+}
+
+export interface Project {
+  id: string
+  name: string
+  repoPath: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type DevEnvironmentStatus = 'creating' | 'running' | 'stopped' | 'error'
+
+export interface DevEnvironment {
+  id: string
+  projectId: string
+  name: string
+  containerName: string
+  workspacePath: string
+  status: DevEnvironmentStatus
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export interface SessionModeInfo {
@@ -128,6 +151,8 @@ export type StreamEvent =
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
   | { type: 'settings-changed' }
   | { type: 'mcp-changed' }
+  | { type: 'project-changed' }
+  | { type: 'dev-environment-changed', devEnvironmentId: string }
 
 /** Browser -> server messages on the voice WebSocket. */
 export type VoiceClientMessage =

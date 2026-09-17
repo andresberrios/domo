@@ -19,6 +19,10 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ Claude Code agents (ACP)
 - **Voice agent** — Gemini Live over a WebSocket: 16 kHz PCM up, 24 kHz PCM
   back, barge-in supported, live transcripts on screen. The model session lives
   on the server, so a page refresh never drops the conversation.
+- **Projects and dev environments** — register a local Git checkout, then make
+  any number of isolated dev containers from it. Each environment has a copied
+  checkout, can host several parallel agents, and includes a private
+  Docker-in-Docker daemon for Compose stacks.
 - **Coding agents** — each one is a real Claude Code session driven through
   Zed's official ACP adapter
   ([`@agentclientprotocol/claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp),
@@ -53,6 +57,21 @@ The schema is created automatically on first boot. Press **New conversation**,
 hit the mic, and say *"start an agent in ~/code/my-project and have it fix the
 failing tests"*.
 
+For isolated work, open **Projects**, add a local Git checkout, create a
+development environment, then select that environment when starting agents.
+The first environment builds the `domo-dev-environment:latest` image. Later
+environments reuse it.
+
+Each environment:
+
+- copies the full source checkout (including its Git metadata) into a private
+  Docker volume at `/workspace/repo`;
+- can run multiple Claude Code ACP sessions against that same copy;
+- runs privileged with its own nested Docker daemon, so agents can use
+  `docker compose` without sharing stacks with the host or other environments;
+- persists its checkout and nested containers across stop/start, and removes
+  both when the environment is deleted.
+
 ## Configuration
 
 Everything secret lives in `.env`; everything else is editable in **Settings**.
@@ -66,6 +85,8 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
 | `NUXT_DEFAULT_CWD` | Default workspace for new coding agents |
 | `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
+| `NUXT_DEV_ENV_IMAGE` | Override the managed development-environment image |
+| `NUXT_CLAUDE_CONFIG_DIR` | Claude config directory mounted into environments (defaults to `~/.claude`) |
 
 ### About the Live model id
 
@@ -88,6 +109,7 @@ server/
   lib/voice/runtime.ts   Gemini Live session, tool dispatch, persistence
   lib/voice/tools.ts     the voice agent's tools over coding agents
   lib/acp/manager.ts     Claude Code adapter processes, one per session
+  lib/dev-environments   Docker/DinD environment lifecycle
   mcp/agent-mesh.mjs     zero-dependency MCP server handed to coding agents
   api/shape.get.ts       authorising proxy in front of Electric
   api/voice/ws.ts        the audio bridge
@@ -113,6 +135,9 @@ pnpm build       # production build → .output
 - The coding agents run on your machine, with your files and your Claude
   account. "Auto-approve permission requests" in Settings really does mean the
   agent can edit and run things unattended.
+- Dev environments require a Docker host that permits privileged containers.
+  Treat an environment as a trusted development machine: its agents can fully
+  control its private nested Docker daemon.
 - Attachments are stored on disk under `.data/uploads` and handed to agents as
   `file://` resource links.
 

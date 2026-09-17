@@ -35,6 +35,11 @@ things that are easy to get wrong.
 - **One adapter process per coding agent session**, spawned lazily
   (`server/lib/acp/manager.ts`) and reattached with `session/load` when the
   session already has an `acp_session_id`.
+- **Projects own dev environments; dev environments own isolation.** A managed
+  environment is a long-lived privileged container with a copied checkout in a
+  named volume and a private DinD daemon. Multiple agent sessions may share one
+  environment. Their ACP adapters run through `docker exec`; legacy sessions
+  without `dev_environment_id` still run directly on the host.
 - **Permission requests are rows, not callbacks.** `onPermission` writes a
   pending `agent_permissions` row, then parks on a promise. The UI, the voice
   agent (`answer_permission`) and the auto-approve setting all resolve the same
@@ -56,6 +61,11 @@ things that are easy to get wrong.
   from a virtual module path, so `createRequire(import.meta.url).resolve(...)`
   fails there. `adapterEntry()` tries cwd first, then `import.meta.url`, then
   gives a human error. `NUXT_CLAUDE_ACP_ENTRY` overrides it.
+- **Container ACP file callbacks must stay in the container.** Read/write ACP
+  requests are proxied through Docker; never use the host filesystem for an
+  environment-backed session. The built-in mesh server is copied to
+  `/opt/domo/agent-mesh.mjs` in the environment image and reaches the host via
+  `host.docker.internal`.
 - **`UChatMessages` skips messages whose `parts` array is empty.** Rich items
   ride in `metadata` and render through the `#content` slot, but each message
   still needs a plain-text part (see `AgentTranscript.vue`).
@@ -94,3 +104,5 @@ things that are easy to get wrong.
 - Server helpers go in `server/lib/<area>/`; anything that writes to the
   database goes through `server/lib/repo.ts` so the bus stays informed.
 - Shared types are in `shared/types/index.ts` and imported as `~~/shared/types`.
+- Keep environment lifecycle operations in `server/lib/dev-environments.ts`;
+  invoke Docker with argument arrays, never interpolated shell commands.

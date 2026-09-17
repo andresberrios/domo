@@ -48,6 +48,27 @@ create table if not exists voice_messages (
 );
 create index if not exists voice_messages_session_seq on voice_messages(session_id, seq);
 
+create table if not exists projects (
+  id text primary key,
+  name text not null,
+  repo_path text not null,
+  created_at text not null,
+  updated_at text not null
+);
+
+create table if not exists dev_environments (
+  id text primary key,
+  project_id text not null references projects(id) on delete cascade,
+  name text not null,
+  container_name text not null unique,
+  workspace_path text not null default '/workspace/repo',
+  status text not null default 'creating',
+  last_error text,
+  created_at text not null,
+  updated_at text not null
+);
+create index if not exists dev_environments_project on dev_environments(project_id);
+
 create table if not exists agent_sessions (
   id text primary key,
   voice_session_id text references voice_sessions(id) on delete set null,
@@ -55,6 +76,7 @@ create table if not exists agent_sessions (
   acp_session_id text,
   title text not null,
   cwd text not null,
+  dev_environment_id text references dev_environments(id) on delete set null,
   status text not null default 'idle',
   mode_id text,
   modes jsonb,
@@ -65,6 +87,8 @@ create table if not exists agent_sessions (
   last_activity_at text,
   archived boolean not null default false
 );
+
+alter table agent_sessions add column if not exists dev_environment_id text references dev_environments(id) on delete set null;
 
 create table if not exists agent_events (
   id text primary key,
@@ -114,6 +138,8 @@ alter table agent_events replica identity full;
 alter table agent_permissions replica identity full;
 alter table mcp_servers replica identity full;
 alter table settings replica identity full;
+alter table projects replica identity full;
+alter table dev_environments replica identity full;
 `
 
 let pool: pg.Pool | null = null

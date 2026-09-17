@@ -65,6 +65,15 @@ async function startConversation() {
               @click="startConversation"
             />
             <UButton
+              to="/projects"
+              label="Projects"
+              icon="i-lucide-box"
+              color="neutral"
+              variant="ghost"
+              block
+              class="justify-start"
+            />
+            <UButton
               label="New coding agent"
               icon="i-lucide-plus"
               color="neutral"
@@ -127,6 +136,7 @@ async function startConversation() {
         <div v-else class="flex flex-col items-center gap-2">
           <UButton icon="i-lucide-mic" :loading="creating" @click="startConversation" />
           <UButton icon="i-lucide-plus" color="neutral" variant="ghost" @click="newAgentOpen = true" />
+          <UButton to="/projects" icon="i-lucide-box" color="neutral" variant="ghost" />
         </div>
       </template>
 

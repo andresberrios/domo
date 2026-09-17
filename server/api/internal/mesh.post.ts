@@ -45,7 +45,8 @@ export default defineEventHandler(async (event) => {
     case 'spawn_agent': {
       const session = await acpManager.create({
         title: args.title,
-        cwd: args.cwd ? normalizeCwd(args.cwd) : caller?.cwd,
+        cwd: caller?.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller?.cwd),
+        devEnvironmentId: caller?.devEnvironmentId ?? null,
         voiceSessionId: caller?.voiceSessionId ?? null,
         initialPrompt: args.prompt
       })

@@ -2,16 +2,20 @@ import { useLiveQuery } from '@tanstack/vue-db'
 import {
   agentEventsCollection,
   agentSessionsCollection,
+  devEnvironmentsCollection,
   mcpServersCollection,
   permissionsCollection,
+  projectsCollection,
   voiceMessagesCollection,
   voiceSessionsCollection
 } from '~/lib/collections'
 import type {
   AgentEvent,
   AgentSession,
+  DevEnvironment,
   McpServer,
   PendingPermission,
+  Project,
   VoiceMessage,
   VoiceSession
 } from '~~/shared/types'
@@ -62,6 +66,7 @@ export function useAgentSessions() {
         acpSessionId: row.acp_session_id ?? null,
         title: row.title,
         cwd: row.cwd,
+        devEnvironmentId: row.dev_environment_id ?? null,
         status: row.status,
         modeId: row.mode_id ?? null,
         modes: row.modes ?? null,
@@ -77,6 +82,38 @@ export function useAgentSessions() {
   )
 
   return { sessions, isReady }
+}
+
+export function useProjects() {
+  const { data, isReady } = useLiveQuery(q => q.from({ project: projectsCollection() }))
+  const projects = computed<Project[]>(() =>
+    (data.value ?? []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      repoPath: row.repo_path,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    })).sort((a, b) => a.name.localeCompare(b.name))
+  )
+  return { projects, isReady }
+}
+
+export function useDevEnvironments() {
+  const { data, isReady } = useLiveQuery(q => q.from({ environment: devEnvironmentsCollection() }))
+  const environments = computed<DevEnvironment[]>(() =>
+    (data.value ?? []).map((row: any) => ({
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      containerName: row.container_name,
+      workspacePath: row.workspace_path,
+      status: row.status,
+      lastError: row.last_error ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  )
+  return { environments, isReady }
 }
 
 export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {

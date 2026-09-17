@@ -8,6 +8,12 @@ import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
 import { bus } from '../bus'
+import {
+  containerExecArgs,
+  ensureEnvironmentRunning,
+  readEnvironmentFile,
+  writeEnvironmentFile
+} from '../dev-environments'
 import { getSettings } from '../settings'
 import {
   appendAgentEvent,
@@ -19,7 +25,7 @@ import {
   resolvePermissionRow,
   updateAgentSession
 } from '../repo'
-import type { AgentSession, PendingPermission } from '../../../shared/types'
+import type { AgentSession, DevEnvironment, PendingPermission } from '../../../shared/types'
 
 const ADAPTER_PACKAGE = '@agentclientprotocol/claude-agent-acp'
 
@@ -119,6 +125,8 @@ class AgentRuntime {
   private booting: Promise<void> | null = null
   private waiters = new Map<string, PendingPermissionWaiter>()
   private turn: { cancel: () => void } | null = null
+  private containerName: string | null = null
+  private containerPidFile: string | null = null
   /** Buffer of the current streaming assistant message, flushed into events. */
   private textBuffer = ''
 
@@ -152,16 +160,30 @@ class AgentRuntime {
     const session = await getAgentSession(this.agentSessionId)
     if (!session) throw new Error(`Agent session ${this.agentSessionId} not found`)
 
-    await mkdir(session.cwd, { recursive: true }).catch(() => {})
     await updateAgentSession(this.agentSessionId, { status: 'starting', lastError: null })
 
+    let environment: DevEnvironment | null = null
     const env = adapterEnv()
-
-    const proc = spawn(process.execPath, [adapterEntry()], {
-      cwd: session.cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe']
-    }) as ChildProcessWithoutNullStreams
+    let proc: ChildProcessWithoutNullStreams
+    if (session.devEnvironmentId) {
+      environment = await ensureEnvironmentRunning(session.devEnvironmentId)
+      this.containerName = environment.containerName
+      this.containerPidFile = `/tmp/domo-agent-${this.agentSessionId}.pid`
+      env.HOME = '/home/node'
+      env.USER = typeof process.getuid === 'function' && process.getuid() === 0 ? 'root' : 'domo-agent'
+      env.LOGNAME = env.USER
+      proc = spawn('docker', [
+        ...containerExecArgs(environment, env),
+        'sh', '-c', 'echo $$ > "$1"; exec claude-agent-acp', 'sh', this.containerPidFile
+      ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
+    } else {
+      await mkdir(session.cwd, { recursive: true }).catch(() => {})
+      proc = spawn(process.execPath, [adapterEntry()], {
+        cwd: session.cwd,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe']
+      }) as ChildProcessWithoutNullStreams
+    }
     this.proc = proc
 
     proc.stderr.setEncoding('utf8')
@@ -174,6 +196,8 @@ class AgentRuntime {
       this.acpSessionId = null
       this.booting = null
       this.proc = null
+      this.containerName = null
+      this.containerPidFile = null
       for (const waiter of this.waiters.values()) waiter.resolve(null)
       this.waiters.clear()
       void appendAgentEvent(this.agentSessionId, 'adapter-exit', { code, signal })
@@ -191,7 +215,9 @@ class AgentRuntime {
       .onRequest(acp.methods.client.session.requestPermission, ctx => this.onPermission(ctx.params))
       .onRequest(acp.methods.client.fs.readTextFile, async (ctx) => {
         const { path, line, limit } = ctx.params
-        const content = await readFile(path, 'utf8')
+        const content = environment
+          ? await readEnvironmentFile(environment, path)
+          : await readFile(path, 'utf8')
         if (line == null && limit == null) return { content }
         const lines = content.split('\n')
         const start = Math.max(0, (line ?? 1) - 1)
@@ -199,8 +225,12 @@ class AgentRuntime {
         return { content: lines.slice(start, end).join('\n') }
       })
       .onRequest(acp.methods.client.fs.writeTextFile, async (ctx) => {
-        await mkdir(dirname(ctx.params.path), { recursive: true })
-        await writeFile(ctx.params.path, ctx.params.content, 'utf8')
+        if (environment) {
+          await writeEnvironmentFile(environment, ctx.params.path, ctx.params.content)
+        } else {
+          await mkdir(dirname(ctx.params.path), { recursive: true })
+          await writeFile(ctx.params.path, ctx.params.content, 'utf8')
+        }
         return {}
       })
       .connect(stream)
@@ -214,7 +244,7 @@ class AgentRuntime {
       clientInfo: { name: 'domo', title: 'Domo', version: '1.0.0' }
     } as any)
 
-    const mcpServers = await this.mcpServersForSession()
+    const mcpServers = await this.mcpServersForSession(environment)
     const settings = await getSettings()
 
     if (session.acpSessionId) {
@@ -260,7 +290,7 @@ class AgentRuntime {
     await updateAgentSession(this.agentSessionId, { status: 'idle', touch: true })
   }
 
-  private async mcpServersForSession() {
+  private async mcpServersForSession(environment: DevEnvironment | null) {
     const servers = await listMcpServers()
     const out: any[] = []
     for (const server of servers) {
@@ -285,10 +315,10 @@ class AgentRuntime {
     // The agent-mesh server lets coding agents talk to each other and spawn peers.
     out.push({
       name: 'domo',
-      command: process.execPath,
-      args: [meshServerEntry()],
+      command: environment ? '/usr/bin/node' : process.execPath,
+      args: [environment ? '/opt/domo/agent-mesh.mjs' : meshServerEntry()],
       env: [
-        { name: 'DOMO_INTERNAL_URL', value: internalBaseUrl() },
+        { name: 'DOMO_INTERNAL_URL', value: internalBaseUrl(!!environment) },
         { name: 'DOMO_AGENT_SESSION_ID', value: this.agentSessionId }
       ]
     })
@@ -427,10 +457,20 @@ class AgentRuntime {
     this.waiters.clear()
     this.connection?.close()
     this.connection = null
+    if (this.containerName && this.containerPidFile) {
+      const killer = spawn('docker', [
+        'exec', this.containerName,
+        'sh', '-c', 'test ! -f "$1" || kill "$(cat "$1")"; rm -f "$1"',
+        'sh', this.containerPidFile
+      ], { stdio: 'ignore' })
+      killer.unref()
+    }
     this.proc?.kill('SIGTERM')
     this.proc = null
     this.acpSessionId = null
     this.booting = null
+    this.containerName = null
+    this.containerPidFile = null
   }
 }
 
@@ -442,8 +482,10 @@ function meshServerEntry(): string {
   return process.env.NUXT_DOMO_MCP_ENTRY || resolve(process.cwd(), 'server/mcp/agent-mesh.mjs')
 }
 
-function internalBaseUrl(): string {
-  return process.env.NUXT_INTERNAL_URL || `http://127.0.0.1:${process.env.PORT || process.env.NITRO_PORT || 3000}`
+function internalBaseUrl(fromContainer = false): string {
+  if (process.env.NUXT_INTERNAL_URL) return process.env.NUXT_INTERNAL_URL
+  const host = fromContainer ? 'host.docker.internal' : '127.0.0.1'
+  return `http://${host}:${process.env.PORT || process.env.NITRO_PORT || 3000}`
 }
 
 class AcpManager {
@@ -463,16 +505,21 @@ class AcpManager {
     cwd?: string
     voiceSessionId?: string | null
     modeId?: string | null
+    devEnvironmentId?: string | null
     initialPrompt?: string
   }): Promise<AgentSession> {
     const settings = await getSettings()
-    const cwd = normalizeCwd(input.cwd || settings.defaultCwd)
+    const environment = input.devEnvironmentId
+      ? await ensureEnvironmentRunning(input.devEnvironmentId)
+      : null
+    const cwd = environment?.workspacePath ?? normalizeCwd(input.cwd || settings.defaultCwd)
     const title = (input.title || input.initialPrompt || 'Coding session').trim().split('\n')[0]!.slice(0, 80)
     const session = await createAgentSession({
       title,
       cwd,
       voiceSessionId: input.voiceSessionId ?? null,
-      modeId: input.modeId ?? settings.defaultAgentMode
+      modeId: input.modeId ?? settings.defaultAgentMode,
+      devEnvironmentId: environment?.id ?? null
     })
     // A failed boot is recorded on the session row (status + lastError) so the
     // UI can show it and offer a retry instead of blowing up the request.
