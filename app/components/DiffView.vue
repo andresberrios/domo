@@ -5,10 +5,18 @@ interface Line { type: 'add' | 'del' | 'same', text: string }
 
 const SENTINEL = '__domo_no_match__'
 
+/**
+ * A missing side — a created or deleted file — is no lines at all. Splitting it
+ * anyway yields `['']`, which renders as a phantom blank added or removed line.
+ */
+function toLines(text?: string | null): string[] {
+  return text ? text.split('\n') : []
+}
+
 /** Line-level diff: good enough to eyeball an edit, cheap to render. */
 const lines = computed<Line[]>(() => {
-  const before = (props.oldText ?? '').split('\n')
-  const after = (props.newText ?? '').split('\n')
+  const before = toLines(props.oldText)
+  const after = toLines(props.newText)
   const out: Line[] = []
   let i = 0
   let j = 0

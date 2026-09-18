@@ -46,16 +46,35 @@ describe('DiffView', () => {
     expect(component.text()).toContain('-1')
   })
 
-  it('shows every line of a new file as an addition', async () => {
-    const { lines } = await diff(null, 'one\ntwo')
+  it('shows every line of a new file as an addition, and nothing else', async () => {
+    const { component, lines } = await diff(null, 'one\ntwo')
 
-    expect(lines.filter(line => line.marker === '+')).toEqual([
+    expect(lines).toEqual([
       { marker: '+', text: 'one' },
       { marker: '+', text: 'two' }
     ])
-    // Known wart: absent text splits into [''], so a created file also renders
-    // one removed empty line and counts as -1.
-    expect(lines.filter(line => line.marker === '-')).toEqual([{ marker: '-', text: '' }])
+    // An absent side is no lines at all, not one empty one.
+    expect(component.text()).toContain('+2')
+    expect(component.text()).toContain('-0')
+  })
+
+  it('shows every line of a deleted file as a removal, and nothing else', async () => {
+    const { component, lines } = await diff('one\ntwo', null)
+
+    expect(lines).toEqual([
+      { marker: '-', text: 'one' },
+      { marker: '-', text: 'two' }
+    ])
+    expect(component.text()).toContain('+0')
+    expect(component.text()).toContain('-2')
+  })
+
+  it('treats an empty string the same as an absent side', async () => {
+    const created = await diff('', 'one')
+    const deleted = await diff('one', '')
+
+    expect(created.lines).toEqual([{ marker: '+', text: 'one' }])
+    expect(deleted.lines).toEqual([{ marker: '-', text: 'one' }])
   })
 
   it('shows the path being changed', async () => {
