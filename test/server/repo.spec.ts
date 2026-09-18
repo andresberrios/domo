@@ -1,0 +1,582 @@
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { query } from '../../server/lib/db'
+import {
+  appendAgentEvent,
+  appendVoiceMessage,
+  createAgentSession,
+  createDevEnvironmentRow,
+  createMcpServer,
+  createPermission,
+  createProject,
+  createVoiceSession,
+  deleteAgentSession,
+  deleteProject,
+  deleteVoiceSession,
+  getResumptionHandle,
+  listAgentEvents,
+  listAgentSessions,
+  listDevEnvironmentPorts,
+  listDevEnvironments,
+  listMcpServers,
+  listPermissions,
+  listProjects,
+  listVoiceMessages,
+  listVoiceSessions,
+  resolvePermissionRow,
+  setAutoTitle,
+  updateAgentSession,
+  updateDevEnvironment,
+  updateDevEnvironmentPort,
+  updateMcpServer,
+  updateVoiceSession,
+  upsertDevEnvironmentPort
+} from '../../server/lib/repo'
+import { captureBus } from '../helpers/bus'
+import { databaseUnavailable, skipMessage } from '../helpers/database'
+
+/**
+ * `server/lib/repo.ts` is the only door to the database, and the only place the
+ * bus gets told about a write. Everything here runs against a real Postgres:
+ * the snake_case-to-domain mapping, the conditional updates and the foreign
+ * keys are exactly what a stubbed driver would paper over.
+ */
+const skip = !!databaseUnavailable()
+if (skip) console.warn(`[test] ${skipMessage()}`)
+
+const seen = captureBus()
+afterAll(() => seen.stop())
+
+beforeEach(async () => {
+  if (skip) return
+  // Projects and voice sessions cascade to everything else.
+  await query('truncate projects, voice_sessions, agent_sessions, mcp_servers, settings cascade')
+  seen.clear()
+})
+
+afterEach(() => seen.clear())
+
+async function project() {
+  return createProject({ name: 'api', repoPath: '/srv/api' })
+}
+
+async function agent(overrides: Parameters<typeof createAgentSession>[0] | null = null) {
+  return createAgentSession(overrides ?? { adapter: 'claude-code', title: 'Auth refactor', cwd: '/srv/api' })
+}
+
+describe.skipIf(skip)('projects', () => {
+  it('round-trips a project and announces it', async () => {
+    const created = await project()
+
+    expect(created).toMatchObject({ name: 'api', repoPath: '/srv/api' })
+    expect(created.id).toMatch(/^prj_/)
+    expect(created.createdAt).toBe(created.updatedAt)
+    expect(seen.types()).toEqual(['project-changed'])
+  })
+
+  it('lists projects by name', async () => {
+    await createProject({ name: 'web', repoPath: '/srv/web' })
+    await createProject({ name: 'api', repoPath: '/srv/api' })
+
+    await expect(listProjects().then(items => items.map(item => item.name))).resolves.toEqual(['api', 'web'])
+  })
+
+  it('takes its environments with it when it is deleted', async () => {
+    const created = await project()
+    await createDevEnvironmentRow({
+      projectId: created.id,
+      name: 'api',
+      containerName: 'domo-dev-1',
+      workspacePath: '/workspaces/api'
+    })
+
+    await deleteProject(created.id)
+
+    await expect(listDevEnvironments()).resolves.toEqual([])
+  })
+})
+
+describe.skipIf(skip)('dev environments', () => {
+  it('starts out creating, with the columns the UI needs', async () => {
+    const created = await project()
+    const environment = await createDevEnvironmentRow({
+      projectId: created.id,
+      name: 'api',
+      containerName: 'domo-dev-1',
+      workspacePath: '/workspaces/api',
+      hostWorkspacePath: '/data/env/repo',
+      configSource: 'devcontainer',
+      configPath: '.devcontainer/devcontainer.json',
+      remoteUser: 'vscode'
+    })
+
+    expect(environment).toMatchObject({
+      status: 'creating',
+      containerId: null,
+      lastError: null,
+      configSource: 'devcontainer',
+      remoteUser: 'vscode'
+    })
+    expect(seen.types()).toEqual(['project-changed', 'dev-environment-changed'])
+  })
+
+  it('patches only the columns it was given', async () => {
+    const created = await project()
+    const environment = await createDevEnvironmentRow({
+      projectId: created.id,
+      name: 'api',
+      containerName: 'domo-dev-1',
+      workspacePath: '/workspaces/api'
+    })
+
+    const updated = await updateDevEnvironment(environment.id, { status: 'running', containerId: 'sha' })
+
+    expect(updated).toMatchObject({ status: 'running', containerId: 'sha', name: 'api' })
+    expect(updated!.updatedAt >= environment.updatedAt).toBe(true)
+  })
+
+  it('returns null for an environment that is gone', async () => {
+    await expect(updateDevEnvironment('env_nope', { status: 'running' })).resolves.toBeNull()
+  })
+
+  describe('ports', () => {
+    let environmentId: string
+
+    beforeEach(async () => {
+      const created = await project()
+      environmentId = (await createDevEnvironmentRow({
+        projectId: created.id,
+        name: 'api',
+        containerName: 'domo-dev-1',
+        workspacePath: '/workspaces/api'
+      })).id
+    })
+
+    it('builds a loopback url for a forwarded tcp port', async () => {
+      const port = await upsertDevEnvironmentPort({
+        environmentId,
+        innerPort: 3000,
+        protocol: 'tcp',
+        appProtocol: 'https',
+        source: 'declared',
+        hostPort: 54123,
+        forwarded: true
+      })
+
+      expect(port.url).toBe('https://127.0.0.1:54123')
+    })
+
+    it('has no url until it is actually forwarded', async () => {
+      const port = await upsertDevEnvironmentPort({
+        environmentId,
+        innerPort: 3000,
+        protocol: 'tcp',
+        source: 'detected'
+      })
+
+      expect(port).toMatchObject({ url: null, listening: false, forwarded: false })
+    })
+
+    it('never demotes a declared port to a detected one', async () => {
+      await upsertDevEnvironmentPort({
+        environmentId,
+        innerPort: 3000,
+        protocol: 'tcp',
+        label: 'Web app',
+        source: 'declared'
+      })
+
+      const port = await upsertDevEnvironmentPort({
+        environmentId,
+        innerPort: 3000,
+        protocol: 'tcp',
+        source: 'detected',
+        listening: true
+      })
+
+      expect(port).toMatchObject({ source: 'declared', label: 'Web app', listening: true })
+    })
+
+    it('keeps a port forwarded once it has been forwarded', async () => {
+      await upsertDevEnvironmentPort({
+        environmentId,
+        innerPort: 3000,
+        protocol: 'tcp',
+        source: 'detected',
+        hostPort: 54123,
+        forwarded: true
+      })
+
+      const port = await upsertDevEnvironmentPort({
+        environmentId,
+        innerPort: 3000,
+        protocol: 'tcp',
+        source: 'detected',
+        listening: true
+      })
+
+      expect(port).toMatchObject({ forwarded: true, hostPort: 54123 })
+    })
+
+    it('treats the same port on tcp and udp as two ports', async () => {
+      await upsertDevEnvironmentPort({ environmentId, innerPort: 5353, protocol: 'tcp', source: 'declared' })
+      await upsertDevEnvironmentPort({ environmentId, innerPort: 5353, protocol: 'udp', source: 'declared' })
+
+      await expect(listDevEnvironmentPorts(environmentId)).resolves.toHaveLength(2)
+    })
+
+    it('clears the host port when a forward is torn down', async () => {
+      await upsertDevEnvironmentPort({
+        environmentId,
+        innerPort: 3000,
+        protocol: 'tcp',
+        source: 'detected',
+        hostPort: 54123,
+        forwarded: true
+      })
+
+      const port = await updateDevEnvironmentPort(environmentId, 3000, { hostPort: null, forwarded: false })
+
+      expect(port).toMatchObject({ hostPort: null, forwarded: false, url: null })
+    })
+  })
+})
+
+describe.skipIf(skip)('voice sessions', () => {
+  it('starts nameless, auto-titled, and takes its model from the settings', async () => {
+    const session = await createVoiceSession()
+
+    expect(session).toMatchObject({ title: 'New conversation', titleSource: 'auto', status: 'idle' })
+    expect(session.model).toBeTruthy()
+    expect(seen.types()).toEqual(['voice-list-changed'])
+  })
+
+  it('is the user\'s from the start when they named it', async () => {
+    await expect(createVoiceSession({ title: '  Payments  ' })).resolves.toMatchObject({
+      title: 'Payments',
+      titleSource: 'user'
+    })
+  })
+
+  it('hides archived conversations unless asked for', async () => {
+    const session = await createVoiceSession()
+    await updateVoiceSession(session.id, { archived: true })
+
+    await expect(listVoiceSessions()).resolves.toEqual([])
+    await expect(listVoiceSessions(true)).resolves.toHaveLength(1)
+  })
+
+  it('sorts by activity, falling back to creation', async () => {
+    const older = await createVoiceSession({ title: 'older' })
+    const newer = await createVoiceSession({ title: 'newer' })
+    await updateVoiceSession(older.id, { lastActivityAt: '2099-01-01T00:00:00.000Z' })
+
+    await expect(listVoiceSessions().then(items => items.map(item => item.title)))
+      .resolves.toEqual(['older', 'newer'])
+    expect(newer.title).toBe('newer')
+  })
+
+  describe('title ownership', () => {
+    it('lets the voice agent name a conversation it still owns', async () => {
+      const session = await createVoiceSession()
+
+      await expect(setAutoTitle(session.id, 'Flaky invoice tests')).resolves.toMatchObject({
+        title: 'Flaky invoice tests',
+        titleSource: 'auto'
+      })
+    })
+
+    it('refuses to overwrite a title the user set', async () => {
+      const session = await createVoiceSession()
+      await updateVoiceSession(session.id, { title: 'Payments', titleSource: 'user' })
+
+      await expect(setAutoTitle(session.id, 'Flaky invoice tests')).resolves.toBeNull()
+      await expect(listVoiceSessions().then(items => items[0]!.title)).resolves.toBe('Payments')
+    })
+
+    it('says nothing on the bus when it did not write', async () => {
+      const session = await createVoiceSession({ title: 'Payments' })
+      seen.clear()
+
+      await setAutoTitle(session.id, 'Something else')
+
+      expect(seen.types()).toEqual([])
+    })
+  })
+
+  it('remembers the resumption handle with the fingerprint that issued it', async () => {
+    const session = await createVoiceSession()
+    await updateVoiceSession(session.id, { resumptionHandle: 'handle-1', resumptionFingerprint: 'model+tools' })
+
+    await expect(getResumptionHandle(session.id)).resolves.toEqual({
+      handle: 'handle-1',
+      fingerprint: 'model+tools'
+    })
+  })
+
+  it('has neither for a session that never connected', async () => {
+    const session = await createVoiceSession()
+
+    await expect(getResumptionHandle(session.id)).resolves.toEqual({ handle: null, fingerprint: null })
+  })
+
+  it('has neither for a session that does not exist', async () => {
+    await expect(getResumptionHandle('vs_nope')).resolves.toEqual({ handle: null, fingerprint: null })
+  })
+})
+
+describe.skipIf(skip)('voice messages', () => {
+  it('appends in order and touches the conversation', async () => {
+    const session = await createVoiceSession()
+    await appendVoiceMessage({ sessionId: session.id, role: 'user', text: 'start an agent' })
+    await appendVoiceMessage({ sessionId: session.id, role: 'assistant', text: 'on it' })
+
+    const messages = await listVoiceMessages(session.id)
+
+    expect(messages.map(message => message.text)).toEqual(['start an agent', 'on it'])
+    expect(messages[0]!.seq).toBeLessThan(messages[1]!.seq)
+    await expect(listVoiceSessions().then(items => items[0]!.lastActivityAt)).resolves.toBeTruthy()
+  })
+
+  it('stores tool calls with their arguments', async () => {
+    const session = await createVoiceSession()
+    const message = await appendVoiceMessage({
+      sessionId: session.id,
+      role: 'tool',
+      text: '',
+      toolName: 'create_agent_session',
+      meta: { args: { title: 'Auth refactor' } }
+    })
+
+    expect(message).toMatchObject({ toolName: 'create_agent_session', meta: { args: { title: 'Auth refactor' } } })
+  })
+
+  it('publishes the message itself, so the runtime does not have to re-read it', async () => {
+    const session = await createVoiceSession()
+    seen.clear()
+    await appendVoiceMessage({ sessionId: session.id, role: 'user', text: 'hello' })
+
+    expect(seen.events).toEqual([
+      expect.objectContaining({ type: 'voice-message', sessionId: session.id })
+    ])
+  })
+
+  it('returns the newest messages when there are more than the limit', async () => {
+    const session = await createVoiceSession()
+    for (let index = 0; index < 5; index++) {
+      await appendVoiceMessage({ sessionId: session.id, role: 'user', text: `message ${index}` })
+    }
+
+    const messages = await listVoiceMessages(session.id, 2)
+
+    expect(messages.map(message => message.text)).toEqual(['message 3', 'message 4'])
+  })
+
+  it('goes away with its conversation', async () => {
+    const session = await createVoiceSession()
+    await appendVoiceMessage({ sessionId: session.id, role: 'user', text: 'hello' })
+
+    await deleteVoiceSession(session.id)
+
+    await expect(query('select 1 from voice_messages')).resolves.toEqual([])
+  })
+})
+
+describe.skipIf(skip)('agent sessions', () => {
+  it('starts in "starting", because a row exists before the adapter does', async () => {
+    const session = await agent()
+
+    expect(session).toMatchObject({ status: 'starting', adapter: 'claude-code', archived: false })
+    expect(seen.types()).toEqual(['agent-list-changed'])
+  })
+
+  it('keeps an unknown adapter out of the domain type', async () => {
+    await query(
+      `insert into agent_sessions (id, adapter, title, cwd, created_at, updated_at)
+       values ('ag_weird', 'gpt-42', 't', '/tmp', 'now', 'now')`
+    )
+
+    await expect(listAgentSessions().then(items => items[0]!.adapter)).resolves.toBe('claude-code')
+  })
+
+  it('survives its voice conversation being deleted', async () => {
+    const conversation = await createVoiceSession()
+    const session = await agent({
+      adapter: 'codex',
+      title: 'Docs',
+      cwd: '/srv/api',
+      voiceSessionId: conversation.id
+    })
+
+    await deleteVoiceSession(conversation.id)
+
+    await expect(listAgentSessions().then(items => items[0])).resolves.toMatchObject({
+      id: session.id,
+      voiceSessionId: null
+    })
+  })
+
+  it('stores modes as json and touches activity only when asked', async () => {
+    const session = await agent()
+    const modes = [{ id: 'default', name: 'Default' }, { id: 'plan', name: 'Plan' }]
+
+    const updated = await updateAgentSession(session.id, { modes, modeId: 'plan' })
+
+    expect(updated).toMatchObject({ modes, modeId: 'plan', lastActivityAt: null })
+    expect(seen.types().slice(-2)).toEqual(['agent-changed', 'agent-list-changed'])
+
+    const touched = await updateAgentSession(session.id, { status: 'thinking', touch: true })
+
+    expect(touched!.lastActivityAt).toBeTruthy()
+  })
+
+  it('returns null for a session that is gone', async () => {
+    await expect(updateAgentSession('ag_nope', { status: 'idle' })).resolves.toBeNull()
+  })
+})
+
+describe.skipIf(skip)('agent events', () => {
+  it('appends an ordered, durable log and publishes each entry', async () => {
+    const session = await agent()
+    seen.clear()
+
+    await appendAgentEvent(session.id, 'user_message', { content: [{ type: 'text', text: 'hi' }] })
+    const last = await appendAgentEvent(session.id, 'turn_end', { stopReason: 'end_turn' })
+
+    const events = await listAgentEvents(session.id)
+
+    expect(events.map(event => event.type)).toEqual(['user_message', 'turn_end'])
+    expect(events[0]!.payload).toEqual({ content: [{ type: 'text', text: 'hi' }] })
+    expect(seen.events).toEqual([
+      expect.objectContaining({ type: 'agent-event', agentSessionId: session.id }),
+      expect.objectContaining({ type: 'agent-event', event: expect.objectContaining({ id: last.id }) })
+    ])
+  })
+
+  it('serves the tail after a given seq, which is how a reconnect catches up', async () => {
+    const session = await agent()
+    const first = await appendAgentEvent(session.id, 'agent_message_chunk', {})
+    await appendAgentEvent(session.id, 'agent_message_chunk', {})
+
+    await expect(listAgentEvents(session.id, first.seq)).resolves.toHaveLength(1)
+  })
+
+  it('stores a null payload without turning it into a string', async () => {
+    const session = await agent()
+    const event = await appendAgentEvent(session.id, 'cancelled', undefined)
+
+    expect(event.payload).toBeNull()
+  })
+
+  it('goes away with its session', async () => {
+    const session = await agent()
+    await appendAgentEvent(session.id, 'cancelled', null)
+
+    await deleteAgentSession(session.id)
+
+    await expect(query('select 1 from agent_events')).resolves.toEqual([])
+  })
+})
+
+describe.skipIf(skip)('permissions', () => {
+  const options = [
+    { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+  ]
+
+  async function pending(agentSessionId: string) {
+    return createPermission({
+      agentSessionId,
+      toolCallId: 'call_1',
+      title: 'Run `pnpm test`',
+      options,
+      toolCall: { title: 'Bash', rawInput: { command: 'pnpm test' } }
+    })
+  }
+
+  it('is a row, not a callback: it survives whatever asked for it', async () => {
+    const session = await agent()
+    const permission = await pending(session.id)
+
+    expect(permission).toMatchObject({ resolvedAt: null, resolvedBy: null, options })
+    await expect(listPermissions(session.id)).resolves.toHaveLength(1)
+  })
+
+  it('records who answered it, once', async () => {
+    const session = await agent()
+    const permission = await pending(session.id)
+
+    await expect(resolvePermissionRow(permission.id, 'allow', 'voice-agent')).resolves.toMatchObject({
+      resolvedOptionId: 'allow',
+      resolvedBy: 'voice-agent'
+    })
+    // The UI, the voice agent and auto-approve all race for the same row.
+    await expect(resolvePermissionRow(permission.id, 'deny', 'user')).resolves.toBeNull()
+  })
+
+  it('drops out of the pending list once answered, but is still on the record', async () => {
+    const session = await agent()
+    const permission = await pending(session.id)
+    await resolvePermissionRow(permission.id, 'allow', 'user')
+
+    await expect(listPermissions(session.id)).resolves.toEqual([])
+    await expect(listPermissions(session.id, false)).resolves.toHaveLength(1)
+  })
+
+  it('lists pending requests across every agent', async () => {
+    const first = await agent()
+    const second = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
+    await pending(first.id)
+    await pending(second.id)
+
+    await expect(listPermissions()).resolves.toHaveLength(2)
+  })
+
+  it('announces both the request and the answer', async () => {
+    const session = await agent()
+    seen.clear()
+    const permission = await pending(session.id)
+    await resolvePermissionRow(permission.id, 'allow', 'user')
+
+    expect(seen.types()).toEqual(['permission-changed', 'permission-changed'])
+  })
+})
+
+describe.skipIf(skip)('mcp servers', () => {
+  it('defaults a new server to enabled, for both kinds of agent', async () => {
+    const server = await createMcpServer({ name: 'linear', transport: 'http', url: 'https://mcp.linear.app' })
+
+    expect(server).toMatchObject({ enabled: true, scope: 'both', args: [], env: {}, headers: {} })
+    expect(seen.types()).toEqual(['mcp-changed'])
+  })
+
+  it('round-trips the json columns of a stdio server', async () => {
+    const server = await createMcpServer({
+      name: 'files',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv'],
+      env: { ROOT: '/srv' },
+      scope: 'coding'
+    })
+
+    await expect(listMcpServers().then(items => items[0])).resolves.toMatchObject({
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv'],
+      env: { ROOT: '/srv' },
+      scope: 'coding'
+    })
+    expect(server.command).toBe('npx')
+  })
+
+  it('patches without clearing the columns it was not given', async () => {
+    const server = await createMcpServer({ name: 'linear', transport: 'http', url: 'https://mcp.linear.app' })
+
+    const updated = await updateMcpServer(server.id, { enabled: false })
+
+    expect(updated).toMatchObject({ enabled: false, url: 'https://mcp.linear.app', name: 'linear' })
+  })
+
+  it('returns null for a server that is gone', async () => {
+    await expect(updateMcpServer('mcp_nope', { enabled: false })).resolves.toBeNull()
+  })
+})
