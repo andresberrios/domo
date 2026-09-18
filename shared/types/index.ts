@@ -42,13 +42,16 @@ export type AgentSessionStatus =
   | 'error'
   | 'stopped'
 
+export type AgentAdapter = 'claude-code' | 'codex'
+
 export interface AgentSession {
   id: string
   voiceSessionId: string | null
-  adapter: 'claude-code'
+  adapter: AgentAdapter
   acpSessionId: string | null
   title: string
   cwd: string
+  devEnvironmentId: string | null
   status: AgentSessionStatus
   modeId: string | null
   modes: SessionModeInfo[] | null
@@ -59,6 +62,48 @@ export interface AgentSession {
   archived: boolean
   /** Rolling summary of the agent's most recent output, for the voice agent. */
   summary: string | null
+}
+
+export interface Project {
+  id: string
+  name: string
+  repoPath: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type DevEnvironmentStatus = 'creating' | 'running' | 'stopped' | 'error'
+export type DevEnvironmentConfigSource = 'devcontainer' | 'domo' | 'default'
+
+export interface DevEnvironment {
+  id: string
+  projectId: string
+  name: string
+  containerName: string
+  containerId: string | null
+  workspacePath: string
+  hostWorkspacePath: string | null
+  configSource: DevEnvironmentConfigSource
+  configPath: string | null
+  remoteUser: string | null
+  status: DevEnvironmentStatus
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DevEnvironmentPort {
+  id: string
+  devEnvironmentId: string
+  innerPort: number
+  protocol: 'tcp' | 'udp'
+  appProtocol: 'http' | 'https' | 'tcp' | 'udp' | null
+  label: string | null
+  source: 'declared' | 'detected'
+  hostPort: number | null
+  listening: boolean
+  forwarded: boolean
+  url: string | null
 }
 
 export interface SessionModeInfo {
@@ -134,6 +179,8 @@ export type StreamEvent =
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
   | { type: 'settings-changed' }
   | { type: 'mcp-changed' }
+  | { type: 'project-changed' }
+  | { type: 'dev-environment-changed', devEnvironmentId: string }
 
 /** Browser -> server messages on the voice WebSocket. */
 export type VoiceClientMessage =

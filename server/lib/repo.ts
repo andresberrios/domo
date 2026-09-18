@@ -3,10 +3,14 @@ import { bus } from './bus'
 import { getSettings } from './settings'
 import type {
   AgentEvent,
+  AgentAdapter,
   AgentSession,
   AgentSessionStatus,
+  DevEnvironment,
+  DevEnvironmentPort,
   McpServer,
   PendingPermission,
+  Project,
   VoiceMessage,
   VoiceSession
 } from '../../shared/types'
@@ -47,10 +51,11 @@ function mapAgentSession(r: any): AgentSession {
   return {
     id: r.id,
     voiceSessionId: r.voice_session_id,
-    adapter: r.adapter,
+    adapter: r.adapter === 'codex' ? 'codex' : 'claude-code',
     acpSessionId: r.acp_session_id,
     title: r.title,
     cwd: r.cwd,
+    devEnvironmentId: r.dev_environment_id ?? null,
     status: r.status,
     modeId: r.mode_id,
     modes: r.modes,
@@ -60,6 +65,55 @@ function mapAgentSession(r: any): AgentSession {
     updatedAt: r.updated_at,
     lastActivityAt: r.last_activity_at,
     archived: r.archived
+  }
+}
+
+function mapProject(r: any): Project {
+  return {
+    id: r.id,
+    name: r.name,
+    repoPath: r.repo_path,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }
+}
+
+function mapDevEnvironment(r: any): DevEnvironment {
+  return {
+    id: r.id,
+    projectId: r.project_id,
+    name: r.name,
+    containerName: r.container_name,
+    containerId: r.container_id ?? null,
+    workspacePath: r.workspace_path,
+    hostWorkspacePath: r.host_workspace_path ?? null,
+    configSource: r.config_source ?? 'default',
+    configPath: r.config_path ?? null,
+    remoteUser: r.remote_user ?? null,
+    status: r.status,
+    lastError: r.last_error ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }
+}
+
+function mapDevEnvironmentPort(r: any): DevEnvironmentPort {
+  const appProtocol = r.app_protocol ?? null
+  const hostPort = r.host_port == null ? null : Number(r.host_port)
+  return {
+    id: r.id,
+    devEnvironmentId: r.dev_environment_id,
+    innerPort: Number(r.inner_port),
+    protocol: r.protocol,
+    appProtocol,
+    label: r.label ?? null,
+    source: r.source,
+    hostPort,
+    listening: !!r.listening,
+    forwarded: !!r.forwarded,
+    url: hostPort && r.protocol === 'tcp'
+      ? `${appProtocol === 'https' ? 'https' : 'http'}://127.0.0.1:${hostPort}`
+      : null
   }
 }
 
@@ -104,6 +158,172 @@ function mapMcp(r: any): McpServer {
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* projects and isolated development environments                     */
+/* ------------------------------------------------------------------ */
+
+export async function listProjects(): Promise<Project[]> {
+  return (await query('select * from projects order by name asc')).map(mapProject)
+}
+
+export async function getProject(id: string): Promise<Project | null> {
+  const row = await queryOne('select * from projects where id = $1', [id])
+  return row ? mapProject(row) : null
+}
+
+export async function createProject(input: { name: string, repoPath: string }): Promise<Project> {
+  const now = nowIso()
+  const row = await queryOne(
+    `insert into projects (id, name, repo_path, created_at, updated_at)
+     values ($1, $2, $3, $4, $4) returning *`,
+    [newId('prj'), input.name, input.repoPath, now]
+  )
+  bus.publish({ type: 'project-changed' })
+  return mapProject(row)
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  await query('delete from projects where id = $1', [id])
+  bus.publish({ type: 'project-changed' })
+}
+
+export async function listDevEnvironments(projectId?: string): Promise<DevEnvironment[]> {
+  const rows = projectId
+    ? await query('select * from dev_environments where project_id = $1 order by created_at desc', [projectId])
+    : await query('select * from dev_environments order by created_at desc')
+  return rows.map(mapDevEnvironment)
+}
+
+export async function getDevEnvironment(id: string): Promise<DevEnvironment | null> {
+  const row = await queryOne('select * from dev_environments where id = $1', [id])
+  return row ? mapDevEnvironment(row) : null
+}
+
+export async function createDevEnvironmentRow(input: {
+  id?: string
+  projectId: string
+  name: string
+  containerName: string
+  workspacePath: string
+  hostWorkspacePath?: string | null
+  configSource?: DevEnvironment['configSource']
+  configPath?: string | null
+  remoteUser?: string | null
+}): Promise<DevEnvironment> {
+  const now = nowIso()
+  const row = await queryOne(
+    `insert into dev_environments
+       (id, project_id, name, container_name, workspace_path, host_workspace_path,
+        config_source, config_path, remote_user, status, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'creating', $10, $10) returning *`,
+    [input.id ?? newId('env'), input.projectId, input.name, input.containerName, input.workspacePath,
+      input.hostWorkspacePath ?? null, input.configSource ?? 'default', input.configPath ?? null,
+      input.remoteUser ?? null, now]
+  )
+  const environment = mapDevEnvironment(row)
+  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: environment.id })
+  return environment
+}
+
+export async function updateDevEnvironment(
+  id: string,
+  patch: Partial<Pick<DevEnvironment,
+    'name' | 'status' | 'lastError' | 'containerName' | 'containerId' | 'hostWorkspacePath'
+    | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser'>>
+): Promise<DevEnvironment | null> {
+  const sets = ['updated_at = $2']
+  const params: any[] = [id, nowIso()]
+  const push = (column: string, value: any) => {
+    params.push(value)
+    sets.push(`${column} = $${params.length}`)
+  }
+  if (patch.name !== undefined) push('name', patch.name)
+  if (patch.status !== undefined) push('status', patch.status)
+  if (patch.lastError !== undefined) push('last_error', patch.lastError)
+  if (patch.containerName !== undefined) push('container_name', patch.containerName)
+  if (patch.containerId !== undefined) push('container_id', patch.containerId)
+  if (patch.hostWorkspacePath !== undefined) push('host_workspace_path', patch.hostWorkspacePath)
+  if (patch.workspacePath !== undefined) push('workspace_path', patch.workspacePath)
+  if (patch.configSource !== undefined) push('config_source', patch.configSource)
+  if (patch.configPath !== undefined) push('config_path', patch.configPath)
+  if (patch.remoteUser !== undefined) push('remote_user', patch.remoteUser)
+  const row = await queryOne(`update dev_environments set ${sets.join(', ')} where id = $1 returning *`, params)
+  if (!row) return null
+  const environment = mapDevEnvironment(row)
+  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
+  return environment
+}
+
+export async function listDevEnvironmentPorts(environmentId: string): Promise<DevEnvironmentPort[]> {
+  const rows = await query(
+    `select * from dev_environment_ports where dev_environment_id = $1
+     order by inner_port, protocol`,
+    [environmentId]
+  )
+  return rows.map(mapDevEnvironmentPort)
+}
+
+export async function upsertDevEnvironmentPort(input: {
+  environmentId: string
+  innerPort: number
+  protocol: DevEnvironmentPort['protocol']
+  appProtocol?: DevEnvironmentPort['appProtocol']
+  label?: string | null
+  source: DevEnvironmentPort['source']
+  hostPort?: number | null
+  listening?: boolean
+  forwarded?: boolean
+}): Promise<DevEnvironmentPort> {
+  const now = nowIso()
+  const row = await queryOne(
+    `insert into dev_environment_ports
+       (id, dev_environment_id, inner_port, protocol, app_protocol, label, source,
+        host_port, listening, forwarded, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+     on conflict (dev_environment_id, inner_port, protocol) do update set
+       app_protocol = coalesce(excluded.app_protocol, dev_environment_ports.app_protocol),
+       label = coalesce(excluded.label, dev_environment_ports.label),
+       source = case when dev_environment_ports.source = 'declared' then 'declared' else excluded.source end,
+       host_port = coalesce(excluded.host_port, dev_environment_ports.host_port),
+       listening = excluded.listening,
+       forwarded = case when excluded.forwarded then true else dev_environment_ports.forwarded end,
+       updated_at = excluded.updated_at
+     returning *`,
+    [newId('port'), input.environmentId, input.innerPort, input.protocol,
+      input.appProtocol ?? null, input.label ?? null, input.source, input.hostPort ?? null,
+      input.listening ?? false, input.forwarded ?? false, now]
+  )
+  return mapDevEnvironmentPort(row)
+}
+
+export async function updateDevEnvironmentPort(
+  environmentId: string,
+  innerPort: number,
+  patch: { hostPort?: number | null, listening?: boolean, forwarded?: boolean },
+  protocol: DevEnvironmentPort['protocol'] = 'tcp'
+): Promise<DevEnvironmentPort | null> {
+  const sets = ['updated_at = $4']
+  const params: any[] = [environmentId, innerPort, protocol, nowIso()]
+  const push = (column: string, value: any) => {
+    params.push(value)
+    sets.push(`${column} = $${params.length}`)
+  }
+  if (patch.hostPort !== undefined) push('host_port', patch.hostPort)
+  if (patch.listening !== undefined) push('listening', patch.listening)
+  if (patch.forwarded !== undefined) push('forwarded', patch.forwarded)
+  const row = await queryOne(
+    `update dev_environment_ports set ${sets.join(', ')}
+     where dev_environment_id = $1 and inner_port = $2 and protocol = $3 returning *`,
+    params
+  )
+  return row ? mapDevEnvironmentPort(row) : null
+}
+
+export async function deleteDevEnvironmentRow(id: string): Promise<void> {
+  await query('delete from dev_environments where id = $1', [id])
+  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
 }
 
 /* ------------------------------------------------------------------ */
@@ -260,16 +480,19 @@ export async function getAgentSession(id: string): Promise<AgentSession | null> 
 }
 
 export async function createAgentSession(input: {
+  adapter: AgentAdapter
   title: string
   cwd: string
   voiceSessionId?: string | null
   modeId?: string | null
+  devEnvironmentId?: string | null
 }): Promise<AgentSession> {
   const now = nowIso()
   const row = await queryOne(
-    `insert into agent_sessions (id, voice_session_id, adapter, title, cwd, status, mode_id, created_at, updated_at)
-     values ($1, $2, 'claude-code', $3, $4, 'starting', $5, $6, $6) returning *`,
-    [newId('ag'), input.voiceSessionId ?? null, input.title, input.cwd, input.modeId ?? null, now]
+    `insert into agent_sessions
+       (id, voice_session_id, adapter, title, cwd, dev_environment_id, status, mode_id, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, 'starting', $7, $8, $8) returning *`,
+    [newId('ag'), input.voiceSessionId ?? null, input.adapter, input.title, input.cwd, input.devEnvironmentId ?? null, input.modeId ?? null, now]
   )
   bus.publish({ type: 'agent-list-changed' })
   return mapAgentSession(row)

@@ -4,7 +4,11 @@ import type { AppSettings, McpServer } from '~~/shared/types'
 const toast = useToast()
 const { servers } = useMcpServers()
 
-const { data: settings, refresh } = await useFetch<AppSettings & { hasGeminiKey: boolean, hasAnthropicKey: boolean }>(
+const { data: settings, refresh } = await useFetch<AppSettings & {
+  hasGeminiKey: boolean
+  hasAnthropicKey: boolean
+  hasOpenAiKey: boolean
+}>(
   '/api/settings',
   { lazy: false }
 )
@@ -118,7 +122,7 @@ async function deleteServer(server: McpServer) {
               Keys come from your <code class="rounded bg-elevated px-1">.env</code> file, never the database.
             </p>
           </div>
-          <div class="grid gap-2 sm:grid-cols-2">
+          <div class="grid gap-2 sm:grid-cols-3">
             <UAlert
               :color="settings?.hasGeminiKey ? 'success' : 'warning'"
               variant="subtle"
@@ -132,6 +136,13 @@ async function deleteServer(server: McpServer) {
               icon="i-lucide-terminal"
               title="Claude Code"
               :description="settings?.hasAnthropicKey ? 'ANTHROPIC_API_KEY is forwarded to the adapter' : 'Using your local `claude` login'"
+            />
+            <UAlert
+              :color="settings?.hasOpenAiKey ? 'success' : 'neutral'"
+              variant="subtle"
+              icon="i-lucide-terminal"
+              title="Codex"
+              :description="settings?.hasOpenAiKey ? 'OpenAI API key is forwarded to the adapter' : 'Using your local Codex login'"
             />
           </div>
         </section>

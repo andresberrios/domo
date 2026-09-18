@@ -9,7 +9,9 @@ import {
   getVoiceSession,
   listAgentEvents,
   listAgentSessions,
+  listDevEnvironments,
   listPermissions,
+  listProjects,
   setAutoTitle,
   updateAgentSession,
   updateVoiceSession
@@ -192,7 +194,9 @@ export const voiceTools: Record<string, VoiceTool> = {
         agents: sessions.map(session => ({
           id: session.id,
           title: session.title,
+          adapter: session.adapter,
           cwd: session.cwd,
+          devEnvironmentId: session.devEnvironmentId,
           status: session.status,
           mode: session.modeId,
           lastActivityAt: session.lastActivityAt,
@@ -207,15 +211,24 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_agent_session',
       description:
-        'Start a new Claude Code agent session and optionally give it its first task. Use this when the user wants new work done in parallel.',
+        'Start a new Claude Code or Codex agent session and optionally give it its first task. Use this when the user wants new work done in parallel.',
       parameters: {
         type: Type.OBJECT,
         properties: {
           title: { type: Type.STRING, description: 'Short human name for the session, e.g. "auth refactor".' },
+          adapter: {
+            type: Type.STRING,
+            enum: ['claude-code', 'codex'],
+            description: 'Coding agent to run. Defaults to Claude Code.'
+          },
           task: { type: Type.STRING, description: 'The first instruction for the agent.' },
           cwd: {
             type: Type.STRING,
             description: 'Absolute path of the repository to work in. Omit to use the configured default workspace.'
+          },
+          devEnvironmentId: {
+            type: Type.STRING,
+            description: 'Development environment id from list_dev_environments. Prefer this over cwd.'
           }
         },
         required: ['title']
@@ -223,17 +236,51 @@ export const voiceTools: Record<string, VoiceTool> = {
     },
     handler: async (args, ctx) => {
       const session = await acpManager.create({
+        adapter: args.adapter === 'codex' ? 'codex' : 'claude-code',
         title: args.title,
         cwd: args.cwd,
+        devEnvironmentId: args.devEnvironmentId,
         voiceSessionId: ctx.voiceSessionId,
         initialPrompt: args.task
       })
       return {
         id: session.id,
         title: session.title,
+        adapter: session.adapter,
         cwd: session.cwd,
         status: session.status,
         started: !!args.task
+      }
+    }
+  },
+
+  list_dev_environments: {
+    declaration: {
+      name: 'list_dev_environments',
+      description: 'List projects and their isolated development environments. Each environment can host multiple coding agents and its own Docker Compose stacks.',
+      parameters: { type: Type.OBJECT, properties: {} }
+    },
+    handler: async () => {
+      const [projects, environments, agents] = await Promise.all([
+        listProjects(),
+        listDevEnvironments(),
+        listAgentSessions()
+      ])
+      return {
+        projects: projects.map(project => ({
+          id: project.id,
+          name: project.name,
+          sourceRepository: project.repoPath,
+          environments: environments
+            .filter(environment => environment.projectId === project.id)
+            .map(environment => ({
+              id: environment.id,
+              name: environment.name,
+              status: environment.status,
+              workspace: environment.workspacePath,
+              agentCount: agents.filter(agent => agent.devEnvironmentId === environment.id).length
+            }))
+        }))
       }
     }
   },

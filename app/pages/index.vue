@@ -2,6 +2,7 @@
 const { sessions: voiceSessions } = useVoiceSessions()
 const { sessions: agents } = useAgentSessions()
 const { pending } = usePermissions()
+const { environments } = useDevEnvironments()
 
 const { data: settings } = await useFetch('/api/settings', { lazy: true })
 
@@ -36,7 +37,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
             Your voice control room for coding agents
           </h1>
           <p class="mx-auto mt-2 max-w-xl text-sm text-muted">
-            Talk to a Gemini Live agent. It spawns Claude Code sessions over ACP, watches them,
+            Talk to a Gemini Live agent. It spawns Claude Code or Codex sessions over ACP, watches them,
             answers their permission prompts, and tells you what changed — while you keep your
             hands free.
           </p>
@@ -68,7 +69,13 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
           description="Add NUXT_GEMINI_API_KEY to your .env and restart the dev server to enable the voice agent."
         />
 
-        <div class="grid gap-3 sm:grid-cols-3">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <UPageCard
+            icon="i-lucide-container"
+            :title="String(environments.filter(environment => environment.status === 'running').length)"
+            description="dev environments"
+            variant="subtle"
+          />
           <UPageCard
             icon="i-lucide-bot"
             :title="String(agents.length)"
