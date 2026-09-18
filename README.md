@@ -176,7 +176,16 @@ pnpm dev:http    # dev server only (http://localhost:3000)
 pnpm typecheck   # vue-tsc
 pnpm lint        # eslint
 pnpm build       # production build → .output
+pnpm test        # the whole suite (needs `docker compose up -d`)
 ```
+
+Tests are layered, and each layer is a Vitest project you can run on its own:
+`pnpm test:unit` (pure logic, no services), `pnpm test:nuxt` (components and
+composables in a Nuxt runtime), `pnpm test:integration` (the repository layer
+against a real Postgres, plus the whole API over HTTP against a real Nitro
+build) and `pnpm test:docker` (needs a Docker daemon). No test opens a browser
+or calls a real model. Every test file gets its own throwaway database, so your
+own `domo` database is never touched.
 
 ## Caveats
 

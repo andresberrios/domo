@@ -90,6 +90,8 @@ things that are easy to get wrong.
 - **The shape proxy (`server/api/shape.get.ts`) must forward Electric's protocol
   params and drop `content-encoding`/`content-length`** after `fetch` has
   already decompressed the body, or the browser client cannot decode the stream.
+  `replica` is neither a protocol param nor part of the shape definition, so a
+  client-supplied one is dropped and every request goes out as `replica=full`.
 - **A failed Live connect is cached for 10 s** (`connectError` in the runtime):
   the mic sends ~8 chunks a second and would otherwise turn one bad key into an
   error storm. The client stops the mic on the first fatal error.
@@ -122,9 +124,57 @@ things that are easy to get wrong.
   one. Every default that ever shipped belongs in the list, byte for byte —
   editing one in place (as the Codex change did) creates another variant.
 
+## Tests
+
+`pnpm test` runs everything in about 15 seconds and needs `docker compose up -d`
+(Postgres). Vitest projects, one per layer — pick one with `--project <name>`:
+
+| project | where | what it is |
+| --- | --- | --- |
+| `unit` | `test/unit` | pure logic, node env, no I/O. `buildTranscript()`, formatters, the settings reconciliation, devcontainer config parsing, the voice tools with everything below them mocked. |
+| `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
+| `server` | `test/server` | `repo.ts` and the schema against a real Postgres, including booting on top of a pre-migration database. |
+| `e2e` | `test/e2e` | a production build of the Nitro server + real Postgres, driven over HTTP. No browser. |
+| `docker` | `test/docker` | Docker at the process boundary: the exact argv handed to `docker`. No daemon. |
+| `docker-live` | `test/docker/*.live.spec.ts` | the few things that need a real daemon. Opt in: `pnpm test:docker`. |
+
+`pnpm test:unit` (unit + docker) needs nothing at all; `pnpm test:integration`
+is the two database-backed layers; `pnpm test:watch` is unit + nuxt.
+
+What is deliberately *not* tested: the Gemini Live runtime and `useVoiceChannel`
+(a real browser and a real Live session), and spawning ACP adapters (a real
+Claude Code / Codex account). Permissions are still covered end to end, because
+a permission is a row — `answerPermission` resolves it with no adapter attached.
+
+- **Each test file gets its own `domo_test_…` database**, created and dropped by
+  `test/setup/database.ts`. `server/lib/db.ts` reads `DATABASE_URL` once, at
+  import time, so the setup file creates the database in a *top-level await* and
+  points the variable at it before the test file is loaded. It sets
+  `DATABASE_URL` to an unreachable `domo_test_unavailable` even when Postgres is
+  down, so a suite that forgot to skip fails to connect instead of quietly
+  writing to the developer's own `domo`.
+- **The skip reason travels through the environment**, not through module state:
+  a setup file and its test file do not reliably share a module registry.
+  `databaseUnavailable()` reads `process.env`, and a refused connection arrives
+  as an `AggregateError` with an *empty* message — store `''` and the suites run
+  against whatever `DATABASE_URL` happens to be.
+- **Electric is stubbed in the e2e layer** (`test/helpers/electric-stub.ts`).
+  The real one is attached to the developer's `domo` database, not to a test
+  one. The stub answers gzipped, like Electric does, which is what the proxy
+  has to cope with.
+- **`MarkdownView` renders asynchronously** (Shiki). In a component test, poll
+  with `expect.poll(() => component.text())`; a single `nextTick` is not enough.
+- **Do not `mockNuxtImport('useRouter')`** — Nuxt's own plugins call
+  `router.afterEach` / `beforeResolve` and the whole runtime fails to set up.
+  Spy on the real router instead.
+- **`pnpm typecheck` covers the tests too.** `test/nuxt` comes in through the
+  generated app tsconfig; everything else through `test/tsconfig.json`,
+  referenced from the root `tsconfig.json` (`nuxt prepare` leaves it alone).
+
 ## Verification notes
 
-- `pnpm typecheck`, `pnpm lint`, `pnpm build` all run clean; keep them that way.
+- `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
+  keep them that way.
 - The ACP path was verified end to end against a real Claude Code account:
   `session/new` with the agent-mesh MCP server attached, streaming
   `agent_message_chunk`s, `tool_call` / `tool_call_update` for Bash, Read and
