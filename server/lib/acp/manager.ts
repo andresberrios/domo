@@ -23,10 +23,20 @@ import {
   getAgentSession,
   listAgentSessions,
   listMcpServers,
+  openAgentStream,
   resolvePermissionRow,
-  updateAgentSession
+  updateAgentSession,
+  writeAgentStream
 } from '../repo'
-import type { AgentAdapter, AgentSession, DevEnvironment, PendingPermission } from '../../../shared/types'
+import type {
+  AgentAdapter,
+  AgentEvent,
+  AgentSession,
+  AgentSessionStatus,
+  AgentStreamType,
+  DevEnvironment,
+  PendingPermission
+} from '../../../shared/types'
 
 const ADAPTERS: Record<AgentAdapter, { packageName: string, command: string, entryOverride: string }> = {
   'claude-code': {
@@ -140,6 +150,47 @@ interface PendingPermissionWaiter {
   resolve: (optionId: string | null) => void
 }
 
+/** A run of streaming text that is being coalesced into one `agent_events` row. */
+interface StreamBlock {
+  type: AgentStreamType
+  /** Everything received so far. */
+  text: string
+  /** What the row already holds, so an idle flush writes nothing. */
+  written: string
+  /** The insert that claimed the row's `seq`; every write waits on it. */
+  row: Promise<AgentEvent>
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+const FLUSH_MS = 150
+/** Past this, a flush costs more than it buys; see `flushDelay`. */
+const FLUSH_SOFT_LIMIT = 4096
+const FLUSH_MAX_MS = 2000
+
+/**
+ * How long to wait before writing the deltas received so far.
+ *
+ * Every write re-streams the whole row to the browser (Electric, plus
+ * `REPLICA IDENTITY FULL`), so a fixed interval costs O(length^2 / interval)
+ * bytes over a block: fine for the couple of kilobytes a message usually is,
+ * wasteful for a long one. The interval therefore grows with the block once it
+ * is past a few kilobytes, which caps the total at a few times its final size.
+ */
+function flushDelay(length: number): number {
+  return Math.min(FLUSH_MAX_MS, Math.max(FLUSH_MS, Math.round((FLUSH_MS * length) / FLUSH_SOFT_LIMIT)))
+}
+
+/**
+ * How often a working agent refreshes `last_activity_at`.
+ *
+ * It is not decoration: `list_agent_sessions` reports it to the voice agent,
+ * which is told to pick "the most recently active agent" for a vague
+ * instruction. Left to status transitions alone, an agent streaming for twenty
+ * minutes would look like the stalest one in the list and Domo would hand the
+ * user's "keep going" to the wrong session.
+ */
+const ACTIVITY_TOUCH_MS = 30_000
+
 class AgentRuntime {
   readonly agentSessionId: string
   private proc: ChildProcessWithoutNullStreams | null = null
@@ -150,8 +201,18 @@ class AgentRuntime {
   private turn: { cancel: () => void } | null = null
   private containerName: string | null = null
   private containerPidFile: string | null = null
-  /** Buffer of the current streaming assistant message, flushed into events. */
+  /** Everything the agent said this turn, which becomes the session summary. */
   private textBuffer = ''
+  /** The block of streaming text currently being coalesced, if any. */
+  private stream: StreamBlock | null = null
+  /**
+   * The status we last wrote. Deltas arrive many times a second and all of them
+   * mean "thinking"; without this every one of them cost a session UPDATE (and
+   * an Electric round trip) that changed nothing.
+   */
+  private status: AgentSessionStatus | null = null
+  /** When `last_activity_at` was last written; see `ACTIVITY_TOUCH_MS`. */
+  private touchedAt = 0
   /**
    * The ACP SDK dispatches notifications without awaiting the previous handler,
    * so concurrent inserts would take `seq` values out of arrival order and
@@ -169,6 +230,112 @@ class AgentRuntime {
     return run
   }
 
+  /**
+   * Write the session status, but only when it actually changes. `touch` still
+   * always writes: refreshing `last_activity_at` is the point of asking.
+   */
+  private async setStatus(
+    status: AgentSessionStatus,
+    patch: { touch?: boolean, lastError?: string | null, summary?: string } = {}
+  ): Promise<void> {
+    if (this.status === status && !patch.touch && patch.lastError === undefined && patch.summary === undefined) return
+    this.status = status
+    if (patch.touch) this.touchedAt = Date.now()
+    await updateAgentSession(this.agentSessionId, { status, ...patch })
+  }
+
+  /**
+   * Say the agent is still working, at most once every `ACTIVITY_TOUCH_MS`.
+   *
+   * Called from the flush timer and from the events that punctuate a turn, so
+   * the write rate is bounded by the clock and never by the delta rate.
+   */
+  private async touchIfStale(): Promise<void> {
+    if (Date.now() - this.touchedAt < ACTIVITY_TOUCH_MS) return
+    this.touchedAt = Date.now()
+    await updateAgentSession(this.agentSessionId, { touch: true })
+  }
+
+  /* ---------------- streaming text ---------------- */
+
+  /**
+   * Take the open block away from the runtime, synchronously, so that a delta
+   * arriving right after cannot reopen or double-close it. The caller closes it
+   * inside `serial`, which is what keeps `seq` in arrival order.
+   */
+  private takeStream(): StreamBlock | null {
+    const block = this.stream
+    this.stream = null
+    if (block?.timer) {
+      clearTimeout(block.timer)
+      block.timer = null
+    }
+    return block
+  }
+
+  /**
+   * Write a block's final text and drop its `streaming` flag. Runs in `serial`,
+   * ahead of whatever event ended the block — which is why a failure here only
+   * loses the text, and never the event that follows it.
+   */
+  private async closeStream(block: StreamBlock | null): Promise<void> {
+    if (!block) return
+    try {
+      const row = await block.row
+      await writeAgentStream(row.id, block.text, false)
+      block.written = block.text
+    } catch (error) {
+      console.error(`[acp:${this.agentSessionId}] could not finish streamed text`, error)
+    }
+  }
+
+  /** Fold a delta into the open block, opening one when the run starts. */
+  private appendStream(type: AgentStreamType, text: string): void {
+    const open = this.stream
+    if (open && open.type === type) {
+      open.text += text
+      this.scheduleFlush(open)
+      return
+    }
+
+    const previous = this.takeStream()
+    const block: StreamBlock = { type, text, written: text, row: null!, timer: null }
+    this.stream = block
+    // One serial step: the previous block is finished before the next one takes
+    // its `seq`, so two runs can never end up in the wrong order.
+    block.row = this.serial(async () => {
+      await this.closeStream(previous)
+      return openAgentStream(this.agentSessionId, type, text)
+    })
+    block.row.catch(() => {})
+  }
+
+  private scheduleFlush(block: StreamBlock): void {
+    if (block.timer) return
+    const timer = setTimeout(() => {
+      block.timer = null
+      void this.flushStream(block)
+    }, flushDelay(block.text.length))
+    // A pending flush must not keep Node alive on its own.
+    timer.unref?.()
+    block.timer = timer
+  }
+
+  private async flushStream(block: StreamBlock): Promise<void> {
+    if (block.written === block.text) return
+    const text = block.text
+    try {
+      await this.serial(async () => {
+        const row = await block.row
+        await writeAgentStream(row.id, text, true)
+        await this.touchIfStale()
+      })
+      block.written = text
+    } catch (error) {
+      console.error(`[acp:${this.agentSessionId}] could not flush streamed text`, error)
+    }
+  }
+
   get sessionId() {
     return this.acpSessionId
   }
@@ -183,7 +350,7 @@ class AgentRuntime {
       this.booting = this.boot().catch(async (error) => {
         this.booting = null
         const message = error instanceof Error ? error.message : String(error)
-        await updateAgentSession(this.agentSessionId, { status: 'error', lastError: message })
+        await this.setStatus('error', { lastError: message })
         await appendAgentEvent(this.agentSessionId, 'error', { message })
         throw error
       })
@@ -195,7 +362,7 @@ class AgentRuntime {
     const session = await getAgentSession(this.agentSessionId)
     if (!session) throw new Error(`Agent session ${this.agentSessionId} not found`)
 
-    await updateAgentSession(this.agentSessionId, { status: 'starting', lastError: null })
+    await this.setStatus('starting', { lastError: null })
 
     let environment: DevEnvironment | null = null
     const definition = ADAPTERS[session.adapter]
@@ -237,8 +404,12 @@ class AgentRuntime {
       this.containerPidFile = null
       for (const waiter of this.waiters.values()) waiter.resolve(null)
       this.waiters.clear()
-      void appendAgentEvent(this.agentSessionId, 'adapter-exit', { code, signal })
-      void updateAgentSession(this.agentSessionId, { status: 'stopped' })
+      const block = this.takeStream()
+      void this.serial(async () => {
+        await this.closeStream(block)
+        await appendAgentEvent(this.agentSessionId, 'adapter-exit', { code, signal })
+        await this.setStatus('stopped')
+      }).catch(() => {})
     })
 
     const stream = acp.ndJsonStream(
@@ -324,7 +495,7 @@ class AgentRuntime {
       }
     }
 
-    await updateAgentSession(this.agentSessionId, { status: 'idle', touch: true })
+    await this.setStatus('idle', { touch: true })
   }
 
   private async mcpServersForSession(environment: DevEnvironment | null) {
@@ -369,15 +540,30 @@ class AgentRuntime {
     if (!update) return
     const kind: string = update.sessionUpdate
 
-    if (kind === 'agent_message_chunk' && update.content?.type === 'text') {
-      this.textBuffer += update.content.text
+    const streamType: AgentStreamType | null
+      = kind === 'agent_message_chunk'
+        ? 'agent_message'
+        : kind === 'agent_thought_chunk' ? 'agent_thought' : null
+
+    if (streamType) {
+      const text = update.content?.type === 'text' ? String(update.content.text ?? '') : ''
+      if (!text) return
+      if (streamType === 'agent_message') this.textBuffer += text
+      this.appendStream(streamType, text)
+      await this.setStatus('thinking')
+      return
     }
 
+    // Detached here, before anything awaits: the block's row has to exist with a
+    // lower `seq` than this event, or the transcript would show the text that
+    // preceded a tool call after it.
+    const block = this.takeStream()
     await this.serial(async () => {
+      await this.closeStream(block)
       await appendAgentEvent(this.agentSessionId, kind, update)
-      if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk' || kind === 'tool_call') {
-        await updateAgentSession(this.agentSessionId, { status: 'thinking', touch: true })
-      }
+      if (kind === 'tool_call') await this.setStatus('thinking')
+      // A turn that is all tool calls and no text is still a working agent.
+      await this.touchIfStale()
     })
   }
 
@@ -390,7 +576,9 @@ class AgentRuntime {
     }))
     const title: string = params.toolCall?.title || params.toolCall?.rawInput?.description || 'Tool call'
 
+    const block = this.takeStream()
     const permission = await this.serial(async () => {
+      await this.closeStream(block)
       const row = await createPermission({
         agentSessionId: this.agentSessionId,
         toolCallId: params.toolCall?.toolCallId ?? null,
@@ -399,7 +587,7 @@ class AgentRuntime {
         toolCall: params.toolCall ?? null
       })
       await appendAgentEvent(this.agentSessionId, 'permission_request', { permissionId: row.id, ...params })
-      await updateAgentSession(this.agentSessionId, { status: 'awaiting-permission', touch: true })
+      await this.setStatus('awaiting-permission', { touch: true })
       return row
     })
 
@@ -408,7 +596,7 @@ class AgentRuntime {
         options.find((o: any) => o.kind === 'allow_once') ?? options.find((o: any) => o.kind === 'allow_always')
       if (auto) {
         await resolvePermissionRow(permission.id, auto.optionId, 'auto')
-        await updateAgentSession(this.agentSessionId, { status: 'thinking' })
+        await this.setStatus('thinking')
         return { outcome: { outcome: 'selected', optionId: auto.optionId } }
       }
     }
@@ -419,7 +607,7 @@ class AgentRuntime {
     this.waiters.delete(permission.id)
 
     if (!optionId) return { outcome: { outcome: 'cancelled' } }
-    await updateAgentSession(this.agentSessionId, { status: 'thinking' })
+    await this.setStatus('thinking')
     return { outcome: { outcome: 'selected', optionId } }
   }
 
@@ -441,9 +629,11 @@ class AgentRuntime {
     if (!this.connection || !this.acpSessionId) throw new Error('agent not started')
 
     this.textBuffer = ''
+    const stale = this.takeStream()
     await this.serial(async () => {
+      await this.closeStream(stale)
       await appendAgentEvent(this.agentSessionId, 'user_message', { content })
-      await updateAgentSession(this.agentSessionId, { status: 'thinking', touch: true })
+      await this.setStatus('thinking', { touch: true })
     })
 
     const controller = new AbortController()
@@ -455,11 +645,12 @@ class AgentRuntime {
         { sessionId: this.acpSessionId, prompt: content } as any,
         { signal: controller.signal } as any
       )) as any
-      // Queued behind any chunk writes still in flight, so the turn closes last.
+      // Queued behind any text writes still in flight, so the turn closes last.
+      const block = this.takeStream()
       await this.serial(async () => {
+        await this.closeStream(block)
         await appendAgentEvent(this.agentSessionId, 'turn_end', { stopReason: response?.stopReason, usage: response?.usage })
-        await updateAgentSession(this.agentSessionId, {
-          status: 'idle',
+        await this.setStatus('idle', {
           touch: true,
           summary: this.textBuffer.trim().slice(-1200) || undefined
         })
@@ -467,9 +658,11 @@ class AgentRuntime {
       return { stopReason: response?.stopReason ?? 'end_turn' }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      const block = this.takeStream()
       await this.serial(async () => {
+        await this.closeStream(block)
         await appendAgentEvent(this.agentSessionId, 'error', { message })
-        await updateAgentSession(this.agentSessionId, { status: 'error', lastError: message, touch: true })
+        await this.setStatus('error', { lastError: message, touch: true })
       })
       throw error
     } finally {
@@ -485,9 +678,11 @@ class AgentRuntime {
     for (const waiter of this.waiters.values()) waiter.resolve(null)
     this.waiters.clear()
     this.turn?.cancel()
+    const block = this.takeStream()
     await this.serial(async () => {
+      await this.closeStream(block)
       await appendAgentEvent(this.agentSessionId, 'cancelled', {})
-      await updateAgentSession(this.agentSessionId, { status: 'idle', touch: true })
+      await this.setStatus('idle', { touch: true })
     })
   }
 
@@ -503,6 +698,9 @@ class AgentRuntime {
   }
 
   stop(): void {
+    // A block left open would render as text that streams forever.
+    const block = this.takeStream()
+    void this.serial(() => this.closeStream(block)).catch(() => {})
     for (const waiter of this.waiters.values()) waiter.resolve(null)
     this.waiters.clear()
     this.connection?.close()

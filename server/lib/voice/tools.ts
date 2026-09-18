@@ -85,6 +85,10 @@ export async function transcriptDigest(agentSessionId: string, limit = 40) {
         items.push({ kind: 'user', text: summarise(text, 400) })
         break
       }
+      case 'agent_message':
+        assistant += event.payload?.text ?? ''
+        break
+      // Older installs logged one row per delta.
       case 'agent_message_chunk':
         if (event.payload?.content?.type === 'text') assistant += event.payload.content.text
         break

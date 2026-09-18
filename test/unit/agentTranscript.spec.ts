@@ -263,6 +263,81 @@ describe('buildTranscript', () => {
     })
   })
 
+  describe('coalesced streaming rows', () => {
+    const message = (text: string, streaming = false) => agentEvent('agent_message', { text, streaming })
+    const thought = (text: string, streaming = false) => agentEvent('agent_thought', { text, streaming })
+
+    it('renders a finished block as one bubble', () => {
+      const items = buildTranscript([message('Hello there!')])
+
+      expect(items).toHaveLength(1)
+      expect(items[0]).toMatchObject({ kind: 'assistant', text: 'Hello there!', streaming: false })
+    })
+
+    it('renders a block that is still filling, so a mid-turn reader sees the text so far', () => {
+      const items = buildTranscript([message('Hello th', true)])
+
+      expect(items[0]).toMatchObject({ kind: 'assistant', text: 'Hello th', streaming: true })
+    })
+
+    it('keeps its own id, seq and timestamp — the row never moves', () => {
+      const row = message('Hello')
+      const items = buildTranscript([row])
+
+      expect(items[0]).toMatchObject({ id: row.id, seq: row.seq, at: row.createdAt })
+    })
+
+    it('keeps text on either side of a tool call in order and apart', () => {
+      const items = buildTranscript([
+        message('Let me look.'),
+        agentEvent('tool_call', { toolCallId: 'c1', title: 'Read', kind: 'read' }),
+        agentEvent('tool_call_update', { toolCallId: 'c1', status: 'completed' }),
+        message('Found it.')
+      ])
+
+      expect(kinds(items)).toEqual(['assistant', 'tool', 'assistant'])
+      expect(items.map(item => (item as any).text ?? '')).toEqual(['Let me look.', '', 'Found it.'])
+    })
+
+    it('never merges two blocks, however they sit next to each other', () => {
+      const items = buildTranscript([message('one'), message('two'), thought('three')])
+
+      expect(kinds(items)).toEqual(['assistant', 'assistant', 'thought'])
+      expect(items.map(item => (item as any).text)).toEqual(['one', 'two', 'three'])
+    })
+
+    it('renders a thought block as a thought', () => {
+      const items = buildTranscript([thought('weighing the options')])
+
+      expect(items[0]).toMatchObject({ kind: 'thought', text: 'weighing the options' })
+    })
+
+    it('ignores a block with no text instead of opening an empty bubble', () => {
+      expect(buildTranscript([message(''), agentEvent('agent_message', {})])).toEqual([])
+    })
+  })
+
+  describe('installs that still hold per-delta rows', () => {
+    it('still merges a run of chunks written before the change', () => {
+      const items = buildTranscript([textChunk('Hel'), textChunk('lo'), agentEvent('turn_end', {})])
+
+      expect(items).toHaveLength(1)
+      expect(items[0]).toMatchObject({ kind: 'assistant', text: 'Hello' })
+    })
+
+    it('does not glue a legacy run onto a coalesced block, in either direction', () => {
+      const items = buildTranscript([
+        textChunk('old '),
+        textChunk('style'),
+        agentEvent('agent_message', { text: 'new style', streaming: false }),
+        textChunk('old again')
+      ])
+
+      expect(kinds(items)).toEqual(['assistant', 'assistant', 'assistant'])
+      expect(items.map(item => (item as any).text)).toEqual(['old style', 'new style', 'old again'])
+    })
+  })
+
   it('keeps the whole log in arrival order', () => {
     const items = buildTranscript([
       userMessage('fix the build'),

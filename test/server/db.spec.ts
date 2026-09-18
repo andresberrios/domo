@@ -107,6 +107,26 @@ describe.skipIf(skip)('sequence columns', () => {
     expect(first!.seq).not.toBe(second!.seq)
   })
 
+  it('does not move a row that is rewritten in place', async () => {
+    // A block of streaming text is one row grown by repeated updates, while
+    // other events keep being appended around it.
+    await session('ag_seq_5')
+    const id = newId('ev')
+    const before = await queryOne<{ seq: number }>(
+      `insert into agent_events (id, agent_session_id, type, payload, created_at)
+       values ($1, 'ag_seq_5', 'agent_message', '{"text":"Look","streaming":true}'::jsonb, $2) returning seq`,
+      [id, nowIso()]
+    )
+    await appendEvent('ag_seq_5', 0)
+    const after = await queryOne<{ seq: number }>(
+      `update agent_events set payload = '{"text":"Looking","streaming":false}'::jsonb
+        where id = $1 returning seq`,
+      [id]
+    )
+
+    expect(after!.seq).toBe(before!.seq)
+  })
+
   it('comes back as a number, not the string pg returns for bigint', async () => {
     await session('ag_seq_4')
     const { seq } = await appendEvent('ag_seq_4', 0)
