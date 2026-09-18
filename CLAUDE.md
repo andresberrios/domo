@@ -170,6 +170,9 @@ a permission is a row — `answerPermission` resolves it with no adapter attache
 - **`pnpm typecheck` covers the tests too.** `test/nuxt` comes in through the
   generated app tsconfig; everything else through `test/tsconfig.json`,
   referenced from the root `tsconfig.json` (`nuxt prepare` leaves it alone).
+- **The e2e layer builds into `.nuxt/test/<id>` and does not always clean up**
+  — roughly 40 MB per run. `rm -rf .nuxt/test` when it gets in the way; it is
+  gitignored either way.
 
 ## Verification notes
 
