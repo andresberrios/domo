@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { defineVitestProject } from '@nuxt/test-utils/config'
 import { defineConfig } from 'vitest/config'
 
+import { TEST_SERVER_ORIGIN } from './test/electric/origin.ts'
+
 const rootDir = dirname(fileURLToPath(import.meta.url))
 
 /**
@@ -73,7 +75,34 @@ export default defineConfig(async () => ({
         }
       },
 
-      // 5. Docker at the process boundary: what argv do we hand `docker`?
+      // 5. The full loop, still without a browser: a page mounted in happy-dom
+      //    drives the real Nitro server, which writes to the real Postgres,
+      //    which a real ElectricSQL streams back into the mounted page.
+      await defineVitestProject({
+        test: {
+          name: 'electric',
+          environment: 'nuxt',
+          include: ['test/electric/**/*.spec.ts'],
+          environmentOptions: {
+            nuxt: {
+              domEnvironment: 'happy-dom',
+              // The app resolves `/api/shape` against `window.location.origin`,
+              // so the document has to live on the real server's origin — both
+              // to reach it and to stay same-origin for happy-dom's fetch.
+              url: TEST_SERVER_ORIGIN
+            }
+          },
+          globalSetup: [resolve(rootDir, 'test/electric/global-setup.ts')],
+          setupFiles: [resolve(rootDir, 'test/electric/setup.ts')],
+          // One database, one Electric, one pinned port: the files take turns.
+          fileParallelism: false,
+          // Building the app and booting the server happens once, in globalSetup.
+          hookTimeout: 300_000,
+          testTimeout: 120_000
+        }
+      }),
+
+      // 6. Docker at the process boundary: what argv do we hand `docker`?
       {
         resolve: { alias },
         test: {
@@ -84,7 +113,7 @@ export default defineConfig(async () => ({
         }
       },
 
-      // 5b. The same code against a real Docker daemon. Opt in: `pnpm test:docker`.
+      // 6b. The same code against a real Docker daemon. Opt in: `pnpm test:docker`.
       {
         resolve: { alias },
         test: {
