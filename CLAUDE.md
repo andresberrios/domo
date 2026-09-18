@@ -110,6 +110,13 @@ things that are easy to get wrong.
   synced too, so a per-chunk `{ status: 'thinking' }` used to re-stream the whole
   session row several times a second and say nothing new. `touch: true` still
   always writes — refreshing `last_activity_at` is the point of asking.
+- **`last_activity_at` is a correctness signal, not decoration.**
+  `list_agent_sessions` reports it to the voice agent, which is told to pick
+  "the most recently active agent" for a vague instruction, so an agent that
+  streams for twenty minutes without a status change must not look like the
+  stalest one. `touchIfStale()` refreshes it at most once every
+  `ACTIVITY_TOUCH_MS` (30 s), from the flush timer and from the events that
+  punctuate a turn — never from the per-delta path.
 - **Old installs hold one row per delta.** The schema folds each run into the
   single row the app writes now (head row keeps its id, `seq` and timestamp), and
   `buildTranscript()` still merges runs of `…_chunk` rows, for anything that

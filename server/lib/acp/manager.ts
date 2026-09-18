@@ -180,6 +180,17 @@ function flushDelay(length: number): number {
   return Math.min(FLUSH_MAX_MS, Math.max(FLUSH_MS, Math.round((FLUSH_MS * length) / FLUSH_SOFT_LIMIT)))
 }
 
+/**
+ * How often a working agent refreshes `last_activity_at`.
+ *
+ * It is not decoration: `list_agent_sessions` reports it to the voice agent,
+ * which is told to pick "the most recently active agent" for a vague
+ * instruction. Left to status transitions alone, an agent streaming for twenty
+ * minutes would look like the stalest one in the list and Domo would hand the
+ * user's "keep going" to the wrong session.
+ */
+const ACTIVITY_TOUCH_MS = 30_000
+
 class AgentRuntime {
   readonly agentSessionId: string
   private proc: ChildProcessWithoutNullStreams | null = null
@@ -200,6 +211,8 @@ class AgentRuntime {
    * an Electric round trip) that changed nothing.
    */
   private status: AgentSessionStatus | null = null
+  /** When `last_activity_at` was last written; see `ACTIVITY_TOUCH_MS`. */
+  private touchedAt = 0
   /**
    * The ACP SDK dispatches notifications without awaiting the previous handler,
    * so concurrent inserts would take `seq` values out of arrival order and
@@ -227,7 +240,20 @@ class AgentRuntime {
   ): Promise<void> {
     if (this.status === status && !patch.touch && patch.lastError === undefined && patch.summary === undefined) return
     this.status = status
+    if (patch.touch) this.touchedAt = Date.now()
     await updateAgentSession(this.agentSessionId, { status, ...patch })
+  }
+
+  /**
+   * Say the agent is still working, at most once every `ACTIVITY_TOUCH_MS`.
+   *
+   * Called from the flush timer and from the events that punctuate a turn, so
+   * the write rate is bounded by the clock and never by the delta rate.
+   */
+  private async touchIfStale(): Promise<void> {
+    if (Date.now() - this.touchedAt < ACTIVITY_TOUCH_MS) return
+    this.touchedAt = Date.now()
+    await updateAgentSession(this.agentSessionId, { touch: true })
   }
 
   /* ---------------- streaming text ---------------- */
@@ -302,6 +328,7 @@ class AgentRuntime {
       await this.serial(async () => {
         const row = await block.row
         await writeAgentStream(row.id, text, true)
+        await this.touchIfStale()
       })
       block.written = text
     } catch (error) {
@@ -535,6 +562,8 @@ class AgentRuntime {
       await this.closeStream(block)
       await appendAgentEvent(this.agentSessionId, kind, update)
       if (kind === 'tool_call') await this.setStatus('thinking')
+      // A turn that is all tool calls and no text is still a working agent.
+      await this.touchIfStale()
     })
   }
 

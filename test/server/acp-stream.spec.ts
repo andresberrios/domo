@@ -94,6 +94,18 @@ async function session() {
   })
 }
 
+/**
+ * Move the clock the runtime throttles on, and nothing else: only `Date.now` is
+ * stubbed, so every timestamp written to the database still comes from a real
+ * `new Date()` and stays ordered.
+ */
+function skipAhead(ms: number) {
+  const from = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => from + ms)
+}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
 function textOf(events: AgentEvent[]): string[] {
   return events.filter(event => event.type === 'agent_message').map(event => event.payload.text)
 }
@@ -109,8 +121,9 @@ afterEach(async () => {
   const { acpManager } = await import('../../server/lib/acp/manager')
   await acpManager.shutdown()
   // Let the exit handler's writes land before the next truncate.
-  await new Promise(resolve => setTimeout(resolve, 50))
+  await sleep(50)
   seen.stop()
+  vi.restoreAllMocks()
 })
 
 describe.skipIf(skip)('a streamed turn', () => {
@@ -209,6 +222,40 @@ describe.skipIf(skip)('a streamed turn', () => {
     // Forty deltas used to mean forty of these.
     expect(changed.length).toBeLessThan(5)
     await expect(getAgentSession(agent.id)).resolves.toMatchObject({ status: 'idle' })
+  })
+
+  it('says the agent is still working through a long block, without writing per delta', async () => {
+    // `last_activity_at` is what `list_agent_sessions` reports to the voice
+    // agent, and what it picks "the most recently active agent" by. A block that
+    // streams for half an hour with no status transition must not look stale.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    let before: string | null = null
+    let after: string | null = null
+    let writes = 0
+
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'this will take a while' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      for (let index = 0; index < 10; index++) await send(textChunk(`${index} `))
+      await sleep(250)
+      before = (await getAgentSession(agent.id))!.lastActivityAt
+      seen.clear()
+
+      // Half a minute into the same block, still nothing but deltas.
+      skipAhead(31_000)
+      for (let index = 10; index < 20; index++) await send(textChunk(`${index} `))
+      await sleep(250)
+      after = (await getAgentSession(agent.id))!.lastActivityAt
+      writes = seen.events.filter(event => event.type === 'agent-changed').length
+    })
+    await started
+    vi.restoreAllMocks()
+
+    expect(before).toBeTruthy()
+    expect(after! > before!).toBe(true)
+    // Ten deltas, one write: the refresh is paced by the clock, not by the text.
+    expect(writes).toBe(1)
   })
 
   it('leaves no block streaming when the turn ends', async () => {
