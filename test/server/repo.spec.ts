@@ -23,6 +23,7 @@ import {
   listProjects,
   listVoiceMessages,
   listVoiceSessions,
+  openAgentStream,
   resolvePermissionRow,
   setAutoTitle,
   updateAgentSession,
@@ -30,7 +31,8 @@ import {
   updateDevEnvironmentPort,
   updateMcpServer,
   updateVoiceSession,
-  upsertDevEnvironmentPort
+  upsertDevEnvironmentPort,
+  writeAgentStream
 } from '../../server/lib/repo'
 import { captureBus } from '../helpers/bus'
 import { databaseUnavailable, skipMessage } from '../helpers/database'
@@ -475,6 +477,77 @@ describe.skipIf(skip)('agent events', () => {
     await deleteAgentSession(session.id)
 
     await expect(query('select 1 from agent_events')).resolves.toEqual([])
+  })
+})
+
+/**
+ * Streaming text is the one thing in the log that is rewritten rather than
+ * appended: one row per message block, grown in place. The row has to stay
+ * where it was — same id, same `seq` — or the transcript reorders itself as the
+ * agent talks.
+ */
+describe.skipIf(skip)('streamed message blocks', () => {
+  it('leaves exactly one row behind, however many deltas arrived', async () => {
+    const session = await agent()
+    let text = 'Look'
+    const block = await openAgentStream(session.id, 'agent_message', text)
+    for (const delta of ['ing ', 'at ', 'the ', 'build']) {
+      text += delta
+      await writeAgentStream(block.id, text, true)
+    }
+    await writeAgentStream(block.id, `${text}.`, false)
+
+    const events = await listAgentEvents(session.id)
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      id: block.id,
+      seq: block.seq,
+      type: 'agent_message',
+      payload: { text: 'Looking at the build.', streaming: false },
+      createdAt: block.createdAt
+    })
+  })
+
+  it('shows the text so far to a reader who arrives mid-block', async () => {
+    const session = await agent()
+    const block = await openAgentStream(session.id, 'agent_message', 'Look')
+    await writeAgentStream(block.id, 'Looking at', true)
+
+    const [event] = await listAgentEvents(session.id)
+
+    expect(event!.payload).toEqual({ text: 'Looking at', streaming: true })
+  })
+
+  it('publishes every rewrite, so the voice agent and the SSE channel keep up', async () => {
+    const session = await agent()
+    seen.clear()
+    const block = await openAgentStream(session.id, 'agent_thought', 'hm')
+    await writeAgentStream(block.id, 'hmm', false)
+
+    expect(seen.events).toEqual([
+      expect.objectContaining({ type: 'agent-event', event: expect.objectContaining({ payload: { text: 'hm', streaming: true } }) }),
+      expect.objectContaining({ type: 'agent-event', event: expect.objectContaining({ payload: { text: 'hmm', streaming: false } }) })
+    ])
+  })
+
+  it('keeps a block in front of the tool call that interrupted it', async () => {
+    const session = await agent()
+    const first = await openAgentStream(session.id, 'agent_message', 'Let me look.')
+    await appendAgentEvent(session.id, 'tool_call', { toolCallId: 'c1', title: 'Read' })
+    const second = await openAgentStream(session.id, 'agent_message', 'Found it.')
+    // The first block is still being finished while the tool call is already in.
+    await writeAgentStream(first.id, 'Let me look.', false)
+
+    const events = await listAgentEvents(session.id)
+
+    expect(events.map(event => event.type)).toEqual(['agent_message', 'tool_call', 'agent_message'])
+    expect(events.map(event => event.seq)).toEqual([...events.map(event => event.seq)].sort((a, b) => a - b))
+    expect(events[2]!.id).toBe(second.id)
+  })
+
+  it('says so instead of inventing a row when the block is gone', async () => {
+    await expect(writeAgentStream('ev_nope', 'orphan', false)).resolves.toBeNull()
   })
 })
 
