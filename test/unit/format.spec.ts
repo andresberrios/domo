@@ -39,9 +39,11 @@ describe('shortPath', () => {
     expect(shortPath('srv/app')).toBe('srv/app')
   })
 
-  it('counts the leading slash as a segment, so even /a/b gets the ellipsis', () => {
-    // Cosmetic only — the path is still shown in full.
-    expect(shortPath('/srv/app')).toBe('…/srv/app')
+  it('does not count the leading slash as a segment', () => {
+    // The ellipsis promises something was dropped; `/srv/app` drops nothing.
+    expect(shortPath('/srv/app')).toBe('/srv/app')
+    expect(shortPath('/srv')).toBe('/srv')
+    expect(shortPath('/')).toBe('/')
   })
 
   it('elides everything but the last segments', () => {
@@ -49,8 +51,14 @@ describe('shortPath', () => {
     expect(shortPath('/Users/me/code/domo/app/utils/format.ts', 3)).toBe('…/app/utils/format.ts')
   })
 
-  it('ignores a trailing slash', () => {
+  it('ignores a trailing slash, on both sides of the threshold', () => {
     expect(shortPath('/Users/me/code/domo/')).toBe('…/code/domo')
+    expect(shortPath('/srv/app/')).toBe('/srv/app')
+  })
+
+  it('leaves a backslash path alone — it only knows about /', () => {
+    // Domo runs the agents on POSIX hosts; a Windows path is one opaque segment.
+    expect(shortPath('C:\\Users\\me\\code\\domo\\app.ts')).toBe('C:\\Users\\me\\code\\domo\\app.ts')
   })
 
   it('is empty for nothing', () => {

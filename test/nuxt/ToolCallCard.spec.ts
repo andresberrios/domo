@@ -79,7 +79,9 @@ describe('ToolCallCard', () => {
     await component.find('button').trigger('click')
 
     expect(component.text()).toContain('…/api/src/index.ts:42')
-    expect(component.text()).toContain('…/srv/api/README.md')
+    // Three segments and three shown: nothing was dropped, so no ellipsis.
+    expect(component.text()).toContain('/srv/api/README.md')
+    expect(component.text()).not.toContain('…/srv/api/README.md')
   })
 
   it('renders a diff the tool produced', async () => {

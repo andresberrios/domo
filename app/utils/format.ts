@@ -16,8 +16,13 @@ export function relativeTime(value?: string | null): string {
 
 export function shortPath(path?: string | null, segments = 2): string {
   if (!path) return ''
-  const parts = path.replace(/\/+$/, '').split('/')
-  return parts.length <= segments ? path : `…/${parts.slice(-segments).join('/')}`
+  const trimmed = path.replace(/\/+$/, '')
+  // The leading slash is not a segment of its own: without the filter `/a/b`
+  // splits into three and gets an ellipsis promising a truncation that never
+  // happened. Empty segments in the middle of a path are noise for the same reason.
+  const parts = trimmed.split('/').filter(Boolean)
+  if (parts.length <= segments) return trimmed || '/'
+  return `…/${parts.slice(-segments).join('/')}`
 }
 
 export function truncate(value: string, max = 140): string {
