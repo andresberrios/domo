@@ -112,7 +112,14 @@ export interface SessionModeInfo {
   description?: string | null
 }
 
-/** A durable row of the ACP session/update stream. */
+/**
+ * A durable row of the ACP session/update stream.
+ *
+ * Discrete events (`user_message`, `tool_call`, `turn_end`, …) are appended
+ * once and never change. Streaming text is one row per message block — type
+ * `agent_message` or `agent_thought`, payload `{ text, streaming }` — rewritten
+ * in place as the deltas arrive and marked final when the block ends.
+ */
 export interface AgentEvent {
   id: string
   agentSessionId: string
@@ -121,6 +128,9 @@ export interface AgentEvent {
   payload: any
   createdAt: string
 }
+
+/** The event types whose rows are rewritten instead of appended. */
+export type AgentStreamType = 'agent_message' | 'agent_thought'
 
 export interface PendingPermission {
   id: string

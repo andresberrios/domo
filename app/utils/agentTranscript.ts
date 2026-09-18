@@ -44,9 +44,12 @@ function textFromContent(content: any): string {
 }
 
 /**
- * Fold the durable ACP event log into something renderable: streaming text
- * merges into one bubble, tool calls collapse onto their updates, the plan is
- * always the latest one.
+ * Fold the durable ACP event log into something renderable: tool calls collapse
+ * onto their updates, the plan is always the latest one.
+ *
+ * Streaming text arrives as one `agent_message` / `agent_thought` row per block,
+ * rewritten in place while it streams. Installs that predate that wrote one row
+ * per delta (`…_chunk`), so those still merge into a single bubble here.
  */
 export function buildTranscript(
   events: AgentEvent[],
@@ -77,6 +80,21 @@ export function buildTranscript(
             .filter(block => block?.type === 'resource_link' || block?.type === 'resource' || block?.type === 'image')
             .map(block => ({ name: block.name ?? block.uri ?? 'attachment', uri: block.uri }))
         })
+        break
+      }
+
+      case 'agent_message':
+      case 'agent_thought': {
+        const text: string = event.payload?.text ?? ''
+        if (!text) break
+        // A whole block: nothing merges into it, and nothing merges it into the
+        // run of legacy chunks that may sit above it.
+        closeText()
+        items.push(
+          event.type === 'agent_message'
+            ? { ...base, kind: 'assistant', text, streaming: event.payload?.streaming !== false }
+            : { ...base, kind: 'thought', text }
+        )
         break
       }
 
@@ -200,8 +218,7 @@ export function buildTranscript(
     }
   }
 
-  // The last assistant bubble is only "streaming" while the turn is still open;
-  // the caller knows the session status and can flip it off.
+  // A permission that has been answered is history, not a prompt.
   const resolved = new Set(permissions.filter(p => p.resolvedAt).map(p => p.id))
   return items.filter(item => item.kind !== 'permission' || !resolved.has(item.permissionId))
 }

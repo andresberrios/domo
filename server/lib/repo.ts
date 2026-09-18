@@ -3,6 +3,7 @@ import { bus } from './bus'
 import { getSettings } from './settings'
 import type {
   AgentEvent,
+  AgentStreamType,
   AgentAdapter,
   AgentSession,
   AgentSessionStatus,
@@ -574,6 +575,38 @@ export async function appendAgentEvent(
   )
   const event = mapAgentEvent(row)
   bus.publish({ type: 'agent-event', agentSessionId, event })
+  return event
+}
+
+/**
+ * Streaming text is one row per message block, not one per delta.
+ *
+ * The block is opened on its first delta — that claims the `seq` which fixes
+ * its place in the transcript, and puts the text in front of a reader that
+ * connects mid-turn — and then grows in place until `closeAgentStream` marks it
+ * final. Every other event type is still appended once and never touched again.
+ */
+export async function openAgentStream(
+  agentSessionId: string,
+  type: AgentStreamType,
+  text: string
+): Promise<AgentEvent> {
+  return appendAgentEvent(agentSessionId, type, { text, streaming: true })
+}
+
+/** Rewrite an open block's text. `seq`, `id` and `created_at` stay put. */
+export async function writeAgentStream(
+  id: string,
+  text: string,
+  streaming: boolean
+): Promise<AgentEvent | null> {
+  const row = await queryOne(
+    'update agent_events set payload = $2::jsonb where id = $1 returning *',
+    [id, JSON.stringify({ text, streaming })]
+  )
+  if (!row) return null
+  const event = mapAgentEvent(row)
+  bus.publish({ type: 'agent-event', agentSessionId: event.agentSessionId, event })
   return event
 }
 

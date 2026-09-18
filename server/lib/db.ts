@@ -123,6 +123,8 @@ create table if not exists agent_sessions (
 
 alter table agent_sessions add column if not exists dev_environment_id text references dev_environments(id) on delete set null;
 
+-- Mostly append-only: discrete ACP updates are inserted once, while a block of
+-- streaming text is a single row rewritten in place until the block ends.
 create table if not exists agent_events (
   id text primary key,
   agent_session_id text not null references agent_sessions(id) on delete cascade,
@@ -132,6 +134,45 @@ create table if not exists agent_events (
   created_at text not null
 );
 create index if not exists agent_events_session_seq on agent_events(agent_session_id, seq);
+
+-- Streaming text used to be one row per delta, which is most of the log on an
+-- older install. Fold each run of consecutive chunks into the single row the
+-- app writes now: the first row of the run keeps its id, seq and timestamp, so
+-- the transcript reads exactly the same afterwards.
+with ordered as (
+  select id, agent_session_id, seq, type, payload,
+         case
+           when type in ('agent_message_chunk', 'agent_thought_chunk')
+             and type is not distinct from lag(type) over (partition by agent_session_id order by seq)
+           then 0 else 1
+         end as opens_run
+    from agent_events
+   where agent_session_id in (
+     select agent_session_id from agent_events
+      where type in ('agent_message_chunk', 'agent_thought_chunk')
+   )
+),
+runs as (
+  select *, sum(opens_run) over (partition by agent_session_id order by seq) as run
+    from ordered
+),
+folded as (
+  select agent_session_id,
+         run,
+         min(seq) as head_seq,
+         case type when 'agent_message_chunk' then 'agent_message' else 'agent_thought' end as folded_type,
+         string_agg(coalesce(payload #>> '{content,text}', ''), '' order by seq) as text
+    from runs
+   where type in ('agent_message_chunk', 'agent_thought_chunk')
+   group by agent_session_id, run, type
+)
+update agent_events e
+   set type = f.folded_type,
+       payload = jsonb_build_object('text', f.text, 'streaming', false)
+  from folded f
+ where e.agent_session_id = f.agent_session_id and e.seq = f.head_seq;
+-- Whatever is left of those runs is the deltas the heads just absorbed.
+delete from agent_events where type in ('agent_message_chunk', 'agent_thought_chunk');
 
 create table if not exists agent_permissions (
   id text primary key,
