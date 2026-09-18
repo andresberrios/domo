@@ -12,7 +12,13 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
-    "typecheck": "nuxt typecheck"
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run --project unit --project nuxt --project server --project docker --project e2e",
+    "test:unit": "vitest run --project unit --project docker",
+    "test:nuxt": "vitest run --project nuxt",
+    "test:integration": "vitest run --project server --project e2e",
+    "test:docker": "vitest run --project docker --project docker-live",
+    "test:watch": "vitest --project unit --project nuxt"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.78.0",
@@ -40,11 +46,15 @@
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.132",
     "@nuxt/eslint": "^1.17.0",
+    "@nuxt/test-utils": "^4.3.2",
     "@types/node": "^22.20.3",
     "@types/pg": "^8.23.1",
+    "@vue/test-utils": "^2.5.1",
     "ai": "^7.0.102",
     "eslint": "^10.10.0",
+    "happy-dom": "^20.14.5",
     "typescript": "^5.9.3",
+    "vitest": "^5.0.1",
     "vue-tsc": "^3.3.11"
   }
 }

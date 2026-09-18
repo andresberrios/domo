@@ -1,0 +1,8 @@
+{
+  // The Nuxt-environment tests under `test/nuxt` are already part of
+  // `.nuxt/tsconfig.app.json`; this project covers the rest, which import
+  // server code and therefore want the Nitro tsconfig.
+  "extends": "../.nuxt/tsconfig.server.json",
+  "include": ["./**/*.ts"],
+  "exclude": ["./nuxt/**/*"]
+}
