@@ -247,12 +247,20 @@ class AgentRuntime {
     return block
   }
 
-  /** Write a block's final text and drop its `streaming` flag. Runs in `serial`. */
+  /**
+   * Write a block's final text and drop its `streaming` flag. Runs in `serial`,
+   * ahead of whatever event ended the block — which is why a failure here only
+   * loses the text, and never the event that follows it.
+   */
   private async closeStream(block: StreamBlock | null): Promise<void> {
     if (!block) return
-    const row = await block.row
-    await writeAgentStream(row.id, block.text, false)
-    block.written = block.text
+    try {
+      const row = await block.row
+      await writeAgentStream(row.id, block.text, false)
+      block.written = block.text
+    } catch (error) {
+      console.error(`[acp:${this.agentSessionId}] could not finish streamed text`, error)
+    }
   }
 
   /** Fold a delta into the open block, opening one when the run starts. */
