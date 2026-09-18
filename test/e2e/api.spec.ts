@@ -321,10 +321,14 @@ describe.skipIf(skip)('the Electric shape proxy', () => {
   it('always asks for full rows, whatever the client says', async () => {
     const before = electric.requests.length
     // `replica` is neither a protocol param nor part of the shape definition, so
-    // it is dropped on the way in and pinned to `full` on the way out.
+    // it is dropped on the way in and pinned to `full` on the way out. There is
+    // no client-supplied value to honour, and `replica=default` would silently
+    // starve the local cache of the columns an update did not touch.
     await fetch('/api/shape?table=projects&offset=-1&replica=default')
+    await fetch('/api/shape?table=projects&offset=-1')
 
-    expect(electric.requests[before]!.searchParams.get('replica')).toBe('full')
+    const sent = electric.requests.slice(before)
+    expect(sent.map(request => request.searchParams.getAll('replica'))).toEqual([['full'], ['full']])
   })
 
   it('drops content-encoding so the browser can decode the stream', async () => {

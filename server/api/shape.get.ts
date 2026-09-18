@@ -35,7 +35,9 @@ export default defineEventHandler(async (event) => {
     if (isProtocol || isShape) url.searchParams.set(key, String(value))
   }
   // Full rows on update keep the UI's local cache coherent without re-fetching.
-  if (!url.searchParams.has('replica')) url.searchParams.set('replica', 'full')
+  // `replica` is neither a protocol param nor part of the shape definition, so
+  // the loop above never forwards a client-supplied one: this is the only value.
+  url.searchParams.set('replica', 'full')
 
   let response: Response
   try {
