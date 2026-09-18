@@ -62,7 +62,7 @@ export function useAgentSessions() {
       .map((row: any) => ({
         id: row.id,
         voiceSessionId: row.voice_session_id ?? null,
-        adapter: 'claude-code' as const,
+        adapter: row.adapter === 'codex' ? 'codex' as const : 'claude-code' as const,
         acpSessionId: row.acp_session_id ?? null,
         title: row.title,
         cwd: row.cwd,

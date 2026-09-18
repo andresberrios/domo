@@ -104,7 +104,7 @@ async function stop() {
 
     <UChatPrompt
       v-model="text"
-      :placeholder="busy ? 'Claude is working — type to queue a follow-up…' : 'Message this agent…'"
+      :placeholder="busy ? 'The agent is working — type to queue a follow-up…' : 'Message this agent…'"
       :autoresize="true"
       :maxrows="10"
       variant="outline"

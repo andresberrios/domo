@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { AgentAdapter } from '~~/shared/types'
+
 const open = defineModel<boolean>('open', { default: false })
 
 const props = defineProps<{ voiceSessionId?: string | null }>()
@@ -10,6 +12,11 @@ const title = ref('')
 const cwd = ref('')
 const task = ref('')
 const submitting = ref(false)
+const adapter = ref<AgentAdapter>('claude-code')
+const adapterItems = [
+  { label: 'Claude Code', value: 'claude-code' },
+  { label: 'Codex', value: 'codex' }
+]
 
 const { data: settings } = await useFetch('/api/settings', { lazy: true })
 const { environments } = useDevEnvironments()
@@ -28,6 +35,7 @@ watch(open, async (value) => {
   if (!value) return
   title.value = ''
   task.value = ''
+  adapter.value = 'claude-code'
   cwd.value = settings.value?.defaultCwd ?? ''
   devEnvironmentId.value = environments.value.find(environment => environment.status === 'running')?.id ?? ''
 })
@@ -40,6 +48,7 @@ async function create() {
       method: 'POST',
       body: {
         title: title.value.trim() || task.value.trim().slice(0, 60),
+        adapter: adapter.value,
         cwd: cwd.value.trim() || undefined,
         devEnvironmentId: devEnvironmentId.value || undefined,
         voiceSessionId: props.voiceSessionId ?? null,
@@ -64,10 +73,19 @@ async function create() {
   <UModal
     v-model:open="open"
     title="New coding agent"
-    description="Starts a Claude Code session in an isolated development environment."
+    description="Starts a coding agent over ACP in a local directory or development environment."
   >
     <template #body>
       <div class="space-y-4">
+        <UFormField label="Agent">
+          <USelectMenu
+            v-model="adapter"
+            :items="adapterItems"
+            value-key="value"
+            class="w-full"
+          />
+        </UFormField>
+
         <UFormField label="Name" hint="How you'll refer to it out loud">
           <UInput v-model="title" placeholder="auth refactor" class="w-full" autofocus />
         </UFormField>

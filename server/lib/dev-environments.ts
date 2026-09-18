@@ -1,7 +1,7 @@
 import { access, cp, mkdir, rm } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 
-import type { DevEnvironment } from '../../shared/types'
+import type { AgentAdapter, DevEnvironment } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
 import { resolveDevcontainerConfig, resolveForwardPorts } from './devcontainer/config'
@@ -28,6 +28,20 @@ function containerReference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
 }
 
+export async function ensureEnvironmentAdapter(
+  environment: DevEnvironment,
+  adapter: AgentAdapter
+): Promise<void> {
+  const [command, packageSpec] = adapter === 'codex'
+    ? ['codex-acp', '@agentclientprotocol/codex-acp@1.12.0']
+    : ['claude-agent-acp', '@agentclientprotocol/claude-agent-acp@0.78.0']
+  await run('docker', [
+    'exec', '--user', 'root', containerReference(environment),
+    'sh', '-c', 'command -v "$1" >/dev/null 2>&1 || npm install --global "$2"',
+    'sh', command, packageSpec
+  ])
+}
+
 async function copyRepository(source: string, destination: string): Promise<void> {
   const excluded = resolve(dataDir())
   await mkdir(destination, { recursive: true })
@@ -42,7 +56,12 @@ async function copyRepository(source: string, destination: string): Promise<void
 }
 
 async function installDomoRuntime(containerId: string, remoteUser: string | null, workspacePath: string): Promise<void> {
-  await run('docker', ['exec', '--user', 'root', containerId, 'npm', 'install', '--global', '@agentclientprotocol/claude-agent-acp@0.78.0'])
+  await run('docker', [
+    'exec', '--user', 'root', containerId,
+    'npm', 'install', '--global',
+    '@agentclientprotocol/claude-agent-acp@0.78.0',
+    '@agentclientprotocol/codex-acp@1.12.0'
+  ])
   const meshEntry = process.env.NUXT_DOMO_MCP_ENTRY
   if (meshEntry) {
     await run('docker', ['exec', '--user', 'root', containerId, 'mkdir', '-p', '/opt/domo'])
@@ -93,6 +112,11 @@ export async function createEnvironment(input: {
     const claudeConfigDir = configuredClaudeDir
       ? await access(configuredClaudeDir).then(() => configuredClaudeDir).catch(() => null)
       : null
+    const configuredCodexDir = process.env.NUXT_CODEX_CONFIG_DIR
+      || (process.env.HOME ? join(process.env.HOME, '.codex') : null)
+    const codexConfigDir = configuredCodexDir
+      ? await access(configuredCodexDir).then(() => configuredCodexDir).catch(() => null)
+      : null
     const result = await devcontainerUp({
       resolved,
       environmentId: id,
@@ -100,7 +124,8 @@ export async function createEnvironment(input: {
       environmentName: input.name.trim(),
       hostWorkspace,
       ports: declaredPorts,
-      claudeConfigDir
+      claudeConfigDir,
+      codexConfigDir
     })
     const inspection = await inspectContainer(result.containerId)
     if (!inspection) throw new Error('The Dev Container was created but could not be inspected.')

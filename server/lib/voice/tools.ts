@@ -118,6 +118,7 @@ export const voiceTools: Record<string, VoiceTool> = {
         agents: sessions.map(session => ({
           id: session.id,
           title: session.title,
+          adapter: session.adapter,
           cwd: session.cwd,
           devEnvironmentId: session.devEnvironmentId,
           status: session.status,
@@ -134,11 +135,16 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_agent_session',
       description:
-        'Start a new Claude Code agent session and optionally give it its first task. Use this when the user wants new work done in parallel.',
+        'Start a new Claude Code or Codex agent session and optionally give it its first task. Use this when the user wants new work done in parallel.',
       parameters: {
         type: Type.OBJECT,
         properties: {
           title: { type: Type.STRING, description: 'Short human name for the session, e.g. "auth refactor".' },
+          adapter: {
+            type: Type.STRING,
+            enum: ['claude-code', 'codex'],
+            description: 'Coding agent to run. Defaults to Claude Code.'
+          },
           task: { type: Type.STRING, description: 'The first instruction for the agent.' },
           cwd: {
             type: Type.STRING,
@@ -154,6 +160,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     },
     handler: async (args, ctx) => {
       const session = await acpManager.create({
+        adapter: args.adapter === 'codex' ? 'codex' : 'claude-code',
         title: args.title,
         cwd: args.cwd,
         devEnvironmentId: args.devEnvironmentId,
@@ -163,6 +170,7 @@ export const voiceTools: Record<string, VoiceTool> = {
       return {
         id: session.id,
         title: session.title,
+        adapter: session.adapter,
         cwd: session.cwd,
         status: session.status,
         started: !!args.task

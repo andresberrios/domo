@@ -3,6 +3,7 @@ import { bus } from './bus'
 import { getSettings } from './settings'
 import type {
   AgentEvent,
+  AgentAdapter,
   AgentSession,
   AgentSessionStatus,
   DevEnvironment,
@@ -49,7 +50,7 @@ function mapAgentSession(r: any): AgentSession {
   return {
     id: r.id,
     voiceSessionId: r.voice_session_id,
-    adapter: r.adapter,
+    adapter: r.adapter === 'codex' ? 'codex' : 'claude-code',
     acpSessionId: r.acp_session_id,
     title: r.title,
     cwd: r.cwd,
@@ -457,6 +458,7 @@ export async function getAgentSession(id: string): Promise<AgentSession | null> 
 }
 
 export async function createAgentSession(input: {
+  adapter: AgentAdapter
   title: string
   cwd: string
   voiceSessionId?: string | null
@@ -467,8 +469,8 @@ export async function createAgentSession(input: {
   const row = await queryOne(
     `insert into agent_sessions
        (id, voice_session_id, adapter, title, cwd, dev_environment_id, status, mode_id, created_at, updated_at)
-     values ($1, $2, 'claude-code', $3, $4, $5, 'starting', $6, $7, $7) returning *`,
-    [newId('ag'), input.voiceSessionId ?? null, input.title, input.cwd, input.devEnvironmentId ?? null, input.modeId ?? null, now]
+     values ($1, $2, $3, $4, $5, $6, 'starting', $7, $8, $8) returning *`,
+    [newId('ag'), input.voiceSessionId ?? null, input.adapter, input.title, input.cwd, input.devEnvironmentId ?? null, input.modeId ?? null, now]
   )
   bus.publish({ type: 'agent-list-changed' })
   return mapAgentSession(row)

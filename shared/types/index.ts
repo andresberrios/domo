@@ -38,10 +38,12 @@ export type AgentSessionStatus =
   | 'error'
   | 'stopped'
 
+export type AgentAdapter = 'claude-code' | 'codex'
+
 export interface AgentSession {
   id: string
   voiceSessionId: string | null
-  adapter: 'claude-code'
+  adapter: AgentAdapter
   acpSessionId: string | null
   title: string
   cwd: string

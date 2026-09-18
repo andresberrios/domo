@@ -56,7 +56,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
             Your voice control room for coding agents
           </h1>
           <p class="mx-auto mt-2 max-w-xl text-sm text-muted">
-            Talk to a Gemini Live agent. It spawns Claude Code sessions over ACP, watches them,
+            Talk to a Gemini Live agent. It spawns Claude Code or Codex sessions over ACP, watches them,
             answers their permission prompts, and tells you what changed — while you keep your
             hands free.
           </p>

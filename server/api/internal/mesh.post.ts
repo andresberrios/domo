@@ -21,6 +21,7 @@ export default defineEventHandler(async (event) => {
           .map(session => ({
             id: session.id,
             title: session.title,
+            adapter: session.adapter,
             cwd: session.cwd,
             status: session.status,
             summary: (session.summary ?? '').replace(/\s+/g, ' ').slice(0, 400)
@@ -44,6 +45,7 @@ export default defineEventHandler(async (event) => {
 
     case 'spawn_agent': {
       const session = await acpManager.create({
+        adapter: caller?.adapter,
         title: args.title,
         cwd: caller?.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller?.cwd),
         devEnvironmentId: caller?.devEnvironmentId ?? null,

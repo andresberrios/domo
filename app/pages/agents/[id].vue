@@ -143,7 +143,12 @@ const menuItems = computed(() => [
             <UIcon name="i-lucide-folder" class="me-1 size-3" />
             {{ session?.cwd }}
           </UBadge>
-          <UBadge color="neutral" variant="subtle" size="sm" label="Claude Code · ACP" />
+          <UBadge
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            :label="`${session?.adapter === 'codex' ? 'Codex' : 'Claude Code'} · ACP`"
+          />
           <UBadge
             v-if="environment"
             color="primary"

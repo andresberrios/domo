@@ -10,6 +10,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import { bus } from '../bus'
 import {
   containerExecArgs,
+  ensureEnvironmentAdapter,
   ensureEnvironmentRunning,
   readEnvironmentFile,
   writeEnvironmentFile
@@ -25,25 +26,37 @@ import {
   resolvePermissionRow,
   updateAgentSession
 } from '../repo'
-import type { AgentSession, DevEnvironment, PendingPermission } from '../../../shared/types'
+import type { AgentAdapter, AgentSession, DevEnvironment, PendingPermission } from '../../../shared/types'
 
-const ADAPTER_PACKAGE = '@agentclientprotocol/claude-agent-acp'
+const ADAPTERS: Record<AgentAdapter, { packageName: string, command: string, entryOverride: string }> = {
+  'claude-code': {
+    packageName: '@agentclientprotocol/claude-agent-acp',
+    command: 'claude-agent-acp',
+    entryOverride: 'NUXT_CLAUDE_ACP_ENTRY'
+  },
+  codex: {
+    packageName: '@agentclientprotocol/codex-acp',
+    command: 'codex-acp',
+    entryOverride: 'NUXT_CODEX_ACP_ENTRY'
+  }
+}
 
 /**
- * Resolve the Claude Code ACP adapter entry point.
+ * Resolve an ACP adapter entry point.
  *
  * The production bundle runs from a virtual module path, so `import.meta.url`
  * resolution fails there; resolving from the working directory finds the real
  * `node_modules` in both dev and a built server.
  */
-function adapterEntry(): string {
-  const override = process.env.NUXT_CLAUDE_ACP_ENTRY
+function adapterEntry(adapter: AgentAdapter): string {
+  const definition = ADAPTERS[adapter]
+  const override = process.env[definition.entryOverride]
   if (override) return override
 
   const resolvers = [
     () => createRequire(pathToFileURL(join(process.cwd(), 'package.json')).href)
-      .resolve(`${ADAPTER_PACKAGE}/package.json`),
-    () => createRequire(import.meta.url).resolve(`${ADAPTER_PACKAGE}/package.json`)
+      .resolve(`${definition.packageName}/package.json`),
+    () => createRequire(import.meta.url).resolve(`${definition.packageName}/package.json`)
   ]
 
   for (const resolvePkg of resolvers) {
@@ -58,8 +71,8 @@ function adapterEntry(): string {
   }
 
   throw new Error(
-    `Could not find ${ADAPTER_PACKAGE}. Run \`pnpm install\` in the Domo directory, `
-    + 'or point NUXT_CLAUDE_ACP_ENTRY at the adapter entry file.'
+    `Could not find ${definition.packageName}. Run \`pnpm install\` in the Domo directory, `
+    + `or point ${definition.entryOverride} at the adapter entry file.`
   )
 }
 
@@ -101,14 +114,24 @@ const PASSTHROUGH_ENV = [
   'PATHEXT'
 ]
 
-function adapterEnv(): NodeJS.ProcessEnv {
+function adapterEnv(adapter: AgentAdapter): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
     const value = process.env[key]
     if (value !== undefined) env[key] = value
   }
-  const apiKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
-  if (apiKey) env.ANTHROPIC_API_KEY = apiKey
+  if (adapter === 'claude-code') {
+    const apiKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
+    if (apiKey) env.ANTHROPIC_API_KEY = apiKey
+  } else {
+    const codexKey = process.env.NUXT_CODEX_API_KEY || process.env.CODEX_API_KEY
+    const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
+    if (codexKey) env.CODEX_API_KEY = codexKey
+    if (openAiKey) env.OPENAI_API_KEY = openAiKey
+    if (codexKey || openAiKey) {
+      env.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
+    }
+  }
   return env
 }
 
@@ -163,10 +186,12 @@ class AgentRuntime {
     await updateAgentSession(this.agentSessionId, { status: 'starting', lastError: null })
 
     let environment: DevEnvironment | null = null
-    const env = adapterEnv()
+    const definition = ADAPTERS[session.adapter]
+    const env = adapterEnv(session.adapter)
     let proc: ChildProcessWithoutNullStreams
     if (session.devEnvironmentId) {
       environment = await ensureEnvironmentRunning(session.devEnvironmentId)
+      await ensureEnvironmentAdapter(environment, session.adapter)
       this.containerName = environment.containerName
       this.containerPidFile = `/tmp/domo-agent-${this.agentSessionId}.pid`
       env.USER = environment.remoteUser ?? 'root'
@@ -174,11 +199,11 @@ class AgentRuntime {
       env.LOGNAME = env.USER
       proc = spawn('docker', [
         ...containerExecArgs(environment, env),
-        'sh', '-c', 'echo $$ > "$1"; exec claude-agent-acp', 'sh', this.containerPidFile
+        'sh', '-c', 'echo $$ > "$1"; exec "$2"', 'sh', this.containerPidFile, definition.command
       ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
     } else {
       await mkdir(session.cwd, { recursive: true }).catch(() => {})
-      proc = spawn(process.execPath, [adapterEntry()], {
+      proc = spawn(process.execPath, [adapterEntry(session.adapter)], {
         cwd: session.cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -501,6 +526,7 @@ class AcpManager {
   }
 
   async create(input: {
+    adapter?: AgentAdapter
     title?: string
     cwd?: string
     voiceSessionId?: string | null
@@ -515,6 +541,7 @@ class AcpManager {
     const cwd = environment?.workspacePath ?? normalizeCwd(input.cwd || settings.defaultCwd)
     const title = (input.title || input.initialPrompt || 'Coding session').trim().split('\n')[0]!.slice(0, 80)
     const session = await createAgentSession({
+      adapter: input.adapter ?? 'claude-code',
       title,
       cwd,
       voiceSessionId: input.voiceSessionId ?? null,

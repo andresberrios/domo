@@ -36,11 +36,19 @@ export default defineNuxtConfig({
         'pg',
         '@devcontainers/cli',
         '@agentclientprotocol/claude-agent-acp',
+        '@agentclientprotocol/codex-acp',
+        '@openai/codex',
         '@agentclientprotocol/sdk'
       ],
       traceInclude: [
         new URL('./node_modules/@devcontainers/cli/devcontainer.js', import.meta.url).pathname,
-        new URL('./node_modules/@devcontainers/cli/package.json', import.meta.url).pathname
+        new URL('./node_modules/@devcontainers/cli/package.json', import.meta.url).pathname,
+        new URL('./node_modules/@agentclientprotocol/claude-agent-acp/package.json', import.meta.url).pathname,
+        new URL('./node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js', import.meta.url).pathname,
+        new URL('./node_modules/@agentclientprotocol/codex-acp/package.json', import.meta.url).pathname,
+        new URL('./node_modules/@agentclientprotocol/codex-acp/dist/index.js', import.meta.url).pathname,
+        new URL('./node_modules/@openai/codex/package.json', import.meta.url).pathname,
+        new URL('./node_modules/@openai/codex/bin/codex.js', import.meta.url).pathname
       ]
     }
   },

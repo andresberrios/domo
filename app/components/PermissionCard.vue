@@ -50,7 +50,7 @@ async function choose(optionId: string) {
             {{ permission.title }}
           </p>
           <p class="text-xs text-muted">
-            Claude Code is asking for permission
+            The coding agent is asking for permission
           </p>
         </div>
 

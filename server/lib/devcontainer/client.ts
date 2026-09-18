@@ -59,6 +59,7 @@ function mergedConfig(input: {
   hostWorkspace: string
   ports: ResolvedPortConfig[]
   claudeConfigDir: string | null
+  codexConfigDir: string | null
 }): DevcontainerConfig {
   const parent = absoluteSourcePaths(input.resolved.config, input.resolved.path)
   const features = { ...(parent.features ?? {}) }
@@ -90,6 +91,11 @@ function mergedConfig(input: {
     const target = user === 'root' ? '/root/.claude' : `/home/${user}/.claude`
     mounts.push({ source: input.claudeConfigDir, target, type: 'bind' })
   }
+  if (input.codexConfigDir) {
+    const user = parent.remoteUser ?? parent.containerUser ?? 'root'
+    const target = user === 'root' ? '/root/.codex' : `/home/${user}/.codex`
+    mounts.push({ source: input.codexConfigDir, target, type: 'bind' })
+  }
 
   const merged: DevcontainerConfig = {
     ...parent,
@@ -118,6 +124,7 @@ export async function devcontainerUp(input: {
   hostWorkspace: string
   ports: ResolvedPortConfig[]
   claudeConfigDir: string | null
+  codexConfigDir: string | null
 }): Promise<{ containerId: string, workspacePath: string, remoteUser: string | null }> {
   if (!DEVCONTAINER_BIN) throw new Error('The packaged Dev Container CLI could not be found.')
   const config = mergedConfig(input)

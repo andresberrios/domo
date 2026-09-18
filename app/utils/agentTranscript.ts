@@ -29,7 +29,7 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   cancelled: () => 'Turn cancelled',
   mode_changed: payload => `Mode set to ${payload?.modeId}`,
   'adapter-exit': payload =>
-    `Claude Code adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
+    `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
   mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,
   mesh_outbound: payload => `Sent to agent "${payload?.toTitle ?? payload?.to}": ${payload?.message}`,
   mesh_spawned: payload => `Spawned agent "${payload?.title}"`,
