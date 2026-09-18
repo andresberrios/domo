@@ -17,24 +17,25 @@ const alias = {
   '@': resolve(rootDir, 'app')
 }
 
-/** Anything that talks to Postgres gets its own ephemeral database. */
-const database = {
-  setupFiles: [resolve(rootDir, 'test/setup/database.ts')],
-  // Creating and dropping a database, and bootstrapping the schema into it,
-  // happens in beforeAll/afterAll and is slower than a normal hook.
-  hookTimeout: 60_000
-}
-
+/**
+ * There is a project per *runtime*, not per folder: a project only earns its
+ * own entry when it needs a different environment, a different setup file, or
+ * a dependency that has to stay out of the default run. Everything else is a
+ * directory inside a project.
+ */
 export default defineConfig(async () => ({
   test: {
     projects: [
-      // 1. Pure logic. No Nuxt, no I/O, no services — these must stay instant.
+      // 1. Plain node, no services, no Nuxt — these must stay instant.
+      //    `test/unit` is pure logic; `test/docker` is Docker at the process
+      //    boundary (the argv handed to `docker`), which needs no daemon.
       {
         resolve: { alias },
         test: {
           name: 'unit',
           environment: 'node',
-          include: ['test/unit/**/*.spec.ts']
+          include: ['test/unit/**/*.spec.ts', 'test/docker/**/*.spec.ts'],
+          exclude: ['test/docker/**/*.live.spec.ts']
         }
       },
 
@@ -48,43 +49,37 @@ export default defineConfig(async () => ({
         }
       }),
 
-      // 3. The repo/db layer against a real Postgres.
+      // 3. Everything that needs a real Postgres: `test/server` drives
+      //    `repo.ts` and the schema directly, `test/e2e` drives a production
+      //    build of the Nitro server over HTTP, and `test/helpers` covers the
+      //    harness's own database lifecycle. Same environment, same per-file
+      //    database — one project.
       {
         resolve: { alias },
         test: {
-          name: 'server',
+          name: 'integration',
           environment: 'node',
-          include: ['test/server/**/*.spec.ts'],
-          ...database
-        }
-      },
-
-      // 4. The whole stack over HTTP: real Nitro build, real Postgres, no browser.
-      {
-        resolve: { alias },
-        test: {
-          name: 'e2e',
-          environment: 'node',
-          include: ['test/e2e/**/*.spec.ts'],
-          ...database,
-          // Building the app and booting the server happens once, in a hook.
+          include: [
+            'test/server/**/*.spec.ts',
+            'test/e2e/**/*.spec.ts',
+            'test/helpers/**/*.spec.ts'
+          ],
+          // One test database, shared by every file, so the files must not
+          // overlap. The suite is ~13 s and most of that is the Nuxt transform
+          // in another project, so there is no parallelism worth keeping here.
+          fileParallelism: false,
+          // Turns "Postgres is not running" into an exit code before any test
+          // reports, and creates the database. See test/setup/require-database.ts.
+          globalSetup: [resolve(rootDir, 'test/setup/require-database.ts')],
+          setupFiles: [resolve(rootDir, 'test/setup/database.ts')],
+          // Resetting the schema is slower than a normal hook; building the
+          // Nuxt app for the e2e files is slower still.
           hookTimeout: 300_000,
           testTimeout: 60_000
         }
       },
 
-      // 5. Docker at the process boundary: what argv do we hand `docker`?
-      {
-        resolve: { alias },
-        test: {
-          name: 'docker',
-          environment: 'node',
-          include: ['test/docker/**/*.spec.ts'],
-          exclude: ['test/docker/**/*.live.spec.ts']
-        }
-      },
-
-      // 5b. The same code against a real Docker daemon. Opt in: `pnpm test:docker`.
+      // 4. The same Docker code against a real daemon. Opt in: `pnpm test:docker`.
       {
         resolve: { alias },
         test: {

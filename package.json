@@ -13,11 +13,12 @@
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
     "typecheck": "nuxt typecheck",
-    "test": "vitest run --project unit --project nuxt --project server --project docker --project e2e",
-    "test:unit": "vitest run --project unit --project docker",
+    "test": "vitest run --project unit --project nuxt --project integration",
+    "test:offline": "DOMO_TEST_ALLOW_SKIP=1 vitest run --project unit --project nuxt",
+    "test:unit": "vitest run --project unit",
     "test:nuxt": "vitest run --project nuxt",
-    "test:integration": "vitest run --project server --project e2e",
-    "test:docker": "vitest run --project docker --project docker-live",
+    "test:integration": "vitest run --project integration",
+    "test:docker": "vitest run --project unit --project docker-live test/docker",
     "test:watch": "vitest --project unit --project nuxt"
   },
   "dependencies": {
