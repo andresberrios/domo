@@ -24,3 +24,6 @@ dist
 .DS_Store
 .idea
 .vscode
+
+# Agent worktrees, created by Claude Code.
+.claude/worktrees/

@@ -122,36 +122,49 @@ something else may legitimately be attached — see below.
   against whatever `DATABASE_URL` happens to be. This once destroyed a real
   `domo` database. Keep the `|| error.name` fallback.
 
-### ElectricSQL is already replicating from `domo_test`
+### ElectricSQL never replicates from `domo_test`
 
-This is no longer hypothetical. As of this writing there is a second Electric
-instance bound to the test database, for the browserless end-to-end layer that
-tests real propagation to the frontend:
+It did, briefly, and the collision is why the rule exists. The `electric` layer
+runs against its own database, **`domo_e2e`**, with its own Electric instance
+(compose service `electric-e2e`, host port 30001, a distinct
+`ELECTRIC_REPLICATION_STREAM_ID` so the slot and publication cannot collide).
+Keep it that way.
 
-```
-electric_slot_default    | domo      | active
-electric_slot_domo_test  | domo_test | active
-```
-
-A fixed database name is what makes that possible at all — you cannot stand up
-an Electric instance per worker per file. But it collides with the reset, and
-the collision is measurable. After a full run:
+The reason is measured, not theoretical. Point an Electric at `domo_test` and
+after the first reset:
 
 - the **replication slot survives** (slots belong to the database, not the
   schema) and stays active,
-- the **publication survives** (`electric_publication_domo_test`),
-- but `select count(*) from pg_publication_tables` in `domo_test` is **0** —
-  `drop schema public cascade` removed every table from the publication, and
-  the tables the app re-bootstraps afterwards are not members of it.
+- the **publication survives**,
+- but `select count(*) from pg_publication_tables` is **0** — `drop schema
+  public cascade` removed every table from the publication, and the tables the
+  app re-bootstraps afterwards are not members.
 
-So an Electric-bound layer will see nothing replicate after the first reset
-until something re-adds the tables. Whoever builds that layer has to decide
-between re-adding them after each reset, resetting with `truncate` instead (I
-do not know how Electric handles a replicated `TRUNCATE` — find out, do not
-assume), or giving that layer its own database. **Do not drop `domo_test`**: a
-replication slot blocks `drop database` and retains WAL forever, silently,
-until the disk fills. If a drop is ever genuinely needed, `pg_drop_replication_slot()`
-and `drop publication` come first.
+Nothing errors. You get a live-looking instance, an active slot and a healthy
+publication, replicating nothing. Electric *does* eventually re-add a table it
+is asked for — but roughly **22 seconds** later, and a write issued in that
+window never reaches the shape log and is **permanently lost**. Silently stale
+data is the worst failure this suite could produce, so the layers are kept on
+separate databases instead.
+
+Two more facts worth not re-deriving:
+
+- **`TRUNCATE` is safe but a blunt instrument.** Against a live Electric with a
+  subscribed `ShapeStream`, the next poll answers HTTP 409 with
+  `{"control":"must-refetch"}`; the client discards, resyncs from a fresh
+  snapshot with a new handle, and a post-truncate insert arrives ~50 ms later.
+  It works — it just invalidates every shape on the table. The `electric` layer
+  resets with `delete from` instead: ordinary DML, decodes like every other
+  write, no re-download per test.
+- **Publication membership is demand-driven.** Electric adds a table the first
+  time a shape asks for it, not schema-wide. Do not assert that every synced
+  table is published; it only means nothing has subscribed yet.
+
+**Never drop a database that has a slot on it.** `drop database … with (force)`
+fails immediately with `is used by an active logical replication slot` — that
+one is loud. The quiet danger is an *inactive* slot left behind, which retains
+WAL forever until the disk fills. `pg_drop_replication_slot()` and
+`drop publication` come first.
 
 ## Other gotchas
 

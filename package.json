@@ -1,7 +1,7 @@
 {
   "name": "domo",
   "version": "1.0.0",
-  "description": "A voice-first control room for coding agents — talk to a Gemini Live agent that spawns, monitors and directs Claude Code and Codex sessions over ACP.",
+  "description": "A voice-first control room for coding agents \u2014 talk to a Gemini Live agent that spawns, monitors and directs Claude Code and Codex sessions over ACP.",
   "type": "module",
   "private": true,
   "license": "SEE LICENSE IN LICENSE.md",
@@ -18,6 +18,7 @@
     "test:unit": "vitest run --project unit",
     "test:nuxt": "vitest run --project nuxt",
     "test:integration": "vitest run --project integration",
+    "test:electric": "vitest run --project electric",
     "test:docker": "vitest run --project unit --project docker-live test/docker",
     "test:watch": "vitest --project unit --project nuxt"
   },
