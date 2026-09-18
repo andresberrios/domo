@@ -51,17 +51,29 @@ export default defineConfig(async () => ({
 
       // 3. Everything that needs a real Postgres: `test/server` drives
       //    `repo.ts` and the schema directly, `test/e2e` drives a production
-      //    build of the Nitro server over HTTP. Same environment, same
-      //    per-file database — one project, two directories.
+      //    build of the Nitro server over HTTP, and `test/helpers` covers the
+      //    harness's own database lifecycle. Same environment, same per-file
+      //    database — one project.
       {
         resolve: { alias },
         test: {
           name: 'integration',
           environment: 'node',
-          include: ['test/server/**/*.spec.ts', 'test/e2e/**/*.spec.ts'],
+          include: [
+            'test/server/**/*.spec.ts',
+            'test/e2e/**/*.spec.ts',
+            'test/helpers/**/*.spec.ts'
+          ],
+          // One test database, shared by every file, so the files must not
+          // overlap. The suite is ~13 s and most of that is the Nuxt transform
+          // in another project, so there is no parallelism worth keeping here.
+          fileParallelism: false,
+          // Turns "Postgres is not running" into an exit code before any test
+          // reports, and creates the database. See test/setup/require-database.ts.
+          globalSetup: [resolve(rootDir, 'test/setup/require-database.ts')],
           setupFiles: [resolve(rootDir, 'test/setup/database.ts')],
-          // Creating a database and bootstrapping the schema is slower than a
-          // normal hook; building the Nuxt app for the e2e files is slower still.
+          // Resetting the schema is slower than a normal hook; building the
+          // Nuxt app for the e2e files is slower still.
           hookTimeout: 300_000,
           testTimeout: 60_000
         }

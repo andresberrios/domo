@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto'
-
 import pg from 'pg'
 
 /**
@@ -7,10 +5,15 @@ import pg from 'pg'
  * the `REPLICA IDENTITY FULL` settings are the things most worth testing, and
  * none of them survive a fake.
  *
- * Every test *file* gets its own throwaway database on the server that
- * `DATABASE_URL` points at (the docker-compose one by default), so files stay
- * isolated from each other and the developer's own `domo` database is never
- * written to. `DOMO_TEST_DATABASE_URL` overrides the server to use.
+ * There is exactly one test database, `domo_test`, on the server that
+ * `DATABASE_URL` points at (the docker-compose one by default), and it is never
+ * the developer's own `domo`. `DOMO_TEST_DATABASE_URL` overrides the server.
+ *
+ * One stable database is zero-clutter by definition: nothing accumulates, so
+ * nothing has to be swept. What it costs is parallelism between test *files* —
+ * the `integration` project runs them one at a time (`fileParallelism: false`)
+ * and resets the schema in between. The suite is ~13 s and most of that is the
+ * Nuxt transform in a different project, so there is nothing to win there.
  */
 
 const SERVER_URL
@@ -21,8 +24,8 @@ const SERVER_URL
 /** The maintenance database: never the one the app uses. */
 const ADMIN_DATABASE = 'postgres'
 
-/** Anything a test may connect to is named for what it is, and nothing else is. */
-export const TEST_DATABASE_PREFIX = 'domo_test_'
+/** The one database any test may touch, named for what it is. */
+export const TEST_DATABASE = 'domo_test'
 
 /**
  * The skip reason travels through the environment rather than through module
@@ -32,24 +35,35 @@ export const TEST_DATABASE_PREFIX = 'domo_test_'
  */
 const UNAVAILABLE_ENV = 'DOMO_TEST_DATABASE_UNAVAILABLE'
 
-export interface TestDatabase {
-  name: string
-  url: string
-}
+/**
+ * Set this to let the database-backed layers skip themselves instead of failing
+ * the run. Off by default on purpose: those layers cover the repo layer, the
+ * SQL schema and the migration path, and a run that silently drops a third of
+ * the suite must not exit 0 — a warning scrolls past, an exit code does not.
+ */
+const ALLOW_SKIP_ENV = 'DOMO_TEST_ALLOW_SKIP'
 
-function urlFor(database: string): string {
+/** Postgres's "that database already exists", which is the happy path here. */
+const DUPLICATE_DATABASE = '42P04'
+
+export function testDatabaseUrl(database: string = TEST_DATABASE): string {
   const url = new URL(SERVER_URL)
   url.pathname = `/${database}`
   return url.href
 }
 
-async function admin<T>(use: (client: pg.Client) => Promise<T>): Promise<T> {
+async function connect(database: string): Promise<pg.Client> {
   const client = new pg.Client({
-    connectionString: urlFor(ADMIN_DATABASE),
+    connectionString: testDatabaseUrl(database),
     // Fail fast instead of hanging when nobody started docker compose.
     connectionTimeoutMillis: 3000
   })
   await client.connect()
+  return client
+}
+
+async function using<T>(database: string, use: (client: pg.Client) => Promise<T>): Promise<T> {
+  const client = await connect(database)
   try {
     return await use(client)
   } finally {
@@ -57,31 +71,58 @@ async function admin<T>(use: (client: pg.Client) => Promise<T>): Promise<T> {
   }
 }
 
+/** Remember why Postgres could not be reached, for the skip and the failure. */
+export function recordUnavailable(error: unknown): void {
+  // An empty reason would read as "available" through the environment, and a
+  // refused connection arrives as an AggregateError with no message at all.
+  const reason = error instanceof Error ? error.message || error.name : String(error)
+  process.env[UNAVAILABLE_ENV] = reason || 'could not connect'
+}
+
 /**
- * Create an empty database for the current test file, or return `null` with a
- * reason on the environment when Postgres is not running — a skipped suite
- * beats a cryptic hang.
+ * Make sure `domo_test` exists, or return `null` with the reason on the
+ * environment when Postgres is not running.
  */
-export async function createTestDatabase(): Promise<TestDatabase | null> {
-  const name = `${TEST_DATABASE_PREFIX}${randomUUID().replace(/-/g, '').slice(0, 16)}`
+export async function ensureTestDatabase(): Promise<string | null> {
   try {
-    await admin(client => client.query(`create database "${name}"`))
+    await using(ADMIN_DATABASE, async (client) => {
+      try {
+        await client.query(`create database "${TEST_DATABASE}"`)
+      } catch (error) {
+        if ((error as { code?: string }).code !== DUPLICATE_DATABASE) throw error
+      }
+    })
   } catch (error) {
-    // An empty reason would read as "available" through the environment, and a
-    // refused connection arrives as an AggregateError with no message at all.
-    const reason = error instanceof Error ? error.message || error.name : String(error)
-    process.env[UNAVAILABLE_ENV] = reason || 'could not connect'
+    recordUnavailable(error)
     return null
   }
   process.env[UNAVAILABLE_ENV] = ''
-  return { name, url: urlFor(name) }
+  return testDatabaseUrl()
 }
 
-export async function dropTestDatabase(database: TestDatabase): Promise<void> {
-  // `force` terminates anything still connected: the pool in this process, or a
-  // Nitro server that has not finished shutting down yet.
-  await admin(client => client.query(`drop database if exists "${database.name}" with (force)`))
-    .catch(error => console.warn(`[test] could not drop ${database.name}:`, error))
+/**
+ * Put the test database back to "never been booted": no tables, no sequences,
+ * no types. The next `getDb()` runs `server/lib/db.ts`'s bootstrap against it
+ * and produces exactly what a fresh install has, which is also what
+ * `test/server/schema-migration.spec.ts` needs — it installs the *old* shape of
+ * the tables by hand and cannot do that on top of the new one.
+ *
+ * `truncate` would be faster but not equivalent: it leaves the current schema
+ * behind, so no file could ever test the migration path.
+ */
+export async function resetTestDatabase(): Promise<void> {
+  await using(TEST_DATABASE, async (client) => {
+    // Other connections are *not* terminated first. Dropping a schema needs a
+    // lock on each table, not an empty database the way `drop database` does,
+    // and an idle pool — a Nitro server from the e2e file that has not finished
+    // shutting down, or the ElectricSQL instance that may be replicating from
+    // here — holds no table locks. Terminating them would be picking a fight we
+    // do not need to win. `lock_timeout` turns the one case that *is* blocked
+    // into a fast, readable error instead of a hang.
+    await client.query("set lock_timeout = '10s'")
+    await client.query('drop schema if exists public cascade')
+    await client.query('create schema public')
+  })
 }
 
 /** Why the database-backed suites are being skipped, if they are. */
@@ -92,4 +133,29 @@ export function databaseUnavailable(): string | null {
 export function skipMessage(): string {
   return `Postgres is not reachable at ${SERVER_URL.replace(/:[^:@/]*@/, ':***@')} `
     + `(${databaseUnavailable()}). Start it with \`docker compose up -d\`.`
+}
+
+/** Is the caller allowed to skip the database-backed layers rather than fail? */
+export function skipAllowed(): boolean {
+  const value = process.env[ALLOW_SKIP_ENV]
+  return !!value && value !== '0' && value !== 'false'
+}
+
+/**
+ * The error that stops a run instead of letting it report a green summary for a
+ * suite a third of which never executed.
+ */
+export function unavailableError(): Error {
+  return new Error([
+    `Postgres is not reachable at ${SERVER_URL.replace(/:[^:@/]*@/, ':***@')} (${databaseUnavailable()}).`,
+    '',
+    'THE DATABASE-BACKED LAYERS DID NOT RUN: test/server, test/e2e, test/helpers.',
+    'They cover the repo layer, the SQL schema and the migration path — the code a',
+    'passing summary would be lying about here. Failing instead of skipping.',
+    '',
+    '  docker compose up -d       start Postgres, then run the whole suite',
+    '  pnpm test:offline          run only the layers that need no services',
+    `  ${ALLOW_SKIP_ENV}=1    skip these layers on purpose and still exit 0`,
+    ''
+  ].join('\n'))
 }
