@@ -47,7 +47,7 @@ async function resolveAgent(agentId?: string) {
 }
 
 /** Spoken models dress titles up; the sidebar wants a plain few words. */
-function cleanTitle(raw: unknown): string {
+export function cleanTitle(raw: unknown): string {
   const title = String(raw ?? '')
     .split('\n')[0]!
     .replace(/^["'“”‘’*#\s]+|["'“”‘’*\s]+$/g, '')

@@ -46,7 +46,7 @@ How you work:
  * Settings are saved as a whole form, so older installs have the previous
  * default stored verbatim. Treat it as "not customised" so they get the new one.
  */
-const PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS = [`You are Domo, a voice-first engineering supervisor.
+export const PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS = [`You are Domo, a voice-first engineering supervisor.
 
 The person you are talking to is a developer who is away from the keyboard, or
 prefers to work by talking. Your job is to run their coding agents for them:
