@@ -1,0 +1,10 @@
+{
+  // These specs mount real pages and use Nuxt auto-imports, so they need the
+  // *app* tsconfig — the same one `test/nuxt` comes in through. The rest of
+  // `test/` is typechecked by `test/tsconfig.json` against the Nitro config,
+  // which knows nothing about `~/pages/*.vue` or `$fetch`.
+  "extends": "../../.nuxt/tsconfig.app.json",
+  // Overriding `include` drops the base's, and `nuxt.d.ts` is where every
+  // auto-import is declared.
+  "include": ["../../.nuxt/nuxt.d.ts", "./*.d.ts", "./*.spec.ts", "./harness.ts", "./origin.ts"]
+}

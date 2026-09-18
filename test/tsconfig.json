@@ -4,5 +4,6 @@
   // server code and therefore want the Nitro tsconfig.
   "extends": "../.nuxt/tsconfig.server.json",
   "include": ["./**/*.ts"],
-  "exclude": ["./nuxt/**/*"]
+  // `test/electric` has its own project: it mounts real pages.
+  "exclude": ["./nuxt/**/*", "./electric/*.spec.ts"]
 }

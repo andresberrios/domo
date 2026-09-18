@@ -42,5 +42,52 @@ services:
       postgres:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # The `electric` test layer (test/electric). A second Electric on its own
+  # database, so a test can assert real replication without ever touching the
+  # `domo` database or the `electric` container above.
+  #
+  # `domo_e2e`, deliberately not `domo_test`: the database-backed layers reset
+  # `domo_test` with `drop schema public cascade`, which empties Electric's
+  # publication and leaves a live-looking instance replicating nothing.
+  # ---------------------------------------------------------------------------
+
+  # Electric refuses to start without its database, and Postgres only runs
+  # `initdb` scripts on a fresh volume, so the database is created by a one-shot
+  # service instead. Idempotent: a no-op once it exists.
+  postgres-e2e-db:
+    image: postgres:17-alpine
+    restart: 'no'
+    environment:
+      PGPASSWORD: password
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        psql -h postgres -U postgres -d postgres -tAc
+        "select 1 from pg_database where datname = 'domo_e2e'"
+        | grep -q 1
+        || psql -h postgres -U postgres -d postgres -c 'create database domo_e2e'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  electric-e2e:
+    image: electricsql/electric:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/domo_e2e?sslmode=disable
+      ELECTRIC_INSECURE: 'true'
+      # A distinct stream id keeps this instance's replication slot and
+      # publication from colliding with the `electric` service's.
+      ELECTRIC_REPLICATION_STREAM_ID: domo_e2e
+    ports:
+      - '30001:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-e2e-db:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:
