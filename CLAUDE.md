@@ -39,6 +39,17 @@ things that are easy to get wrong.
   pending `agent_permissions` row, then parks on a promise. The UI, the voice
   agent (`answer_permission`) and the auto-approve setting all resolve the same
   row through `acpManager.answerPermission`.
+- **A new conversation is a new `voice_sessions` row, never a context reset.**
+  Fresh context comes from having no resumption handle and no recap. When the
+  voice agent calls `start_new_conversation`, the runtime waits for the sign-off
+  turn to complete (8 s fallback), emits `session-changed`, and the browser
+  follows with `switchSession()`, which swaps the socket but keeps the mic open.
+- **The voice agent names its own conversations** with `set_conversation_title`;
+  there is no background titling model. Titles have an owner (`title_source`):
+  the tool writes only while it is `auto`, in the same `update … where` (a rename
+  mid-call wins). A rename in the UI or via `rename_conversation` flips it to
+  `user`. The titling guidance is appended in `systemInstruction()`, not the
+  editable prompt, so the Settings switch still governs a customised prompt.
 - **The voice agent is told about agent activity through the bus**, not through
   imports: `server/lib/bus.ts` carries `agent-event` / `permission-changed`, and
   the runtime injects a spoken note (`injectNote`) when
@@ -79,6 +90,11 @@ things that are easy to get wrong.
   made the edit. The Live socket drops too, and any tool call in flight never
   gets its response. When Domo works on itself, stage `server/` edits outside
   the tree (a worktree or a patch) and apply them when no turn is running.
+- **A resumed Live session keeps its original tools.** Sending new
+  `functionDeclarations` with a `sessionResumption.handle` is silently ignored:
+  after `set_conversation_title` shipped, a resumed conversation said it had no
+  such tool. The runtime stores a fingerprint of model + tools next to the handle
+  (`resumption_fingerprint`) and starts fresh when it differs.
 - **Voice tool calls run off the message inbox with a timeout.** The model waits
   on every tool response, so a hung handler (e.g. an adapter that never answers
   `session/new`) used to leave the voice agent silent; agent notes are held until
@@ -89,6 +105,10 @@ things that are easy to get wrong.
   sets `admin off` (no clash with another Caddy on :2019) and
   `skip_install_trust` (no sudo prompt mid-startup — run `caddy trust` once).
   A non-`localhost` address may also need Vite `server.allowedHosts`.
+
+- **Changing `DEFAULT_SYSTEM_INSTRUCTION`? Keep the old text in
+  `PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS`.** The settings page saves the whole
+  form, so most installs store the default verbatim and would never see the new one.
 
 ## Verification notes
 

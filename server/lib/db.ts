@@ -33,6 +33,14 @@ create table if not exists voice_sessions (
   archived boolean not null default false,
   resumption_handle text
 );
+alter table voice_sessions add column if not exists title_source text;
+alter table voice_sessions add column if not exists resumption_fingerprint text;
+-- Rows from before auto-titling: anything but the placeholder was a rename.
+update voice_sessions
+   set title_source = case when title = 'New conversation' then 'auto' else 'user' end
+ where title_source is null;
+alter table voice_sessions alter column title_source set default 'auto';
+alter table voice_sessions alter column title_source set not null;
 
 create table if not exists voice_messages (
   id text primary key,

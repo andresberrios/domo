@@ -22,7 +22,8 @@ const form = reactive<AppSettings>({
   proactiveNotifications: true,
   autoApprovePermissions: false,
   defaultAgentMode: 'default',
-  language: 'en-US'
+  language: 'en-US',
+  autoTitle: true
 })
 
 watchEffect(() => {
@@ -35,7 +36,8 @@ watchEffect(() => {
     proactiveNotifications: settings.value.proactiveNotifications,
     autoApprovePermissions: settings.value.autoApprovePermissions,
     defaultAgentMode: settings.value.defaultAgentMode,
-    language: settings.value.language
+    language: settings.value.language,
+    autoTitle: settings.value.autoTitle
   })
 })
 
@@ -173,6 +175,12 @@ async function deleteServer(server: McpServer) {
             v-model="form.proactiveNotifications"
             label="Speak up on agent activity"
             description="When a coding agent finishes a turn or needs a decision, the voice agent tells you."
+          />
+
+          <USwitch
+            v-model="form.autoTitle"
+            label="Name conversations automatically"
+            description="The voice agent titles each conversation as it goes and renames it when the topic moves on. A title you set yourself is never replaced."
           />
         </section>
 

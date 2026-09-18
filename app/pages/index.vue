@@ -1,31 +1,12 @@
 <script setup lang="ts">
-const router = useRouter()
-const toast = useToast()
-
 const { sessions: voiceSessions } = useVoiceSessions()
 const { sessions: agents } = useAgentSessions()
 const { pending } = usePermissions()
 
 const { data: settings } = await useFetch('/api/settings', { lazy: true })
 
-const creating = ref(false)
+const { creating, startConversation } = useNewConversation()
 const newAgentOpen = ref(false)
-
-async function startConversation() {
-  creating.value = true
-  try {
-    const session = await $fetch<{ id: string }>('/api/voice-sessions', { method: 'POST', body: {} })
-    await router.push(`/voice/${session.id}`)
-  } catch (error: any) {
-    toast.add({
-      title: 'Could not start a conversation',
-      description: error?.data?.statusMessage ?? error?.message,
-      color: 'error'
-    })
-  } finally {
-    creating.value = false
-  }
-}
 
 const working = computed(() => agents.value.filter(agent => agent.status === 'thinking').length)
 </script>

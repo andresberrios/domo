@@ -35,6 +35,7 @@ export function useVoiceSessions() {
       .map((row: any) => ({
         id: row.id,
         title: row.title,
+        titleSource: row.title_source ?? 'auto',
         status: row.status,
         model: row.model,
         voice: row.voice,

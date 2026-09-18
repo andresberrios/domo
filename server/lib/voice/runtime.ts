@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { GoogleGenAI, Modality, type LiveServerMessage, type Session } from '@google/genai'
 
 import { bus } from '../bus'
@@ -10,6 +11,7 @@ import {
   listVoiceMessages,
   updateVoiceSession
 } from '../repo'
+import { geminiApiKey } from '../gemini'
 import { connectVoiceMcpServers, type ConnectedMcp } from './mcp'
 import { voiceToolDeclarations, voiceTools } from './tools'
 import type { VoiceServerMessage } from '../../../shared/types'
@@ -49,9 +51,18 @@ class VoiceRuntime {
    * `onclose` cannot null out the session that replaced it.
    */
   private generation = 0
+  /** Fingerprint of the model + tools this socket was set up with. */
+  private setupFingerprint: string | null = null
   /** Tool calls the model is still waiting on, and notes held back until then. */
   private pendingToolCalls = 0
   private deferredNotes: Array<{ text: string, speak: boolean }> = []
+  /**
+   * A conversation that `start_new_conversation` replaced. Listeners follow it
+   * once the sign-off turn is over, so the goodbye isn't cut off mid-word.
+   */
+  private handOverTo: string | null = null
+  private handOverTimer: ReturnType<typeof setTimeout> | null = null
+  private handedOver = false
 
   private userTranscript = ''
   private assistantTranscript = ''
@@ -119,7 +130,7 @@ class VoiceRuntime {
   }
 
   private async apiKey(): Promise<string> {
-    const key = process.env.NUXT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+    const key = geminiApiKey()
     if (!key) {
       throw new Error(
         'No Gemini API key. Put NUXT_GEMINI_API_KEY=... in .env and restart the server.'
@@ -145,8 +156,18 @@ class VoiceRuntime {
           .join('\n')
       : ''
 
+    // Appended rather than left to the editable prompt, so the Settings switch
+    // governs it even for a customised instruction.
+    const session = await getVoiceSession(this.voiceSessionId)
+    const naming = !settings.autoTitle || !session
+      ? ''
+      : session.titleSource === 'user'
+        ? `\nThis conversation is titled "${session.title}". The user chose that title, so keep it unless they ask for a new one.`
+        : `\nThis conversation is currently titled "${session.title}". Keep the title accurate with set_conversation_title, silently: set it once the topic is clear and update it when the work changes.`
+
     return [
       settings.systemInstruction,
+      naming,
       '',
       'Coding agent sessions currently known to the system:',
       roster,
@@ -170,9 +191,27 @@ class VoiceRuntime {
       this.emit({ type: 'error', message: `MCP server "${error.name}" failed: ${error.message}` })
     }
 
-    const handle = await getResumptionHandle(this.voiceSessionId)
     const model = session?.model || settings.liveModel
     const voiceName = session?.voice || settings.voiceName
+    const functionDeclarations = voiceToolDeclarations({ autoTitle: settings.autoTitle })
+
+    // A resumed session keeps the tools it was created with and ignores the ones
+    // sent now, so the agent would miss any tool added since (verified against
+    // the Live API). Resume only when the setup is unchanged; otherwise start a
+    // fresh session, which still gets the recent recap in its instruction.
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({
+        model,
+        functionDeclarations,
+        mcp: connections.map(connection => [connection.server.id, connection.server.updatedAt])
+      }))
+      .digest('hex')
+    this.setupFingerprint = fingerprint
+    const stored = await getResumptionHandle(this.voiceSessionId)
+    const handle = stored.fingerprint === fingerprint ? stored.handle : null
+    if (stored.handle && !handle) {
+      console.info(`[voice:${this.voiceSessionId}] model or tools changed since the last session; starting fresh instead of resuming`)
+    }
 
     this.emit({ type: 'status', status: 'idle', detail: `connecting to ${model}` })
 
@@ -187,7 +226,7 @@ class VoiceRuntime {
       outputAudioTranscription: {},
       sessionResumption: handle ? { handle } : {},
       contextWindowCompression: { slidingWindow: {} },
-      tools: [{ functionDeclarations: voiceToolDeclarations() }, ...mcpTools]
+      tools: [{ functionDeclarations }, ...mcpTools]
     }
 
     this.session = await this.ai.live.connect({
@@ -252,6 +291,10 @@ class VoiceRuntime {
     this.generation += 1
     this.pendingToolCalls = 0
     this.deferredNotes = []
+    if (this.handOverTimer) clearTimeout(this.handOverTimer)
+    this.handOverTimer = null
+    this.handOverTo = null
+    this.handedOver = false
     this.unsubscribeBus?.()
     this.unsubscribeBus = null
     try {
@@ -287,7 +330,8 @@ class VoiceRuntime {
 
   /** Inject a system note (agent progress, permission needed, …) into the conversation. */
   async injectNote(text: string, speak = true): Promise<void> {
-    if (!this.session) return
+    // Agent news belongs to the conversation the user is moving to.
+    if (!this.session || this.handOverTo) return
     // Client content sent while the model waits on a tool response can leave the
     // turn stuck; hold the note until the response has gone out.
     if (this.pendingToolCalls > 0) {
@@ -315,7 +359,8 @@ class VoiceRuntime {
 
     if (message.sessionResumptionUpdate?.newHandle) {
       await updateVoiceSession(this.voiceSessionId, {
-        resumptionHandle: message.sessionResumptionUpdate.newHandle
+        resumptionHandle: message.sessionResumptionUpdate.newHandle,
+        resumptionFingerprint: this.setupFingerprint
       })
     }
 
@@ -373,6 +418,7 @@ class VoiceRuntime {
         await this.flushUser()
         await this.flushAssistant()
         this.emit({ type: 'turn-complete' })
+        if (this.handOverTo && this.handOverTimer) this.completeHandOver()
       }
     }
 
@@ -423,7 +469,16 @@ class VoiceRuntime {
         result = { error: `Unknown tool: ${name}` }
       } else {
         try {
-          result = await withTimeout(tool.handler(args, { voiceSessionId: this.voiceSessionId }), TOOL_TIMEOUT_MS, name)
+          result = await withTimeout(
+            tool.handler(args, {
+              voiceSessionId: this.voiceSessionId,
+              handOver: (id) => {
+                this.handOverTo = id
+              }
+            }),
+            TOOL_TIMEOUT_MS,
+            name
+          )
         } catch (error) {
           result = { error: error instanceof Error ? error.message : String(error) }
         }
@@ -455,10 +510,29 @@ class VoiceRuntime {
     if (generation !== this.generation && this.closed) return
     this.session?.sendToolResponse({ functionResponses: responses })
     this.pendingToolCalls = Math.max(0, this.pendingToolCalls - 1)
+    if (this.handOverTo && !this.handOverTimer && !this.handedOver) {
+      // The sign-off ends with `turnComplete`; don't wait forever if it never comes.
+      this.handOverTimer = setTimeout(() => this.completeHandOver(), 8000)
+    }
     if (this.pendingToolCalls === 0) {
       const notes = this.deferredNotes.splice(0)
       for (const note of notes) await this.injectNote(note.text, note.speak)
     }
+  }
+
+  private completeHandOver() {
+    const target = this.handOverTo
+    if (this.handOverTimer) clearTimeout(this.handOverTimer)
+    this.handOverTimer = null
+    if (!target || this.handedOver) return
+    this.handedOver = true
+    console.info(`[voice:${this.voiceSessionId}] handing over to ${target}`)
+    this.emit({ type: 'session-changed', sessionId: target })
+    // Browsers that followed detach and the socket handler closes this runtime;
+    // one nobody was listening to would otherwise stay open and billed.
+    setTimeout(() => {
+      if (!this.listenerCount) void voiceManager.close(this.voiceSessionId)
+    }, 5000)
   }
 
   /* ------------------- proactive agent notifications ------------------- */

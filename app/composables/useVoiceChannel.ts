@@ -81,7 +81,10 @@ export interface VoiceToolActivity {
  * down, and the live transcript in between. The model session itself lives on
  * the server, so refreshing the page never drops the conversation.
  */
-export function useVoiceChannel(sessionId: MaybeRefOrGetter<string>) {
+export function useVoiceChannel(
+  sessionId: MaybeRefOrGetter<string>,
+  options: { onSessionChanged?: (sessionId: string) => void } = {}
+) {
   const state = ref<VoiceConnectionState>('offline')
   const statusDetail = ref<string>('')
   const micEnabled = ref(false)
@@ -106,6 +109,8 @@ export function useVoiceChannel(sessionId: MaybeRefOrGetter<string>) {
   let outputDecay: ReturnType<typeof setInterval> | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let intentionalClose = false
+  /** Set when the server moved us to a fresh conversation mid-sign-off. */
+  let followingHandOver = false
 
   function send(message: unknown) {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
@@ -277,6 +282,10 @@ export function useVoiceChannel(sessionId: MaybeRefOrGetter<string>) {
       case 'message':
         // Persisted rows arrive through Electric; nothing to do here.
         break
+      case 'session-changed':
+        followingHandOver = true
+        options.onSessionChanged?.(message.sessionId)
+        break
     }
   }
 
@@ -289,23 +298,29 @@ export function useVoiceChannel(sessionId: MaybeRefOrGetter<string>) {
     errorMessage.value = null
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    socket = new WebSocket(`${protocol}//${window.location.host}/api/voice/ws?sessionId=${id}`)
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/voice/ws?sessionId=${id}`)
+    socket = ws
 
-    socket.onopen = () => {
-      send({ type: 'start' })
+    // Handlers of a socket that `switchSession` already replaced must not touch
+    // the state of the one that took its place.
+    ws.onopen = () => {
+      if (socket === ws) send({ type: 'start' })
     }
-    socket.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (socket !== ws) return
       try {
         handleMessage(JSON.parse(event.data) as VoiceServerMessage)
       } catch {
         /* ignore malformed frame */
       }
     }
-    socket.onerror = () => {
+    ws.onerror = () => {
+      if (socket !== ws) return
       errorMessage.value = 'Voice connection failed'
       state.value = 'error'
     }
-    socket.onclose = () => {
+    ws.onclose = () => {
+      if (socket !== ws) return
       socket = null
       state.value = 'offline'
       if (!intentionalClose) {
@@ -324,6 +339,26 @@ export function useVoiceChannel(sessionId: MaybeRefOrGetter<string>) {
     socket?.close()
     socket = null
     state.value = 'offline'
+  }
+
+  /**
+   * Follow the session id to another conversation without dropping the mic, so
+   * someone mid-conversation can keep talking. Speech still playing is only kept
+   * for a server handover, where it is the old conversation's sign-off.
+   */
+  function switchSession() {
+    const keepPlayback = followingHandOver
+    followingHandOver = false
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = null
+    if (!keepPlayback) stopPlayback()
+    liveUserText.value = ''
+    liveAssistantText.value = ''
+    toolActivity.value = []
+    const previous = socket
+    socket = null
+    previous?.close()
+    connect()
   }
 
   async function startTalking() {
@@ -368,6 +403,7 @@ export function useVoiceChannel(sessionId: MaybeRefOrGetter<string>) {
     toolActivity,
     connect,
     disconnect,
+    switchSession,
     startTalking,
     stopTalking,
     setMuted,

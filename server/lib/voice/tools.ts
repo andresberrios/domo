@@ -4,16 +4,22 @@ import { Type, type FunctionDeclaration } from '@google/genai'
 
 import { acpManager, normalizeCwd } from '../acp/manager'
 import {
+  createVoiceSession,
   getAgentSession,
+  getVoiceSession,
   listAgentEvents,
   listAgentSessions,
   listPermissions,
-  updateAgentSession
+  setAutoTitle,
+  updateAgentSession,
+  updateVoiceSession
 } from '../repo'
 import { getSettings } from '../settings'
 
 export interface VoiceToolContext {
   voiceSessionId: string
+  /** Move everyone listening to another conversation once this turn is spoken. */
+  handOver: (voiceSessionId: string) => void
 }
 
 export interface VoiceTool {
@@ -36,6 +42,16 @@ async function resolveAgent(agentId?: string) {
   }
   if (!sessions.length) throw new Error('There are no coding agent sessions yet.')
   return sessions[0]!
+}
+
+/** Spoken models dress titles up; the sidebar wants a plain few words. */
+function cleanTitle(raw: unknown): string {
+  const title = String(raw ?? '')
+    .split('\n')[0]!
+    .replace(/^["'“”‘’*#\s]+|["'“”‘’*\s]+$/g, '')
+    .replace(/[.!]+$/, '')
+    .trim()
+  return title.length > 60 ? `${title.slice(0, 59).trimEnd()}…` : title
 }
 
 function summarise(text: string | null, max = 400): string {
@@ -102,6 +118,66 @@ export async function transcriptDigest(agentSessionId: string, limit = 40) {
 }
 
 export const voiceTools: Record<string, VoiceTool> = {
+  start_new_conversation: {
+    declaration: {
+      name: 'start_new_conversation',
+      description:
+        'Start a brand-new conversation with fresh context and move the user into it. Use it only when the user asks to start over, clear the context, or begin a new conversation. Coding agents keep running and are still reachable from the new conversation. Say a short sign-off in the same turn; nothing from this conversation carries over.',
+      parameters: { type: Type.OBJECT, properties: {} }
+    },
+    handler: async (_args, ctx) => {
+      const session = await createVoiceSession()
+      ctx.handOver(session.id)
+      return { id: session.id, started: true }
+    }
+  },
+
+  set_conversation_title: {
+    declaration: {
+      name: 'set_conversation_title',
+      description:
+        'Set the title this conversation is listed under. Call it on your own, without saying anything about it: once the topic is clear (usually after the first exchange), and again whenever the conversation moves on to clearly different work. 2 to 6 words, sentence case, naming the actual work ("Flaky invoice tests", "Auth refactor plan"), never "Conversation with user". Skip the call if the current title still fits.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: { title: { type: Type.STRING, description: 'The title, 2 to 6 words.' } },
+        required: ['title']
+      }
+    },
+    handler: async (args, ctx) => {
+      const title = cleanTitle(args.title)
+      if (!title) throw new Error('A title is required.')
+      const session = await getVoiceSession(ctx.voiceSessionId)
+      if (session?.titleSource === 'user') {
+        return { applied: false, title: session.title, reason: 'The user named this conversation. Leave it unless they ask for a rename.' }
+      }
+      if (session?.title === title) return { applied: true, title }
+      // Conditional on the source, so a rename landing in the meantime still wins.
+      const updated = await setAutoTitle(ctx.voiceSessionId, title)
+      return updated
+        ? { applied: true, title }
+        : { applied: false, reason: 'The user named this conversation meanwhile. Leave it.' }
+    }
+  },
+
+  rename_conversation: {
+    declaration: {
+      name: 'rename_conversation',
+      description:
+        'Rename the current conversation because the user asked to call it something. Their title sticks: set_conversation_title will not replace it.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: { title: { type: Type.STRING, description: 'New title, a few words.' } },
+        required: ['title']
+      }
+    },
+    handler: async (args, ctx) => {
+      const title = cleanTitle(args.title)
+      if (!title) throw new Error('A title is required.')
+      await updateVoiceSession(ctx.voiceSessionId, { title, titleSource: 'user' })
+      return { title }
+    }
+  },
+
   list_agent_sessions: {
     declaration: {
       name: 'list_agent_sessions',
@@ -376,8 +452,10 @@ export const voiceTools: Record<string, VoiceTool> = {
   }
 }
 
-export function voiceToolDeclarations(): FunctionDeclaration[] {
-  return Object.values(voiceTools).map(tool => tool.declaration)
+export function voiceToolDeclarations(options: { autoTitle: boolean }): FunctionDeclaration[] {
+  return Object.values(voiceTools)
+    .map(tool => tool.declaration)
+    .filter(declaration => options.autoTitle || declaration.name !== 'set_conversation_title')
 }
 
 export async function pathExists(path: string): Promise<boolean> {

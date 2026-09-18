@@ -19,6 +19,7 @@ function mapVoiceSession(r: any): VoiceSession {
   return {
     id: r.id,
     title: r.title,
+    titleSource: r.title_source ?? 'auto',
     status: r.status,
     model: r.model,
     voice: r.voice,
@@ -126,10 +127,11 @@ export async function createVoiceSession(input: { title?: string } = {}): Promis
   const settings = await getSettings()
   const now = nowIso()
   const id = newId('vs')
+  const title = input.title?.trim()
   const row = await queryOne(
-    `insert into voice_sessions (id, title, status, model, voice, created_at, updated_at)
-     values ($1, $2, 'idle', $3, $4, $5, $5) returning *`,
-    [id, input.title?.trim() || 'New conversation', settings.liveModel, settings.voiceName, now]
+    `insert into voice_sessions (id, title, title_source, status, model, voice, created_at, updated_at)
+     values ($1, $2, $3, 'idle', $4, $5, $6, $6) returning *`,
+    [id, title || 'New conversation', title ? 'user' : 'auto', settings.liveModel, settings.voiceName, now]
   )
   bus.publish({ type: 'voice-list-changed' })
   return mapVoiceSession(row)
@@ -137,9 +139,10 @@ export async function createVoiceSession(input: { title?: string } = {}): Promis
 
 export async function updateVoiceSession(
   id: string,
-  patch: Partial<Pick<VoiceSession, 'title' | 'status' | 'archived' | 'model' | 'voice'>> & {
+  patch: Partial<Pick<VoiceSession, 'title' | 'titleSource' | 'status' | 'archived' | 'model' | 'voice'>> & {
     lastActivityAt?: string
     resumptionHandle?: string | null
+    resumptionFingerprint?: string | null
   }
 ): Promise<VoiceSession | null> {
   const sets: string[] = ['updated_at = $2']
@@ -149,12 +152,14 @@ export async function updateVoiceSession(
     sets.push(`${col} = $${params.length}`)
   }
   if (patch.title !== undefined) push('title', patch.title)
+  if (patch.titleSource !== undefined) push('title_source', patch.titleSource)
   if (patch.status !== undefined) push('status', patch.status)
   if (patch.archived !== undefined) push('archived', patch.archived)
   if (patch.model !== undefined) push('model', patch.model)
   if (patch.voice !== undefined) push('voice', patch.voice)
   if (patch.lastActivityAt !== undefined) push('last_activity_at', patch.lastActivityAt)
   if (patch.resumptionHandle !== undefined) push('resumption_handle', patch.resumptionHandle)
+  if (patch.resumptionFingerprint !== undefined) push('resumption_fingerprint', patch.resumptionFingerprint)
 
   const row = await queryOne(
     `update voice_sessions set ${sets.join(', ')} where id = $1 returning *`,
@@ -166,12 +171,29 @@ export async function updateVoiceSession(
   return mapVoiceSession(row)
 }
 
-export async function getResumptionHandle(id: string): Promise<string | null> {
-  const row = await queryOne<{ resumption_handle: string | null }>(
-    'select resumption_handle from voice_sessions where id = $1',
+/**
+ * Store a generated title, unless the user named the conversation in the
+ * meantime: a rename always wins over a title that was still being written.
+ */
+export async function setAutoTitle(id: string, title: string): Promise<VoiceSession | null> {
+  const row = await queryOne(
+    `update voice_sessions set title = $2, updated_at = $3
+     where id = $1 and title_source = 'auto' returning *`,
+    [id, title, nowIso()]
+  )
+  if (!row) return null
+  bus.publish({ type: 'voice-session-changed', sessionId: id })
+  bus.publish({ type: 'voice-list-changed' })
+  return mapVoiceSession(row)
+}
+
+/** The handle to resume with, and the fingerprint of the setup that issued it. */
+export async function getResumptionHandle(id: string): Promise<{ handle: string | null, fingerprint: string | null }> {
+  const row = await queryOne<{ resumption_handle: string | null, resumption_fingerprint: string | null }>(
+    'select resumption_handle, resumption_fingerprint from voice_sessions where id = $1',
     [id]
   )
-  return row?.resumption_handle ?? null
+  return { handle: row?.resumption_handle ?? null, fingerprint: row?.resumption_fingerprint ?? null }
 }
 
 export async function deleteVoiceSession(id: string): Promise<void> {

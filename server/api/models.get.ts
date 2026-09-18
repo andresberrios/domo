@@ -1,11 +1,13 @@
 import { GoogleGenAI } from '@google/genai'
 
+import { geminiApiKey } from '../lib/gemini'
+
 /**
  * Ask the Gemini API what models this key can see, so the model picker shows
  * real ids rather than a hard-coded guess.
  */
 export default defineEventHandler(async () => {
-  const apiKey = process.env.NUXT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+  const apiKey = geminiApiKey()
   if (!apiKey) return { models: [], error: 'No Gemini API key configured' }
 
   try {

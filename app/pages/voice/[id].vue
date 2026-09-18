@@ -1,22 +1,41 @@
 <script setup lang="ts">
 import type { VoiceSession } from '~~/shared/types'
 
+// Nuxt keys pages by their interpolated path, so going from one conversation to
+// another would remount this page, and its unmount stops the mic. One key for
+// every conversation keeps the page (and the open mic) while `switchSession`
+// moves the socket to the new id.
+definePageMeta({ key: 'voice' })
+
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 
-const sessionId = computed(() => route.params.id as string)
+// Leaving for `/agents/:id` changes `params.id` before this page unmounts; only
+// follow ids that are still conversations.
+const sessionId = ref(route.params.id as string)
+watch(
+  () => route.params.id,
+  (id) => {
+    if (typeof id === 'string' && route.path.startsWith('/voice/')) sessionId.value = id
+  }
+)
 
-const { data: session, refresh: refreshSession } = await useFetch<VoiceSession>(
+const { data: fetchedSession, refresh: refreshSession } = await useFetch<VoiceSession>(
   () => `/api/voice-sessions/${sessionId.value}`,
   { lazy: true }
 )
+// The live row wins, so an auto-generated title shows up as soon as it lands.
+const { sessions } = useVoiceSessions()
+const session = computed(() => sessions.value.find(row => row.id === sessionId.value) ?? fetchedSession.value)
+const { creating, startConversation } = useNewConversation()
 
 const { messages } = useVoiceMessages(sessionId)
 const { sessions: agents } = useAgentSessions()
 const { pending } = usePermissions()
 
-const voice = useVoiceChannel(sessionId)
+// When Domo starts a fresh conversation itself, follow it there.
+const voice = useVoiceChannel(sessionId, { onSessionChanged: id => router.push(`/voice/${id}`) })
 const typed = ref('')
 const newAgentOpen = ref(false)
 const renaming = ref(false)
@@ -41,10 +60,9 @@ watch(
 
 onMounted(() => voice.connect())
 
-watch(sessionId, () => {
-  voice.disconnect()
-  voice.connect()
-})
+// Keeps the mic open across conversations: talking, then "new conversation",
+// carries straight on in the new one.
+watch(sessionId, () => voice.switchSession())
 
 async function toggleMic() {
   if (voice.micEnabled.value) voice.stopTalking()
@@ -71,6 +89,20 @@ async function saveTitle() {
   renaming.value = false
   await refreshSession()
 }
+
+async function nameAutomatically() {
+  await $fetch(`/api/voice-sessions/${sessionId.value}`, { method: 'PATCH', body: { autoTitle: true } })
+  toast.add({ title: 'Domo will name this conversation', color: 'neutral', icon: 'i-lucide-sparkles' })
+}
+
+const menuItems = computed(() => [[
+  { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
+  ...(session.value?.titleSource === 'user'
+    ? [{ label: 'Name automatically', icon: 'i-lucide-sparkles', onSelect: nameAutomatically }]
+    : []),
+  { label: 'End session', icon: 'i-lucide-power', onSelect: endSession },
+  { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: remove }
+]])
 
 async function remove() {
   await $fetch(`/api/voice-sessions/${sessionId.value}`, { method: 'DELETE' })
@@ -110,6 +142,17 @@ function roleMeta(role: string) {
         </template>
 
         <template #right>
+          <UTooltip text="Start over with a fresh context">
+            <UButton
+              icon="i-lucide-message-square-plus"
+              color="neutral"
+              variant="ghost"
+              label="New conversation"
+              :loading="creating"
+              :ui="{ label: 'hidden sm:inline' }"
+              @click="startConversation"
+            />
+          </UTooltip>
           <UButton
             icon="i-lucide-plus"
             color="neutral"
@@ -118,13 +161,7 @@ function roleMeta(role: string) {
             :ui="{ label: 'hidden sm:inline' }"
             @click="newAgentOpen = true"
           />
-          <UDropdownMenu
-            :items="[[
-              { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft = session?.title ?? ''; renaming = true } },
-              { label: 'End session', icon: 'i-lucide-power', onSelect: endSession },
-              { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error', onSelect: remove }
-            ]]"
-          >
+          <UDropdownMenu :items="menuItems">
             <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
           </UDropdownMenu>
         </template>

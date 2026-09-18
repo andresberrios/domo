@@ -4,9 +4,13 @@
 
 export type VoiceSessionStatus = 'idle' | 'live' | 'error'
 
+/** Who set a conversation's title: auto-titling only ever replaces its own. */
+export type VoiceTitleSource = 'auto' | 'user'
+
 export interface VoiceSession {
   id: string
   title: string
+  titleSource: VoiceTitleSource
   status: VoiceSessionStatus
   model: string
   voice: string
@@ -115,6 +119,8 @@ export interface AppSettings {
   autoApprovePermissions: boolean
   defaultAgentMode: string
   language: string
+  /** Let the voice agent name conversations, and rename them as the topic moves. */
+  autoTitle: boolean
 }
 
 /** Server -> browser events on the /api/stream SSE channel. */
@@ -147,4 +153,6 @@ export type VoiceServerMessage =
   | { type: 'transcript', role: 'user' | 'assistant', text: string, final: boolean }
   | { type: 'tool', name: string, args: any, result?: any, phase: 'start' | 'end' }
   | { type: 'message', message: VoiceMessage }
+  /** The conversation was handed over to a fresh one; follow it there. */
+  | { type: 'session-changed', sessionId: string }
   | { type: 'error', message: string }
