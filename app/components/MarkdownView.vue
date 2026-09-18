@@ -19,6 +19,12 @@ watch(
 </script>
 
 <template>
+  <!--
+    `text` is untrusted: model output that quotes files, web pages and command
+    output. `renderMarkdown` is what makes it safe to insert — it escapes raw
+    HTML and allows only http/https/mailto/relative URLs — so nothing but its
+    output may ever reach this `v-html`.
+  -->
   <!-- eslint-disable-next-line vue/no-v-html -->
   <div class="md-body" v-html="html" />
 </template>
