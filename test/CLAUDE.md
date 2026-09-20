@@ -14,41 +14,47 @@ else is a directory inside a project.
 | `unit` | `test/unit`, `test/docker` | plain node, no services, no Nuxt. Pure logic (`buildTranscript()`, formatters, settings reconciliation, devcontainer config parsing, the voice tools with everything below them mocked) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
+| `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
 | `docker-live` | `test/docker/*.live.spec.ts` | the few things that need a real Docker daemon. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
 them but a label; `test/server` and `test/e2e` share one because they have the
-same environment and the same per-file database. `nuxt` is separate because
-`environment: 'nuxt'` really is a different runtime, and `docker-live` because
-a daemon is not something the default run may assume.
+same environment and the same test database. `nuxt` is separate because
+`environment: 'nuxt'` really is a different runtime, `electric` because it needs
+a database nothing may reset with `drop schema`, and `docker-live` because a
+daemon is not something the default run may assume.
 
 ## Commands
 
+**`docker compose up -d` is a precondition of the suite, not a branch in it.**
+
 | command | needs | runs |
 | --- | --- | --- |
-| `pnpm test` | `docker compose up -d` | `unit` + `nuxt` + `integration` — the default. **Fails if Postgres is unreachable.** |
-| `pnpm test:offline` | nothing | `unit` + `nuxt`. Sets the opt-out itself. |
+| `pnpm test` | the services | `unit` + `nuxt` + `integration` + `electric` — the default, ~30 s. |
 | `pnpm test:unit` | nothing | `unit`. |
 | `pnpm test:nuxt` | nothing | `nuxt`. |
 | `pnpm test:integration` | Postgres | `integration`. |
+| `pnpm test:electric` | Postgres + `electric-e2e` | `electric`. |
 | `pnpm test:docker` | a Docker daemon | every `test/docker` file, live ones included. |
 | `pnpm test:watch` | nothing | `unit` + `nuxt` in watch mode. |
 
-### An unreachable database fails the run
+### An unreachable service fails the run
 
-The database-backed files skip themselves through
-`describe.skipIf(databaseUnavailable())`. That is the right behaviour once
-someone has *said* they want it, and a trap otherwise: with Postgres down the
-suite used to print a green "263 passed" while a third of it — the repo layer,
-the SQL schema, the migration path — had not executed at all. A warning scrolls
-past; an exit code does not.
+There is no skip and no opt-out. Both service-backed projects check what they
+need in a `globalSetup` — `test/setup/require-database.ts` for `integration`,
+`test/electric/global-setup.ts` for `electric` — and throw before a single test
+reports, naming the layers that did not run and the command that fixes it.
 
-So the run-level setup now throws when it cannot reach Postgres, before a single
-test reports, and says which layers did not run. `DOMO_TEST_ALLOW_SKIP=1` is the
-deliberate way out: the layers skip, Vitest reports them as skipped in the
-summary (`178 passed | 89 skipped`), and the run exits 0. `pnpm test:offline`
-sets it itself, because "no services at all" is its whole purpose and nobody
-should have to remember a variable to get it.
+That is the whole of it now, and it used to be two mechanisms. The files also
+skipped themselves through `describe.skipIf(databaseUnavailable())`, so with
+Postgres down the suite printed a green "263 passed" while a third of it — the
+repo layer, the SQL schema, the migration path — had not executed at all. A
+warning scrolls past; an exit code does not. The hard failure came later, an
+opt-out came after that to preserve the old behaviour, and the two paths were
+then kept in step by hand for no benefit. Do not reintroduce either.
+
+`test:unit` and `test:nuxt` are the ones that need no services, and they need no
+flag to say so.
 
 What is deliberately *not* tested: the Gemini Live runtime and
 `useVoiceChannel` (a real browser and a real Live session), and spawning ACP
@@ -70,15 +76,16 @@ Two halves, both under `test/setup`:
   the `integration` project, so it runs in the main process before any worker
   forks and not at all for the service-free projects. It creates `domo_test` if
   it is missing and turns an unreachable Postgres into an exit code.
+  (`build-app.ts` sits beside it: same project, same reason — see below.)
 - **`database.ts` is the per-file half** — a `setupFiles` entry that empties the
   database in a *top-level await* and points `DATABASE_URL` at it.
 
 ### Why one database, and what it costs
 
 Per-file databases (`domo_test_<uuid>`) existed to let test *files* run in
-parallel workers. We do not need that: the suite is ~18 s and roughly half of
-it is the Nuxt transform in a different project, which serialising the database
-files does not touch. What per-file databases *did* cost was a permanent
+parallel workers. We do not need that: the whole suite is ~30 s and a large
+share of it is the Nuxt transform in a different project, which serialising the
+database files does not touch. What per-file databases *did* cost was a permanent
 cleanup problem — anything that killed a run (crash, `Ctrl-C`, a worker
 timeout) leaked a database forever, and any sweep that fixes that has to decide
 whether a database it did not create is dead, which it cannot do reliably.
@@ -112,15 +119,16 @@ something else may legitimately be attached — see below.
 - **The reset happens *before* a file, not after it.** A file that crashes
   cannot hand the next one a dirty database, because the next one cleans first.
 - **`DATABASE_URL` always names `domo_test`**, even when Postgres is down: the
-  fallback is an unreachable `postgresql://127.0.0.1:1/domo_test`. A suite that
-  forgot to skip then fails to connect instead of quietly writing to the
-  developer's own `domo`. Never let it fall through to the default.
-- **The skip reason travels through the environment**, not module state: a setup
-  file and its test file do not reliably share a module registry.
-  `databaseUnavailable()` reads `process.env`, and a refused connection arrives
-  as an `AggregateError` with an *empty* message — store `''` and the suites run
-  against whatever `DATABASE_URL` happens to be. This once destroyed a real
-  `domo` database. Keep the `|| error.name` fallback.
+  fallback is an unreachable `postgresql://127.0.0.1:1/domo_test`, set *before*
+  the setup file throws. Anything that still runs then fails to connect instead
+  of quietly writing to the developer's own `domo`. Never let it fall through to
+  the default, and never point the suite at a database called `domo`.
+- **A refused pg connection is an `AggregateError` with an *empty* message.**
+  Keep the `error.message || error.name` fallback in `ensureTestDatabase()`. An
+  early version derived "is the database reachable?" from `error.message` alone,
+  read the empty string as "reachable", ran against whatever `DATABASE_URL`
+  happened to be, and destroyed a real `domo` — ~18 conversations and ~5,200
+  agent events, unrecoverable.
 
 ### ElectricSQL never replicates from `domo_test`
 
@@ -170,8 +178,8 @@ WAL forever until the disk fills. `pg_drop_replication_slot()` and
 
 - **Electric is stubbed in the current e2e layer** (`test/helpers/electric-stub.ts`).
   The stub answers gzipped, like Electric does, which is what the shape proxy
-  has to cope with. The real instance on `domo_test` is for the new propagation
-  layer, not for this one.
+  has to cope with. The real instance belongs to the `electric` layer, on
+  `domo_e2e`; this one never touches it.
 - **`MarkdownView` renders asynchronously** (Shiki). In a component test, poll
   with `expect.poll(() => component.text())`; a single `nextTick` is not enough.
 - **Do not `mockNuxtImport('useRouter')`** — Nuxt's own plugins call
@@ -180,9 +188,21 @@ WAL forever until the disk fills. `pg_drop_replication_slot()` and
 - **`pnpm typecheck` covers the tests too.** `test/nuxt` comes in through the
   generated app tsconfig; everything else through `test/tsconfig.json`,
   referenced from the root `tsconfig.json` (`nuxt prepare` leaves it alone).
-- **The e2e files build into `.nuxt/test/<id>` and do not always clean up** —
-  roughly 40 MB per run. `rm -rf .nuxt/test` when it gets in the way; it is
-  gitignored either way.
+- **`test/e2e` and `test/electric` share one production build.** They differ only in
+  the environment their server is started with, so building twice cost ~15 s for
+  nothing. `test/helpers/app-build.ts` builds `.nuxt/test/app` once per run from
+  whichever project's `globalSetup` runs first, and both start a server from it
+  with `build: false`. The "already built" mark is an **environment variable**,
+  not module state: Vitest runs each project's `globalSetup` in the main process
+  but with its own module registry, so the two callers import two copies of the
+  file. They run one after the other, never concurrently, so a flag is enough —
+  if that ever changes, this needs a lock.
+- **The build is a child process** (`test/helpers/build-app.mjs`). A Nuxt build
+  inside Vitest's main process takes stdout with it and the report never
+  appears.
+- **`.nuxt/test` is roughly 40 MB and gitignored.** It is one directory now
+  (`app`), rebuilt every run, so it no longer accumulates the way the random
+  `.nuxt/test/<id>` dirs did. `rm -rf .nuxt/test` when it gets in the way.
 
 ## Verifying a change to the lifecycle
 
