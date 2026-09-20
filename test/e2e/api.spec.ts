@@ -12,6 +12,7 @@ import {
   listPermissions,
   listProjects
 } from '../../server/lib/repo'
+import { APP_BUILD_DIR } from '../helpers/app-build'
 import { startElectricStub } from '../helpers/electric-stub'
 import type { AgentEvent, AppSettings, PendingPermission, Project, VoiceSession } from '~~/shared/types'
 
@@ -38,7 +39,10 @@ afterAll(async () => {
 
 await setup({
   server: true,
-  build: true,
+  // The build already happened in the project's `globalSetup`, and is the same
+  // one the `electric` layer runs: `test/helpers/app-build.ts`.
+  build: false,
+  buildDir: APP_BUILD_DIR,
   browser: false,
   env: {
     // Explicit, never inherited: a leaked DATABASE_URL would write to the

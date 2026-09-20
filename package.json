@@ -13,7 +13,7 @@
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
     "typecheck": "nuxt typecheck",
-    "test": "vitest run --project unit --project nuxt --project integration",
+    "test": "vitest run --project unit --project nuxt --project integration --project electric",
     "test:unit": "vitest run --project unit",
     "test:nuxt": "vitest run --project nuxt",
     "test:integration": "vitest run --project integration",

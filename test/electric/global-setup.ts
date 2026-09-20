@@ -1,11 +1,11 @@
-import { execFile } from 'node:child_process'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { promisify } from 'node:util'
 
 import { createTestContext, loadFixture, startServer, stopServer } from '@nuxt/test-utils/e2e'
+
+import { APP_BUILD_DIR, ensureAppBuild } from '../helpers/app-build'
 
 import {
   TEST_DATABASE_URL,
@@ -25,10 +25,7 @@ import {
  * resets on the way in.
  */
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const buildDir = resolve(rootDir, '.nuxt/test/electric')
 const dataDir = join(tmpdir(), 'domo-test', 'electric-layer')
-
-const run = promisify(execFile)
 
 export default async function setup() {
   await prepare()
@@ -50,17 +47,11 @@ async function prepare(): Promise<void> {
   try {
     await ensureTestDatabase()
   } catch (error) {
-    throw new Error(
-      `Postgres is not reachable (${reason(error)}). Start it with \`docker compose up -d\`.`,
-      { cause: error }
-    )
+    throw unavailableError(`Postgres is not reachable (${reason(error)}).`, error)
   }
 
   if (!await electricIsUp()) {
-    throw new Error(
-      `ElectricSQL is not reachable at ${TEST_ELECTRIC_URL}. `
-      + 'Start it with `docker compose up -d electric-e2e`.'
-    )
+    throw unavailableError(`ElectricSQL is not reachable at ${TEST_ELECTRIC_URL}.`)
   }
 
   // A clean slate for the first file; every file resets again on entry.
@@ -68,13 +59,13 @@ async function prepare(): Promise<void> {
 
   createTestContext({
     rootDir,
-    // The build happens below, in a child process; this context only has to
-    // know where its output landed.
+    // The build is shared with `test/e2e` and happens in a child process; this
+    // context only has to know where its output landed.
     build: false,
     server: false,
     browser: false,
     port: TEST_SERVER_PORT,
-    buildDir,
+    buildDir: APP_BUILD_DIR,
     env: {
       // Explicit, never inherited: a leaked DATABASE_URL would write to the
       // developer's own `domo`, and these assertions would not notice.
@@ -88,21 +79,25 @@ async function prepare(): Promise<void> {
     }
   })
   await loadFixture()
+  await ensureAppBuild()
+}
 
-  try {
-    // Output is held back and only printed when the build fails: a successful
-    // Nuxt build prints its entire asset manifest.
-    await run(process.execPath, [resolve(rootDir, 'test/electric/build.mjs'), buildDir], {
-      cwd: rootDir,
-      maxBuffer: 64 * 1024 * 1024
-    })
-  } catch (error) {
-    const streams = error as { stdout?: string, stderr?: string }
-    const output = streams.stdout || streams.stderr
-      ? `${streams.stdout ?? ''}\n${streams.stderr ?? ''}`
-      : reason(error)
-    throw new Error(`The app failed to build:\n${output}`, { cause: error })
-  }
+/**
+ * The error that ends the run. Same shape as the one the `integration` project
+ * throws (`test/helpers/database.ts`): what is missing, what did not run, and
+ * the one command that fixes it.
+ */
+function unavailableError(what: string, cause?: unknown): Error {
+  return new Error([
+    what,
+    '',
+    'THE ELECTRIC LAYER DID NOT RUN: test/electric.',
+    'It is the only cover for the propagation loop — a mounted page, the real',
+    'server, real Postgres, a real Electric and back into the page.',
+    '',
+    '  docker compose up -d       start the services, then run the suite again',
+    ''
+  ].join('\n'), { cause })
 }
 
 function reason(error: unknown): string {
