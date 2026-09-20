@@ -60,15 +60,25 @@ class FakeAdapter extends EventEmitter {
 
 type Turn = (send: (update: any) => Promise<void>) => Promise<void>
 
+interface ServeOptions {
+  /** What the adapter says in `initialize`; the mesh rides on `mcpCapabilities.http`. */
+  capabilities?: Record<string, unknown>
+  /** Handed the `session/new` params, so a test can look at `mcpServers`. */
+  onNewSession?: (params: any) => void
+}
+
 /** Serve one turn, scripted by the test, then answer `session/prompt`. */
-function serve(adapter: FakeAdapter, turn: Turn) {
+function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
   return acp
     .agent({ name: 'fake' })
     .onRequest(acp.methods.agent.initialize, () => ({
       protocolVersion: acp.PROTOCOL_VERSION,
-      agentCapabilities: { loadSession: false }
+      agentCapabilities: { loadSession: false, ...options.capabilities }
     }))
-    .onRequest(acp.methods.agent.session.new, () => ({ sessionId: 'acp_fake' }))
+    .onRequest(acp.methods.agent.session.new, (ctx: any) => {
+      options.onNewSession?.(ctx.params)
+      return { sessionId: 'acp_fake' }
+    })
     .onRequest(acp.methods.agent.session.prompt, async (ctx: any) => {
       await turn(update =>
         ctx.client.notify(acp.methods.client.session.update, { sessionId: ctx.params.sessionId, update })
@@ -269,5 +279,48 @@ describe('a streamed turn', () => {
       `select 1 from agent_events where payload->>'streaming' = 'true'`
     )
     expect(open).toEqual([])
+  })
+})
+
+/**
+ * The mesh is an HTTP MCP server Domo hosts itself, so the only thing the
+ * adapter is handed is a URL and a bearer token that names the session. An
+ * adapter that cannot speak HTTP MCP is given nothing at all, rather than a
+ * server it would fail to connect to.
+ */
+describe('the agent mesh handed to a new session', () => {
+  async function newSessionParams(capabilities?: Record<string, unknown>) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    let params: any = null
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      capabilities,
+      onNewSession: (received) => {
+        params = received
+      }
+    })
+    await started
+    return { agent, params }
+  }
+
+  it('is an HTTP server whose token verifies back to the session', async () => {
+    const { verifyMeshToken } = await import('../../server/lib/mesh/token')
+    const { agent, params } = await newSessionParams({ mcpCapabilities: { http: true } })
+
+    const domo = params.mcpServers.find((server: any) => server.name === 'domo')
+    expect(domo.type).toBe('http')
+    expect(domo.url.endsWith('/api/internal/mcp')).toBe(true)
+    const header = domo.headers.find((entry: any) => entry.name === 'Authorization')
+    expect(verifyMeshToken(header.value.replace('Bearer ', ''))).toBe(agent.id)
+  })
+
+  it('is absent when the adapter does not advertise HTTP MCP', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { params } = await newSessionParams()
+
+    expect(params.mcpServers.find((server: any) => server.name === 'domo')).toBeUndefined()
+    warn.mockRestore()
   })
 })

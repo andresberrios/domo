@@ -70,6 +70,13 @@ things that are easy to get wrong.
   imports: `server/lib/bus.ts` carries `agent-event` / `permission-changed`, and
   the runtime injects a spoken note (`injectNote`) when
   `settings.proactiveNotifications` is on.
+- **The agent mesh is an HTTP MCP server Domo hosts itself**, at
+  `/api/internal/mcp` — `server/lib/mesh/` holds the tools (`tools.ts`), the
+  stateless Streamable-HTTP transport (`server.ts`) and the auth (`token.ts`).
+  There is no stdio shim to ship or copy into a container, and one code path
+  serves host and environment sessions: only the hostname differs
+  (`internalBaseUrl`). The caller is whoever their bearer token says they are;
+  nothing in the request body is trusted.
 
 ## Gotchas (learned the hard way)
 
@@ -85,9 +92,22 @@ things that are easy to get wrong.
   gives a human error. `NUXT_CLAUDE_ACP_ENTRY` overrides it.
 - **Container ACP file callbacks must stay in the container.** Read/write ACP
   requests are proxied through Docker; never use the host filesystem for an
-  environment-backed session. The built-in mesh server is copied to
-  `/opt/domo/agent-mesh.mjs` in the environment image and reaches the host via
-  `host.docker.internal`.
+  environment-backed session. The built-in mesh server is not a file the
+  container needs at all: it is Domo's own HTTP endpoint, reached at
+  `host.docker.internal` from inside an environment (`internalBaseUrl(true)`).
+- **The mesh token secret lives in memory and must stay there.** It is
+  `randomBytes(32)` at module scope in `server/lib/mesh/token.ts`, and a token
+  never needs to outlive the process: Nitro's `close` hook kills every adapter,
+  and each spawn gets fresh `mcpServers` (both `session/new` and
+  `session/load`). Do not put the token on `agent_sessions` either — that table
+  is streamed to the browser through Electric.
+- **The mesh is gated on `agentCapabilities.mcpCapabilities.http`**, read from
+  the adapter's `initialize` response. An adapter that does not advertise it
+  gets no `domo` server rather than one it would fail to connect to, and
+  `warnNoHttpMcp()` says so once per adapter. Both installed adapters do
+  advertise it (claude-agent-acp `{http: true, sse: true}`, codex-acp
+  `{acp: false, http: true, sse: false}`), verified by sending `initialize` to
+  each — no account needed for that call.
 - **`UChatMessages` skips messages whose `parts` array is empty.** Rich items
   ride in `metadata` and render through the `#content` slot, but each message
   still needs a plain-text part (see `AgentTranscript.vue`).
@@ -310,7 +330,8 @@ and permissions are end to end because a permission is a row.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
 - The ACP path was verified end to end against a real Claude Code account:
-  `session/new` with the agent-mesh MCP server attached, streaming
+  `session/new` with the agent-mesh MCP server attached (then a stdio shim,
+  now the HTTP endpoint), streaming
   `agent_message_chunk`s, `tool_call` / `tool_call_update` for Bash, Read and
   Write, a pending permission request, and `stopReason: end_turn`.
 - The browser audio path was verified with a fake capture device: the worklet

@@ -36,8 +36,8 @@ if (!url) throw unavailableError()
 
 await resetTestDatabase()
 
-// Uploads, the copied mesh server and dev-environment checkouts must not land
-// in the developer's real `.data` directory. One directory per file, so a
+// Uploads and dev-environment checkouts must not land in the developer's real
+// `.data` directory. One directory per file, so a
 // leftover from one cannot be read by the next.
 const dataDir = join(tmpdir(), 'domo-test', randomUUID().slice(0, 8))
 process.env.NUXT_DATA_DIR = dataDir

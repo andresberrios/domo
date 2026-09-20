@@ -30,9 +30,10 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   [`@agentclientprotocol/codex-acp`](https://www.npmjs.com/package/@agentclientprotocol/codex-acp).
   Streaming messages, tool calls, diffs, plans, permission prompts and modes
   are all first class.
-- **Agent mesh** — every coding agent gets a built-in `domo` MCP server, so
-  agents can list each other, hand work over, spawn new peers, and page the
-  voice supervisor.
+- **Agent mesh** — every coding agent gets a built-in `domo` MCP server, served
+  over HTTP by Domo itself, so agents can list each other, hand work over, spawn
+  new peers, and page the voice supervisor. Each session is handed its own
+  bearer token, so a call can only ever act as the agent that made it.
 - **Custom MCP servers** — add stdio / HTTP / SSE servers in Settings and scope
   them to the voice agent, the coding agents, or both.
 - **Real-time UI** — Postgres is the source of truth, ElectricSQL streams
@@ -182,7 +183,8 @@ server/
   lib/voice/tools.ts     the voice agent's tools over coding agents
   lib/acp/manager.ts     Claude Code / Codex ACP processes, one per session
   lib/dev-environments   Docker/DinD environment lifecycle
-  mcp/agent-mesh.mjs     zero-dependency MCP server handed to coding agents
+  lib/mesh/              the agent-mesh tools, MCP transport and tokens
+  api/internal/mcp.ts    the agent-mesh MCP server every coding agent gets
   api/shape.get.ts       authorising proxy in front of Electric
   api/voice/ws.ts        the audio bridge
 ```
