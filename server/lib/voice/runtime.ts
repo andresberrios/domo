@@ -191,8 +191,14 @@ class VoiceRuntime {
       this.emit({ type: 'error', message: `MCP server "${error.name}" failed: ${error.message}` })
     }
 
-    const model = session?.model || settings.liveModel
-    const voiceName = session?.voice || settings.voiceName
+    // Always the current Settings: the copy on the session row is only a record
+    // of what the conversation last used, and honouring it made a saved change
+    // (or a fixed default) silently not apply to existing conversations.
+    const model = settings.liveModel
+    const voiceName = settings.voiceName
+    if (session && (session.model !== model || session.voice !== voiceName)) {
+      void updateVoiceSession(this.voiceSessionId, { model, voice: voiceName })
+    }
     const functionDeclarations = voiceToolDeclarations({ autoTitle: settings.autoTitle })
 
     // A resumed session keeps the tools it was created with and ignores the ones

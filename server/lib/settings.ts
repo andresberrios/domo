@@ -93,7 +93,7 @@ How to behave:
   configured default workspace.`]
 
 export const DEFAULTS: AppSettings = {
-  liveModel: process.env.NUXT_GEMINI_LIVE_MODEL || 'gemini-3.8-live-preview',
+  liveModel: process.env.NUXT_GEMINI_LIVE_MODEL || 'gemini-3.8-live',
   voiceName: 'Puck',
   systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
