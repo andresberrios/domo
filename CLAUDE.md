@@ -160,6 +160,32 @@ things that are easy to get wrong.
   one. Every default that ever shipped belongs in the list, byte for byte —
   editing one in place (as the Codex change did) creates another variant.
 
+- **The CSP is nonce-based, and Nuxt's own inline scripts depend on it.**
+  `server/plugins/csp.ts` sets the header on every response and stamps a
+  per-request nonce onto the SPA shell's inline scripts through the
+  `render:html` hook — the importmap, the colour-mode preamble and
+  `window.__NUXT__.config` are all inline and all CSP-checked. If that hook
+  stops matching, the app dies with `Refused to execute inline script`.
+  Production only: `pnpm dev` skips it, because Vite needs inline script,
+  `eval` and its own HMR socket.
+- **`style-src` needs `'unsafe-inline'` and cannot be tightened.** Nuxt UI
+  injects its whole colour palette as `<style id="nuxt-ui-colors">` at runtime,
+  Vaul injects the drawer rules, and Shiki's dual-theme output arrives as
+  `style` attributes through `v-html`. Blocked, the app renders black and white
+  with no icons. Hashing the two `<style>` bodies was considered and rejected: a
+  hash drifts on a dependency bump and then fails silently and colourless.
+  `script-src` is where the teeth are — never add `'unsafe-inline'` there.
+- **An AudioWorklet module is governed by `script-src`, not `worker-src`.**
+  Measured in Chromium: `worker-src 'self' blob:` alone makes
+  `audioWorklet.addModule(blobUrl)` fail with a bare `AbortError` and no console
+  violation. That is why `script-src` carries `blob:` and `worker-src` is pinned
+  to `'self'`.
+- **happy-dom does not enforce CSP.** No test layer can tell you the policy still
+  lets the app render; `test/unit/csp.spec.ts` only guards the properties (no
+  `'unsafe-inline'` / `'unsafe-eval'` in `script-src`, no directive injection
+  through the `Host` header). Changing the policy means loading the production
+  build in a real browser and reading the console.
+
 ## Tests
 
 **`test/CLAUDE.md` is the authoritative guide** — layout, the database
@@ -217,6 +243,10 @@ and permissions are end to end because a permission is a row.
 
 ## Verification notes
 
+- The CSP was verified in Chromium against the production build: dashboard,
+  settings, projects, a conversation and an agent transcript, light and dark,
+  desktop and mobile, zero violations. The agent page rendered byte-identically
+  with the header enforced and with it stripped.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
 - The ACP path was verified end to end against a real Claude Code account:
