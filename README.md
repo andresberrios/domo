@@ -183,9 +183,14 @@ Tests are layered, and each layer is a Vitest project you can run on its own:
 `pnpm test:unit` (pure logic, no services), `pnpm test:nuxt` (components and
 composables in a Nuxt runtime), `pnpm test:integration` (the repository layer
 against a real Postgres, plus the whole API over HTTP against a real Nitro
-build) and `pnpm test:docker` (needs a Docker daemon). No test opens a browser
-or calls a real model. Every test file gets its own throwaway database, so your
-own `domo` database is never touched.
+build), `pnpm test:electric` (a page mounted in happy-dom driving the real
+server, with a real ElectricSQL streaming the change back into it) and
+`pnpm test:docker` (needs a Docker daemon).
+
+No test opens a browser or calls a real model. The services are a precondition:
+with them stopped the suite fails rather than quietly skipping the layers that
+need them. Tests run against separate `domo_test` and `domo_e2e` databases, so
+your own `domo` database is never touched.
 
 ## Caveats
 
