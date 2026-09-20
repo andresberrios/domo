@@ -243,7 +243,7 @@ describe('settings', () => {
   it('serves the defaults, and says which keys are configured', async () => {
     const settings = await $fetch<AppSettings & { hasGeminiKey: boolean }>('/api/settings')
 
-    expect(settings).toMatchObject({ voiceName: 'Puck', autoTitle: true, hasGeminiKey: false })
+    expect(settings).toMatchObject({ voiceName: 'Puck', autoTitle: true, vscodeSshHost: '', hasGeminiKey: false })
     expect(settings.systemInstruction).toContain('You are Domo')
   })
 

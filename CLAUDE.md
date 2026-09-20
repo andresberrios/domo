@@ -121,6 +121,14 @@ things that are easy to get wrong.
   single row the app writes now (head row keeps its id, `seq` and timestamp), and
   `buildTranscript()` still merges runs of `…_chunk` rows, for anything that
   arrives from a version that predates the change.
+- **The "Open in VS Code" URL is a hex-encoded JSON authority.**
+  `app/utils/vscodeUri.ts` builds
+  `vscode://vscode-remote/attached-container+<hex>/<path>` from
+  `{"containerName":"/<name>"}`. The leading slash is Docker's own name for the
+  container and is widely attested; the `settings.host` key that points the
+  extension at a remote daemon over SSH (the `vscodeSshHost` setting) is *not*
+  in Microsoft's docs — third-party write-ups only. Navigating to it needs no
+  CSP change: a link is a navigation, and the policy has no `navigate-to`.
 - **Electric needs `REPLICA IDENTITY FULL`** on every synced table (set in the
   schema) or updates arrive without the unchanged columns.
 - **The shape proxy (`server/api/shape.get.ts`) must forward Electric's protocol
