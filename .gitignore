@@ -11,7 +11,7 @@ dist
 # typescript project references (vue-tsc build mode)
 *.tsbuildinfo
 
-# local data (uploads, agent-mesh entry)
+# local data (uploads)
 .data
 *.log
 

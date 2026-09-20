@@ -154,7 +154,7 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
 | `NUXT_DEFAULT_CWD` | Default workspace for new coding agents |
-| `NUXT_DATA_DIR` | Where uploads and the agent-mesh entry are stored (default `./.data`) |
+| `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
 | `NUXT_DEV_ENV_IMAGE` | Override Domo's built-in fallback Dev Container image |
 | `NUXT_DEV_ENV_HELPER_IMAGE` | Image used to copy a checkout into its volume (default `busybox:1.37`; set it for offline installs) |
 | `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix of the volumes and Compose projects Domo creates (default `domo-dev-`) |

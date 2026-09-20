@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
-/** Root for everything Domo persists on disk: uploaded attachments and the agent-mesh entry. */
+/** Root for everything Domo persists on disk: uploaded attachments. */
 export function dataDir(): string {
   const configured = process.env.NUXT_DATA_DIR || process.env.DOMO_DATA_DIR
   const dir = configured
