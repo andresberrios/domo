@@ -101,7 +101,8 @@ export const DEFAULTS: AppSettings = {
   autoApprovePermissions: false,
   defaultAgentMode: 'default',
   language: 'en-US',
-  autoTitle: true
+  autoTitle: true,
+  vscodeSshHost: ''
 }
 
 export async function getSettings(): Promise<AppSettings> {

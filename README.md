@@ -124,6 +124,21 @@ ports every five seconds. Undeclared ports appear in the same card and can be
 forwarded with one click, without VS Code and without recreating the container.
 The **Open** action launches the forwarded address in the host browser.
 
+### Open an environment in VS Code
+
+The checkout lives inside the container, so editing it means attaching an editor
+to that container. **Open in VS Code** on a running environment does exactly
+that: it opens a `vscode://vscode-remote/attached-container+…` URL, which is the
+same thing as the Dev Containers command *Attach to Running Container*.
+
+Requirements:
+
+- VS Code with the **Dev Containers** extension installed;
+- the environment running — the action is disabled while it is stopped;
+- if VS Code runs on a different machine than Domo's Docker, set **VS Code SSH
+  host** in Settings (for example `you@server`) so VS Code reaches that daemon
+  over SSH. Leave it empty when they are the same machine.
+
 ## Configuration
 
 Everything secret lives in `.env`; everything else is editable in **Settings**.

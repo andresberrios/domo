@@ -176,6 +176,8 @@ export interface AppSettings {
   language: string
   /** Let the voice agent name conversations, and rename them as the topic moves. */
   autoTitle: boolean
+  /** SSH target VS Code reaches Docker through; empty when it is the same machine. */
+  vscodeSshHost: string
 }
 
 /** Server -> browser events on the /api/stream SSE channel. */

@@ -40,6 +40,17 @@ describe('getSettings', () => {
     expect(settings.liveModel).toBe(DEFAULTS.liveModel)
   })
 
+  it('defaults the VS Code SSH host to empty, meaning docker is local', async () => {
+    expect(DEFAULTS.vscodeSshHost).toBe('')
+    await expect(getSettings()).resolves.toMatchObject({ vscodeSshHost: '' })
+  })
+
+  it('keeps a stored VS Code SSH host', async () => {
+    stored({ vscodeSshHost: 'you@server' })
+
+    await expect(getSettings()).resolves.toMatchObject({ vscodeSshHost: 'you@server' })
+  })
+
   it('reads values that were stored unwrapped', async () => {
     // Older rows hold the bare value instead of `{ v: … }`.
     query.mockResolvedValue([{ key: 'voiceName', value: 'Kore' }])

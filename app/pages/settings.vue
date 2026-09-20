@@ -27,7 +27,8 @@ const form = reactive<AppSettings>({
   autoApprovePermissions: false,
   defaultAgentMode: 'default',
   language: 'en-US',
-  autoTitle: true
+  autoTitle: true,
+  vscodeSshHost: ''
 })
 
 watchEffect(() => {
@@ -41,7 +42,8 @@ watchEffect(() => {
     autoApprovePermissions: settings.value.autoApprovePermissions,
     defaultAgentMode: settings.value.defaultAgentMode,
     language: settings.value.language,
-    autoTitle: settings.value.autoTitle
+    autoTitle: settings.value.autoTitle,
+    vscodeSshHost: settings.value.vscodeSshHost
   })
 })
 
@@ -220,6 +222,21 @@ async function deleteServer(server: McpServer) {
             label="Auto-approve permission requests"
             description="Answers every prompt with its first “allow once” option. Convenient and dangerous — the agent can edit and run things unattended."
           />
+        </section>
+
+        <USeparator />
+
+        <section class="space-y-4">
+          <h2 class="text-sm font-semibold">
+            Development environments
+          </h2>
+
+          <UFormField
+            label="VS Code SSH host"
+            help="Leave empty when VS Code runs on the same machine as Domo's Docker. Otherwise the SSH target VS Code should reach Docker through, e.g. you@server."
+          >
+            <UInput v-model="form.vscodeSshHost" class="w-full font-mono text-xs" placeholder="you@server" />
+          </UFormField>
         </section>
 
         <USeparator />
