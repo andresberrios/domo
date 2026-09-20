@@ -1,5 +1,5 @@
 import { ShapeStream } from '@electric-sql/client'
-import { beforeAll, describe, expect, inject, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 import { TEST_SERVER_ORIGIN, resetTestDatabase } from './harness'
 
@@ -10,15 +10,12 @@ import { TEST_SERVER_ORIGIN, resetTestDatabase } from './harness'
  * If this file fails, nothing above it can be trusted — a component test would
  * just look like a slow timeout with no explanation.
  */
-const skip = inject('electricLayerUnavailable')
-if (skip) console.warn(`[test] ${skip}`)
 
 beforeAll(async () => {
-  if (skip) return
   await resetTestDatabase()
 })
 
-describe.skipIf(skip)('the Electric client under happy-dom', () => {
+describe('the Electric client under happy-dom', () => {
   it('reaches the real Nitro server through a relative /api path', async () => {
     await expect($fetch('/api/health')).resolves.toMatchObject({ db: true, electric: true })
   })

@@ -2,7 +2,6 @@ import pg from 'pg'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { getDb, query } from '../../server/lib/db'
-import { databaseUnavailable, skipMessage } from '../helpers/database'
 
 /**
  * Every install that ran Domo before streaming text was coalesced has a log
@@ -12,8 +11,6 @@ import { databaseUnavailable, skipMessage } from '../helpers/database'
  *
  * This file starts from that old log and lets `server/lib/db.ts` boot onto it.
  */
-const skip = !!databaseUnavailable()
-if (skip) console.warn(`[test] ${skipMessage()}`)
 
 /** `agent_events` as it was: one row per ACP `session/update`, chunks included. */
 const LEGACY = /* sql */ `
@@ -60,7 +57,6 @@ insert into agent_events (id, agent_session_id, type, payload, created_at) value
 `
 
 beforeAll(async () => {
-  if (skip) return
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL })
   await client.connect()
   await client.query(LEGACY)
@@ -77,7 +73,7 @@ async function events(agentSessionId: string): Promise<Row[]> {
   )
 }
 
-describe.skipIf(skip)('booting on top of a per-delta event log', () => {
+describe('booting on top of a per-delta event log', () => {
   it('folds each run of chunks into one row and keeps everything else', async () => {
     const rows = await events('ag_old')
 

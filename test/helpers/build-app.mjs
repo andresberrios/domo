@@ -1,19 +1,18 @@
 /**
- * Build the app for the `electric` layer, in a child process.
+ * Build the app for the layers that drive a real server, in a child process.
  *
  * Not in-process: a Nuxt build run inside Vitest's *main* process takes its
- * stdout with it, and the test report never appears. (The `e2e` layer gets away
- * with an in-process build because it runs inside a worker, where only that
- * worker's output is affected.)
+ * stdout with it, and the test report never appears. Both callers now build
+ * from a `globalSetup`, which is the main process.
  *
- *   node test/electric/build.mjs <buildDir>
+ *   node test/helpers/build-app.mjs <buildDir>
  */
 import Module from 'node:module'
 import { delimiter, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const buildDir = process.argv[2]
-if (!buildDir) throw new Error('usage: node test/electric/build.mjs <buildDir>')
+if (!buildDir) throw new Error('usage: node test/helpers/build-app.mjs <buildDir>')
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 

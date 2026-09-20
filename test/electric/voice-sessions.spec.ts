@@ -1,5 +1,5 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { beforeAll, describe, expect, inject, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 import HomePage from '~/pages/index.vue'
 
@@ -13,8 +13,6 @@ import { publishedTables, resetTestDatabase, withTestDatabase } from './harness'
  * Nothing here refetches. Every assertion about the DOM is waiting on the
  * Electric stream and on nothing else.
  */
-const skip = inject('electricLayerUnavailable')
-if (skip) console.warn(`[test] ${skip}`)
 
 async function voiceSessions() {
   const { rows } = await withTestDatabase(client =>
@@ -26,11 +24,10 @@ async function voiceSessions() {
 }
 
 beforeAll(async () => {
-  if (skip) return
   await resetTestDatabase()
 })
 
-describe.skipIf(skip)('starting a conversation from the home page', () => {
+describe('starting a conversation from the home page', () => {
   it('reaches Postgres and comes back through Electric, with no refetch', async () => {
     const page = await mountSuspended(HomePage)
 

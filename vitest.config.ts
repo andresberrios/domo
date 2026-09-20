@@ -71,8 +71,14 @@ export default defineConfig(async () => ({
           // in another project, so there is no parallelism worth keeping here.
           fileParallelism: false,
           // Turns "Postgres is not running" into an exit code before any test
-          // reports, and creates the database. See test/setup/require-database.ts.
-          globalSetup: [resolve(rootDir, 'test/setup/require-database.ts')],
+          // reports, and creates the database. The services are a precondition
+          // of the suite, so there is no skip. See test/setup/require-database.ts.
+          // The build is the one `test/e2e` starts its server from, shared with
+          // the `electric` project — see test/helpers/app-build.ts.
+          globalSetup: [
+            resolve(rootDir, 'test/setup/require-database.ts'),
+            resolve(rootDir, 'test/setup/build-app.ts')
+          ],
           setupFiles: [resolve(rootDir, 'test/setup/database.ts')],
           // Resetting the schema is slower than a normal hook; building the
           // Nuxt app for the e2e files is slower still.

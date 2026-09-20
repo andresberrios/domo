@@ -6,5 +6,5 @@
   "extends": "../../.nuxt/tsconfig.app.json",
   // Overriding `include` drops the base's, and `nuxt.d.ts` is where every
   // auto-import is declared.
-  "include": ["../../.nuxt/nuxt.d.ts", "./*.d.ts", "./*.spec.ts", "./harness.ts", "./origin.ts"]
+  "include": ["../../.nuxt/nuxt.d.ts", "./*.spec.ts", "./harness.ts", "./origin.ts"]
 }

@@ -5,14 +5,7 @@ import { join } from 'node:path'
 
 import { afterAll } from 'vitest'
 
-import {
-  TEST_DATABASE,
-  ensureTestDatabase,
-  resetTestDatabase,
-  skipAllowed,
-  skipMessage,
-  unavailableError
-} from '../helpers/database'
+import { TEST_DATABASE, ensureTestDatabase, resetTestDatabase, unavailableError } from '../helpers/database'
 
 /**
  * The per-file half of the test-database lifecycle; `test/setup/require-database.ts`
@@ -29,12 +22,19 @@ import {
  * `fileParallelism: false`.
  */
 const url = await ensureTestDatabase()
-if (url) await resetTestDatabase()
 
 // `DATABASE_URL` always names the test database, even when there is no Postgres
-// to reach. A test that forgets to skip then fails to connect, instead of
-// quietly running against the developer's own `domo`.
+// to reach — the fallback is an unreachable host. Anything that still runs then
+// fails to connect, instead of quietly running against the developer's own
+// `domo`. An early version of this harness emptied it; never let the variable
+// fall through to the default.
 process.env.DATABASE_URL = url ?? `postgresql://127.0.0.1:1/${TEST_DATABASE}`
+
+// The run-level setup normally catches this first; this covers a database that
+// went away mid-run, and any future project that forgets that setup.
+if (!url) throw unavailableError()
+
+await resetTestDatabase()
 
 // Uploads, the copied mesh server and dev-environment checkouts must not land
 // in the developer's real `.data` directory. One directory per file, so a
@@ -42,15 +42,8 @@ process.env.DATABASE_URL = url ?? `postgresql://127.0.0.1:1/${TEST_DATABASE}`
 const dataDir = join(tmpdir(), 'domo-test', randomUUID().slice(0, 8))
 process.env.NUXT_DATA_DIR = dataDir
 
-// The run-level setup normally catches this first; this covers a database that
-// went away mid-run, and any future project that forgets that setup.
-if (!url && !skipAllowed()) throw unavailableError()
-if (!url) console.warn(`[test] ${skipMessage()}`)
-
 afterAll(async () => {
-  if (url) {
-    const { closeDb } = await import('../../server/lib/db')
-    await closeDb()
-  }
+  const { closeDb } = await import('../../server/lib/db')
+  await closeDb()
   await rm(dataDir, { recursive: true, force: true })
 })

@@ -2,7 +2,6 @@ import pg from 'pg'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import { getDb, query } from '../../server/lib/db'
-import { databaseUnavailable, skipMessage } from '../helpers/database'
 
 /**
  * The schema is also the migration: every boot re-runs it against whatever the
@@ -10,8 +9,6 @@ import { databaseUnavailable, skipMessage } from '../helpers/database'
  * tables and checks that booting brings them forward — the case a fresh
  * database can never exercise, and the one that breaks a real install.
  */
-const skip = !!databaseUnavailable()
-if (skip) console.warn(`[test] ${skipMessage()}`)
 
 /** The tables as they were before `title_source` and the container columns. */
 const LEGACY = /* sql */ `
@@ -63,7 +60,6 @@ values ('env_custom', 'prj_1', 'api2', 'domo-dev-env_custom', '/workspaces/api2'
 `
 
 beforeAll(async () => {
-  if (skip) return
   // Set the old shape up outside the pool, so booting is the first thing
   // `server/lib/db.ts` does to this database.
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL })
@@ -73,7 +69,7 @@ beforeAll(async () => {
   await getDb()
 })
 
-describe.skipIf(skip)('booting on top of a pre-title_source database', () => {
+describe('booting on top of a pre-title_source database', () => {
   it('treats the untouched placeholder as Domo\'s to rename', async () => {
     const rows = await query<{ id: string, title_source: string }>(
       'select id, title_source from voice_sessions order by id'

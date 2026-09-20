@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { query } from '../../server/lib/db'
 import { createAgentSession, getAgentSession, listAgentEvents } from '../../server/lib/repo'
 import { captureBus } from '../helpers/bus'
-import { databaseUnavailable, skipMessage } from '../helpers/database'
 import type { AgentEvent } from '~~/shared/types'
 
 /**
@@ -20,8 +19,6 @@ import type { AgentEvent } from '~~/shared/types'
  * Nothing is spawned and nothing is mocked below the ACP boundary: the events
  * here come out of the same Postgres the app uses.
  */
-const skip = !!databaseUnavailable()
-if (skip) console.warn(`[test] ${skipMessage()}`)
 
 const state = vi.hoisted(() => ({ adapters: [] as FakeAdapter[] }))
 
@@ -111,7 +108,6 @@ function textOf(events: AgentEvent[]): string[] {
 }
 
 beforeEach(async () => {
-  if (skip) return
   await query('truncate agent_sessions cascade')
   state.adapters.length = 0
   seen = captureBus()
@@ -126,7 +122,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-describe.skipIf(skip)('a streamed turn', () => {
+describe('a streamed turn', () => {
   it('writes one row per message block, not one per delta', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const agent = await session()

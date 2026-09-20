@@ -165,10 +165,11 @@ things that are easy to get wrong.
 **`test/CLAUDE.md` is the authoritative guide** — layout, the database
 lifecycle, and the Electric rules. This is the summary.
 
-`pnpm test` needs `docker compose up -d` and takes ~20 s. One Vitest project per
-*runtime*: a project earns its own entry only when it needs a different
-environment, a different setup file, or a dependency that must stay out of the
-default run. Everything else is a directory inside a project.
+**`docker compose up -d` is a precondition of `pnpm test`, not a branch in it.**
+The run takes ~30 s. One Vitest project per *runtime*: a project earns its own
+entry only when it needs a different environment, a different setup file, or a
+dependency that must stay out of the default run. Everything else is a directory
+inside a project.
 
 | project | where | what it is |
 | --- | --- | --- |
@@ -178,13 +179,19 @@ default run. Everything else is a directory inside a project.
 | `electric` | `test/electric` | the full loop without a browser — a page mounted in happy-dom drives the real server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. |
 | `docker-live` | `test/docker/*.live.spec.ts` | the few things needing a real daemon. Opt in: `pnpm test:docker`. |
 
-`pnpm test:offline` runs with no services at all; `test:unit` / `test:nuxt` /
+`pnpm test` runs the first four projects; `test:unit` / `test:nuxt` /
 `test:integration` / `test:electric` pick one layer; `test:watch` is unit + nuxt.
 
-- **An unreachable Postgres fails the run.** The database-backed layers used to
-  `skipIf` themselves, so a machine without Postgres printed a green summary for
-  a third of the suite it never ran. Now it exits non-zero and says which layers
-  did not run. `DOMO_TEST_ALLOW_SKIP=1` opts out; `pnpm test:offline` sets it.
+- **An unreachable service fails the run, and there is no opt-out.** Each
+  service-backed project checks what it needs in a `globalSetup` and throws
+  before any test reports, naming the layers that did not run. The layers used
+  to `skipIf` themselves instead, so a machine without Postgres printed a green
+  summary for a third of the suite it never ran; the skip and the opt-out that
+  preserved it are both gone. Do not reintroduce either.
+- **`test/e2e` and `test/electric` share one production build**
+  (`.nuxt/test/app`, built once per run by `test/helpers/app-build.ts` from
+  whichever `globalSetup` runs first). They differ only in the environment their
+  server starts with, and two builds cost ~15 s for nothing.
 - **One test database, `domo_test`**, emptied before each file with `drop schema
   public cascade` and re-bootstrapped by `server/lib/db.ts`. `fileParallelism` is
   off for `integration` only — parallel files were the only reason the old
@@ -195,11 +202,11 @@ default run. Everything else is a directory inside a project.
   publication out from under a live instance and leaves it replicating nothing,
   with no error anywhere. See `test/CLAUDE.md`.
 - **`DATABASE_URL` is always rewritten to a non-`domo` name**, even when Postgres
-  is down (to an unreachable host), so a suite that forgot to skip fails to
+  is down (to an unreachable host), so anything that runs anyway fails to
   connect instead of writing to the developer's own database. This is not
   theoretical: an early version of the harness emptied it. A refused connection
-  arrives as an `AggregateError` with an *empty* message, so the "unavailable"
-  flag must not be derived from `error.message` alone.
+  arrives as an `AggregateError` with an *empty* message, so "could not reach
+  the database" must not be derived from `error.message` alone.
 
 What is deliberately *not* tested: the Gemini Live runtime and `useVoiceChannel`
 (a real browser and a real Live session), and *spawning* ACP adapters (a real

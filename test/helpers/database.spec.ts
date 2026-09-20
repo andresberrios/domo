@@ -1,15 +1,13 @@
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 
-import { TEST_DATABASE, databaseUnavailable, resetTestDatabase, skipMessage, testDatabaseUrl } from './database'
+import { TEST_DATABASE, resetTestDatabase, testDatabaseUrl } from './database'
 
 /**
  * The harness's own test. One shared database means the reset between files is
  * load-bearing: everything else assumes it hands over a database that looks
  * like one the app has never booted against.
  */
-const skip = !!databaseUnavailable()
-if (skip) console.warn(`[test] ${skipMessage()}`)
 
 async function onTestDatabase<T>(use: (client: pg.Client) => Promise<T>): Promise<T> {
   const client = new pg.Client({ connectionString: testDatabaseUrl(), connectionTimeoutMillis: 3000 })
@@ -29,7 +27,7 @@ async function tablesInPublic(client: pg.Client): Promise<string[]> {
   return rows.map(row => row.table_name)
 }
 
-describe.skipIf(skip)('resetTestDatabase', () => {
+describe('resetTestDatabase', () => {
   it('is only ever the test database, never the app\'s own', () => {
     expect(TEST_DATABASE).toBe('domo_test')
     expect(new URL(testDatabaseUrl()).pathname).not.toBe('/domo')
