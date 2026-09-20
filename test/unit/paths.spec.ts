@@ -45,18 +45,21 @@ describe('dataDir', () => {
   })
 
   it('defaults to ./.data', async () => {
+    const expected = resolve(process.cwd(), '.data')
+    const existed = existsSync(expected)
     const { dataDir } = await import('../../server/lib/paths')
 
-    expect(dataDir()).toBe(resolve(process.cwd(), '.data'))
+    expect(dataDir()).toBe(expected)
+    // Creating the directory is the point of dataDir(); don't leave it behind.
+    if (!existed) await rm(expected, { recursive: true, force: true })
   })
 })
 
 describe('sub-directories', () => {
   it('live under the data directory and are created on demand', async () => {
     process.env.NUXT_DATA_DIR = root
-    const { dbDir, uploadsDir } = await import('../../server/lib/paths')
+    const { uploadsDir } = await import('../../server/lib/paths')
 
-    expect(dbDir()).toBe(join(root, 'pglite'))
     expect(uploadsDir()).toBe(join(root, 'uploads'))
     expect(existsSync(join(root, 'uploads'))).toBe(true)
   })

@@ -65,7 +65,7 @@ async function environmentAction(environment: DevEnvironment, action: 'start' | 
 }
 
 async function deleteEnvironment(environment: DevEnvironment) {
-  if (!confirm(`Delete ${environment.name}, its repository copy, Compose stacks, and agent sessions?`)) return
+  if (!confirm(`Delete ${environment.name}, its checkout, Compose stacks, and agent sessions? Work that is not pushed is lost.`)) return
   busy[environment.id] = true
   try {
     await $fetch(`/api/dev-environments/${environment.id}`, { method: 'DELETE' })

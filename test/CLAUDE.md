@@ -15,7 +15,7 @@ else is a directory inside a project.
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
-| `docker-live` | `test/docker/*.live.spec.ts` | the few things that need a real Docker daemon. Opt in. |
+| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real Dev Container CLI, five project shapes including Compose, plus the tar copy into the volume; minutes on a cold cache, needs the network). Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
 them but a label; `test/server` and `test/e2e` share one because they have the
@@ -56,8 +56,17 @@ then kept in step by hand for no benefit. Do not reintroduce either.
 `test:unit` and `test:nuxt` are the ones that need no services, and they need no
 flag to say so.
 
-What is deliberately *not* tested: the Gemini Live runtime and
-`useVoiceChannel` (a real browser and a real Live session), and spawning ACP
+**Asserting on the argv handed to `docker` cannot tell you the CLI accepts it.**
+`test/docker/dev-environments.spec.ts` was green while every environment for a
+project without a `.devcontainer/` failed to start. The live spec exists for
+that gap; when the environment lifecycle changes, run `pnpm test:docker`. It
+leaves nothing behind, and its `afterEach` removes containers, workspace volumes,
+Docker-in-Docker volumes and compose projects when an assertion fails halfway.
+Everything it creates is named `domo-live-test-…`.
+
+What is deliberately *not* tested: a real Gemini Live session and
+`useVoiceChannel` (a real browser and a real Live session; only the request the
+runtime sends is covered, with the SDK faked — `test/server/voice-runtime-model.spec.ts`), and spawning ACP
 adapters (a real Claude Code / Codex account). Permissions are still covered
 end to end, because a permission is a row — `answerPermission` resolves it with
 no adapter attached.

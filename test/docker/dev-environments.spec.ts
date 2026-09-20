@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -17,6 +17,7 @@ import type { DevEnvironment } from '~~/shared/types'
 const run = vi.fn(async (_program: string, _args: string[], _options?: unknown) => ({ stdout: '', stderr: '' }))
 const inspectContainer = vi.fn()
 const devcontainerUp = vi.fn()
+const populateWorkspaceVolume = vi.fn(async () => undefined)
 const repo = {
   createDevEnvironmentRow: vi.fn(),
   deleteDevEnvironmentRow: vi.fn(),
@@ -26,7 +27,9 @@ const repo = {
   upsertDevEnvironmentPort: vi.fn()
 }
 
-vi.mock('../../server/lib/devcontainer/client', () => ({ run, inspectContainer, devcontainerUp }))
+vi.mock('../../server/lib/devcontainer/client', () => ({
+  run, inspectContainer, devcontainerUp, populateWorkspaceVolume, resourcePrefix: () => 'domo-dev-'
+}))
 vi.mock('../../server/lib/dev-environment-ports', () => ({
   refreshEnvironmentPorts: vi.fn(async () => []),
   stopEnvironmentForwarders: vi.fn()
@@ -52,7 +55,7 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     containerName: 'domo-dev-env_1',
     containerId: 'container-sha',
     workspacePath: '/workspaces/api',
-    hostWorkspacePath: '/tmp/domo/env_1/repo',
+    hostWorkspacePath: null,
     configSource: 'default',
     configPath: null,
     remoteUser: 'vscode',
@@ -193,6 +196,12 @@ describe('start, stop and remove', () => {
 
   it('removes the container with its volumes, and tolerates it being gone', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha',
+      labels: {},
+      namedVolumes: ['domo-dev-env_1-workspace', 'dind-var-lib-docker-abc'],
+      publishedPorts: []
+    })
 
     await removeEnvironment('env_1')
 
@@ -201,7 +210,43 @@ describe('start, stop and remove', () => {
       ['rm', '--force', '--volumes', 'container-sha'],
       { allowFailure: true }
     )
+    // The workspace volume and the docker-in-docker feature's named volume go too.
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-abc'])
     expect(repo.deleteDevEnvironmentRow).toHaveBeenCalledWith('env_1')
+  })
+
+  it('leaves a named volume the project mounted itself alone, and reads the mounts first', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha',
+      labels: {},
+      namedVolumes: ['shared-build-cache', 'dind-var-lib-docker-abc'],
+      publishedPorts: []
+    })
+
+    await removeEnvironment('env_1')
+
+    expect(dockerCalls()).not.toContainEqual(expect.arrayContaining(['shared-build-cache']))
+    // Once the container is gone there is nothing left to ask which volumes it had.
+    const removedAt = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'rm')]!
+    expect(inspectContainer.mock.invocationCallOrder[0]).toBeLessThan(removedAt)
+  })
+
+  it('takes a compose project down instead of only removing one container', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha',
+      labels: { 'com.docker.compose.project': 'domo-dev-env_1' },
+      namedVolumes: [],
+      publishedPorts: []
+    })
+
+    await removeEnvironment('env_1')
+
+    expect(dockerCalls()).toContainEqual([
+      'compose', '--project-name', 'domo-dev-env_1', 'down', '--volumes', '--remove-orphans'
+    ])
   })
 
   it('is a no-op for an environment that is not there', async () => {
@@ -243,6 +288,8 @@ describe('createEnvironment', () => {
       id: 'container-sha',
       name: 'domo-dev-env_1',
       running: true,
+      labels: {},
+      namedVolumes: [],
       publishedPorts: []
     })
   })
@@ -253,11 +300,18 @@ describe('createEnvironment', () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  it('copies the checkout, declares its ports and boots a Dev Container', async () => {
+  it('copies the checkout into a volume, declares its ports and boots a Dev Container', async () => {
     await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
-    const copied = repo.createDevEnvironmentRow.mock.calls[0]![0].hostWorkspacePath
-    await expect(readFile(join(copied, 'README.md'), 'utf8')).resolves.toBe('# project\n')
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    expect(repo.createDevEnvironmentRow.mock.calls[0]![0].hostWorkspacePath).toBeUndefined()
+    expect(dockerCalls()).toContainEqual([
+      'volume', 'create', '--label', `domo.envId=${id}`, `domo-dev-${id}-workspace`
+    ])
+    expect(populateWorkspaceVolume).toHaveBeenCalledWith(expect.objectContaining({
+      source: repoPath,
+      volume: `domo-dev-${id}-workspace`
+    }))
 
     expect(repo.upsertDevEnvironmentPort).toHaveBeenCalledWith(expect.objectContaining({
       innerPort: 3000,
@@ -266,9 +320,48 @@ describe('createEnvironment', () => {
     }))
     expect(devcontainerUp).toHaveBeenCalledWith(expect.objectContaining({
       environmentName: 'API work',
-      hostWorkspace: copied,
+      repoPath,
+      workspaceVolume: expect.stringMatching(/^domo-dev-env_.*-workspace$/),
       resolved: expect.objectContaining({ source: 'domo' })
     }))
+  })
+
+  // A data dir inside the project would otherwise be copied into its own environment.
+  it.each([
+    ['at the top level', '.data', '.data'],
+    ['nested', join('tools', 'state', 'domo'), join('tools', 'state', 'domo')],
+    ['outside it', null, null]
+  ])('leaves the Domo data dir out of the copy when it is %s', async (_label, inside, excluded) => {
+    process.env.NUXT_DATA_DIR = inside ? join(repoPath, inside) : dataRoot
+
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    expect(populateWorkspaceVolume).toHaveBeenCalledWith(expect.objectContaining({
+      exclude: excluded ? [excluded] : []
+    }))
+  })
+
+  it('leaves nothing behind when the container fails to start', async () => {
+    devcontainerUp.mockRejectedValue(new Error('feature build failed'))
+    repo.getDevEnvironment.mockResolvedValue(environment({ containerId: null }))
+    run.mockImplementation(async (_program, args) => ({
+      stdout: args[0] === 'ps' ? 'half-made-container' : '',
+      stderr: ''
+    }))
+    inspectContainer.mockResolvedValue({
+      id: 'half-made-container',
+      labels: {},
+      namedVolumes: ['dind-var-lib-docker-xyz'],
+      publishedPorts: []
+    })
+
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow('feature build failed')
+
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith(id, { status: 'error', lastError: 'feature build failed' })
+    expect(dockerCalls()).toContainEqual(['rm', '--force', '--volumes', 'half-made-container'])
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-xyz'])
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', `domo-dev-${id}-workspace`])
   })
 
   it('makes the workspace safe for git and installs both adapters, as argv', async () => {

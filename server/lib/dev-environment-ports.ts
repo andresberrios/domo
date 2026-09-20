@@ -2,8 +2,7 @@ import { spawn } from 'node:child_process'
 import { createServer, type Server, type Socket } from 'node:net'
 
 import type { DevEnvironment, DevEnvironmentPort } from '../../shared/types'
-import { inspectContainer, run } from './devcontainer/client'
-import { resolveDevcontainerConfig } from './devcontainer/config'
+import { devcontainerMetadata, inspectContainer, run } from './devcontainer/client'
 import type { PortAttributes } from './devcontainer/types'
 import {
   getDevEnvironment,
@@ -135,9 +134,9 @@ export async function refreshEnvironmentPorts(environmentId: string): Promise<De
 
   const listening = await listeningTcpPorts(environment)
   const existing = await listDevEnvironmentPorts(environmentId)
-  const resolved = environment.hostWorkspacePath
-    ? await resolveDevcontainerConfig(environment.hostWorkspacePath, environment.name).catch(() => null)
-    : null
+  // Port attributes come from the container's own devcontainer.metadata label, so they no longer
+  // depend on a host copy of the repository being around.
+  const resolved = devcontainerMetadata(inspection.labels)
   for (const port of existing) {
     const published = inspection.publishedPorts.find(item =>
       item.innerPort === port.innerPort && item.protocol === port.protocol
@@ -151,8 +150,8 @@ export async function refreshEnvironmentPorts(environmentId: string): Promise<De
     if (innerPort === 22 || existing.some(port => port.innerPort === innerPort && port.protocol === 'tcp')) continue
     const attributes = detectedPortAttributes(
       innerPort,
-      resolved?.config.portsAttributes ?? {},
-      resolved?.config.otherPortsAttributes
+      resolved.portsAttributes,
+      resolved.otherPortsAttributes
     )
     if (attributes?.onAutoForward === 'ignore') continue
     await upsertDevEnvironmentPort({

@@ -100,13 +100,20 @@ manage the environment.
 
 Each environment:
 
-- copies the full source checkout (including its Git metadata) into Domo's data
-  directory and bind-mounts that copy at `/workspaces/<environment>`;
+- copies the full source checkout (including its Git metadata) into a private
+  Docker volume mounted at `/workspaces/<environment>`. Nothing bind-mounts your
+  working tree, so file-heavy work (`git`, installs, test runs) runs at native
+  container speed and an agent's edits never touch your checkout. The definition,
+  Dockerfile and Compose files are read from your checkout when the environment
+  is created; a Compose file that binds the checkout is rewritten to use the
+  volume;
 - can run multiple Claude Code and Codex ACP sessions against that same copy;
 - runs privileged with its own nested Docker daemon, so agents can use
   `docker compose` without sharing stacks with the host or other environments;
 - persists its checkout and nested containers across stop/start, and removes
-  both when the environment is deleted.
+  both when the environment is deleted. **The checkout exists only in the
+  volume**, so push what you want to keep (or `docker cp` it out) before
+  deleting.
 
 ### Forwarding application ports
 
@@ -131,14 +138,16 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
 | `NUXT_DEFAULT_CWD` | Default workspace for new coding agents |
-| `NUXT_DATA_DIR` | Where copied dev environments and uploads are stored (default `./.data`) |
+| `NUXT_DATA_DIR` | Where uploads and the agent-mesh entry are stored (default `./.data`) |
 | `NUXT_DEV_ENV_IMAGE` | Override Domo's built-in fallback Dev Container image |
+| `NUXT_DEV_ENV_HELPER_IMAGE` | Image used to copy a checkout into its volume (default `busybox:1.37`; set it for offline installs) |
+| `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix of the volumes and Compose projects Domo creates (default `domo-dev-`) |
 | `NUXT_CLAUDE_CONFIG_DIR` | Claude config directory mounted into environments (defaults to `~/.claude`) |
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
 
 ### About the Live model id
 
-Google's Live model ids move fast. Domo defaults to `gemini-3.8-live-preview`
+Google's Live model ids move fast. Domo defaults to `gemini-3.8-live`
 and lets you change it in **Settings → Live model**; the dropdown is populated
 from `models.list` on your own API key, and you can type any id by hand. If a
 session fails to connect with a model-not-found error, that's the knob to turn.
@@ -200,7 +209,7 @@ your own `domo` database is never touched.
 - Dev environments require a Docker host that permits privileged containers.
   Treat an environment as a trusted development machine: its agents can fully
   control its private nested Docker daemon.
-- Attachments are stored on disk under `.data/uploads` and handed to agents as
+- Attachments are stored on disk under `<data dir>/uploads` and handed to agents as
   `file://` resource links.
 
 ## License

@@ -45,8 +45,10 @@ things that are easy to get wrong.
   (`server/lib/acp/manager.ts`) and reattached with `session/load` when the
   session already has an `acp_session_id`.
 - **Projects own dev environments; dev environments own isolation.** A managed
-  environment is a long-lived privileged container with a copied checkout in a
-  named volume and a private DinD daemon. Multiple agent sessions may share one
+  environment is a long-lived privileged container whose checkout lives in a
+  named Docker volume (`domo-dev-<id>-workspace`, derived from the id, so no
+  column) and a private DinD daemon. There is no host copy. Legacy environments
+  keep their bind-mounted `hostWorkspacePath`, and delete still removes it. Multiple agent sessions may share one
   environment. Their ACP adapters run through `docker exec`; legacy sessions
   without `dev_environment_id` still run directly on the host.
 - **Permission requests are rows, not callbacks.** `onPermission` writes a
@@ -121,6 +123,40 @@ things that are easy to get wrong.
   single row the app writes now (head row keeps its id, `seq` and timestamp), and
   `buildTranscript()` still merges runs of `…_chunk` rows, for anything that
   arrives from a version that predates the change.
+- **The checkout goes into its volume as a `tar` pipe, not a bind mount.**
+  `populateWorkspaceVolume()` streams host `tar` into `tar -x` in a throwaway
+  busybox container (`COPYFILE_DISABLE=1`, or macOS adds `._*` files). It leaves
+  out the Domo data dir when `NUXT_DATA_DIR` sits inside the project. Bind
+  mounts on Docker Desktop cost 15–35x on metadata-heavy work (`git add` on 20k
+  files: 22.8 s vs 0.65 s), which is why the volume exists at all.
+- **A voice session's `model` / `voice` columns are a record, not an input.** The
+  runtime reads `liveModel` / `voiceName` from Settings on every connect and
+  writes them back to the row. Preferring the row froze whatever default was
+  current when the conversation was created, so a Settings change never applied.
+- **Reka select items cannot have `value: ''`** (it throws when the menu opens).
+  Use a named sentinel for "none" — see `LOCAL` in `NewAgentModal.vue`.
+
+- **`devcontainer up` needs `--no-lockfile`, and its `--workspace-folder` is a
+  scratch dir.** The CLI writes a Feature lockfile beside the config it thinks it
+  is using; with `--override-config` that is `<workspace>/.devcontainer/`, which
+  does not exist for a project without a definition, so every one of them died
+  with `ENOENT … devcontainer-lock.json`. The scratch folder (deleted afterwards)
+  is what keeps the CLI's `vsc-<folder>-<hash>` image tag unique per environment;
+  the checkout is not in it. Consequence: `${localWorkspaceFolder}` in a project's
+  own config resolves to that scratch dir.
+- **Launch is two phases:** `up --skip-post-create`, `chown` the volume to the
+  remote user (tar leaves it root-owned), then `run-user-commands`. Otherwise
+  `postCreateCommand` runs as the remote user against files it does not own.
+- **Build contexts, Dockerfiles and compose files are read from the project's own
+  checkout**, made absolute by `absoluteSourcePaths()`; the volume is not on the
+  host. A compose file that binds `..` is rewritten by `composeWorkspaceOverride()`
+  (an extra compose file, found with `docker compose config`) to mount the volume
+  at the same target; sub-directory binds become `subpath` mounts (Engine 26+).
+- **`docker rm --volumes` does not remove the Docker-in-Docker volume.** The
+  Feature names it (`dind-var-lib-docker-<id>`, `<project>_dind-…` under compose),
+  so `removeContainer()` reads the container's named volumes first and removes
+  exactly those, plus `compose down` for a compose project. Not other named
+  volumes: a project's own mounts may be shared.
 - **Electric needs `REPLICA IDENTITY FULL`** on every synced table (set in the
   schema) or updates arrive without the unchanged columns.
 - **The shape proxy (`server/api/shape.get.ts`) must forward Electric's protocol
@@ -249,8 +285,9 @@ inside a project.
   arrives as an `AggregateError` with an *empty* message, so "could not reach
   the database" must not be derived from `error.message` alone.
 
-What is deliberately *not* tested: the Gemini Live runtime and `useVoiceChannel`
-(a real browser and a real Live session), and *spawning* ACP adapters (a real
+What is deliberately *not* tested: a real Gemini Live session and `useVoiceChannel`
+(a real browser and a real Live session; the model/voice the runtime sends is
+covered with the SDK faked), and *spawning* ACP adapters (a real
 Claude Code / Codex account). Everything above that boundary is covered —
 `test/server/acp-stream.spec.ts` mocks `spawn` with a pair of pipes and puts the
 SDK's own agent side on the far end, so `onUpdate` runs against real Postgres,

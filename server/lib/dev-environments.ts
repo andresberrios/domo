@@ -1,11 +1,11 @@
-import { access, cp, mkdir, rm } from 'node:fs/promises'
-import { join, relative, resolve, sep } from 'node:path'
+import { access, rm } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { AgentAdapter, DevEnvironment } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
 import { resolveDevcontainerConfig, resolveForwardPorts } from './devcontainer/config'
-import { devcontainerUp, inspectContainer, run } from './devcontainer/client'
+import { devcontainerUp, inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './devcontainer/client'
 import { dataDir } from './paths'
 import {
   createDevEnvironmentRow,
@@ -42,17 +42,24 @@ export async function ensureEnvironmentAdapter(
   ])
 }
 
-async function copyRepository(source: string, destination: string): Promise<void> {
-  const excluded = resolve(dataDir())
-  await mkdir(destination, { recursive: true })
-  await cp(source, destination, {
-    recursive: true,
-    verbatimSymlinks: true,
-    filter: (path) => {
-      const absolute = resolve(path)
-      return absolute !== excluded && !absolute.startsWith(`${excluded}${sep}`)
-    }
+/** The named volume that holds an environment's checkout. Derived from the id, so it needs no column. */
+export function workspaceVolumeName(environmentId: string): string {
+  return `${resourcePrefix()}${environmentId}-workspace`.toLowerCase()
+}
+
+const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
+
+async function copyRepository(source: string, environmentId: string): Promise<string> {
+  const volume = workspaceVolumeName(environmentId)
+  await run('docker', ['volume', 'create', '--label', `domo.envId=${environmentId}`, volume])
+  const excluded = relative(resolve(source), resolve(dataDir()))
+  await populateWorkspaceVolume({
+    source,
+    volume,
+    helperImage: HELPER_IMAGE,
+    exclude: excluded && !excluded.startsWith('..') && !isAbsolute(excluded) ? [excluded] : []
   })
+  return volume
 }
 
 async function installDomoRuntime(containerId: string, remoteUser: string | null, workspacePath: string): Promise<void> {
@@ -75,6 +82,29 @@ async function installDomoRuntime(containerId: string, remoteUser: string | null
   await run('docker', args)
 }
 
+/**
+ * Removes a container and everything of its that `docker rm --volumes` leaves
+ * behind. That flag only takes anonymous volumes; the Docker-in-Docker Feature
+ * keeps /var/lib/docker in a *named* one (`dind-var-lib-docker-<id>`, prefixed
+ * with the compose project for compose definitions), so the nested daemon's whole
+ * image store used to outlive its environment. Only that volume is removed by
+ * name: any other one a project's own config mounts may be shared.
+ */
+async function removeContainer(reference: string): Promise<void> {
+  const inspection = await inspectContainer(reference).catch(() => null)
+  const dindVolumes = (inspection?.namedVolumes ?? []).filter(name => name.includes('dind-var-lib-docker'))
+  const composeProject = inspection?.labels['com.docker.compose.project']
+  if (composeProject) {
+    // A compose-based definition: the container is one service of a project with its own
+    // network, volumes and possibly sidecars. `down` needs only the project name.
+    await run('docker', ['compose', '--project-name', composeProject, 'down', '--volumes', '--remove-orphans'], { allowFailure: true }).catch(() => {})
+  }
+  await run('docker', ['rm', '--force', '--volumes', reference], { allowFailure: true }).catch(() => {})
+  for (const volume of dindVolumes) {
+    await run('docker', ['volume', 'rm', volume], { allowFailure: true }).catch(() => {})
+  }
+}
+
 export async function createEnvironment(input: {
   projectId: string
   name: string
@@ -85,20 +115,19 @@ export async function createEnvironment(input: {
 
   const id = newId('env')
   const safeName = safeEnvironmentName(input.name) || id
-  const hostWorkspace = join(environmentRoot(id), 'repo')
   const workspacePath = `/workspaces/${safeName}`
   await createDevEnvironmentRow({
     id,
     projectId: project.id,
     name: input.name.trim(),
     containerName: `domo-dev-${id}`,
-    workspacePath,
-    hostWorkspacePath: hostWorkspace
+    workspacePath
   })
 
   try {
-    await copyRepository(project.repoPath, hostWorkspace)
-    const resolved = await resolveDevcontainerConfig(hostWorkspace, input.name.trim())
+    // Read the definition (and, later, build contexts / compose files) from the project's own
+    // checkout; the environment gets a copy in a named volume, never a host directory.
+    const resolved = await resolveDevcontainerConfig(project.repoPath, input.name.trim())
     const declaredPorts = resolveForwardPorts(resolved.config)
     for (const port of declaredPorts) {
       await upsertDevEnvironmentPort({
@@ -117,22 +146,32 @@ export async function createEnvironment(input: {
     const codexConfigDir = configuredCodexDir
       ? await access(configuredCodexDir).then(() => configuredCodexDir).catch(() => null)
       : null
+    const workspaceVolume = await copyRepository(project.repoPath, id)
     const result = await devcontainerUp({
       resolved,
       environmentId: id,
       projectId: project.id,
       environmentName: input.name.trim(),
-      hostWorkspace,
+      workspaceVolume,
+      repoPath: project.repoPath,
       ports: declaredPorts,
       claudeConfigDir,
-      codexConfigDir
+      codexConfigDir,
+      // The tar stream left the files owned by root. Hand them to the remote user before
+      // postCreateCommand & co. run as that user.
+      afterCreate: async (created) => {
+        if (!created.remoteUser || created.remoteUser === 'root') return
+        await run('docker', [
+          'exec', '--user', 'root', created.containerId,
+          'chown', '--recursive', `${created.remoteUser}:`, created.workspacePath
+        ])
+      }
     })
     const inspection = await inspectContainer(result.containerId)
     if (!inspection) throw new Error('The Dev Container was created but could not be inspected.')
     await updateDevEnvironment(id, {
       containerId: result.containerId,
       containerName: inspection.name,
-      hostWorkspacePath: hostWorkspace,
       workspacePath: result.workspacePath,
       configSource: resolved.source,
       configPath: resolved.displayPath,
@@ -150,15 +189,16 @@ export async function createEnvironment(input: {
     await updateDevEnvironment(id, { status: 'error', lastError: message })
     const current = await getDevEnvironment(id)
     if (current?.containerId) {
-      await run('docker', ['rm', '--force', '--volumes', current.containerId], { allowFailure: true }).catch(() => {})
+      await removeContainer(current.containerId)
     } else {
       const found = await run('docker', [
         'ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`
       ], { allowFailure: true }).catch(() => ({ stdout: '', stderr: '' }))
       for (const containerId of found.stdout.split('\n').filter(Boolean)) {
-        await run('docker', ['rm', '--force', '--volumes', containerId], { allowFailure: true }).catch(() => {})
+        await removeContainer(containerId)
       }
     }
+    await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
     throw error
   }
 }
@@ -200,9 +240,10 @@ export async function removeEnvironment(id: string): Promise<void> {
   const environment = await getDevEnvironment(id)
   if (!environment) return
   stopEnvironmentForwarders(id)
-  await run('docker', ['rm', '--force', '--volumes', containerReference(environment)], { allowFailure: true }).catch(() => {})
-  if (!environment.containerId) {
-    await run('docker', ['volume', 'rm', `${environment.containerName}-workspace`], { allowFailure: true }).catch(() => {})
+  await removeContainer(containerReference(environment))
+  // The checkout's volume, plus the one older installs named after the container.
+  for (const volume of [workspaceVolumeName(id), `${environment.containerName}-workspace`]) {
+    await run('docker', ['volume', 'rm', volume], { allowFailure: true }).catch(() => {})
   }
   const root = resolve(environmentRoot(id))
   const environmentsDir = resolve(join(dataDir(), 'dev-environments'))
