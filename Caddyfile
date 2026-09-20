@@ -3,13 +3,13 @@
 #
 # Caddy issues the certificate from its local CA; run `caddy trust` once so the
 # browser accepts it. Override the address with DOMO_HTTPS_ADDRESS, e.g.
-# `DOMO_HTTPS_ADDRESS=my-mac.local:3443 pnpm dev`.
+# `DOMO_HTTPS_ADDRESS=my-mac.local:3666 pnpm dev`.
 {
 	admin off
 	skip_install_trust
 }
 
-{$DOMO_HTTPS_ADDRESS:localhost:3443} {
+{$DOMO_HTTPS_ADDRESS:localhost:3666} {
 	tls internal
-	reverse_proxy localhost:{$DOMO_DEV_PORT:3000}
+	reverse_proxy localhost:{$DOMO_DEV_PORT:3667}
 }

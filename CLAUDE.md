@@ -153,6 +153,21 @@ things that are easy to get wrong.
   sets `admin off` (no clash with another Caddy on :2019) and
   `skip_install_trust` (no sudo prompt mid-startup — run `caddy trust` once).
   A non-`localhost` address may also need Vite `server.allowedHosts`.
+- **The ports are 3666 (Caddy, the one you open) and 3667 (Nuxt, behind it),
+  and the script dials the Nuxt one before starting.**
+  Binding is not a usable test for "is this port free": a server holding the
+  wildcard address (`*:3667`) does not stop Nuxt from binding the one address
+  left over (`[::1]:3667`), so both listen and Caddy — dialling `localhost` —
+  reaches whichever the resolver returns. The symptom is not a crash but a
+  storm of `aborting with incomplete response` / `connection reset by peer` in
+  the Caddy log and `Failed to fetch dynamically imported module` in the
+  browser, with the app half-loading. Hence the port away from the crowded 3000
+  range *and* the connect-probe on both `127.0.0.1` and `::1`.
+- **`scripts/dev.mjs` sets `PORT`, and that is load-bearing.**
+  `internalBaseUrl()` (`server/lib/acp/manager.ts`) reads it to build the
+  `DOMO_INTERNAL_URL` the agent-mesh MCP server calls Domo back on. `nuxt dev
+  --port` does not set it, so before this the mesh dialled 3000 no matter what
+  port the dev server was really on.
 
 - **Changing `DEFAULT_SYSTEM_INSTRUCTION`? Append the old text to
   `PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS`.** The settings page saves the whole

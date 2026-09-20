@@ -8,7 +8,6 @@
   "scripts": {
     "build": "nuxt build",
     "dev": "node scripts/dev.mjs",
-    "dev:http": "nuxt dev",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",

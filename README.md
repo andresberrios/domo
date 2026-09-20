@@ -53,15 +53,15 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
 cp .env.example .env     # then put your Gemini key in it
 docker compose up -d     # Postgres :54321 + Electric :30000
 pnpm install
-pnpm dev                 # https://localhost:3443 (Caddy) → http://localhost:3000
+pnpm dev                 # https://localhost:3666 (Caddy) → http://localhost:3667
 ```
 
 `pnpm dev` runs the Nuxt dev server behind a [Caddy](https://caddyserver.com)
 HTTPS proxy (`Caddyfile`), since browsers only allow the microphone on secure
 origins. It needs `caddy` on your PATH (`brew install caddy`); run `caddy trust`
 once so the browser accepts Caddy's local certificate. Set `DOMO_HTTPS_ADDRESS`
-(default `localhost:3443`) or `DOMO_DEV_PORT` (default `3000`) to change the
-addresses, or use `pnpm dev:http` to skip Caddy.
+(default `localhost:3666`) or `DOMO_DEV_PORT` (default `3667`) to change the
+addresses.
 
 The schema is created automatically on first boot. Press **New conversation**,
 hit the mic, and say *"start an agent in ~/code/my-project and have it fix the
@@ -171,8 +171,7 @@ a second tab, or a phone all show the same thing.
 ## Development
 
 ```bash
-pnpm dev         # dev server behind Caddy HTTPS (https://localhost:3443)
-pnpm dev:http    # dev server only (http://localhost:3000)
+pnpm dev         # dev server behind Caddy HTTPS (https://localhost:3666)
 pnpm typecheck   # vue-tsc
 pnpm lint        # eslint
 pnpm build       # production build → .output
