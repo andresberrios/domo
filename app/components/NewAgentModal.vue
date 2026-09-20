@@ -22,9 +22,12 @@ const { data: settings } = await useFetch('/api/settings', { lazy: true })
 const { environments } = useDevEnvironments()
 const { projects } = useProjects()
 
-const devEnvironmentId = ref('')
+// Reka's select items may not have an empty-string value, so "no environment"
+// is a named sentinel rather than ''.
+const LOCAL = 'local'
+const devEnvironmentId = ref(LOCAL)
 const environmentItems = computed(() => [
-  { label: 'Local host directory', value: '' },
+  { label: 'Local host directory', value: LOCAL },
   ...environments.value.map(environment => ({
     label: `${projects.value.find(project => project.id === environment.projectId)?.name ?? 'Project'} / ${environment.name}`,
     value: environment.id
@@ -37,7 +40,7 @@ watch(open, async (value) => {
   task.value = ''
   adapter.value = 'claude-code'
   cwd.value = settings.value?.defaultCwd ?? ''
-  devEnvironmentId.value = environments.value.find(environment => environment.status === 'running')?.id ?? ''
+  devEnvironmentId.value = environments.value.find(environment => environment.status === 'running')?.id ?? LOCAL
 })
 
 async function create() {
@@ -50,7 +53,7 @@ async function create() {
         title: title.value.trim() || task.value.trim().slice(0, 60),
         adapter: adapter.value,
         cwd: cwd.value.trim() || undefined,
-        devEnvironmentId: devEnvironmentId.value || undefined,
+        devEnvironmentId: devEnvironmentId.value === LOCAL ? undefined : devEnvironmentId.value,
         voiceSessionId: props.voiceSessionId ?? null,
         initialPrompt: task.value.trim() || undefined
       }
@@ -105,7 +108,7 @@ async function create() {
           </template>
         </UFormField>
 
-        <UFormField v-if="!devEnvironmentId" label="Working directory">
+        <UFormField v-if="devEnvironmentId === LOCAL" label="Working directory">
           <DirectoryPicker v-model="cwd" />
         </UFormField>
 
