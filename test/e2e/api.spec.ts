@@ -365,3 +365,30 @@ describe('the filesystem picker', () => {
     expect((await fetch('/api/fs/list?path=/definitely/not/here')).status).toBe(400)
   })
 })
+
+describe('the agent-mesh MCP endpoint', () => {
+  // The token secret lives in the server process, so a *valid* call cannot be
+  // made from here — `test/server/mesh-mcp.spec.ts` drives the handler itself.
+  // What only a real request shows is that the route is mounted, reads the
+  // body, and refuses anything it did not sign.
+  const rpc = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+  const headers = { 'content-type': 'application/json', 'accept': 'application/json, text/event-stream' }
+  const forged = `Bearer ag_1.${'0'.repeat(64)}`
+
+  it('401s without a bearer token', async () => {
+    const response = await fetch('/api/internal/mcp', { method: 'POST', headers, body: rpc })
+
+    expect(response.status).toBe(401)
+    await expect(response.json()).resolves.toMatchObject({ error: { message: 'Unauthorized' } })
+  })
+
+  it('401s on a forged token', async () => {
+    const response = await fetch('/api/internal/mcp', {
+      method: 'POST',
+      headers: { ...headers, authorization: forged },
+      body: rpc
+    })
+
+    expect(response.status).toBe(401)
+  })
+})

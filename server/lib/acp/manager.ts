@@ -15,6 +15,7 @@ import {
   readEnvironmentFile,
   writeEnvironmentFile
 } from '../dev-environments'
+import { mintMeshToken } from '../mesh/token'
 import { getSettings } from '../settings'
 import {
   appendAgentEvent,
@@ -444,15 +445,20 @@ class AgentRuntime {
       .connect(stream)
     this.connection = connection
 
-    await connection.agent.request(acp.methods.agent.initialize, {
+    const initialized = (await connection.agent.request(acp.methods.agent.initialize, {
       protocolVersion: acp.PROTOCOL_VERSION,
       clientCapabilities: {
         fs: { readTextFile: true, writeTextFile: true }
       },
       clientInfo: { name: 'domo', title: 'Domo', version: '1.0.0' }
-    } as any)
+    } as any)) as any
 
-    const mcpServers = await this.mcpServersForSession(environment)
+    // The mesh is an HTTP MCP server now; an adapter that cannot speak that
+    // transport gets no mesh rather than a server it would fail to connect to.
+    const httpMcp = !!initialized?.agentCapabilities?.mcpCapabilities?.http
+    if (!httpMcp) warnNoHttpMcp(session.adapter)
+
+    const mcpServers = await this.mcpServersForSession(environment, httpMcp)
     const settings = await getSettings()
 
     if (session.acpSessionId) {
@@ -498,7 +504,7 @@ class AgentRuntime {
     await this.setStatus('idle', { touch: true })
   }
 
-  private async mcpServersForSession(environment: DevEnvironment | null) {
+  private async mcpServersForSession(environment: DevEnvironment | null, httpMcp: boolean) {
     const servers = await listMcpServers()
     const out: any[] = []
     for (const server of servers) {
@@ -520,16 +526,17 @@ class AgentRuntime {
         })
       }
     }
-    // The agent-mesh server lets coding agents talk to each other and spawn peers.
-    out.push({
-      name: 'domo',
-      command: environment ? '/usr/bin/node' : process.execPath,
-      args: [environment ? '/opt/domo/agent-mesh.mjs' : meshServerEntry()],
-      env: [
-        { name: 'DOMO_INTERNAL_URL', value: internalBaseUrl(!!environment) },
-        { name: 'DOMO_AGENT_SESSION_ID', value: this.agentSessionId }
-      ]
-    })
+    // The agent-mesh server lets coding agents talk to each other and spawn
+    // peers. One code path for host and container sessions: the container only
+    // differs in which host name reaches Domo.
+    if (httpMcp) {
+      out.push({
+        name: 'domo',
+        type: 'http',
+        url: `${internalBaseUrl(!!environment)}/api/internal/mcp`,
+        headers: [{ name: 'Authorization', value: `Bearer ${mintMeshToken(this.agentSessionId)}` }]
+      })
+    }
     return out
   }
 
@@ -726,8 +733,18 @@ class AgentRuntime {
 /* manager                                                             */
 /* ------------------------------------------------------------------ */
 
-function meshServerEntry(): string {
-  return process.env.NUXT_DOMO_MCP_ENTRY || resolve(process.cwd(), 'server/mcp/agent-mesh.mjs')
+const warnedNoHttpMcp = new Set<AgentAdapter>()
+
+/** Said once per adapter: a storm of this would drown the adapter's own output. */
+function warnNoHttpMcp(adapter: AgentAdapter): void {
+  if (warnedNoHttpMcp.has(adapter)) return
+  warnedNoHttpMcp.add(adapter)
+  console.warn(
+    `[acp] the ${adapter} adapter does not advertise HTTP MCP support `
+    + '(agentCapabilities.mcpCapabilities.http), so its sessions get no agent mesh: '
+    + 'they cannot list, message or spawn peers, or page the voice supervisor. '
+    + 'Upgrade the adapter to restore it.'
+  )
 }
 
 function internalBaseUrl(fromContainer = false): string {
