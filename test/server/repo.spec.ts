@@ -35,7 +35,6 @@ import {
   writeAgentStream
 } from '../../server/lib/repo'
 import { captureBus } from '../helpers/bus'
-import { databaseUnavailable, skipMessage } from '../helpers/database'
 
 /**
  * `server/lib/repo.ts` is the only door to the database, and the only place the
@@ -43,14 +42,11 @@ import { databaseUnavailable, skipMessage } from '../helpers/database'
  * the snake_case-to-domain mapping, the conditional updates and the foreign
  * keys are exactly what a stubbed driver would paper over.
  */
-const skip = !!databaseUnavailable()
-if (skip) console.warn(`[test] ${skipMessage()}`)
 
 const seen = captureBus()
 afterAll(() => seen.stop())
 
 beforeEach(async () => {
-  if (skip) return
   // Projects and voice sessions cascade to everything else.
   await query('truncate projects, voice_sessions, agent_sessions, mcp_servers, settings cascade')
   seen.clear()
@@ -66,7 +62,7 @@ async function agent(overrides: Parameters<typeof createAgentSession>[0] | null 
   return createAgentSession(overrides ?? { adapter: 'claude-code', title: 'Auth refactor', cwd: '/srv/api' })
 }
 
-describe.skipIf(skip)('projects', () => {
+describe('projects', () => {
   it('round-trips a project and announces it', async () => {
     const created = await project()
 
@@ -98,7 +94,7 @@ describe.skipIf(skip)('projects', () => {
   })
 })
 
-describe.skipIf(skip)('dev environments', () => {
+describe('dev environments', () => {
   it('starts out creating, with the columns the UI needs', async () => {
     const created = await project()
     const environment = await createDevEnvironmentRow({
@@ -244,7 +240,7 @@ describe.skipIf(skip)('dev environments', () => {
   })
 })
 
-describe.skipIf(skip)('voice sessions', () => {
+describe('voice sessions', () => {
   it('starts nameless, auto-titled, and takes its model from the settings', async () => {
     const session = await createVoiceSession()
 
@@ -327,7 +323,7 @@ describe.skipIf(skip)('voice sessions', () => {
   })
 })
 
-describe.skipIf(skip)('voice messages', () => {
+describe('voice messages', () => {
   it('appends in order and touches the conversation', async () => {
     const session = await createVoiceSession()
     await appendVoiceMessage({ sessionId: session.id, role: 'user', text: 'start an agent' })
@@ -384,7 +380,7 @@ describe.skipIf(skip)('voice messages', () => {
   })
 })
 
-describe.skipIf(skip)('agent sessions', () => {
+describe('agent sessions', () => {
   it('starts in "starting", because a row exists before the adapter does', async () => {
     const session = await agent()
 
@@ -437,7 +433,7 @@ describe.skipIf(skip)('agent sessions', () => {
   })
 })
 
-describe.skipIf(skip)('agent events', () => {
+describe('agent events', () => {
   it('appends an ordered, durable log and publishes each entry', async () => {
     const session = await agent()
     seen.clear()
@@ -486,7 +482,7 @@ describe.skipIf(skip)('agent events', () => {
  * where it was — same id, same `seq` — or the transcript reorders itself as the
  * agent talks.
  */
-describe.skipIf(skip)('streamed message blocks', () => {
+describe('streamed message blocks', () => {
   it('leaves exactly one row behind, however many deltas arrived', async () => {
     const session = await agent()
     let text = 'Look'
@@ -551,7 +547,7 @@ describe.skipIf(skip)('streamed message blocks', () => {
   })
 })
 
-describe.skipIf(skip)('permissions', () => {
+describe('permissions', () => {
   const options = [
     { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
     { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
@@ -615,7 +611,7 @@ describe.skipIf(skip)('permissions', () => {
   })
 })
 
-describe.skipIf(skip)('mcp servers', () => {
+describe('mcp servers', () => {
   it('defaults a new server to enabled, for both kinds of agent', async () => {
     const server = await createMcpServer({ name: 'linear', transport: 'http', url: 'https://mcp.linear.app' })
 

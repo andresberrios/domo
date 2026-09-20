@@ -27,21 +27,8 @@ const ADMIN_DATABASE = 'postgres'
 /** The one database any test may touch, named for what it is. */
 export const TEST_DATABASE = 'domo_test'
 
-/**
- * The skip reason travels through the environment rather than through module
- * state: a setup file and the test file it sets up do not always share a module
- * registry, and a test that quietly fell through to the developer's own
- * database instead of skipping would be worse than a failing one.
- */
-const UNAVAILABLE_ENV = 'DOMO_TEST_DATABASE_UNAVAILABLE'
-
-/**
- * Set this to let the database-backed layers skip themselves instead of failing
- * the run. Off by default on purpose: those layers cover the repo layer, the
- * SQL schema and the migration path, and a run that silently drops a third of
- * the suite must not exit 0 — a warning scrolls past, an exit code does not.
- */
-const ALLOW_SKIP_ENV = 'DOMO_TEST_ALLOW_SKIP'
+/** Why Postgres could not be reached, kept for the error that ends the run. */
+let unavailableReason = ''
 
 /** Postgres's "that database already exists", which is the happy path here. */
 const DUPLICATE_DATABASE = '42P04'
@@ -71,17 +58,10 @@ async function using<T>(database: string, use: (client: pg.Client) => Promise<T>
   }
 }
 
-/** Remember why Postgres could not be reached, for the skip and the failure. */
-export function recordUnavailable(error: unknown): void {
-  // An empty reason would read as "available" through the environment, and a
-  // refused connection arrives as an AggregateError with no message at all.
-  const reason = error instanceof Error ? error.message || error.name : String(error)
-  process.env[UNAVAILABLE_ENV] = reason || 'could not connect'
-}
-
 /**
- * Make sure `domo_test` exists, or return `null` with the reason on the
- * environment when Postgres is not running.
+ * Make sure `domo_test` exists, or return `null` — remembering why — when
+ * Postgres is not running. Every caller turns that `null` into
+ * `unavailableError()`; nothing is allowed to carry on without a database.
  */
 export async function ensureTestDatabase(): Promise<string | null> {
   try {
@@ -93,10 +73,15 @@ export async function ensureTestDatabase(): Promise<string | null> {
       }
     })
   } catch (error) {
-    recordUnavailable(error)
+    // A refused connection arrives as an `AggregateError` with an *empty*
+    // message, so `error.message` on its own records nothing. Keep both
+    // fallbacks: a blank reason once read as "the database is fine", and the
+    // suite ran against — and emptied — a real `domo`.
+    const reason = error instanceof Error ? error.message || error.name : String(error)
+    unavailableReason = reason || 'could not connect'
     return null
   }
-  process.env[UNAVAILABLE_ENV] = ''
+  unavailableReason = ''
   return testDatabaseUrl()
 }
 
@@ -125,37 +110,20 @@ export async function resetTestDatabase(): Promise<void> {
   })
 }
 
-/** Why the database-backed suites are being skipped, if they are. */
-export function databaseUnavailable(): string | null {
-  return process.env[UNAVAILABLE_ENV] || null
-}
-
-export function skipMessage(): string {
-  return `Postgres is not reachable at ${SERVER_URL.replace(/:[^:@/]*@/, ':***@')} `
-    + `(${databaseUnavailable()}). Start it with \`docker compose up -d\`.`
-}
-
-/** Is the caller allowed to skip the database-backed layers rather than fail? */
-export function skipAllowed(): boolean {
-  const value = process.env[ALLOW_SKIP_ENV]
-  return !!value && value !== '0' && value !== 'false'
-}
-
 /**
- * The error that stops a run instead of letting it report a green summary for a
- * suite a third of which never executed.
+ * The error that ends the run. There is no opt-out: the services are a
+ * precondition of the suite, and a green summary for a third of it that never
+ * executed is worse than no summary at all.
  */
 export function unavailableError(): Error {
   return new Error([
-    `Postgres is not reachable at ${SERVER_URL.replace(/:[^:@/]*@/, ':***@')} (${databaseUnavailable()}).`,
+    `Postgres is not reachable at ${SERVER_URL.replace(/:[^:@/]*@/, ':***@')} (${unavailableReason}).`,
     '',
     'THE DATABASE-BACKED LAYERS DID NOT RUN: test/server, test/e2e, test/helpers.',
     'They cover the repo layer, the SQL schema and the migration path — the code a',
-    'passing summary would be lying about here. Failing instead of skipping.',
+    'passing summary would be lying about here.',
     '',
-    '  docker compose up -d       start Postgres, then run the whole suite',
-    '  pnpm test:offline          run only the layers that need no services',
-    `  ${ALLOW_SKIP_ENV}=1    skip these layers on purpose and still exit 0`,
+    '  docker compose up -d       start the services, then run the suite again',
     ''
   ].join('\n'))
 }

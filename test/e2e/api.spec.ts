@@ -12,7 +12,6 @@ import {
   listPermissions,
   listProjects
 } from '../../server/lib/repo'
-import { databaseUnavailable, skipMessage } from '../helpers/database'
 import { startElectricStub } from '../helpers/electric-stub'
 import type { AgentEvent, AppSettings, PendingPermission, Project, VoiceSession } from '~~/shared/types'
 
@@ -27,8 +26,6 @@ import type { AgentEvent, AppSettings, PendingPermission, Project, VoiceSession 
  * exercised end to end, because a permission is a row — `answerPermission`
  * resolves it whether or not an adapter is listening.
  */
-const skip = !!databaseUnavailable()
-if (skip) console.warn(`[test] ${skipMessage()}`)
 
 const electric = await startElectricStub()
 const checkout = await mkdtemp(join(tmpdir(), 'domo-e2e-repo-'))
@@ -40,8 +37,8 @@ afterAll(async () => {
 })
 
 await setup({
-  server: !skip,
-  build: !skip,
+  server: true,
+  build: true,
   browser: false,
   env: {
     // Explicit, never inherited: a leaked DATABASE_URL would write to the
@@ -56,7 +53,7 @@ await setup({
   }
 })
 
-describe.skipIf(skip)('health', () => {
+describe('health', () => {
   it('reports both backing services', async () => {
     await expect($fetch('/api/health')).resolves.toMatchObject({
       db: true,
@@ -66,7 +63,7 @@ describe.skipIf(skip)('health', () => {
   })
 })
 
-describe.skipIf(skip)('projects', () => {
+describe('projects', () => {
   it('registers a local Git checkout and writes it to the database', async () => {
     const project = await $fetch<Project>('/api/projects', {
       method: 'POST',
@@ -125,7 +122,7 @@ describe.skipIf(skip)('projects', () => {
   })
 })
 
-describe.skipIf(skip)('conversations', () => {
+describe('conversations', () => {
   it('creates one that Domo is free to name', async () => {
     const session = await $fetch<VoiceSession>('/api/voice-sessions', { method: 'POST', body: {} })
 
@@ -166,7 +163,7 @@ describe.skipIf(skip)('conversations', () => {
   })
 })
 
-describe.skipIf(skip)('a coding agent as the UI sees it', () => {
+describe('a coding agent as the UI sees it', () => {
   it('serves the event log and answers a permission over HTTP', async () => {
     // The adapter subprocess is the one thing that cannot run in a test, so the
     // session and its log are seeded directly; everything after is the real API.
@@ -238,7 +235,7 @@ describe.skipIf(skip)('a coding agent as the UI sees it', () => {
   })
 })
 
-describe.skipIf(skip)('settings', () => {
+describe('settings', () => {
   it('serves the defaults, and says which keys are configured', async () => {
     const settings = await $fetch<AppSettings & { hasGeminiKey: boolean }>('/api/settings')
 
@@ -257,7 +254,7 @@ describe.skipIf(skip)('settings', () => {
   })
 })
 
-describe.skipIf(skip)('mcp servers', () => {
+describe('mcp servers', () => {
   it('creates an http server and lists it', async () => {
     const server = await $fetch<{ id: string }>('/api/mcp-servers', {
       method: 'POST',
@@ -286,7 +283,7 @@ describe.skipIf(skip)('mcp servers', () => {
   })
 })
 
-describe.skipIf(skip)('the Electric shape proxy', () => {
+describe('the Electric shape proxy', () => {
   it('only proxies tables the browser is allowed to sync', async () => {
     const response = await fetch('/api/shape?table=settings&offset=-1')
 
@@ -345,7 +342,7 @@ describe.skipIf(skip)('the Electric shape proxy', () => {
   })
 })
 
-describe.skipIf(skip)('the filesystem picker', () => {
+describe('the filesystem picker', () => {
   it('lists the directories under a path, with its parent', async () => {
     await mkdir(join(checkout, 'src'), { recursive: true })
 

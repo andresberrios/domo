@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import { closeDb, getDb, newId, nowIso, query, queryOne } from '../../server/lib/db'
-import { databaseUnavailable, skipMessage } from '../helpers/database'
 
 /**
  * The schema bootstraps itself on first boot: `create table if not exists` plus
@@ -9,8 +8,6 @@ import { databaseUnavailable, skipMessage } from '../helpers/database'
  * start. It has to be idempotent, and Electric depends on details of it that no
  * unit test can see.
  */
-const skip = !!databaseUnavailable()
-if (skip) console.warn(`[test] ${skipMessage()}`)
 
 /** Every table the app writes to, and every one Electric syncs. */
 const TABLES = [
@@ -28,7 +25,7 @@ const TABLES = [
 
 const SYNCED_TABLES = TABLES.filter(table => table !== 'dev_environment_ports')
 
-describe.skipIf(skip)('schema bootstrap', () => {
+describe('schema bootstrap', () => {
   it('creates every table the app needs', async () => {
     const rows = await query<{ table_name: string }>(
       `select table_name from information_schema.tables where table_schema = 'public' order by table_name`
@@ -73,7 +70,7 @@ describe.skipIf(skip)('schema bootstrap', () => {
   })
 })
 
-describe.skipIf(skip)('sequence columns', () => {
+describe('sequence columns', () => {
   async function session(id: string) {
     await query(
       `insert into agent_sessions (id, adapter, title, cwd, created_at, updated_at)

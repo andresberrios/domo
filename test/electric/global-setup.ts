@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 import { createTestContext, loadFixture, startServer, stopServer } from '@nuxt/test-utils/e2e'
-import type { TestProject } from 'vitest/node'
 
 import {
   TEST_DATABASE_URL,
@@ -31,15 +30,8 @@ const dataDir = join(tmpdir(), 'domo-test', 'electric-layer')
 
 const run = promisify(execFile)
 
-export default async function setup(project: TestProject) {
-  const unavailable = await prepare()
-  project.provide('electricLayerUnavailable', unavailable)
-
-  if (unavailable) {
-    console.warn(`[test] skipping the electric layer: ${unavailable}`)
-    return
-  }
-
+export default async function setup() {
+  await prepare()
   await startServer()
 
   return async () => {
@@ -48,17 +40,27 @@ export default async function setup(project: TestProject) {
   }
 }
 
-/** Returns a reason to skip, or `''`. */
-async function prepare(): Promise<string> {
+/**
+ * Everything the layer needs before a single test reports, and an exit code
+ * when it is missing. The services are a precondition of the suite, not a
+ * branch: a layer that skipped itself would report green for the one loop
+ * nothing else covers.
+ */
+async function prepare(): Promise<void> {
   try {
     await ensureTestDatabase()
   } catch (error) {
-    return `Postgres is not reachable (${reason(error)}). Start it with \`docker compose up -d\`.`
+    throw new Error(
+      `Postgres is not reachable (${reason(error)}). Start it with \`docker compose up -d\`.`,
+      { cause: error }
+    )
   }
 
   if (!await electricIsUp()) {
-    return `ElectricSQL is not reachable at ${TEST_ELECTRIC_URL}. `
+    throw new Error(
+      `ElectricSQL is not reachable at ${TEST_ELECTRIC_URL}. `
       + 'Start it with `docker compose up -d electric-e2e`.'
+    )
   }
 
   // A clean slate for the first file; every file resets again on entry.
@@ -99,10 +101,8 @@ async function prepare(): Promise<string> {
     const output = streams.stdout || streams.stderr
       ? `${streams.stdout ?? ''}\n${streams.stderr ?? ''}`
       : reason(error)
-    return `The app failed to build:\n${output}`
+    throw new Error(`The app failed to build:\n${output}`, { cause: error })
   }
-
-  return ''
 }
 
 function reason(error: unknown): string {
