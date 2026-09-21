@@ -7,7 +7,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { query } from '../../server/lib/db'
-import { createAgentSession, getAgentSession, listAgentEvents } from '../../server/lib/repo'
+import { createAgentSession, getAgentSession, listAgentEvents, updateAgentSession } from '../../server/lib/repo'
 import { captureBus } from '../helpers/bus'
 import type { AgentEvent } from '~~/shared/types'
 
@@ -69,6 +69,18 @@ interface ServeOptions {
   models?: { current: string, ids: string[] }
   /** Every `session/set_config_option` the adapter is asked for. */
   onSetConfigOption?: (params: any) => void
+  /** The mode state `session/new` and `session/load` report, if any. */
+  modes?: { current: string, ids: string[] } | null
+  /** Every `session/set_mode` the adapter is asked for. */
+  onSetMode?: (params: any) => void
+}
+
+/** A `modes` block shaped the way `SessionModeState` is. */
+function modeState(modes: { current: string, ids: string[] }) {
+  return {
+    currentModeId: modes.current,
+    availableModes: modes.ids.map(id => ({ id, name: id }))
+  }
 }
 
 /** A `configOptions` model selector shaped the way both real adapters send one. */
@@ -95,8 +107,18 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
       options.onNewSession?.(ctx.params)
       return {
         sessionId: 'acp_fake',
-        ...(options.models ? { configOptions: [modelOption(options.models)] } : {})
+        ...(options.models ? { configOptions: [modelOption(options.models)] } : {}),
+        ...(options.modes ? { modes: modeState(options.modes) } : {})
       }
+    })
+    .onRequest(acp.methods.agent.session.load, () => (
+      // `null` is the real shape of "loaded, and saying nothing about modes":
+      // the SDK lets `session/load` answer with nothing at all.
+      options.modes ? { modes: modeState(options.modes) } : {}
+    ))
+    .onRequest(acp.methods.agent.session.setMode, (ctx: any) => {
+      options.onSetMode?.(ctx.params)
+      return {}
     })
     .onRequest(acp.methods.agent.session.setConfigOption, (ctx: any) => {
       options.onSetConfigOption?.(ctx.params)
@@ -436,5 +458,141 @@ describe('the model a session runs on', () => {
     const row = await getAgentSession(agent.id)
     expect(row!.status).toBe('error')
     expect(row!.lastError).toContain('sonnet, haiku')
+  })
+})
+
+/**
+ * `session/load` restores the *adapter's* transcript, not Domo's choices: it
+ * comes back in whatever mode it defaults to. Under `pnpm dev` every edit to
+ * `server/` restarts Nitro and reattaches every session, so a mode that is not
+ * re-applied lapses within minutes of being chosen — for Claude Code, into
+ * asking for permissions again.
+ */
+describe('the mode a session runs in', () => {
+  const MODES = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
+
+  /** Start a session the runtime has to reattach to, and report what it asked. */
+  async function reattach(input: { modeId: string, reports: string | null }) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Mode',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      modeId: input.modeId
+    })
+    // What a session that has run before looks like: an adapter-side id to
+    // load, and the mode list its `session/new` reported back then.
+    await updateAgentSession(agent.id, {
+      acpSessionId: 'acp_fake',
+      modes: MODES.map(id => ({ id, name: id, description: null }))
+    })
+    const asked: any[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      capabilities: { loadSession: true },
+      modes: input.reports ? { current: input.reports, ids: MODES } : null,
+      onSetMode: params => asked.push(params)
+    })
+    await started
+    return { agent, asked }
+  }
+
+  it('puts a reattached session back in the mode the row asks for', async () => {
+    const { agent, asked } = await reattach({ modeId: 'bypassPermissions', reports: 'default' })
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', modeId: 'bypassPermissions' }])
+    await expect(getAgentSession(agent.id).then(row => row!.modeId)).resolves.toBe('bypassPermissions')
+  })
+
+  it('asks anyway when the load says nothing about modes, since the row knows there are some', async () => {
+    // `session/load` is allowed to answer with nothing at all, and an adapter
+    // that says nothing has still gone back to its own default.
+    const { agent, asked } = await reattach({ modeId: 'plan', reports: null })
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', modeId: 'plan' }])
+    await expect(getAgentSession(agent.id).then(row => row!.modeId)).resolves.toBe('plan')
+  })
+
+  it('asks for nothing, and logs nothing, when the adapter came back in the right mode', async () => {
+    const { agent, asked } = await reattach({ modeId: 'plan', reports: 'plan' })
+
+    expect(asked).toEqual([])
+    await expect(getAgentSession(agent.id).then(row => row!.modeId)).resolves.toBe('plan')
+  })
+
+  it('adds no "mode set to" line to the transcript on a re-apply', async () => {
+    // The row already said this; a restart is not a mode change, and one line
+    // per restart would bury the turn it is attached to.
+    const { agent } = await reattach({ modeId: 'bypassPermissions', reports: 'default' })
+
+    expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed')).toEqual([])
+  })
+
+  it('follows a mode the agent switched by itself', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Mode',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      modeId: 'default'
+    })
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send({ sessionUpdate: 'current_mode_update', currentModeId: 'acceptEdits' })
+    }, { modes: { current: 'default', ids: MODES } })
+    await started
+
+    // The log alone would be lost on the next attach, which re-applies the row.
+    await expect(getAgentSession(agent.id).then(row => row!.modeId)).resolves.toBe('acceptEdits')
+    expect((await listAgentEvents(agent.id)).map(event => event.type)).toContain('current_mode_update')
+  })
+
+  it('still writes a line for a mode the user chose, which is what the event is for', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Mode',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+    })
+    const asked: any[] = []
+    const setting = acpManager.setMode(agent.id, 'plan')
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      modes: { current: 'default', ids: MODES },
+      onSetMode: params => asked.push(params)
+    })
+    await setting
+
+    // Starting a session is not a mode change; somebody choosing one is.
+    expect(asked).toEqual([{ sessionId: 'acp_fake', modeId: 'plan' }])
+    expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed'))
+      .toEqual([expect.objectContaining({ payload: { modeId: 'plan' } })])
+    await expect(getAgentSession(agent.id).then(row => row!.modeId)).resolves.toBe('plan')
+  })
+
+  it('records the modes a new session offers, and starts it in the row\'s', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Mode',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      modeId: 'plan'
+    })
+    const asked: any[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      modes: { current: 'default', ids: MODES },
+      onSetMode: params => asked.push(params)
+    })
+    await started
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', modeId: 'plan' }])
+    const row = await getAgentSession(agent.id)
+    expect(row!.modeId).toBe('plan')
+    // The list is what the picker offers; it comes from the adapter, once.
+    expect(row!.modes).toEqual(MODES.map(id => ({ id, name: id, description: null })))
   })
 })

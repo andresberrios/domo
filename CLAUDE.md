@@ -43,7 +43,13 @@ things that are easy to get wrong.
   what deserves to be durable.
 - **One adapter process per coding agent session**, spawned lazily
   (`server/lib/acp/manager.ts`) and reattached with `session/load` when the
-  session already has an `acp_session_id`.
+  session already has an `acp_session_id`. **`session/load` restores the
+  *adapter's* transcript, not Domo's choices**: it comes back in whatever mode
+  and model it defaults to, so both are re-applied from the row on every attach
+  (`applySessionMode` / `applyRequestedModel`). This is not a rare path — under
+  `pnpm dev` every edit to `server/` restarts Nitro and reattaches every
+  session — and the symptom of missing it was a Claude Code agent quietly
+  asking for permissions again minutes after being told not to.
 - **Projects own dev environments; dev environments own isolation.** A managed
   environment is a long-lived container whose checkout lives in a named Docker
   volume (`domo-dev-<id>-workspace`, derived from the id, so no column). There is
@@ -76,6 +82,16 @@ things that are easy to get wrong.
   to: `.devcontainer/devcontainer.json`, compose definitions, `mounts`,
   `runArgs` and the rest of the lifecycle commands are simply not supported, and
   an unknown key in `.domo.json` is an error rather than something ignored.
+- **The mode is a row, and `mode_changed` means somebody changed it.** The row
+  is the authority on what was asked for and the adapter on what is, so what
+  the adapter answers with is what gets written back — including a
+  `current_mode_update` the agent sent itself, which updates `mode_id` and not
+  only the event log, or the next attach would undo it. Re-applying the row's
+  mode at start appends no event: a restart is not a mode change, and a "Mode
+  set to …" line per restart would bury the turn it sits in. The event comes
+  from `setMode` (the user or the voice agent) and from `current_mode_update`
+  (the agent) only. The whole reconciliation returns a patch rather than
+  writing one, so a start is still **one** `agent_sessions` update.
 - **Permission requests are rows, not callbacks.** `onPermission` writes a
   pending `agent_permissions` row, then parks on a promise. The UI, the voice
   agent (`answer_permission`) and the auto-approve setting all resolve the same

@@ -36,6 +36,7 @@ import type {
   AgentSession,
   AgentSessionStatus,
   AgentStreamType,
+  AppSettings,
   DevEnvironment,
   PendingPermission
 } from '../../../shared/types'
@@ -368,36 +369,88 @@ class AgentRuntime {
       }
     }
 
+    let fresh = false
+    const patch: { acpSessionId?: string, modes?: any, modeId?: string } = {}
     if (!this.acpSessionId) {
       const created = (await connection.agent.request(acp.methods.agent.session.new, {
         cwd: session.cwd,
         mcpServers
       } as any)) as any
       sessionResponse = created
+      fresh = true
       this.acpSessionId = created.sessionId
-      const modes = created.modes
-        ? {
-            current: created.modes.currentModeId,
-            available: (created.modes.availableModes ?? []).map((m: any) => ({
-              id: m.id,
-              name: m.name,
-              description: m.description ?? null
-            }))
-          }
-        : null
-      await updateAgentSession(this.agentSessionId, {
-        acpSessionId: created.sessionId,
-        modes: modes?.available ?? null,
-        modeId: modes?.current ?? session.modeId ?? settings.defaultAgentMode
-      })
-      const desiredMode = session.modeId || settings.defaultAgentMode
-      if (desiredMode && modes?.current && desiredMode !== modes.current) {
-        await this.setMode(desiredMode).catch(() => {})
-      }
+      patch.acpSessionId = created.sessionId
     }
+
+    Object.assign(patch, await this.applySessionMode({ session, response: sessionResponse, settings, fresh }))
+    // One write, not one per thing learned: `agent_sessions` is synced, so each
+    // one re-streams the whole row to every browser.
+    if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
 
     await this.applyRequestedModel(session, sessionResponse)
     await this.setStatus('idle', { touch: true })
+  }
+
+  /**
+   * Put the adapter in the mode the row asks for, and record which one it is in.
+   *
+   * `session/load` restores the *adapter's* transcript, not Domo's choices. It
+   * comes back in whatever mode it defaults to — for Claude Code that means
+   * asking for permissions again, however the session was set up — so the mode
+   * has to be re-applied from the row on every attach, exactly as the model is
+   * (`applyRequestedModel`). Under `pnpm dev` this is not a rare path: every
+   * edit to `server/` restarts Nitro and reattaches every session.
+   *
+   * The row is the authority on what was *asked for* and the adapter on what
+   * *is*, so what it answers with is what gets recorded. Returns the columns to
+   * write rather than writing them, so a start is one row update.
+   *
+   * Nothing here appends a `mode_changed` event. That event means "somebody
+   * changed the mode": the user or the voice agent through `setMode`, or the
+   * agent itself through a `current_mode_update`, which is its own event. A
+   * start is neither, and a line per restart would bury the turn it sits in.
+   */
+  private async applySessionMode(input: {
+    session: AgentSession
+    response: any
+    settings: AppSettings
+    /** A `session/new` response is authoritative about modes; a `session/load` may say nothing at all. */
+    fresh: boolean
+  }): Promise<{ modes?: any, modeId?: string }> {
+    const { session, settings } = input
+    const state = input.response?.modes ?? null
+    const available = state
+      ? (state.availableModes ?? []).map((mode: any) => ({
+          id: mode.id,
+          name: mode.name,
+          description: mode.description ?? null
+        }))
+      : null
+    const reported: string | null = state?.currentModeId ?? null
+    const desired = session.modeId || settings.defaultAgentMode
+    // A `session/load` may answer with no mode state even for an adapter that
+    // has modes, so the row's own list is the other half of the question.
+    const hasModes = !!state || !!session.modes?.length
+    let effective = reported ?? session.modeId ?? settings.defaultAgentMode
+
+    if (desired && hasModes && desired !== reported) {
+      try {
+        await this.connection!.agent.request(acp.methods.agent.session.setMode, {
+          sessionId: this.acpSessionId,
+          modeId: desired
+        } as any)
+        effective = desired
+      } catch (error) {
+        // A mode that will not take is not a reason to fail the start: the
+        // session still works, it just asks more often than it was told to.
+        console.error(`[acp:${this.agentSessionId}] could not set mode ${desired}`, error)
+      }
+    }
+
+    const patch: { modes?: any, modeId?: string } = {}
+    if (available || input.fresh) patch.modes = available
+    if (effective && effective !== session.modeId) patch.modeId = effective
+    return patch
   }
 
   /**
@@ -520,6 +573,11 @@ class AgentRuntime {
       await this.closeStream(block)
       await appendAgentEvent(this.agentSessionId, kind, update)
       if (kind === 'tool_call') await this.setStatus('thinking')
+      // The agent may switch its own mode mid-turn, and the row is what gets
+      // re-applied on the next attach — so it has to follow, not just the log.
+      if (kind === 'current_mode_update' && update.currentModeId) {
+        await updateAgentSession(this.agentSessionId, { modeId: update.currentModeId })
+      }
       // A turn that is all tool calls and no text is still a working agent.
       await this.touchIfStale()
     })
