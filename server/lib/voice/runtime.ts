@@ -20,6 +20,13 @@ export const INPUT_SAMPLE_RATE = 16000
 export const OUTPUT_SAMPLE_RATE = 24000
 /** The model waits on every tool response, so a hung handler must not silence it. */
 const TOOL_TIMEOUT_MS = 30000
+/**
+ * How long after the last input transcription the user still counts as
+ * speaking. Transcription arrives in bursts with gaps inside a single sentence,
+ * so "silent" has to mean a gap longer than those — long enough not to cut in
+ * mid-sentence, short enough that a note is not held for a noticeable beat.
+ */
+const USER_SILENCE_MS = 1500
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>
@@ -53,9 +60,19 @@ class VoiceRuntime {
   private generation = 0
   /** Fingerprint of the model + tools this socket was set up with. */
   private setupFingerprint: string | null = null
-  /** Tool calls the model is still waiting on, and notes held back until then. */
+  /** Tool calls the model is still waiting on. */
   private pendingToolCalls = 0
+  /**
+   * Notes written to the transcript but not yet handed to the model, oldest
+   * first. The row is stored when the note is made, so the UI shows it at once;
+   * only the *delivery* waits. See `injectNote`.
+   */
   private deferredNotes: Array<{ text: string, speak: boolean }> = []
+  /** True between the first sign of a model turn and the end of it. */
+  private modelSpeaking = false
+  /** When input transcription was last seen, i.e. when the user was last heard. */
+  private lastUserSpeechAt = 0
+  private silenceTimer: ReturnType<typeof setTimeout> | null = null
   /**
    * A conversation that `start_new_conversation` replaced. Listeners follow it
    * once the sign-off turn is over, so the goodbye isn't cut off mid-word.
@@ -180,6 +197,10 @@ class VoiceRuntime {
   private async connect(): Promise<void> {
     const generation = ++this.generation
     this.closed = false
+    // A new socket is a new turn state; whatever the old one was mid-way
+    // through is gone, and a stale `modelSpeaking` would hold notes forever.
+    this.modelSpeaking = false
+    this.lastUserSpeechAt = 0
     const settings = await getSettings()
     const session = await getVoiceSession(this.voiceSessionId)
     const apiKey = await this.apiKey()
@@ -297,6 +318,10 @@ class VoiceRuntime {
     this.generation += 1
     this.pendingToolCalls = 0
     this.deferredNotes = []
+    this.modelSpeaking = false
+    this.lastUserSpeechAt = 0
+    if (this.silenceTimer) clearTimeout(this.silenceTimer)
+    this.silenceTimer = null
     if (this.handOverTimer) clearTimeout(this.handOverTimer)
     this.handOverTimer = null
     this.handOverTo = null
@@ -331,29 +356,108 @@ class VoiceRuntime {
   async sendText(text: string): Promise<void> {
     await this.ensureConnected()
     await appendVoiceMessage({ sessionId: this.voiceSessionId, role: 'user', text })
+    // The turn is the model's from here; a note must not pre-empt the answer.
+    this.modelSpeaking = true
     this.session?.sendClientContent({ turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true })
   }
 
-  /** Inject a system note (agent progress, permission needed, …) into the conversation. */
+  /**
+   * Is this a moment at which client content would cut the conversation off?
+   *
+   * Client content pre-empts whatever the model is generating, so a note sent
+   * mid-sentence truncates it — the agent audibly interrupting itself. A note
+   * sent while the model waits on a tool response can leave that turn stuck.
+   * And one sent while the user is still talking answers a question they have
+   * not finished asking.
+   */
+  private busy(): boolean {
+    return this.pendingToolCalls > 0
+      || this.modelSpeaking
+      || Date.now() - this.lastUserSpeechAt < USER_SILENCE_MS
+  }
+
+  /**
+   * Inject a system note (agent progress, permission needed, …) into the
+   * conversation.
+   *
+   * The transcript row is written now and the delivery may be held: the screen
+   * should show agent news the moment it happens, and only the *speaking* has
+   * to wait for a gap. `speak` false means "context, don't answer it", which is
+   * `turnComplete: false` on the wire.
+   */
   async injectNote(text: string, speak = true): Promise<void> {
     // Agent news belongs to the conversation the user is moving to.
     if (!this.session || this.handOverTo) return
-    // Client content sent while the model waits on a tool response can leave the
-    // turn stuck; hold the note until the response has gone out.
-    if (this.pendingToolCalls > 0) {
-      this.deferredNotes.push({ text, speak })
-      return
-    }
     await appendVoiceMessage({
       sessionId: this.voiceSessionId,
       role: 'system',
       text,
       meta: { source: 'agent-activity' }
     })
+    if (this.busy()) {
+      this.deferredNotes.push({ text, speak })
+      // Nothing else reports the end of a user's turn, so a note that only the
+      // user's voice is holding up needs its own alarm clock.
+      this.scheduleSilenceDrain()
+      return
+    }
+    this.send([{ text, speak }])
+  }
+
+  /**
+   * One client-content message per delivery. `turnComplete` is true unless
+   * *every* note in it was context-only: a batch that contains something worth
+   * saying is worth answering once.
+   */
+  private send(notes: Array<{ text: string, speak: boolean }>) {
+    if (!this.session || !notes.length) return
+    const speak = notes.some(note => note.speak)
+    // A delivery that asks for an answer starts a model turn, so the next note
+    // along waits for it rather than cutting the reply to this one in half.
+    if (speak) this.modelSpeaking = true
     this.session.sendClientContent({
-      turns: [{ role: 'user', parts: [{ text: `[Domo system notice] ${text}` }] }],
+      turns: [{
+        role: 'user',
+        parts: [{ text: notes.map(note => `[Domo system notice] ${note.text}`).join('\n\n') }]
+      }],
       turnComplete: speak
     })
+  }
+
+  /**
+   * Hand over every note that was held, as **one** message: three agents
+   * finishing while the model spoke is one thing to say, not three turns of
+   * client content racing each other.
+   *
+   * The rows were written when the notes were made, so nothing is stored here.
+   * Called from every point at which the conversation might have gone quiet.
+   */
+  private drainNotes(): void {
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer)
+      this.silenceTimer = null
+    }
+    if (!this.deferredNotes.length) return
+    if (this.busy()) {
+      // Still not a gap. Whoever unblocks next drains; if that is the user
+      // falling silent, nothing but the timer will say so.
+      this.scheduleSilenceDrain()
+      return
+    }
+    this.send(this.deferredNotes.splice(0))
+  }
+
+  /** Wake up once the user has been quiet long enough, and try again then. */
+  private scheduleSilenceDrain(): void {
+    if (this.silenceTimer) return
+    const quietIn = USER_SILENCE_MS - (Date.now() - this.lastUserSpeechAt)
+    if (quietIn <= 0) return
+    this.silenceTimer = setTimeout(() => {
+      this.silenceTimer = null
+      this.drainNotes()
+    }, quietIn)
+    // Waiting for a gap in the conversation is no reason to hold the process open.
+    this.silenceTimer.unref?.()
   }
 
   /* ---------------------------- output ---------------------------- */
@@ -386,6 +490,8 @@ class VoiceRuntime {
     const content = message.serverContent
     if (content) {
       if (content.interrupted) {
+        // The model stopped generating, so there is nothing left to cut off.
+        this.modelSpeaking = false
         this.emit({ type: 'interrupted' })
         await this.flushAssistant()
       }
@@ -394,18 +500,27 @@ class VoiceRuntime {
       // after what has been committed so far and never accumulate it.
       const interim = content.interimInputTranscription?.text
       if (interim) {
+        this.lastUserSpeechAt = Date.now()
         this.emit({ type: 'transcript', role: 'user', text: this.userTranscript + interim, final: false })
       }
 
       if (content.inputTranscription?.text) {
+        this.lastUserSpeechAt = Date.now()
         this.userTranscript += content.inputTranscription.text
         this.emit({ type: 'transcript', role: 'user', text: this.userTranscript, final: false })
       }
 
       if (content.outputTranscription?.text) {
+        this.modelSpeaking = true
         this.assistantTranscript += content.outputTranscription.text
         this.emit({ type: 'transcript', role: 'assistant', text: this.assistantTranscript, final: false })
       }
+
+      if (content.modelTurn?.parts?.length) this.modelSpeaking = true
+      // `generationComplete` is the model putting its pen down; `turnComplete`
+      // then waits on playback. Either one ends the window in which client
+      // content would truncate what is being said.
+      if (content.generationComplete || content.turnComplete) this.modelSpeaking = false
 
       for (const part of content.modelTurn?.parts ?? []) {
         const inline = part.inlineData
@@ -421,10 +536,19 @@ class VoiceRuntime {
       }
 
       if (content.turnComplete) {
+        // Whatever the user said has now been asked and answered, so the
+        // silence window is over however recently the transcription arrived.
+        this.lastUserSpeechAt = 0
         await this.flushUser()
         await this.flushAssistant()
         this.emit({ type: 'turn-complete' })
         if (this.handOverTo && this.handOverTimer) this.completeHandOver()
+      }
+
+      // Every release point goes through one drain: whatever was held back is
+      // delivered as soon as the conversation has a gap for it.
+      if (content.interrupted || content.generationComplete || content.turnComplete) {
+        this.drainNotes()
       }
     }
 
@@ -520,10 +644,7 @@ class VoiceRuntime {
       // The sign-off ends with `turnComplete`; don't wait forever if it never comes.
       this.handOverTimer = setTimeout(() => this.completeHandOver(), 8000)
     }
-    if (this.pendingToolCalls === 0) {
-      const notes = this.deferredNotes.splice(0)
-      for (const note of notes) await this.injectNote(note.text, note.speak)
-    }
+    if (this.pendingToolCalls === 0) this.drainNotes()
   }
 
   private completeHandOver() {

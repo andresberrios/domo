@@ -358,6 +358,35 @@ The same reasoning is why `.claude` and `.claude.json` are refused as
 [home directory mounts](#git-ssh-and-cli-logins-inside-environments), whatever
 you put in the setting.
 
+### Permission modes
+
+A coding agent's **permission mode** decides how much it may do before it stops
+to ask. The modes are the agent's own, and the two agents share none of them:
+
+| Claude Code | Codex |
+| --- | --- |
+| `default` — Manual, always ask | `read-only` — Ask for approval |
+| `acceptEdits` — accept file edits | `agent` — Approve for me *(its default)* |
+| `plan` — plan before changing anything | `agent-full-access` — unrestricted |
+| `auto` — Claude decides | |
+| `bypassPermissions` — accept everything | |
+
+So **Settings → Coding agents → Default permission mode** has one picker per
+agent, and each list is fetched from the agent itself the same way the model
+list is — by starting a throwaway session and reading what it answers with
+(cached for an hour). If an agent cannot be asked — not logged in, not
+installed — the picker says so and you can type an id by hand. A brand-new mode
+that shipped after this Domo goes in the same way.
+
+Each new session starts in its agent's default and can be given a different one
+in the **New coding agent** dialog, or changed from the agent's own page at any
+time. The mode lives on the session, not in Settings, so two agents can run in
+different modes at once — and it is re-applied every time Domo reattaches to a
+session, because the agent comes back in whatever mode *it* defaults to.
+
+Domo upgrades an install that predates the split: whatever single mode you had
+chosen becomes the Claude Code default, and Codex starts on its own.
+
 ### About the Live model id
 
 Google's Live model ids move fast. Domo defaults to `gemini-3.8-live`

@@ -373,18 +373,45 @@ things that are easy to get wrong.
   records the truth rather than the request. Claude Code *also* honours
   `ANTHROPIC_MODEL` at the top of its own priority list, but the ACP call is one
   mechanism for both adapters, so that is the one used.
-- **An adapter only lists its models in a `session/new` response**, which is why
-  the picker is backed by `server/lib/acp/models.ts` spawning a throwaway
-  session (cached an hour, de-duplicated, timeout-capped). The ids are not what
-  you would guess: Claude Code lists `default` / `sonnet` / `opus` / `haiku`,
-  **not** `claude-haiku-4-5`, and codex-acp lists `gpt-6-astra` / `gpt-5.6-sol` /
-  `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` with **no `*-mini` or `*-nano` at
-  all**. `resolveModel()` therefore accepts an exact id, a display name or a
-  containment match either way, and fails the session rather than guessing.
+- **An adapter only lists its models *and its permission modes* in a
+  `session/new` response**, which is why both pickers are backed by
+  `server/lib/acp/models.ts` spawning a throwaway session (cached an hour,
+  de-duplicated, timeout-capped). One probe answers both — they arrive in the
+  same response, so asking separately would cost a second spawn for nothing —
+  and `listAdapterModels` returns `{ models, current, modes, currentMode }`.
+  The ids are not what you would guess: Claude Code lists `default` / `sonnet` /
+  `opus` / `haiku`, **not** `claude-haiku-4-5`, and codex-acp lists
+  `gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5`
+  with **no `*-mini` or `*-nano` at all**. `resolveModel()` therefore accepts an
+  exact id, a display name or a containment match either way, and fails the
+  session rather than guessing.
+- **The two adapters share not one permission-mode id, so nothing may hard-code
+  a list and the default is per adapter.** Claude Code answers `default`
+  ("Manual") / `acceptEdits` / `plan` / `auto` / `bypassPermissions` — the last
+  only when bypass is allowed, and `auto` falls back to `acceptEdits` on a model
+  that does not support it. codex-acp answers `read-only` ("Ask for approval") /
+  `agent` ("Approve for me", its own default) / `agent-full-access`. Both read
+  off the adapters' own sources (`SessionModeManager.buildAvailableModes`,
+  `AgentMode.all()`) and pinned in `test/unit/acp-model-options.spec.ts`. The
+  setting is therefore `defaultAgentModes: { 'claude-code', codex }`, each
+  defaulting to that adapter's own starting mode; `getSettings()` reads an
+  install's old single `defaultAgentMode` string as the claude-code value, so a
+  choice made before the split survives. The Settings page used to hard-code
+  `default`/`acceptEdits`/`plan`/`bypassPermissions` — missing `auto` and wrong
+  for Codex in every entry — and `manager.ts` then wrote an impossible id onto
+  every Codex row.
+- **`modes` is ACP's own object, not a `configOptions` select.** An adapter
+  publishes the mode both ways, but `session/set_mode` acts on
+  `modes.currentModeId`, so `server/lib/acp/mode.ts` reads
+  `modes.availableModes` / `modes.currentModeId` and nothing else. (Models are
+  the other way round: there is no `models` object, only the `configOptions`
+  entry whose `category` is `model`.)
 - **That endpoint is `/api/adapters/models`, not `/api/agents/models`.** A
   literal segment beside `/api/agents/[id]` collapses the typed route for every
   agent call to the methods the literal one supports, and
-  `$fetch('/api/agents/' + id, { method: 'PATCH' })` stops type-checking.
+  `$fetch('/api/agents/' + id, { method: 'PATCH' })` stops type-checking. It
+  serves the modes too, under that name: a rename would cost every caller for a
+  word.
 
 - **`devcontainer build` gets a scratch `.devcontainer/` all to itself.** The CLI
   writes its Feature lockfile *beside the config it was given*, so the generated
@@ -472,6 +499,23 @@ things that are easy to get wrong.
   on every tool response, so a hung handler (e.g. an adapter that never answers
   `session/new`) used to leave the voice agent silent; agent notes are held until
   the response has gone out.
+- **Client content pre-empts generation, so a proactive note has one gate and
+  one drain.** Sending `sendClientContent` while the model is speaking *cancels*
+  that generation — the symptom was the voice agent cutting itself off
+  mid-sentence whenever an agent finished a turn. `injectNote()` therefore holds
+  a note while a tool call is pending (a note mid-tool-call can leave the turn
+  stuck), while the model is mid-turn (`modelTurn` parts or `outputTranscription`
+  seen, cleared by `generationComplete` / `turnComplete` / `interrupted`), or
+  while the user is still talking (input transcription within
+  `USER_SILENCE_MS`, 1.5 s — transcription arrives in bursts, so a shorter gap
+  is a pause mid-sentence, and a completed turn ends the window outright).
+  Every release point calls the same `drainNotes()`, and what was held goes out
+  **coalesced into one** client-content message: three agents finishing while
+  the model spoke is one thing to say, not three turns racing each other. The
+  `voice_messages` row is written when the note is *made*, not when it is
+  delivered — the screen should show agent news at once, and only the speaking
+  waits — so the drain stores nothing. `turnComplete` on a batch is true unless
+  every note in it was `speak: false`.
 
 - **`pnpm dev` is `scripts/dev.mjs`**: Nuxt on `DOMO_DEV_PORT` (pinned, so the
   proxy target can't drift) plus Caddy on `DOMO_HTTPS_ADDRESS`. The Caddyfile
@@ -598,8 +642,10 @@ inside a project.
   the database" must not be derived from `error.message` alone.
 
 What is deliberately *not* tested: a real Gemini Live session and
-`useVoiceChannel` (a real browser and a real Live session; the model/voice the
-runtime sends is covered with the SDK faked). **Spawning ACP adapters is now
+`useVoiceChannel` (a real browser and a real Live session; what the runtime
+*sends* is covered with the SDK faked — the model and voice in
+`test/server/voice-runtime-model.spec.ts`, and when a proactive note is allowed
+out in `test/unit/voice-runtime-notes.spec.ts`). **Spawning ACP adapters is now
 covered** — `pnpm test:agents` runs both, for real, inside a real environment.
 Everything above that boundary is still covered without an account:
 `test/server/acp-stream.spec.ts` mocks `spawn` with a pair of pipes and puts the

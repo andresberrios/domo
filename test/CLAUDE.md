@@ -95,10 +95,13 @@ workspace volume, DinD volume, image) at every failure point. None of that is
 visible in any single argv, and all of it has been wrong at some point.
 
 What is deliberately *not* tested: a real Gemini Live session and
-`useVoiceChannel` (a real browser and a real Live session; only the request the
-runtime sends is covered, with the SDK faked —
-`test/server/voice-runtime-model.spec.ts`). That is the whole list now: spawning
-ACP adapters used to be on it and is covered by `agents-live`.
+`useVoiceChannel` (a real browser and a real Live session; only what the runtime
+*sends* is covered, with the SDK faked — the model and voice it connects with in
+`test/server/voice-runtime-model.spec.ts`, and when a proactive note is allowed
+to reach the model in `test/unit/voice-runtime-notes.spec.ts`, where the repo,
+the settings and the tools are faked too so it needs no database). That is the
+whole list now: spawning ACP adapters used to be on it and is covered by
+`agents-live`.
 
 ## The `agents-live` layer
 

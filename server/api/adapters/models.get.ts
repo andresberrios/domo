@@ -1,7 +1,11 @@
 import { listAdapterModels } from '../../lib/acp/models'
 
 /**
- * The models an adapter offers, for the picker in the new-agent modal.
+ * The models *and permission modes* an adapter offers, for the pickers in the
+ * new-agent modal and in Settings. One probe answers both: they come out of the
+ * same `session/new` response, so asking separately would cost a second spawn
+ * for nothing. The route keeps its name — `/api/adapters/models` — because a
+ * rename would cost every caller for a word.
  *
  * Under `/api/adapters`, not `/api/agents`: a literal segment beside
  * `/api/agents/[id]` collapses the typed route for every agent call to the
