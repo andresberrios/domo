@@ -8,9 +8,9 @@ import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
 import { bus } from '../bus'
+import { adapterCommandPath } from '../dev-env/runtime-volume'
 import {
   containerExecArgs,
-  ensureEnvironmentAdapter,
   ensureEnvironmentRunning,
   readEnvironmentFile,
   writeEnvironmentFile
@@ -39,15 +39,13 @@ import type {
   PendingPermission
 } from '../../../shared/types'
 
-const ADAPTERS: Record<AgentAdapter, { packageName: string, command: string, entryOverride: string }> = {
+const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride: string }> = {
   'claude-code': {
     packageName: '@agentclientprotocol/claude-agent-acp',
-    command: 'claude-agent-acp',
     entryOverride: 'NUXT_CLAUDE_ACP_ENTRY'
   },
   codex: {
     packageName: '@agentclientprotocol/codex-acp',
-    command: 'codex-acp',
     entryOverride: 'NUXT_CODEX_ACP_ENTRY'
   }
 }
@@ -366,12 +364,10 @@ class AgentRuntime {
     await this.setStatus('starting', { lastError: null })
 
     let environment: DevEnvironment | null = null
-    const definition = ADAPTERS[session.adapter]
     const env = adapterEnv(session.adapter)
     let proc: ChildProcessWithoutNullStreams
     if (session.devEnvironmentId) {
       environment = await ensureEnvironmentRunning(session.devEnvironmentId)
-      await ensureEnvironmentAdapter(environment, session.adapter)
       this.containerName = environment.containerName
       this.containerPidFile = `/tmp/domo-agent-${this.agentSessionId}.pid`
       env.USER = environment.remoteUser ?? 'root'
@@ -379,7 +375,8 @@ class AgentRuntime {
       env.LOGNAME = env.USER
       proc = spawn('docker', [
         ...containerExecArgs(environment, env),
-        'sh', '-c', 'echo $$ > "$1"; exec "$2"', 'sh', this.containerPidFile, definition.command
+        // The adapters live in the shared runtime volume at /opt/domo, not on the image's PATH.
+        'sh', '-c', 'echo $$ > "$1"; exec "$2"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter)
       ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
     } else {
       await mkdir(session.cwd, { recursive: true }).catch(() => {})

@@ -73,7 +73,7 @@ export interface Project {
 }
 
 export type DevEnvironmentStatus = 'creating' | 'running' | 'stopped' | 'error'
-export type DevEnvironmentConfigSource = 'devcontainer' | 'domo' | 'default'
+export type DevEnvironmentConfigSource = 'domo' | 'default'
 
 export interface DevEnvironment {
   id: string
@@ -82,7 +82,6 @@ export interface DevEnvironment {
   containerName: string
   containerId: string | null
   workspacePath: string
-  hostWorkspacePath: string | null
   configSource: DevEnvironmentConfigSource
   configPath: string | null
   remoteUser: string | null

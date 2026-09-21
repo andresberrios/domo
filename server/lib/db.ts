@@ -78,7 +78,6 @@ create table if not exists dev_environments (
 create index if not exists dev_environments_project on dev_environments(project_id);
 
 alter table dev_environments add column if not exists container_id text;
-alter table dev_environments add column if not exists host_workspace_path text;
 alter table dev_environments add column if not exists config_source text not null default 'default';
 alter table dev_environments add column if not exists config_path text;
 alter table dev_environments add column if not exists remote_user text;

@@ -1,25 +1,24 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { DevEnvironment } from '~~/shared/types'
 
 /**
- * Creating a development environment for real: the real Dev Container CLI, a
- * real Docker daemon, the real `createEnvironment` / `removeEnvironment`. Only
- * what is backed by Postgres (`repo`) is replaced, by an in-memory map that
- * behaves like the tables, and the port scanner, which reads them.
+ * Creating a development environment for real: the real Dev Container CLI building a
+ * real image, a real `docker run`, the real `createEnvironment` / `removeEnvironment`.
+ * Only what is backed by Postgres (`repo`) is replaced, by an in-memory map that behaves
+ * like the tables, and the port scanner, which reads them.
  *
- * `dev-environments.spec.ts` asserts on the argv handed to `docker`; that is
- * how "`devcontainer up` dies on a missing lockfile directory" got through — the
- * argv was right and the CLI still refused it. Nothing short of running the CLI
- * against a checkout that looks like a real project can say.
+ * `dev-environments.spec.ts` asserts on the argv handed to `docker`; that is how
+ * "`devcontainer up` dies on a missing lockfile directory" got through — the argv was
+ * right and the CLI still refused it. Nothing short of running it against a checkout
+ * that looks like a real project can say.
  *
- * Slow (it pulls the base image and builds the Node and Docker-in-Docker
- * Features on the first run, and installs both ACP adapters into every
- * environment) and needs the network. Opt in: `pnpm test:docker`.
+ * Slow (it pulls base images, builds Features and populates the runtime volume on the
+ * first run) and needs the network. Opt in: `pnpm test:docker`.
  */
 
 const state = vi.hoisted(() => ({
@@ -34,7 +33,6 @@ vi.mock('../../server/lib/repo', () => ({
     const now = new Date().toISOString()
     const row = {
       containerId: null,
-      hostWorkspacePath: null,
       configSource: 'default',
       configPath: null,
       remoteUser: null,
@@ -67,8 +65,10 @@ vi.mock('../../server/lib/dev-environment-ports', () => ({
 const PREFIX = 'domo-live-test-'
 process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = PREFIX
 
-const { run, inspectContainer, populateWorkspaceVolume } = await import('../../server/lib/devcontainer/client')
-const { DEFAULT_IMAGE } = await import('../../server/lib/devcontainer/config')
+const { run, inspectContainer, populateWorkspaceVolume } = await import('../../server/lib/dev-env/docker')
+const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
+const { environmentImageName } = await import('../../server/lib/dev-env/image')
+const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
 const {
   createEnvironment,
   readEnvironmentFile,
@@ -78,6 +78,12 @@ const {
 
 const HOUR = 60 * 60 * 1000
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
+/** A glibc image with git and no Node of its own — the case the runtime volume exists for. */
+const BARE_IMAGE_DOCKERFILE = 'FROM debian:bookworm-slim\n'
+  + 'RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates '
+  + '&& rm -rf /var/lib/apt/lists/*\n'
+  + 'RUN useradd --create-home --shell /bin/bash dev\n'
+
 const created: string[] = []
 const scratch: string[] = []
 const volumes: string[] = []
@@ -123,111 +129,24 @@ async function mounts(containerId: string): Promise<Array<{ Type: string, Name?:
   return JSON.parse(output.stdout)
 }
 
+async function isPrivileged(containerId: string): Promise<boolean> {
+  const output = await run('docker', ['inspect', '--format', '{{.HostConfig.Privileged}}', containerId])
+  return output.stdout === 'true'
+}
+
 async function exists(path: string): Promise<boolean> {
   return stat(path).then(() => true, () => false)
 }
 
-interface Scenario {
-  label: string
-  files: Record<string, string>
-  /** Where the checkout is mounted; Domo picks `/workspaces/live-test` unless the project's own config says otherwise. */
-  workspace?: string
-  /** Extra assertions inside the running environment. */
-  verify?: (environment: DevEnvironment) => Promise<void>
+async function create(name = 'Live Test'): Promise<DevEnvironment> {
+  const environment = await createEnvironment({ projectId: 'prj_live', name })
+  created.push(environment.id)
+  return environment
 }
-
-const scenarios: Scenario[] = [
-  {
-    label: 'no environment definition at all (Domo\'s built-in one)',
-    files: {}
-  },
-  {
-    label: 'a .domo.json that only picks an image, with a forwarded port',
-    files: {
-      '.domo.json': JSON.stringify({
-        devEnvironment: { image: DEFAULT_IMAGE, remoteUser: 'vscode', forwardPorts: [3000] }
-      })
-    },
-    verify: async (environment) => {
-      const inspection = await inspectContainer(environment.containerId!)
-      expect(inspection!.publishedPorts).toContainEqual(
-        expect.objectContaining({ innerPort: 3000, protocol: 'tcp', hostPort: expect.any(Number) })
-      )
-      expect(state.ports).toContainEqual(expect.objectContaining({
-        environmentId: environment.id, innerPort: 3000, source: 'declared'
-      }))
-    }
-  },
-  {
-    label: 'the project\'s own devcontainer.json using an image',
-    files: {
-      '.devcontainer/devcontainer.json': `// comments and trailing commas are legal here
-{
-  "image": "${DEFAULT_IMAGE}",
-  "remoteUser": "vscode",
-  "containerEnv": { "FROM_PROJECT": "yes", },
-  "postCreateCommand": "echo ran > /tmp/post-create",
-}
-`
-    },
-    verify: async (environment) => {
-      await expect(inContainer(environment, 'printenv', 'FROM_PROJECT')).resolves.toBe('yes')
-      // Lifecycle commands run after the volume is handed to the remote user, as that user.
-      await expect(inContainer(environment, 'stat', '-c', '%U', '/tmp/post-create')).resolves.toBe('vscode')
-    }
-  },
-  {
-    label: 'the project\'s own devcontainer.json building a Dockerfile by relative path',
-    files: {
-      '.devcontainer/devcontainer.json': JSON.stringify({
-        build: { dockerfile: 'Dockerfile', context: '..', args: { MARK: 'yes' } },
-        remoteUser: 'vscode'
-      }),
-      '.devcontainer/Dockerfile': `FROM ${DEFAULT_IMAGE}\nARG MARK=no\nCOPY README.md /etc/domo-fixture-readme\nRUN echo "built with $MARK" >> /etc/domo-fixture-readme\n`
-    },
-    verify: async (environment) => {
-      // `context: ..` is the repository root: this only exists if both the
-      // Dockerfile and the context resolved against the project's own checkout.
-      await expect(inContainer(environment, 'cat', '/etc/domo-fixture-readme')).resolves.toBe('# fixture\nbuilt with yes')
-    }
-  },
-  {
-    label: 'a Docker Compose definition that binds the checkout by relative path',
-    workspace: '/workspaces/compose-fixture',
-    files: {
-      '.devcontainer/devcontainer.json': JSON.stringify({
-        dockerComposeFile: 'docker-compose.yml',
-        service: 'app',
-        workspaceFolder: '/workspaces/compose-fixture',
-        remoteUser: 'vscode'
-      }),
-      '.devcontainer/docker-compose.yml': [
-        'services:',
-        '  app:',
-        `    image: ${DEFAULT_IMAGE}`,
-        '    command: sleep infinity',
-        '    volumes:',
-        '      - ..:/workspaces/compose-fixture:cached',
-        '      - ../src:/extra-src',
-        ''
-      ].join('\n')
-    },
-    verify: async (environment) => {
-      // The compose file says `..`, which is the live checkout on the host; both
-      // of its binds must have become the environment's own volume instead.
-      const bound = (await mounts(environment.containerId!)).filter(mount => mount.Type === 'bind')
-      expect(bound.map(mount => mount.Destination)).not.toContain('/extra-src')
-      expect(bound.map(mount => mount.Destination)).not.toContain('/workspaces/compose-fixture')
-      await expect(inContainer(environment, 'cat', '/extra-src/index.ts')).resolves.toBe('export {}')
-    }
-  }
-]
-
-let meshEntry: string
 
 beforeAll(async () => {
-  // `docker info` first: with no daemon every scenario below would fail with the
-  // CLI's own, much less helpful, message.
+  // `docker info` first: with no daemon every test below would fail with a much less
+  // helpful message from several layers down.
   await run('docker', ['info', '--format', '{{.ServerVersion}}'])
 
   process.env.NUXT_DATA_DIR = await temp('data')
@@ -235,16 +154,11 @@ beforeAll(async () => {
   // hand a test the real ones.
   process.env.NUXT_CLAUDE_CONFIG_DIR = await temp('claude')
   process.env.NUXT_CODEX_CONFIG_DIR = await temp('codex')
-  meshEntry = resolve(process.cwd(), 'server/mcp/agent-mesh.mjs')
-  process.env.NUXT_DOMO_MCP_ENTRY = meshEntry
 })
 
 afterEach(async () => {
   // Whatever a failed assertion left behind.
   for (const id of created.splice(0)) {
-    await run('docker', ['compose', '--project-name', `${PREFIX}${id}`, 'down', '--volumes', '--remove-orphans'], {
-      allowFailure: true
-    })
     const found = await run('docker', ['ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`], {
       allowFailure: true
     })
@@ -256,6 +170,7 @@ afterEach(async () => {
       for (const volume of named) await run('docker', ['volume', 'rm', '--force', volume], { allowFailure: true })
     }
     await run('docker', ['volume', 'rm', '--force', workspaceVolumeName(id)], { allowFailure: true })
+    await run('docker', ['image', 'rm', '--force', environmentImageName(id)], { allowFailure: true })
   }
   for (const volume of volumes.splice(0)) {
     await run('docker', ['volume', 'rm', '--force', volume], { allowFailure: true })
@@ -267,37 +182,38 @@ afterAll(async () => {
   delete process.env.NUXT_DATA_DIR
   delete process.env.NUXT_CLAUDE_CONFIG_DIR
   delete process.env.NUXT_CODEX_CONFIG_DIR
-  delete process.env.NUXT_DOMO_MCP_ENTRY
   for (const path of scratch) await rm(path, { recursive: true, force: true })
 })
 
-describe.each(scenarios)('an environment for $label', ({ files, workspace = '/workspaces/live-test', verify }) => {
-  it('comes up, runs the project and tears down completely', async () => {
-    const repo = await checkout(files)
+describe('an environment for a project with no .domo.json', () => {
+  it('comes up with the built-in definition and tears down completely', async () => {
+    const repo = await checkout()
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
     state.ports.length = 0
 
-    const environment = await createEnvironment({ projectId: 'prj_live', name: 'Live Test' })
-    created.push(environment.id)
-    const volume = workspaceVolumeName(environment.id)
+    const environment = await create()
 
-    // What was recorded. There is no host copy: the checkout is the volume.
-    expect(environment).toMatchObject({ status: 'running', lastError: null, workspacePath: workspace })
-    expect(environment.containerId).toBeTruthy()
-    expect(environment.remoteUser).toBeTruthy()
-    expect(environment.hostWorkspacePath).toBeNull()
+    expect(environment).toMatchObject({
+      status: 'running',
+      lastError: null,
+      workspacePath: '/workspaces/live-test',
+      configSource: 'default',
+      configPath: null
+    })
     expect((await inspectContainer(environment.containerId!))?.running).toBe(true)
 
-    // The checkout is the environment's own volume, and nothing binds the
-    // developer's tree or Domo's data into it.
+    // The checkout is the environment's own volume, and nothing binds the developer's
+    // tree or Domo's data into it.
     const all = await mounts(environment.containerId!)
-    expect(all).toContainEqual(expect.objectContaining({ Type: 'volume', Name: volume, Destination: workspace }))
-    expect(all.filter(mount => mount.Type === 'bind').map(mount => mount.Source).join('\n'))
-      .not.toContain(repo)
+    expect(all).toContainEqual(expect.objectContaining({
+      Type: 'volume',
+      Name: workspaceVolumeName(environment.id),
+      Destination: '/workspaces/live-test'
+    }))
+    expect(all.filter(mount => mount.Type === 'bind').map(mount => mount.Source).join('\n')).not.toContain(repo)
 
-    // The project is in there, owned by the environment's user, and git is happy
-    // with it: no dubious-ownership refusal, nothing the CLI left behind.
-    await expect(readEnvironmentFile(environment, `${workspace}/README.md`)).resolves.toBe('# fixture\n')
+    // The project is in there, owned by the environment's user, and git is happy with it.
+    await expect(readEnvironmentFile(environment, '/workspaces/live-test/README.md')).resolves.toBe('# fixture\n')
     await expect(inContainer(environment, 'stat', '-c', '%U', '.')).resolves.toBe(environment.remoteUser)
     await expect(inContainer(environment, 'git', 'log', '--oneline')).resolves.toMatch(/fixture/)
     await expect(inContainer(environment, 'git', 'status', '--porcelain')).resolves.toBe('')
@@ -306,41 +222,164 @@ describe.each(scenarios)('an environment for $label', ({ files, workspace = '/wo
     await inContainer(environment, 'sh', '-c', 'echo scribble > written-inside.txt')
     expect(await exists(join(repo, 'written-inside.txt'))).toBe(false)
 
-    // The agents' runtime: both adapters, and the mesh server the agents call
-    // Domo back through.
-    await expect(inContainer(environment, 'sh', '-c', 'command -v claude-agent-acp && command -v codex-acp'))
-      .resolves.toMatch(/claude-agent-acp\n.*codex-acp/)
-    await expect(readEnvironmentFile(environment, '/opt/domo/agent-mesh.mjs'))
-      .resolves.toBe(await readFile(meshEntry, 'utf8'))
-
-    // Privileged with a working nested daemon, so agents can `docker compose`.
-    await vi.waitFor(async () => {
-      const version = await inContainer(environment, 'docker', 'info', '--format', '{{.ServerVersion}}')
-      expect(version).toMatch(/^\d+\.\d+/)
-    }, { timeout: 90_000, interval: 3_000 })
-
-    await verify?.(environment)
+    // The default definition asks for Node and Docker, so both are there.
+    await expect(inContainer(environment, 'node', '--version')).resolves.toMatch(/^v22\./)
+    expect(await isPrivileged(environment.containerId!)).toBe(true)
+    await expect(inContainer(environment, 'docker', 'info', '--format', '{{.ServerVersion}}'))
+      .resolves.toMatch(/^\d+\.\d+/)
 
     // The project's own checkout was only read.
     await expect(run('git', ['-C', repo, 'status', '--porcelain'])).resolves.toMatchObject({ stdout: '' })
 
-    // Deleting leaves nothing: the container, every volume it had, the compose
-    // project's network and sidecars.
     const kept = all.filter(mount => mount.Type === 'volume' && mount.Name).map(mount => mount.Name!)
-    expect(kept).toContain(volume)
-
     await removeEnvironment(environment.id)
 
     expect(await inspectContainer(environment.containerId!)).toBeNull()
     for (const name of kept) {
+      if (name.startsWith(`${PREFIX}runtime-`)) continue // shared, and deliberately kept
       const left = await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${name}$`])
       expect(left.stdout, `volume ${name} outlived its environment`).toBe('')
     }
-    const project = await run('docker', [
-      'ps', '--all', '--quiet', '--filter', `label=com.docker.compose.project=${PREFIX}${environment.id}`
-    ])
-    expect(project.stdout, 'a compose service outlived its environment').toBe('')
+    const image = await run('docker', ['images', '--quiet', environmentImageName(environment.id)])
+    expect(image.stdout, 'the environment image outlived its environment').toBe('')
   }, HOUR / 4)
+})
+
+describe('an environment for a bare glibc image with no Node of its own', () => {
+  it('runs unprivileged, and Domo\'s runtime works in it anyway', async () => {
+    const repo = await checkout({
+      'Dockerfile.dev': BARE_IMAGE_DOCKERFILE,
+      '.domo.json': JSON.stringify({
+        devEnvironment: {
+          build: { dockerfile: 'Dockerfile.dev', context: '.' },
+          docker: false,
+          remoteUser: 'dev',
+          containerEnv: { FROM_PROJECT: 'yes' },
+          forwardPorts: [3000],
+          portsAttributes: { 3000: { label: 'Web app', protocol: 'http' } },
+          postCreateCommand: 'echo ran > /tmp/post-create'
+        }
+      })
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    state.ports.length = 0
+
+    const environment = await create()
+
+    expect(environment).toMatchObject({
+      status: 'running',
+      remoteUser: 'dev',
+      configSource: 'domo',
+      configPath: '.domo.json'
+    })
+    // `docker: false` means exactly that: no nested daemon, no privileges.
+    expect(await isPrivileged(environment.containerId!)).toBe(false)
+    expect((await mounts(environment.containerId!)).map(mount => mount.Name).join('\n'))
+      .not.toContain('dind-var-lib-docker')
+    await expect(inContainer(environment, 'sh', '-c', 'command -v node || echo none')).resolves.toBe('none')
+
+    // The workspace belongs to the remote user, and postCreateCommand ran as them.
+    await expect(inContainer(environment, 'stat', '-c', '%U', '.')).resolves.toBe('dev')
+    await expect(inContainer(environment, 'stat', '-c', '%U', '/tmp/post-create')).resolves.toBe('dev')
+    await expect(inContainer(environment, 'printenv', 'FROM_PROJECT')).resolves.toBe('yes')
+    await expect(inContainer(environment, 'printenv', 'DOMO_DEV_ENVIRONMENT_ID')).resolves.toBe(environment.id)
+
+    // The declared port is published, and its attributes rode along on the container.
+    const inspection = await inspectContainer(environment.containerId!)
+    expect(inspection!.publishedPorts).toContainEqual(
+      expect.objectContaining({ innerPort: 3000, protocol: 'tcp', hostPort: expect.any(Number) })
+    )
+    expect(JSON.parse(inspection!.labels['domo.portsAttributes']!))
+      .toEqual({ 3000: { label: 'Web app', protocol: 'http' } })
+    expect(state.ports).toContainEqual(expect.objectContaining({
+      environmentId: environment.id, innerPort: 3000, source: 'declared'
+    }))
+
+    // The point of the whole runtime volume: an ACP adapter starts and answers, in an
+    // image that has no Node. `initialize` needs no account.
+    const initialize = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } }
+    })
+    const answer = await run('docker', [
+      'exec', '--interactive', '--user', 'dev', '--workdir', environment.workspacePath,
+      environment.containerId!, '/opt/domo/bin/claude-agent-acp'
+    ], { input: `${initialize}\n` })
+    expect(JSON.parse(answer.stdout.split('\n')[0]!)).toMatchObject({
+      id: 1,
+      result: { agentInfo: { name: '@agentclientprotocol/claude-agent-acp' } }
+    })
+
+    await removeEnvironment(environment.id)
+    expect(await inspectContainer(environment.containerId!)).toBeNull()
+  }, HOUR / 4)
+})
+
+describe('an environment whose image cannot run Domo\'s runtime', () => {
+  it('fails creation with a readable message and leaves nothing behind', async () => {
+    // With git, so the preflight gets as far as the bundled Node and reports the real
+    // problem: the binary is glibc-linked and musl has no loader for it.
+    const repo = await checkout({
+      'Dockerfile.alpine': 'FROM alpine:3\nRUN apk add --no-cache git\n',
+      '.domo.json': JSON.stringify({
+        devEnvironment: { build: { dockerfile: 'Dockerfile.alpine' }, docker: false }
+      })
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+
+    let id = ''
+    await expect(
+      createEnvironment({ projectId: 'prj_live', name: 'Live Test Alpine' })
+        .catch((error) => {
+          id = [...state.rows.keys()][0]!
+          throw error
+        })
+    ).rejects.toThrow(/glibc-based/)
+
+    created.push(id)
+    expect(state.rows.get(id)).toMatchObject({ status: 'error' })
+    const containers = await run('docker', ['ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`])
+    expect(containers.stdout, 'a container outlived a failed creation').toBe('')
+    const volume = await run('docker', [
+      'volume', 'ls', '--quiet', '--filter', `name=^${workspaceVolumeName(id)}$`
+    ])
+    expect(volume.stdout, 'the workspace volume outlived a failed creation').toBe('')
+    const image = await run('docker', ['images', '--quiet', environmentImageName(id)])
+    expect(image.stdout, 'the image outlived a failed creation').toBe('')
+  }, HOUR / 4)
+})
+
+describe('two environments of the same project', () => {
+  it('share one runtime volume, built once', async () => {
+    const repo = await checkout({
+      '.domo.json': JSON.stringify({
+        devEnvironment: {
+          image: DEFAULT_IMAGE,
+          docker: false,
+          remoteUser: 'vscode',
+          features: { 'ghcr.io/devcontainers/features/node:1': { version: '20' } }
+        }
+      })
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+
+    const first = await create('Live Test One')
+    const second = await create('Live Test Two')
+    const shared = await ensureRuntimeVolume()
+
+    expect(shared).toBe(runtimeVolumeName((await run('docker', ['version', '--format', '{{.Server.Arch}}'])).stdout))
+    for (const environment of [first, second]) {
+      expect((await mounts(environment.containerId!))).toContainEqual(expect.objectContaining({
+        Type: 'volume', Name: shared, Destination: '/opt/domo', RW: false
+      }))
+      // The Feature the project asked for was baked into the image.
+      await expect(inContainer(environment, 'node', '--version')).resolves.toMatch(/^v20\./)
+    }
+    const built = await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${PREFIX}runtime-`])
+    expect(built.stdout.split('\n').filter(Boolean)).toEqual([shared])
+  }, HOUR / 2)
 })
 
 describe('populateWorkspaceVolume', () => {

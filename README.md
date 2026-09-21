@@ -19,10 +19,10 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
 - **Voice agent** — Gemini Live over a WebSocket: 16 kHz PCM up, 24 kHz PCM
   back, barge-in supported, live transcripts on screen. The model session lives
   on the server, so a page refresh never drops the conversation.
-- **Projects and dev environments** — register a local Git checkout, then make
-  any number of isolated dev containers from it. Each environment has a copied
-  checkout, can host several parallel agents, and includes a private
-  Docker-in-Docker daemon for Compose stacks.
+- **Projects and dev environments** — register a local checkout, then make any
+  number of isolated containers from it, described by one `.domo.json` in the
+  project. Each environment has a copied checkout, can host several parallel
+  agents, and can have a private Docker-in-Docker daemon for Compose stacks.
 - **Coding agents** — choose Claude Code or Codex for each session. Claude Code
   runs through Zed's official ACP adapter
   ([`@agentclientprotocol/claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp),
@@ -68,58 +68,101 @@ The schema is created automatically on first boot. Press **New conversation**,
 hit the mic, and say *"start an agent in ~/code/my-project and have it fix the
 failing tests"*.
 
-For isolated work, open **Projects**, add a local Git checkout, create a
+For isolated work, open **Projects**, add a local checkout, create a
 development environment, then select that environment when starting agents.
-Domo resolves the environment definition in this order:
 
-1. `.devcontainer/devcontainer.json` or `.devcontainer.json` — the standard
-   Dev Container definition, launched with the official Dev Container CLI.
-2. `.domo.json` — a small fallback for projects that only need to select a
-   prebuilt image.
-3. Domo's built-in Ubuntu Dev Container definition.
+### `.domo.json`
 
-For example, a repository can use a prebuilt image without adding a full
-Dev Container definition:
+An environment is described by a single file in the project root, `.domo.json`
+(JSONC — comments and trailing commas are fine). A project that does not have
+one gets Domo's built-in definition. A project's `.devcontainer/devcontainer.json`
+is **not** read: Domo owns how the container runs, and a file it only half
+honoured would be worse than no file at all. Unknown keys under `devEnvironment`
+are an error, not something quietly ignored.
 
-```json
+```jsonc
 {
   "devEnvironment": {
+    // Exactly one of "image" or "build".
     "image": "ghcr.io/acme/my-project-dev:latest",
-    "remoteUser": "vscode",
-    "forwardPorts": [3000],
-    "portsAttributes": {
-      "3000": { "label": "Web app", "protocol": "http" }
-    }
+    "build": {
+      "dockerfile": "Dockerfile.dev",  // relative to the project root
+      "context": ".",                  // default "."
+      "args": { "MARK": "yes" },
+      "target": "dev"
+    },
+
+    // Dev Container Features, baked into the image.
+    "features": { "ghcr.io/devcontainers/features/python:1": {} },
+
+    // A private, nested Docker daemon (docker-in-docker). Default false.
+    // Only an environment with this runs privileged.
+    "docker": true,
+
+    "remoteUser": "dev",               // who agents and commands run as
+    "containerEnv": { "API_URL": "http://localhost:3000" },
+    "forwardPorts": [3000, "5432/tcp"],
+    "portsAttributes": { "3000": { "label": "Web app", "protocol": "http" } },
+
+    // A string runs through `sh -c`; an array is argv.
+    "postCreateCommand": "pnpm install"
   }
 }
 ```
 
-Domo preserves the project's Dev Container image/build/Compose definition,
-Features, mounts, environment variables, lifecycle commands, and user. It adds
-Node, Docker-in-Docker, both agent adapters, and the labels and mounts needed to
-manage the environment.
+The built-in definition, used when there is no `.domo.json`, is:
 
-Each environment:
+```jsonc
+{
+  "devEnvironment": {
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+    "features": { "ghcr.io/devcontainers/features/node:1": { "version": "22" } },
+    "docker": true
+  }
+}
+```
 
-- copies the full source checkout (including its Git metadata) into a private
-  Docker volume mounted at `/workspaces/<environment>`. Nothing bind-mounts your
-  working tree, so file-heavy work (`git`, installs, test runs) runs at native
-  container speed and an agent's edits never touch your checkout. The definition,
-  Dockerfile and Compose files are read from your checkout when the environment
-  is created; a Compose file that binds the checkout is rewritten to use the
-  volume;
-- can run multiple Claude Code and Codex ACP sessions against that same copy;
-- runs privileged with its own nested Docker daemon, so agents can use
-  `docker compose` without sharing stacks with the host or other environments;
-- persists its checkout and nested containers across stop/start, and removes
-  both when the environment is deleted. **The checkout exists only in the
-  volume**, so push what you want to keep (or `docker cp` it out) before
-  deleting.
+**The image must be glibc-based and have `git`.** Domo mounts its own Node and
+both ACP adapters into every environment from a shared, read-only volume, so the
+image does not need a Node of its own — but that Node is glibc-linked, so Alpine
+and other musl images are not supported. Creation fails with exactly that
+message rather than with something obscure later on.
+
+#### Using the same Dockerfile as VS Code
+
+A project that already has a `.devcontainer/Dockerfile` for VS Code can point
+Domo at it instead of duplicating anything:
+
+```jsonc
+{
+  "devEnvironment": {
+    "build": { "dockerfile": ".devcontainer/Dockerfile", "context": "." },
+    "docker": true
+  }
+}
+```
+
+### What an environment is
+
+- The image is built once per environment by the Dev Container CLI, which is
+  used **only** as an image builder — that is what makes Features available.
+  Domo runs the container itself.
+- The full source checkout (including its version-control metadata) is copied
+  into a private Docker volume mounted at `/workspaces/<environment>`. Nothing
+  bind-mounts your working tree, so file-heavy work (installs, test runs) runs
+  at native container speed and an agent's edits never touch your checkout.
+- Multiple Claude Code and Codex ACP sessions can run against that same copy.
+- With `"docker": true` the environment is privileged and has its own nested
+  Docker daemon, so agents can use `docker compose` without sharing stacks with
+  the host or other environments. Without it the container is unprivileged.
+- The checkout and any nested containers persist across stop/start, and the
+  container, both volumes and the image are removed when the environment is
+  deleted. **The checkout exists only in the volume**, so push what you want to
+  keep (or `docker cp` it out) before deleting.
 
 ### Forwarding application ports
 
-`forwardPorts` and `portsAttributes` in `devcontainer.json` (or `.domo.json`)
-are shown automatically in the environment card and bound to a random free
+`forwardPorts` and `portsAttributes` in `.domo.json` are shown automatically in the environment card and bound to a random free
 port on `127.0.0.1`. Domo also scans running environments for listening TCP
 ports every five seconds. Undeclared ports appear in the same card and can be
 forwarded with one click, without VS Code and without recreating the container.
@@ -155,9 +198,11 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
 | `NUXT_DEFAULT_CWD` | Default workspace for new coding agents |
 | `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
-| `NUXT_DEV_ENV_IMAGE` | Override Domo's built-in fallback Dev Container image |
+| `NUXT_DEV_ENV_IMAGE` | Base image of the built-in environment definition |
+| `NUXT_DEV_ENV_RUNTIME_IMAGE` | Image the shared runtime volume takes its Node and adapters from (default `node:22-bookworm-slim`) |
 | `NUXT_DEV_ENV_HELPER_IMAGE` | Image used to copy a checkout into its volume (default `busybox:1.37`; set it for offline installs) |
-| `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix of the volumes and Compose projects Domo creates (default `domo-dev-`) |
+| `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix of the containers, images and volumes Domo creates (default `domo-dev-`) |
+| `NUXT_DEV_ENV_DOCKER_READY_MS` | How long a nested Docker daemon gets to start before creation fails (default `30000`) |
 | `NUXT_CLAUDE_CONFIG_DIR` | Claude config directory mounted into environments (defaults to `~/.claude`) |
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
 

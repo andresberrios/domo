@@ -45,12 +45,21 @@ things that are easy to get wrong.
   (`server/lib/acp/manager.ts`) and reattached with `session/load` when the
   session already has an `acp_session_id`.
 - **Projects own dev environments; dev environments own isolation.** A managed
-  environment is a long-lived privileged container whose checkout lives in a
-  named Docker volume (`domo-dev-<id>-workspace`, derived from the id, so no
-  column) and a private DinD daemon. There is no host copy. Legacy environments
-  keep their bind-mounted `hostWorkspacePath`, and delete still removes it. Multiple agent sessions may share one
+  environment is a long-lived container whose checkout lives in a named Docker
+  volume (`domo-dev-<id>-workspace`, derived from the id, so no column). There is
+  no host copy. It is described by the project's own `.domo.json`
+  (`server/lib/dev-env/config.ts`) — nothing else is read — and `docker: true`
+  gives it a private DinD daemon. Multiple agent sessions may share one
   environment. Their ACP adapters run through `docker exec`; legacy sessions
   without `dev_environment_id` still run directly on the host.
+- **The Dev Container CLI builds the image and nothing else.** `devcontainer
+  build` is how a Feature gets baked in, and that is all it is used for
+  (`server/lib/dev-env/image.ts`); Domo composes `docker run` itself
+  (`container.ts`) and owns the lifecycle (`server/lib/dev-environments.ts`).
+  We were not following the spec faithfully before and have stopped pretending
+  to: `.devcontainer/devcontainer.json`, compose definitions, `mounts`,
+  `runArgs` and the rest of the lifecycle commands are simply not supported, and
+  an unknown key in `.domo.json` is an error rather than something ignored.
 - **Permission requests are rows, not callbacks.** `onPermission` writes a
   pending `agent_permissions` row, then parks on a promise. The UI, the voice
   agent (`answer_permission`) and the auto-approve setting all resolve the same
@@ -94,7 +103,9 @@ things that are easy to get wrong.
   requests are proxied through Docker; never use the host filesystem for an
   environment-backed session. The built-in mesh server is not a file the
   container needs at all: it is Domo's own HTTP endpoint, reached at
-  `host.docker.internal` from inside an environment (`internalBaseUrl(true)`).
+  `host.docker.internal` from inside an environment (`internalBaseUrl(true)`),
+  which is why every environment gets
+  `--add-host host.docker.internal:host-gateway`.
 - **The mesh token secret lives in memory and must stay there.** It is
   `randomBytes(32)` at module scope in `server/lib/mesh/token.ts`, and a token
   never needs to outlive the process: Nitro's `close` hook kills every adapter,
@@ -156,26 +167,57 @@ things that are easy to get wrong.
 - **Reka select items cannot have `value: ''`** (it throws when the menu opens).
   Use a named sentinel for "none" — see `LOCAL` in `NewAgentModal.vue`.
 
-- **`devcontainer up` needs `--no-lockfile`, and its `--workspace-folder` is a
-  scratch dir.** The CLI writes a Feature lockfile beside the config it thinks it
-  is using; with `--override-config` that is `<workspace>/.devcontainer/`, which
-  does not exist for a project without a definition, so every one of them died
-  with `ENOENT … devcontainer-lock.json`. The scratch folder (deleted afterwards)
-  is what keeps the CLI's `vsc-<folder>-<hash>` image tag unique per environment;
-  the checkout is not in it. Consequence: `${localWorkspaceFolder}` in a project's
-  own config resolves to that scratch dir.
-- **Launch is two phases:** `up --skip-post-create`, `chown` the volume to the
-  remote user (tar leaves it root-owned), then `run-user-commands`. Otherwise
-  `postCreateCommand` runs as the remote user against files it does not own.
-- **Build contexts, Dockerfiles and compose files are read from the project's own
-  checkout**, made absolute by `absoluteSourcePaths()`; the volume is not on the
-  host. A compose file that binds `..` is rewritten by `composeWorkspaceOverride()`
-  (an extra compose file, found with `docker compose config`) to mount the volume
-  at the same target; sub-directory binds become `subpath` mounts (Engine 26+).
+- **`devcontainer build` gets a scratch `.devcontainer/` all to itself.** The CLI
+  writes its Feature lockfile *beside the config it was given*, so the generated
+  config lives in `mkdtemp()/.devcontainer/devcontainer.json` and the directory is
+  deleted afterwards. The user's checkout is only ever read from (Dockerfile,
+  build context, both made absolute — the CLI runs from the scratch folder, so a
+  relative path would resolve against that).
+- **The `devcontainer.metadata` label is an allow-list, not a config.** An image
+  built by the CLI carries a JSON array contributed by the base image, each
+  Feature and the config; `mergeImageMetadata()` honours only `entrypoint`,
+  `privileged`, `init`, `capAdd`, `securityOpt`, `containerEnv`, volume `mounts`
+  and `remoteUser`/`containerUser`. **Bind mounts are dropped with a warning** —
+  a Feature that mounts a host path (the docker-*outside*-of-docker one mounts
+  `/var/run/docker.sock`) would put the host filesystem back inside an
+  environment whose whole point is not having it. `${devcontainerId}` in a mount
+  source is substituted with the environment id.
+- **`--privileged` comes from the metadata, never from Domo.** In practice that
+  means the docker-in-docker Feature, which is injected only for
+  `"docker": true`. A `"docker": false` environment runs unprivileged, and
+  `test/unit/dev-env-container.spec.ts` asserts it.
+- **Feature entrypoints run on every `docker start`, so they live in the
+  container's command.** `keepAliveScript()` mirrors what the CLI composes:
+  `echo Container started` / `trap "exit 0" 15` / each entrypoint / `exec "$@"` /
+  `while sleep 1 & wait $!; do :; done`, behind `--entrypoint /bin/sh` with
+  `-c <script> -`. DinD's `/usr/local/share/docker-init.sh` is one of those
+  entrypoints; run it once at creation instead and a stopped environment comes
+  back with no `dockerd`.
+- **Node and both ACP adapters live in one shared, read-only volume**
+  (`server/lib/dev-env/runtime-volume.ts`, mounted at `/opt/domo`), not installed
+  per environment. The volume's name is a hash of the pinned helper image, both
+  adapter versions and the daemon's architecture, so a pin bump builds a new one
+  and a running environment keeps the one it mounted. `.ready` is written **last**
+  so an interrupted build is redone, and the wrappers are `chmod 0755`'d by name:
+  `chmod -R a+rX` leaves a file that had no execute bit non-executable, and the
+  symptom is a bare `permission denied` from `runc`.
+- **Nothing is added to PATH, and nothing needs to be.** `claude-agent-acp`
+  resolves Claude Code as a *native binary* from an optional dependency of
+  `@anthropic-ai/claude-agent-sdk` and spawns it directly; `codex-acp` spawns
+  `process.execPath` (which is Domo's own absolute node, because the wrapper
+  `exec`s it) with the bundled `@openai/codex/bin/codex.js`. So the wrappers
+  hard-code `/opt/domo/node/bin/node` — npm's own shims say `#!/usr/bin/env
+  node`, which finds nothing in an image without node — and the project's own
+  node version still wins in the agent's shell.
+- **The preflight is where an unusable image is caught.** `git` missing, the
+  bundled node failing to exec (Alpine/musl: `exec … no such file or directory`),
+  or `docker info` not answering within 30 s each fail creation with a sentence
+  that says what to do. It runs **before** the `chown` and `git config
+  safe.directory`, because those are themselves things a missing `git` turns into
+  a bare `exit 127`.
 - **`docker rm --volumes` does not remove the Docker-in-Docker volume.** The
-  Feature names it (`dind-var-lib-docker-<id>`, `<project>_dind-…` under compose),
-  so `removeContainer()` reads the container's named volumes first and removes
-  exactly those, plus `compose down` for a compose project. Not other named
+  Feature names it (`dind-var-lib-docker-<id>`), so `removeContainer()` reads the
+  container's named volumes first and removes exactly those. Not other named
   volumes: a project's own mounts may be shared.
 - **The "Open in VS Code" URL is a hex-encoded JSON authority.**
   `app/utils/vscodeUri.ts` builds
@@ -329,6 +371,10 @@ and permissions are end to end because a permission is a row.
   with the header enforced and with it stripped.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
+- The dev-environment path was verified against a real Docker daemon by
+  `pnpm test:docker`, including an ACP `initialize` answered by
+  `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no
+  Node of its own, and an Alpine image failing the preflight and cleaning up.
 - The ACP path was verified end to end against a real Claude Code account:
   `session/new` with the agent-mesh MCP server attached (then a stdio shim,
   now the HTTP endpoint), streaming

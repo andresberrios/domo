@@ -9,15 +9,19 @@ import type { DevEnvironment } from '~~/shared/types'
 /**
  * Docker is driven at the process boundary: `run('docker', [...])` with an
  * argument array, never an interpolated shell string. These tests assert on the
- * exact argv, which is the only thing that a name with a space, a `$` or a
- * newline in it can break. No Docker daemon is involved — see the `.live` spec
- * for the handful of tests that need a real one.
+ * exact argv and on the order the steps happen in, which is where the rules live —
+ * a `postCreateCommand` that runs before the workspace is chowned, or a failure that
+ * leaves an image behind, is not visible anywhere else. No Docker daemon is involved;
+ * see the `.live` spec for the handful of tests that need a real one.
  */
 
 const run = vi.fn(async (_program: string, _args: string[], _options?: unknown) => ({ stdout: '', stderr: '' }))
 const inspectContainer = vi.fn()
-const devcontainerUp = vi.fn()
 const populateWorkspaceVolume = vi.fn(async () => undefined)
+const buildEnvironmentImage = vi.fn(async () => 'domo-dev-env_1')
+const readImageMetadata = vi.fn()
+const ensureRuntimeVolume = vi.fn(async () => 'domo-dev-runtime-abc123')
+const collectRuntimeVolumes = vi.fn(async () => undefined)
 const repo = {
   createDevEnvironmentRow: vi.fn(),
   deleteDevEnvironmentRow: vi.fn(),
@@ -27,8 +31,26 @@ const repo = {
   upsertDevEnvironmentPort: vi.fn()
 }
 
-vi.mock('../../server/lib/devcontainer/client', () => ({
-  run, inspectContainer, devcontainerUp, populateWorkspaceVolume, resourcePrefix: () => 'domo-dev-'
+vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  run,
+  inspectContainer,
+  populateWorkspaceVolume,
+  resourcePrefix: () => 'domo-dev-'
+}))
+vi.mock('../../server/lib/dev-env/image', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  buildEnvironmentImage,
+  removeImage: async (image: string) => { await run('docker', ['image', 'rm', image], { allowFailure: true }) }
+}))
+vi.mock('../../server/lib/dev-env/container', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  readImageMetadata
+}))
+vi.mock('../../server/lib/dev-env/runtime-volume', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  ensureRuntimeVolume,
+  collectRuntimeVolumes
 }))
 vi.mock('../../server/lib/dev-environment-ports', () => ({
   refreshEnvironmentPorts: vi.fn(async () => []),
@@ -39,13 +61,24 @@ vi.mock('../../server/lib/repo', () => repo)
 const {
   containerExecArgs,
   createEnvironment,
-  ensureEnvironmentAdapter,
   readEnvironmentFile,
   removeEnvironment,
   startEnvironment,
   stopEnvironment,
   writeEnvironmentFile
 } = await import('../../server/lib/dev-environments')
+
+const EMPTY_METADATA = {
+  entrypoints: [],
+  privileged: false,
+  init: false,
+  capAdd: [],
+  securityOpt: [],
+  containerEnv: {},
+  volumeMounts: [],
+  remoteUser: 'vscode',
+  containerUser: null
+}
 
 function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
   return {
@@ -55,7 +88,6 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     containerName: 'domo-dev-env_1',
     containerId: 'container-sha',
     workspacePath: '/workspaces/api',
-    hostWorkspacePath: null,
     configSource: 'default',
     configPath: null,
     remoteUser: 'vscode',
@@ -72,9 +104,17 @@ function dockerCalls(): string[][] {
   return run.mock.calls.filter(([program]) => program === 'docker').map(([, args]) => args)
 }
 
+/** The index of the first `docker` call whose argv contains all of `needles`. */
+function stepAt(...needles: string[]): number {
+  return dockerCalls().findIndex(args => needles.every(needle => args.some(arg => arg.includes(needle))))
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   run.mockResolvedValue({ stdout: '', stderr: '' })
+  buildEnvironmentImage.mockResolvedValue('domo-dev-env_1')
+  ensureRuntimeVolume.mockResolvedValue('domo-dev-runtime-abc123')
+  readImageMetadata.mockResolvedValue(EMPTY_METADATA)
 })
 
 describe('containerExecArgs', () => {
@@ -137,24 +177,6 @@ describe('file access inside an environment', () => {
   })
 })
 
-describe('ensureEnvironmentAdapter', () => {
-  it('installs the Claude Code adapter only when it is missing', async () => {
-    await ensureEnvironmentAdapter(environment(), 'claude-code')
-
-    expect(dockerCalls()[0]).toEqual([
-      'exec', '--user', 'root', 'container-sha',
-      'sh', '-c', 'command -v "$1" >/dev/null 2>&1 || npm install --global "$2"',
-      'sh', 'claude-agent-acp', '@agentclientprotocol/claude-agent-acp@0.78.0'
-    ])
-  })
-
-  it('installs the Codex adapter for a Codex session', async () => {
-    await ensureEnvironmentAdapter(environment(), 'codex')
-
-    expect(dockerCalls()[0]!.slice(-2)).toEqual(['codex-acp', '@agentclientprotocol/codex-acp@1.12.0'])
-  })
-})
-
 describe('start, stop and remove', () => {
   it('starts a container that exists but is not running', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
@@ -194,7 +216,7 @@ describe('start, stop and remove', () => {
     expect(dockerCalls()).toEqual([['stop', 'container-sha']])
   })
 
-  it('removes the container with its volumes, and tolerates it being gone', async () => {
+  it('removes the container, both volumes and the image', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment())
     inspectContainer.mockResolvedValue({
       id: 'container-sha',
@@ -210,9 +232,11 @@ describe('start, stop and remove', () => {
       ['rm', '--force', '--volumes', 'container-sha'],
       { allowFailure: true }
     )
-    // The workspace volume and the docker-in-docker feature's named volume go too.
-    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
+    // `docker rm --volumes` only takes anonymous volumes, so both named ones go by name.
     expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-abc'])
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
+    expect(dockerCalls()).toContainEqual(['image', 'rm', 'domo-dev-env_1'])
+    expect(collectRuntimeVolumes).toHaveBeenCalled()
     expect(repo.deleteDevEnvironmentRow).toHaveBeenCalledWith('env_1')
   })
 
@@ -231,22 +255,6 @@ describe('start, stop and remove', () => {
     // Once the container is gone there is nothing left to ask which volumes it had.
     const removedAt = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'rm')]!
     expect(inspectContainer.mock.invocationCallOrder[0]).toBeLessThan(removedAt)
-  })
-
-  it('takes a compose project down instead of only removing one container', async () => {
-    repo.getDevEnvironment.mockResolvedValue(environment())
-    inspectContainer.mockResolvedValue({
-      id: 'container-sha',
-      labels: { 'com.docker.compose.project': 'domo-dev-env_1' },
-      namedVolumes: [],
-      publishedPorts: []
-    })
-
-    await removeEnvironment('env_1')
-
-    expect(dockerCalls()).toContainEqual([
-      'compose', '--project-name', 'domo-dev-env_1', 'down', '--volumes', '--remove-orphans'
-    ])
   })
 
   it('is a no-op for an environment that is not there', async () => {
@@ -271,7 +279,14 @@ describe('createEnvironment', () => {
     await writeFile(join(repoPath, 'README.md'), '# project\n', 'utf8')
     await writeFile(
       join(repoPath, '.domo.json'),
-      JSON.stringify({ devEnvironment: { image: 'ghcr.io/acme/dev:latest', forwardPorts: [3000] } }),
+      JSON.stringify({
+        devEnvironment: {
+          image: 'ghcr.io/acme/dev:latest',
+          remoteUser: 'vscode',
+          forwardPorts: [3000],
+          postCreateCommand: 'pnpm install'
+        }
+      }),
       'utf8'
     )
 
@@ -279,11 +294,10 @@ describe('createEnvironment', () => {
     repo.createDevEnvironmentRow.mockImplementation(async (input: any) => environment(input))
     repo.updateDevEnvironment.mockResolvedValue(environment())
     repo.getDevEnvironment.mockResolvedValue(environment())
-    devcontainerUp.mockResolvedValue({
-      containerId: 'container-sha',
-      workspacePath: '/workspaces/api',
-      remoteUser: 'vscode'
-    })
+    run.mockImplementation(async (_program, args) => ({
+      stdout: args[0] === 'run' ? 'container-sha' : '',
+      stderr: ''
+    }))
     inspectContainer.mockResolvedValue({
       id: 'container-sha',
       name: 'domo-dev-env_1',
@@ -300,11 +314,30 @@ describe('createEnvironment', () => {
     await rm(repoPath, { recursive: true, force: true })
   })
 
-  it('copies the checkout into a volume, declares its ports and boots a Dev Container', async () => {
+  it('builds, runs, preflights, chowns and only then runs postCreateCommand', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    expect(buildEnvironmentImage).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath,
+      name: 'API work',
+      config: expect.objectContaining({ image: 'ghcr.io/acme/dev:latest' })
+    }))
+    const order = [
+      stepAt('run', 'domo-dev-env_1'),
+      stepAt('git', '--version'),
+      stepAt('/opt/domo/node/bin/node'),
+      stepAt('chown'),
+      stepAt('safe.directory'),
+      stepAt('pnpm install')
+    ]
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    expect(order.includes(-1)).toBe(false)
+  })
+
+  it('copies the checkout into a volume and declares its ports', async () => {
     await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
-    expect(repo.createDevEnvironmentRow.mock.calls[0]![0].hostWorkspacePath).toBeUndefined()
     expect(dockerCalls()).toContainEqual([
       'volume', 'create', '--label', `domo.envId=${id}`, `domo-dev-${id}-workspace`
     ])
@@ -312,18 +345,26 @@ describe('createEnvironment', () => {
       source: repoPath,
       volume: `domo-dev-${id}-workspace`
     }))
-
     expect(repo.upsertDevEnvironmentPort).toHaveBeenCalledWith(expect.objectContaining({
       innerPort: 3000,
       protocol: 'tcp',
       source: 'declared'
     }))
-    expect(devcontainerUp).toHaveBeenCalledWith(expect.objectContaining({
-      environmentName: 'API work',
-      repoPath,
-      workspaceVolume: expect.stringMatching(/^domo-dev-env_.*-workspace$/),
-      resolved: expect.objectContaining({ source: 'domo' })
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith(id, expect.objectContaining({
+      configSource: 'domo',
+      configPath: '.domo.json',
+      remoteUser: 'vscode'
     }))
+  })
+
+  it('mounts the shared runtime volume read-only, and the checkout at the workspace', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    const runCall = dockerCalls().find(args => args[0] === 'run')!
+    expect(runCall).toContain('type=volume,source=domo-dev-runtime-abc123,target=/opt/domo,readonly')
+    expect(runCall).toContain(`type=volume,source=domo-dev-${id}-workspace,target=/workspaces/api-work`)
+    expect(runCall).not.toContain('--privileged')
   })
 
   // A data dir inside the project would otherwise be copied into its own environment.
@@ -341,8 +382,34 @@ describe('createEnvironment', () => {
     }))
   })
 
-  it('leaves nothing behind when the container fails to start', async () => {
-    devcontainerUp.mockRejectedValue(new Error('feature build failed'))
+  it.each([
+    ['the image build', () => buildEnvironmentImage.mockRejectedValue(new Error('feature build failed')),
+      'feature build failed'],
+    ['docker run', () => run.mockImplementation(async (_program, args) => {
+      if (args[0] === 'run') throw new Error('no privileged containers allowed')
+      return { stdout: '', stderr: '' }
+    }), 'no privileged containers allowed'],
+    ['postCreateCommand', () => run.mockImplementation(async (_program, args) => {
+      if (args.includes('pnpm install')) throw new Error('exit 1')
+      return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+    }), 'postCreateCommand failed']
+  ])('records the failure and leaves nothing behind when %s fails', async (_label, arrange, message) => {
+    arrange()
+
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(message)
+
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith(id, {
+      status: 'error',
+      lastError: expect.stringContaining(message)
+    })
+    expect(dockerCalls()).toContainEqual(['rm', '--force', '--volumes', 'container-sha'])
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', `domo-dev-${id}-workspace`])
+    expect(dockerCalls()).toContainEqual(['image', 'rm', `domo-dev-${id}`])
+  })
+
+  it('takes the dind volume with it when the half-made container had one', async () => {
+    buildEnvironmentImage.mockRejectedValue(new Error('feature build failed'))
     repo.getDevEnvironment.mockResolvedValue(environment({ containerId: null }))
     run.mockImplementation(async (_program, args) => ({
       stdout: args[0] === 'ps' ? 'half-made-container' : '',
@@ -357,45 +424,65 @@ describe('createEnvironment', () => {
 
     await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow('feature build failed')
 
-    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
-    expect(repo.updateDevEnvironment).toHaveBeenCalledWith(id, { status: 'error', lastError: 'feature build failed' })
     expect(dockerCalls()).toContainEqual(['rm', '--force', '--volumes', 'half-made-container'])
     expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-xyz'])
-    expect(dockerCalls()).toContainEqual(['volume', 'rm', `domo-dev-${id}-workspace`])
   })
 
-  it('makes the workspace safe for git and installs both adapters, as argv', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+  it.each([
+    ['git', ['git', '--version'], /does not have `git` installed/],
+    ['Domo\'s Node', ['/opt/domo/node/bin/node'], /must be glibc-based/]
+  ])('fails creation with a readable message when the image has no %s', async (_label, needles, message) => {
+    run.mockImplementation(async (_program, args) => {
+      if (needles.every(needle => args.includes(needle))) throw new Error('exit 126')
+      return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+    })
 
-    expect(dockerCalls()).toContainEqual([
-      'exec', '--user', 'root', 'container-sha',
-      'npm', 'install', '--global',
-      '@agentclientprotocol/claude-agent-acp@0.78.0',
-      '@agentclientprotocol/codex-acp@1.12.0'
-    ])
-    expect(dockerCalls()).toContainEqual([
-      'exec', '--user', 'vscode', '--env', 'HOME=/home/vscode', 'container-sha',
-      'git', 'config', '--global', '--add', 'safe.directory', '/workspaces/api'
-    ])
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(message)
+  })
+
+  it('waits for the nested daemon, and gives up with a readable message', async () => {
+    process.env.NUXT_DEV_ENV_DOCKER_READY_MS = '30'
+    await writeFile(
+      join(repoPath, '.domo.json'),
+      JSON.stringify({ devEnvironment: { image: 'ghcr.io/acme/dev:latest', docker: true } }),
+      'utf8'
+    )
+    let attempts = 0
+    run.mockImplementation(async (_program, args) => {
+      if (args.includes('info')) {
+        attempts += 1
+        throw new Error('cannot connect')
+      }
+      return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+    })
+
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' }))
+      .rejects.toThrow(/nested Docker daemon did not come up/)
+
+    expect(attempts).toBeGreaterThan(1)
+    delete process.env.NUXT_DEV_ENV_DOCKER_READY_MS
+  })
+
+  it('accepts a daemon that takes a few tries to answer', async () => {
+    await writeFile(
+      join(repoPath, '.domo.json'),
+      JSON.stringify({ devEnvironment: { image: 'ghcr.io/acme/dev:latest', docker: true } }),
+      'utf8'
+    )
+    let attempts = 0
+    run.mockImplementation(async (_program, args) => {
+      if (args.includes('info') && ++attempts < 3) throw new Error('cannot connect')
+      return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+    })
+
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).resolves.toBeTruthy()
+    expect(attempts).toBe(3)
   })
 
   it('refuses a project that is not a Git checkout', async () => {
     await rm(join(repoPath, '.git'), { recursive: true, force: true })
 
     await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow()
-    expect(devcontainerUp).not.toHaveBeenCalled()
-  })
-
-  it('records the failure and tears the container down again when the boot fails', async () => {
-    devcontainerUp.mockRejectedValue(new Error('no privileged containers allowed'))
-
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects
-      .toThrow('no privileged containers allowed')
-
-    expect(repo.updateDevEnvironment).toHaveBeenCalledWith(
-      expect.any(String),
-      { status: 'error', lastError: 'no privileged containers allowed' }
-    )
-    expect(dockerCalls()).toContainEqual(['rm', '--force', '--volumes', 'container-sha'])
+    expect(buildEnvironmentImage).not.toHaveBeenCalled()
   })
 })

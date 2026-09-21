@@ -102,9 +102,8 @@ describe('dev environments', () => {
       name: 'api',
       containerName: 'domo-dev-1',
       workspacePath: '/workspaces/api',
-      hostWorkspacePath: '/data/env/repo',
-      configSource: 'devcontainer',
-      configPath: '.devcontainer/devcontainer.json',
+      configSource: 'domo',
+      configPath: '.domo.json',
       remoteUser: 'vscode'
     })
 
@@ -112,7 +111,7 @@ describe('dev environments', () => {
       status: 'creating',
       containerId: null,
       lastError: null,
-      configSource: 'devcontainer',
+      configSource: 'domo',
       remoteUser: 'vscode'
     })
     expect(seen.types()).toEqual(['project-changed', 'dev-environment-changed'])

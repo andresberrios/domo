@@ -87,7 +87,6 @@ function mapDevEnvironment(r: any): DevEnvironment {
     containerName: r.container_name,
     containerId: r.container_id ?? null,
     workspacePath: r.workspace_path,
-    hostWorkspacePath: r.host_workspace_path ?? null,
     configSource: r.config_source ?? 'default',
     configPath: r.config_path ?? null,
     remoteUser: r.remote_user ?? null,
@@ -208,7 +207,6 @@ export async function createDevEnvironmentRow(input: {
   name: string
   containerName: string
   workspacePath: string
-  hostWorkspacePath?: string | null
   configSource?: DevEnvironment['configSource']
   configPath?: string | null
   remoteUser?: string | null
@@ -216,12 +214,11 @@ export async function createDevEnvironmentRow(input: {
   const now = nowIso()
   const row = await queryOne(
     `insert into dev_environments
-       (id, project_id, name, container_name, workspace_path, host_workspace_path,
+       (id, project_id, name, container_name, workspace_path,
         config_source, config_path, remote_user, status, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'creating', $10, $10) returning *`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, 'creating', $9, $9) returning *`,
     [input.id ?? newId('env'), input.projectId, input.name, input.containerName, input.workspacePath,
-      input.hostWorkspacePath ?? null, input.configSource ?? 'default', input.configPath ?? null,
-      input.remoteUser ?? null, now]
+      input.configSource ?? 'default', input.configPath ?? null, input.remoteUser ?? null, now]
   )
   const environment = mapDevEnvironment(row)
   bus.publish({ type: 'dev-environment-changed', devEnvironmentId: environment.id })
@@ -231,7 +228,7 @@ export async function createDevEnvironmentRow(input: {
 export async function updateDevEnvironment(
   id: string,
   patch: Partial<Pick<DevEnvironment,
-    'name' | 'status' | 'lastError' | 'containerName' | 'containerId' | 'hostWorkspacePath'
+    'name' | 'status' | 'lastError' | 'containerName' | 'containerId'
     | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser'>>
 ): Promise<DevEnvironment | null> {
   const sets = ['updated_at = $2']
@@ -245,7 +242,6 @@ export async function updateDevEnvironment(
   if (patch.lastError !== undefined) push('last_error', patch.lastError)
   if (patch.containerName !== undefined) push('container_name', patch.containerName)
   if (patch.containerId !== undefined) push('container_id', patch.containerId)
-  if (patch.hostWorkspacePath !== undefined) push('host_workspace_path', patch.hostWorkspacePath)
   if (patch.workspacePath !== undefined) push('workspace_path', patch.workspacePath)
   if (patch.configSource !== undefined) push('config_source', patch.configSource)
   if (patch.configPath !== undefined) push('config_path', patch.configPath)
