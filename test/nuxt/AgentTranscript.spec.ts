@@ -25,8 +25,8 @@ const session: AgentSession = {
   archived: false
 }
 
-function render(events: AgentEvent[], permissions: PendingPermission[] = []) {
-  return mountSuspended(AgentTranscript, { props: { session, events, permissions } })
+function render(events: AgentEvent[], permissions: PendingPermission[] = [], condensed = false) {
+  return mountSuspended(AgentTranscript, { props: { session, events, permissions, condensed } })
 }
 
 /** MarkdownView renders asynchronously (Shiki), so message bodies land a tick late. */
@@ -126,5 +126,73 @@ describe('AgentTranscript', () => {
     const component = await render([])
 
     expect(component.text().trim()).toBe('')
+  })
+
+  /**
+   * Condensing is a render choice, not a change to the log: the same events
+   * draw as one row or as every card, and the things the user has to act on
+   * stay on screen either way.
+   */
+  describe('condensed', () => {
+    const toolCall = (id: string, name: string) =>
+      agentEvent('tool_call', { toolCallId: id, title: name, name, kind: 'execute', status: 'completed' })
+
+    const run = [
+      toolCall('c1', 'Read'),
+      toolCall('c2', 'Read'),
+      toolCall('c3', 'Bash'),
+      agentEvent('agent_message', { text: 'All set.', streaming: false })
+    ]
+
+    it('draws a run as one row and none of its cards', async () => {
+      const component = await render(run, [], true)
+
+      await text(component).toContain('3 tool calls')
+      expect(component.text()).toContain('Read ×2, Bash ×1')
+      expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(0)
+      await text(component).toContain('All set.')
+    })
+
+    it('draws every card when it is off', async () => {
+      const component = await render(run, [], false)
+
+      await text(component).toContain('Read')
+      expect(component.text()).not.toContain('3 tool calls')
+      expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(3)
+    })
+
+    it('is on unless the page says otherwise', async () => {
+      const component = await mountSuspended(AgentTranscript, {
+        props: { session, events: run, permissions: [] }
+      })
+
+      await text(component).toContain('3 tool calls')
+    })
+
+    it('never hides a permission that is still waiting for an answer', async () => {
+      const pending = permission()
+      const component = await render([
+        toolCall('c1', 'Read'),
+        toolCall('c2', 'Read'),
+        agentEvent('permission_request', { permissionId: pending.id, toolCall: { title: 'Run pnpm install' } }),
+        toolCall('c3', 'Bash'),
+        toolCall('c4', 'Bash')
+      ], [pending], true)
+
+      await text(component).toContain('Waiting for permission: Run pnpm install')
+      expect(component.text()).toContain('2 tool calls')
+    })
+
+    it('leaves the call that is running now outside the group', async () => {
+      const component = await render([
+        toolCall('c1', 'Read'),
+        toolCall('c2', 'Read'),
+        agentEvent('tool_call', { toolCallId: 'c3', title: 'Bash', name: 'Bash', kind: 'execute', status: 'in_progress' })
+      ], [], true)
+
+      await text(component).toContain('2 tool calls')
+      expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(1)
+      expect(component.text()).toContain('Running')
+    })
   })
 })

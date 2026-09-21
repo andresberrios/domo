@@ -12,6 +12,7 @@ const { environments } = useDevEnvironments()
 const { events } = useAgentEvents(agentId)
 const { permissions, pending } = usePermissions(agentId)
 const { queued } = useAgentInbox(agentId)
+const condensed = useCondensedTranscript()
 
 const { data: fetched, refresh } = await useFetch<AgentSession>(
   () => `/api/agents/${agentId.value}`,
@@ -169,6 +170,7 @@ const menuItems = computed(() => [
           </UBadge>
         </template>
         <template #right>
+          <USwitch v-model="condensed" size="xs" label="Condensed" :ui="{ label: 'text-xs text-muted' }" />
           <span class="text-xs text-dimmed">{{ relativeTime(session?.lastActivityAt) }}</span>
         </template>
       </UDashboardToolbar>
@@ -212,6 +214,7 @@ const menuItems = computed(() => [
               :session="session"
               :events="events"
               :permissions="permissions"
+              :condensed="condensed"
             />
           </div>
         </div>
