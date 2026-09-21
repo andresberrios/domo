@@ -38,6 +38,7 @@ vi.mock('../../server/lib/acp/manager', async (importOriginal) => {
 })
 
 const devEnvironments = vi.hoisted(() => ({
+  safeEnvironmentName: (name: string) => name,
   createEnvironment: vi.fn(async (input: any) => ({
     id: 'env_new',
     projectId: input.projectId,
@@ -51,6 +52,25 @@ const devEnvironments = vi.hoisted(() => ({
 }))
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
+
+// The export itself is `git-sync.spec.ts`, with real git on both ends; here it
+// is only what the mesh decides before calling it. `resolveIntoBranch` stays
+// real, because that decision is the point.
+const gitSync = vi.hoisted(() => ({
+  exportBranch: vi.fn(async (input: any) => ({
+    ref: `refs/remotes/domo-env/env/${input.branch}`,
+    sha: 'f00d',
+    commits: [],
+    into: input.into,
+    result: input.into ? 'fast-forwarded' : 'not-merged'
+  })),
+  listEnvironmentBranches: vi.fn(async () => ({ current: 'work-in-here', branches: [] }))
+}))
+
+vi.mock('../../server/lib/dev-env/git-sync', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../server/lib/dev-env/git-sync')>(),
+  ...gitSync
+}))
 
 // The real one spawns an adapter to ask it; that belongs to `adapter-models.spec.ts`.
 const catalog = vi.hoisted(() => vi.fn(async (_adapter?: string) => ({
@@ -99,6 +119,8 @@ beforeEach(async () => {
   devEnvironments.startEnvironment.mockClear()
   devEnvironments.stopEnvironment.mockClear()
   devEnvironments.removeEnvironment.mockClear()
+  gitSync.exportBranch.mockClear()
+  gitSync.listEnvironmentBranches.mockClear()
 })
 
 describe('the agent-mesh MCP endpoint', () => {
@@ -145,6 +167,7 @@ describe('the agent-mesh MCP endpoint', () => {
       'create_dev_environment',
       'update_dev_environment',
       'delete_dev_environment',
+      'export_branch',
       'notify_supervisor'
     ])
   })
@@ -437,5 +460,80 @@ describe('projects and dev environments', () => {
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toMatch(/Refusing to delete the environment/)
     expect(devEnvironments.removeEnvironment).not.toHaveBeenCalled()
+  })
+})
+
+describe('export_branch', () => {
+  let repoPath: string
+
+  async function environmentFor(name = 'env') {
+    const project = await createProject({ name: 'domo', repoPath })
+    return createDevEnvironmentRow({
+      projectId: project.id,
+      name,
+      containerName: `domo-${name}`,
+      workspacePath: '/workspace'
+    })
+  }
+
+  beforeEach(async () => {
+    repoPath = await mkdtemp(join(tmpdir(), 'domo-mesh-repo-'))
+    await mkdir(join(repoPath, '.git'))
+  })
+
+  afterEach(async () => {
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  it('defaults to the caller\'s own environment, its checked-out branch and the same name on the host', async () => {
+    const environment = await environmentFor()
+    const caller = await session('caller', { devEnvironmentId: environment.id })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'export_branch')).body)
+
+    expect(gitSync.listEnvironmentBranches).toHaveBeenCalledWith(environment.id)
+    expect(gitSync.exportBranch).toHaveBeenCalledWith({
+      environmentId: environment.id,
+      branch: 'work-in-here',
+      into: 'work-in-here'
+    })
+    expect(body).toMatchObject({ result: 'fast-forwarded', into: 'work-in-here' })
+  })
+
+  it('takes another environment, branch and local branch when it is given them', async () => {
+    const environment = await environmentFor('other')
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'export_branch', {
+      devEnvironmentId: environment.id,
+      branch: 'feature',
+      into: 'review'
+    })
+
+    expect(gitSync.listEnvironmentBranches).not.toHaveBeenCalled()
+    expect(gitSync.exportBranch).toHaveBeenCalledWith({
+      environmentId: environment.id,
+      branch: 'feature',
+      into: 'review'
+    })
+  })
+
+  it('reads an empty `into` as "fetch it, touch nothing"', async () => {
+    const environment = await environmentFor()
+    const caller = await session('caller', { devEnvironmentId: environment.id })
+
+    await callTool(mintMeshToken(caller.id), 'export_branch', { branch: 'feature', into: '' })
+
+    expect(gitSync.exportBranch).toHaveBeenCalledWith(expect.objectContaining({ into: null }))
+  })
+
+  it('tells a host session it has to name an environment', async () => {
+    const caller = await session('caller')
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'export_branch', { branch: 'main' })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toMatch(/pass devEnvironmentId/)
+    expect(gitSync.exportBranch).not.toHaveBeenCalled()
   })
 })

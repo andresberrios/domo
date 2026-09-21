@@ -1,5 +1,6 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
 import {
@@ -17,7 +18,7 @@ import { voiceManager } from '../voice/runtime'
 /**
  * The agent mesh: what a coding agent can do to the rest of Domo.
  *
- * Every session Domo spawns gets these five tools through the built-in `domo`
+ * Every session Domo spawns gets these tools through the built-in `domo`
  * MCP server (`server/api/internal/mcp.ts`). They are how agents see each
  * other, hand work over, spawn peers, pick a model and page the voice
  * supervisor.
@@ -165,6 +166,26 @@ export const MESH_TOOLS = [
     }
   },
   {
+    name: 'export_branch',
+    description:
+      'Copy a branch out of a development environment into the project\'s own checkout on the host, by fetching it straight from the container. Fast-forward only: it never rewrites or merges anything on the host.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        branch: { type: 'string', description: 'Branch in the environment. Defaults to the one checked out there.' },
+        into: {
+          type: 'string',
+          description: 'Local branch on the host to fast-forward. Defaults to the same name; pass an empty string to fetch without touching a branch.'
+        },
+        devEnvironmentId: {
+          type: 'string',
+          description: 'Environment to export from, from list_projects. Defaults to this agent\'s own environment.'
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: 'notify_supervisor',
     description:
       'Say something to the human’s voice supervisor agent. Use it to report a milestone, flag a blocker, or ask a question that needs a human decision. The supervisor may speak it out loud.',
@@ -298,6 +319,18 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       }
       await removeProjectEnvironment(args.environmentId)
       return { id: args.environmentId, deleted: true }
+    }
+
+    case 'export_branch': {
+      const environmentId = String(args.devEnvironmentId ?? caller.devEnvironmentId ?? '')
+      if (!environmentId) {
+        throw new Error('This agent is not running in a development environment; pass devEnvironmentId (from list_projects).')
+      }
+      const branch = String(args.branch ?? '').trim() || (await listEnvironmentBranches(environmentId)).current
+      if (!branch) {
+        throw new Error('That environment has no branch checked out; name the branch to export.')
+      }
+      return exportBranch({ environmentId, branch, into: resolveIntoBranch(branch, args.into) })
     }
 
     case 'notify_supervisor': {
