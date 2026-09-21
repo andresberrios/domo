@@ -40,6 +40,12 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   new peers, subscribe to each other's progress, and page the voice supervisor.
   Each session is handed its own bearer token, so a call can only ever act as
   the agent that made it.
+- **Conversations that don't reset** — a Live socket lasts minutes; a
+  conversation lasts as long as you want it to. Domo folds the older part of
+  each conversation into a rolling summary on its row and replays the rest
+  verbatim, so a reconnect, a tool change or a server restart picks the thread
+  up mid-thought instead of starting over. See
+  [Long conversations](#long-conversations).
 - **Custom MCP servers** — add stdio / HTTP / SSE servers in Settings and scope
   them to the voice agent, the coding agents, or both.
 - **Real-time UI** — Postgres is the source of truth, ElectricSQL streams
@@ -346,6 +352,7 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `DATABASE_URL` | Postgres, defaults to the compose service |
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
+| `NUXT_GEMINI_SUMMARY_MODEL` | Text model that writes the rolling conversation summary (default `gemini-flash-lite-latest`) |
 | `NUXT_DEFAULT_CWD` | Default workspace for new coding agents |
 | `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
 | `NUXT_DEV_ENV_IMAGE` | Base image of the built-in environment definition |
@@ -427,6 +434,38 @@ session, because the agent comes back in whatever mode *it* defaults to.
 Domo upgrades an install that predates the split: whatever single mode you had
 chosen becomes the Claude Code default, and Codex starts on its own.
 
+### Long conversations
+
+Nothing about a conversation lives in the socket. Gemini hands out a
+`goAway` every few minutes, changing a tool or adding an MCP server
+invalidates the resumption handle, and editing `server/` under `pnpm dev`
+restarts Nitro — so a long conversation is rebuilt from Postgres many times
+over, and what it is rebuilt *from* is the whole question.
+
+Domo answers it with two halves that meet exactly:
+
+- **a rolling summary** on the `voice_sessions` row, covering everything up to
+  `summary_through_seq`, and
+- **the tail after it, verbatim**, newest-first within a character budget.
+
+The fold runs when a turn ends and again just before a connect (capped, and
+never fatal), and it always leaves the last few exchanges alone — a paraphrase
+of what you said thirty seconds ago is worse than the words. It is written by
+a cheap text model, not the Live one — `gemini-flash-lite-latest`, which
+summarised a 6.6 kB transcript in ~1.2 s in testing; set
+`NUXT_GEMINI_SUMMARY_MODEL` to change it. If the summariser is unreachable the conversation carries on regardless,
+and the instruction says in as many words that some messages were lost, so
+Domo tells you rather than confabulating.
+
+The transcript on screen is never touched: every message stays in
+`voice_messages`, and the panel at the top of a folded conversation shows the
+summary Domo is actually carrying. **New conversation** is still the way to
+get a clean context — a new row, with no summary and no handle.
+
+Coding agents are not part of this: Claude Code and Codex compact their own
+context inside their own processes, and `agent_events` is a log Domo renders,
+not a prompt it rebuilds.
+
 ### About the Live model id
 
 Google's Live model ids move fast. Domo defaults to `gemini-3.8-live`
@@ -446,6 +485,8 @@ app/                     Nuxt 4 SPA (Nuxt UI 4)
 server/
   lib/db.ts              Postgres pool + schema (source of truth)
   lib/voice/runtime.ts   Gemini Live session, tool dispatch, persistence
+  lib/voice/context.ts   summary + verbatim tail → what a connect is told
+  lib/voice/compaction.ts folding old messages into the rolling summary
   lib/voice/tools.ts     the voice agent's tools over coding agents
   lib/acp/manager.ts     Claude Code / Codex ACP processes, one per session
   lib/dev-environments   Docker/DinD environment lifecycle

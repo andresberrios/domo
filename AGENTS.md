@@ -140,6 +140,39 @@ things that are easy to get wrong.
   voice agent calls `start_new_conversation`, the runtime waits for the sign-off
   turn to complete (8 s fallback), emits `session-changed`, and the browser
   follows with `switchSession()`, which swaps the socket but keeps the mic open.
+- **A conversation is the row and its messages; the socket is disposable.**
+  Every connect rebuilds the model's context from Postgres, and what it
+  rebuilds is two halves that meet at `voice_sessions.summary_through_seq`: the
+  rolling `summary` stands in for everything up to it, and everything after it
+  is replayed verbatim, newest-first within a character budget
+  (`server/lib/voice/context.ts`). No overlap, no hole — that is the whole of
+  "seamless", and it is why the instruction looks the same after three turns
+  and after three hundred. The decisions are pure (`context.ts`: what to
+  render, what to fold, where to cut) and the I/O is not
+  (`compaction.ts`: load, summarise, write back), because the half that is easy
+  to get wrong is the half that is trivial to test. Before this the instruction
+  carried the last **12** messages verbatim and nothing else, so every
+  reconnect of a long conversation — and `goAway` alone makes that every few
+  minutes — silently dropped everything before them.
+- **The fold runs at a turn boundary and before a connect, and never blocks
+  either for long.** `AgentRuntime`-style fire-and-forget after `turnComplete`
+  (`scheduleCompaction`, deliberately not awaited), and `ensureCompacted` at
+  the top of `connect()` — awaited, because a reconnect is exactly where an
+  uncompacted middle would fall off the end of the budget, but capped at
+  `COMPACT_CONNECT_TIMEOUT_MS` and never fatal. `compactConversation`
+  de-duplicates by session, so the turn's fold and the connect's fold are one
+  model call. The write is guarded (`where coalesce(summary_through_seq, 0) <
+  $new`), so a summary can only move forward: two folds racing end on the
+  further one instead of rewinding the row to cover fewer messages than it
+  already did. And the most recent exchanges are never folded
+  (`KEEP_VERBATIM_CHARS`) — the user says "do that again" about those, and a
+  paraphrase is worse than the words.
+- **A failed fold is told to the model, not hidden from it.** If the summariser
+  is unreachable the row is left exactly as it was, the tail overflows its
+  budget, and `buildConversationContext` puts the count of what it had to drop
+  into the instruction. A conversation that quietly forgets is the failure that
+  is impossible to debug from the outside; one that says "I have lost some of
+  this" is merely annoying.
 - **The voice agent names its own conversations** with `set_conversation_title`;
   there is no background titling model. Titles have an owner (`title_source`):
   the tool writes only while it is `auto`, in the same `update … where` (a rename
@@ -430,6 +463,35 @@ things that are easy to get wrong.
   the bundle into the workspace volume instead would dirty the agent's own
   checkout. The `ext::` fetch needs no intermediate file at all, and it
   negotiates: only the objects the host is missing cross.
+- **The schema in `server/lib/db.ts` is a template literal, so a backtick in a
+  SQL comment ends it.** Writing `` -- the summary of `x` `` there does not
+  fail as SQL; it fails as *TypeScript*, several lines later, with
+  `TS1005: ',' expected`. Name columns in prose, unquoted, inside `SCHEMA`.
+- **The summariser is `gemini-flash-lite-latest`, and that is a measured
+  choice.** Against a real key on a 6.6 kB transcript (the size a fold actually
+  hands over, since `COMPACT_AFTER_CHARS` is 6000): lite answered in
+  **1.1–1.2 s** across four runs with no failures, while `gemini-flash-latest`
+  took **4.0–4.6 s** and `gemini-3.8-flash` 5.1 s, and both of those returned
+  `503 UNAVAILABLE` ("high demand") on two of three attempts in the same
+  window. The summaries were equally usable — ids, branch, file name and the
+  outstanding commitment all survived — so the slower models buy nothing here.
+  Latency is what matters because `connect()` waits on a fold; at ~1.2 s the
+  6 s cap is slack, at 4.6 s it would not have been. A 503 costs nothing but
+  the fold: the next turn's fold retries, and the tail is still replayed
+  verbatim meanwhile.
+- **The summariser call sets no `maxOutputTokens`.** A thinking model can spend
+  the whole cap on thinking and answer with empty text, which would look like a
+  summariser that silently stopped working. The length is bounded on the way
+  into the row instead (`SUMMARY_CHARS`), where it cannot fail open.
+- **A fold reads forward from the boundary; a connect reads back from the
+  end.** `listVoiceMessagesAfter(seq)` for compaction, `listVoiceMessages`
+  (newest N) for the context, and they are not interchangeable: fold the
+  *newest* N of a long backlog and `summary_through_seq` advances past
+  messages nothing ever read — a hole the summary silently claims to cover.
+  From the boundary, a backlog is simply folded a chunk per turn until it is
+  caught up. The connect side has the mirror-image hazard, so it passes
+  `countVoiceMessagesAfter` as `uncoveredTotal`: a backlog older than the
+  window is then counted as lost instead of being invisible.
 - **A voice session's `model` / `voice` columns are a record, not an input.** The
   runtime reads `liveModel` / `voiceName` from Settings on every connect and
   writes them back to the row. Preferring the row froze whatever default was
@@ -728,6 +790,14 @@ inside a project.
   theoretical: an early version of the harness emptied it. A refused connection
   arrives as an `AggregateError` with an *empty* message, so "could not reach
   the database" must not be derived from `error.message` alone.
+
+Context compaction is covered without an account at three levels: the pure
+decisions in `test/unit/voice-context.spec.ts` (including the invariant that
+the fold and the replay partition the log exactly), the fold against real
+Postgres with a stubbed summariser in `test/server/voice-compaction.spec.ts`,
+and what a connect is actually told in
+`test/server/voice-runtime-context.spec.ts`, where the real runtime meets a
+recorder for `live.connect` and a stub for `models.generateContent`.
 
 What is deliberately *not* tested: a real Gemini Live session and
 `useVoiceChannel` (a real browser and a real Live session; what the runtime
