@@ -1,5 +1,6 @@
 import { getDb, query } from '../lib/db'
 import { acpManager } from '../lib/acp/manager'
+import { startSubscriptionNotifier } from '../lib/acp/subscriptions'
 import { voiceManager } from '../lib/voice/runtime'
 import {
   rebuildEnvironmentForwarders,
@@ -24,6 +25,9 @@ export default defineNitroPlugin(async (nitro) => {
   } catch (error) {
     console.error(`\n[domo] ${error instanceof Error ? error.message : error}\n`)
   }
+
+  // Subscriptions are rows, so they outlive the process that made them.
+  await startSubscriptionNotifier().catch(error => console.error('[domo] subscriptions', error))
 
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
 

@@ -1,4 +1,4 @@
-import type { AgentEvent, PendingPermission } from '~~/shared/types'
+import type { AgentEvent, AgentInboxMessage, PendingPermission } from '~~/shared/types'
 
 /**
  * Builders for the two append-only logs. `buildTranscript()` only cares about
@@ -48,6 +48,21 @@ export function permission(overrides: Partial<PendingPermission> = {}): PendingP
     resolvedAt: null,
     resolvedOptionId: null,
     resolvedBy: null,
+    ...overrides
+  }
+}
+
+export function inboxMessage(overrides: Partial<AgentInboxMessage> = {}): AgentInboxMessage {
+  counter += 1
+  return {
+    id: `in_${counter}`,
+    agentSessionId: 'ag_test',
+    seq: counter,
+    content: [{ type: 'text', text: 'then push it' }],
+    delivery: 'queue',
+    origin: 'user',
+    createdAt: new Date(1700000000000 + counter * 1000).toISOString(),
+    deliveredAt: null,
     ...overrides
   }
 }

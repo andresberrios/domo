@@ -1,6 +1,7 @@
 import { useLiveQuery } from '@tanstack/vue-db'
 import {
   agentEventsCollection,
+  agentInboxCollection,
   agentSessionsCollection,
   devEnvironmentsCollection,
   mcpServersCollection,
@@ -11,6 +12,7 @@ import {
 } from '~/lib/collections'
 import type {
   AgentEvent,
+  AgentInboxMessage,
   AgentSession,
   DevEnvironment,
   McpServer,
@@ -146,6 +148,42 @@ export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | 
   )
 
   return { events, isReady }
+}
+
+/**
+ * What is waiting for an agent that is still working.
+ *
+ * A row, like everything else the UI renders: a queued message is visible while
+ * it waits, survives a reload, and can be taken back before it goes out.
+ */
+export function useAgentInbox(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
+  const { data, isReady } = useLiveQuery(
+    (q) => {
+      const id = toValue(agentSessionId)
+      if (!id) return undefined
+      return q.from({ message: agentInboxCollection(id) })
+    },
+    [() => toValue(agentSessionId)]
+  )
+
+  const messages = computed<AgentInboxMessage[]>(() =>
+    (data.value ?? [])
+      .map((row: any) => ({
+        id: row.id,
+        agentSessionId: row.agent_session_id,
+        seq: asNumber(row.seq),
+        content: row.content ?? [],
+        delivery: row.delivery,
+        origin: row.origin,
+        createdAt: row.created_at,
+        deliveredAt: row.delivered_at ?? null
+      }))
+      .sort((a, b) => a.seq - b.seq)
+  )
+
+  const queued = computed(() => messages.value.filter(message => !message.deliveredAt))
+
+  return { messages, queued, isReady }
 }
 
 export function useVoiceMessages(voiceSessionId: MaybeRefOrGetter<string | null | undefined>) {

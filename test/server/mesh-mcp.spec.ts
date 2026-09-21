@@ -8,7 +8,9 @@ import {
   createAgentSession,
   createDevEnvironmentRow,
   createProject,
-  listAgentEvents
+  deleteAgentSession,
+  listAgentEvents,
+  listAgentSubscriptions
 } from '../../server/lib/repo'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
 import { mintMeshToken } from '../../server/lib/mesh/token'
@@ -23,13 +25,13 @@ import { mintMeshToken } from '../../server/lib/mesh/token'
 
 const acp = vi.hoisted(() => ({
   promptInBackground: vi.fn(async () => {}),
-  create: vi.fn(async (input: any) => ({
-    id: 'ag_spawned',
-    title: input.title,
-    cwd: input.cwd ?? '/workspace',
-    adapter: input.adapter,
-    devEnvironmentId: input.devEnvironmentId
-  }))
+  deliver: vi.fn(async (_id: string, input: any) => ({
+    delivery: input.delivery,
+    outcome: input.delivery === 'queue' ? 'queued' : 'prompted'
+  })),
+  // The implementation is set in `beforeEach`: it has to insert a real row, or
+  // a subscription to the spawned peer has nothing to reference.
+  create: vi.fn()
 }))
 
 vi.mock('../../server/lib/acp/manager', async (importOriginal) => {
@@ -114,7 +116,17 @@ async function session(title: string, patch: Record<string, unknown> = {}) {
 beforeEach(async () => {
   await query('truncate agent_sessions, projects cascade')
   acp.promptInBackground.mockClear()
+  acp.deliver.mockClear()
   acp.create.mockClear()
+  // The real one writes an `agent_sessions` row; anything that then points at
+  // the new session — a subscription — needs that row to exist.
+  acp.create.mockImplementation(async (input: any) => createAgentSession({
+    adapter: input.adapter,
+    title: input.title,
+    cwd: input.cwd ?? '/workspace',
+    devEnvironmentId: input.devEnvironmentId ?? null,
+    model: input.model ?? null
+  }))
   devEnvironments.createEnvironment.mockClear()
   devEnvironments.startEnvironment.mockClear()
   devEnvironments.stopEnvironment.mockClear()
@@ -160,6 +172,8 @@ describe('the agent-mesh MCP endpoint', () => {
       'list_agents',
       'message_agent',
       'spawn_agent',
+      'subscribe_to_agent',
+      'unsubscribe_from_agent',
       'list_projects',
       'create_project',
       'update_project',
@@ -198,17 +212,45 @@ describe('the agent-mesh MCP endpoint', () => {
       agentId: target.id,
       message: 'take over the migration'
     })).body)
-    expect(body).toEqual({ delivered: true, agentId: target.id, title: 'target' })
+    expect(body).toEqual({
+      delivered: true, agentId: target.id, title: 'target', delivery: 'queue', outcome: 'queued'
+    })
 
-    expect(acp.promptInBackground).toHaveBeenCalledWith(target.id, [
-      { type: 'text', text: `[Message from agent "caller" (${caller.id})]\n\ntake over the migration` }
-    ])
+    // An agent has no idea what its peer is in the middle of, so the default
+    // waits for the turn to end rather than cutting across it.
+    expect(acp.deliver).toHaveBeenCalledWith(target.id, {
+      content: [{ type: 'text', text: `[Message from agent "caller" (${caller.id})]\n\ntake over the migration` }],
+      delivery: 'queue',
+      origin: `agent:${caller.id}`
+    })
     await expect(listAgentEvents(target.id)).resolves.toMatchObject([
-      { type: 'mesh_inbound', payload: { from: caller.id, fromTitle: 'caller', message: 'take over the migration' } }
+      { type: 'mesh_inbound', payload: { from: caller.id, fromTitle: 'caller', message: 'take over the migration', delivery: 'queue' } }
     ])
     await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
-      { type: 'mesh_outbound', payload: { to: target.id, toTitle: 'target', message: 'take over the migration' } }
+      { type: 'mesh_outbound', payload: { to: target.id, toTitle: 'target', message: 'take over the migration', delivery: 'queue' } }
     ])
+  })
+
+  it('takes a delivery mode when the caller wants one, and refuses nonsense', async () => {
+    const caller = await session('caller')
+    const target = await session('target')
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'message_agent', {
+      agentId: target.id,
+      message: 'drop that, do this',
+      delivery: 'interrupt'
+    })).body)
+
+    expect(body).toMatchObject({ delivery: 'interrupt', outcome: 'prompted' })
+    expect(acp.deliver).toHaveBeenLastCalledWith(target.id, expect.objectContaining({ delivery: 'interrupt' }))
+
+    // The model invents values; an unknown one falls back rather than failing.
+    await callTool(mintMeshToken(caller.id), 'message_agent', {
+      agentId: target.id,
+      message: 'hello',
+      delivery: 'shout'
+    })
+    expect(acp.deliver).toHaveBeenLastCalledWith(target.id, expect.objectContaining({ delivery: 'queue' }))
   })
 
   it('spawns a peer into the caller\'s own environment and adapter', async () => {
@@ -235,9 +277,9 @@ describe('the agent-mesh MCP endpoint', () => {
       devEnvironmentId: environment.id,
       initialPrompt: 'write the README'
     }))
-    expect(body.id).toBe('ag_spawned')
+    expect(body.id).toMatch(/^ag_/)
     await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
-      { type: 'mesh_spawned', payload: { agentId: 'ag_spawned', title: 'docs' } }
+      { type: 'mesh_spawned', payload: { agentId: body.id, title: 'docs' } }
     ])
   })
 
@@ -259,6 +301,86 @@ describe('the agent-mesh MCP endpoint', () => {
     await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'docs', prompt: 'go' })
 
     expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ model: null }))
+  })
+})
+
+/**
+ * An agent cannot wait for a peer — its own turn ends long before the peer's
+ * does — so being told is the only way it ever finds out.
+ */
+describe('subscriptions', () => {
+  it('follows a spawned peer by default, because you cannot wait for one', async () => {
+    const caller = await session('caller')
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      title: 'docs',
+      prompt: 'write the README'
+    })).body)
+
+    expect(body).toMatchObject({ notifyWhenDone: true })
+    await expect(listAgentSubscriptions(caller.id)).resolves.toMatchObject([
+      { subscriberId: caller.id, targetId: body.id }
+    ])
+  })
+
+  it('leaves a peer unfollowed when the caller says so', async () => {
+    const caller = await session('caller')
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      title: 'docs',
+      prompt: 'write the README',
+      notifyWhenDone: false
+    })).body)
+
+    expect(body).toMatchObject({ notifyWhenDone: false })
+    await expect(listAgentSubscriptions(caller.id)).resolves.toEqual([])
+  })
+
+  it('subscribes to and unsubscribes from an existing peer', async () => {
+    const caller = await session('caller')
+    const peer = await session('peer')
+    const token = mintMeshToken(caller.id)
+
+    await expect(callTool(token, 'subscribe_to_agent', { agentId: peer.id }).then(r => resultOf(r.body)))
+      .resolves.toEqual({ subscribed: true, agentId: peer.id, title: 'peer' })
+    await expect(listAgentSubscriptions(caller.id)).resolves.toHaveLength(1)
+
+    await expect(callTool(token, 'unsubscribe_from_agent', { agentId: peer.id }).then(r => resultOf(r.body)))
+      .resolves.toEqual({ subscribed: false, agentId: peer.id, wasSubscribed: true })
+    await expect(listAgentSubscriptions(caller.id)).resolves.toEqual([])
+  })
+
+  it('refuses an agent that does not exist, and itself', async () => {
+    const caller = await session('caller')
+    const token = mintMeshToken(caller.id)
+
+    const missing = await callTool(token, 'subscribe_to_agent', { agentId: 'ag_nope' })
+    expect(missing.body.result.content[0].text).toContain('No agent ag_nope')
+
+    const self = await callTool(token, 'subscribe_to_agent', { agentId: caller.id })
+    expect(self.body.result.content[0].text).toContain('cannot subscribe to itself')
+  })
+
+  it('refuses the pair that would notify each other forever', async () => {
+    const one = await session('one')
+    const two = await session('two')
+    await callTool(mintMeshToken(one.id), 'subscribe_to_agent', { agentId: two.id })
+
+    const back = await callTool(mintMeshToken(two.id), 'subscribe_to_agent', { agentId: one.id })
+
+    expect(back.body.result.isError).toBe(true)
+    expect(back.body.result.content[0].text).toContain('would never stop')
+    await expect(listAgentSubscriptions(two.id)).resolves.toEqual([])
+  })
+
+  it('goes away with the session on either end of it', async () => {
+    const caller = await session('caller')
+    const peer = await session('peer')
+    await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id })
+
+    await deleteAgentSession(peer.id)
+
+    await expect(listAgentSubscriptions(caller.id)).resolves.toEqual([])
   })
 })
 

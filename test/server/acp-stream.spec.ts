@@ -7,7 +7,15 @@ import * as acp from '@agentclientprotocol/sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { query } from '../../server/lib/db'
-import { createAgentSession, getAgentSession, listAgentEvents, updateAgentSession } from '../../server/lib/repo'
+import {
+  addAgentSubscription,
+  createAgentSession,
+  enqueueInboxMessage,
+  getAgentSession,
+  listAgentEvents,
+  listInboxMessages,
+  updateAgentSession
+} from '../../server/lib/repo'
 import { captureBus } from '../helpers/bus'
 import type { AgentEvent } from '~~/shared/types'
 
@@ -60,6 +68,13 @@ class FakeAdapter extends EventEmitter {
 
 type Turn = (send: (update: any) => Promise<void>) => Promise<void>
 
+/**
+ * The steering extension both real adapters implement. Not a core ACP method
+ * and not an `agentCapabilities` entry — it is advertised in the `initialize`
+ * response's top-level `_meta`.
+ */
+const STEERING_METHOD = '_session/steering'
+
 interface ServeOptions {
   /** What the adapter says in `initialize`; the mesh rides on `mcpCapabilities.http`. */
   capabilities?: Record<string, unknown>
@@ -73,6 +88,14 @@ interface ServeOptions {
   modes?: { current: string, ids: string[] } | null
   /** Every `session/set_mode` the adapter is asked for. */
   onSetMode?: (params: any) => void
+  /** Whether `_meta.steering.supported` is advertised. Both real adapters do. */
+  steering?: boolean
+  /** Every `_session/steering` the adapter is asked for. */
+  onSteer?: (params: any) => void
+  /** Every `session/prompt` the adapter is asked for. */
+  onPrompt?: (params: any) => void
+  /** Called when the client sends `session/cancel`. */
+  onCancel?: () => void
 }
 
 /** A `modes` block shaped the way `SessionModeState` is. */
@@ -97,11 +120,17 @@ function modelOption(models: { current: string, ids: string[] }) {
 
 /** Serve one turn, scripted by the test, then answer `session/prompt`. */
 function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
+  // What makes the steering answer meaningful: the real adapters inject into a
+  // turn that is running and hand the content back when none is.
+  let running = 0
+  let cancelled = false
+
   return acp
     .agent({ name: 'fake' })
     .onRequest(acp.methods.agent.initialize, () => ({
       protocolVersion: acp.PROTOCOL_VERSION,
-      agentCapabilities: { loadSession: false, ...options.capabilities }
+      agentCapabilities: { loadSession: false, ...options.capabilities },
+      ...(options.steering === false ? {} : { _meta: { steering: { supported: true } } })
     }))
     .onRequest(acp.methods.agent.session.new, (ctx: any) => {
       options.onNewSession?.(ctx.params)
@@ -128,12 +157,33 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
       }
     })
     .onRequest(acp.methods.agent.session.prompt, async (ctx: any) => {
-      await turn(update =>
-        ctx.client.notify(acp.methods.client.session.update, { sessionId: ctx.params.sessionId, update })
-      )
-      return { stopReason: 'end_turn' }
+      options.onPrompt?.(ctx.params)
+      running++
+      try {
+        await turn(update =>
+          ctx.client.notify(acp.methods.client.session.update, { sessionId: ctx.params.sessionId, update })
+        )
+        // A real adapter answers the prompt it was told to cancel, rather than
+        // leaving the request hanging for the client's abort to clean up.
+        return { stopReason: cancelled ? 'cancelled' : 'end_turn' }
+      } finally {
+        running--
+        cancelled = false
+      }
     })
-    .onNotification(acp.methods.agent.session.cancel, () => {})
+    // Mirrors both real adapters: inject into the turn in flight, and — with
+    // the `promptRequired` opt-in — hand an idle steer straight back.
+    .onRequest(STEERING_METHOD, (params: any) => params, (ctx: any) => {
+      options.onSteer?.(ctx.params)
+      if (running > 0) return { outcome: 'injected' }
+      return ctx.params?._meta?.steering?.idleBehavior === 'promptRequired'
+        ? { outcome: 'promptRequired', reason: 'noRunningTurn' }
+        : { outcome: 'startedNewTurn' }
+    })
+    .onNotification(acp.methods.agent.session.cancel, () => {
+      cancelled = true
+      options.onCancel?.()
+    })
     .connect(adapter.stream())
 }
 
@@ -141,13 +191,33 @@ const textChunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', con
 
 let seen: ReturnType<typeof captureBus>
 
-async function session() {
+async function session(title = 'Streaming turn') {
   return createAgentSession({
     adapter: 'claude-code',
-    title: 'Streaming turn',
+    title,
     cwd: join(tmpdir(), 'domo-test', 'acp-stream')
   })
 }
+
+/**
+ * A turn that starts and then hangs until the test lets it finish — which is
+ * the only state in which the delivery modes differ from each other.
+ */
+function heldTurn() {
+  let begin!: () => void
+  let open!: () => void
+  const started = new Promise<void>((resolve) => { begin = resolve })
+  const gate = new Promise<void>((resolve) => { open = resolve })
+  const turn: Turn = async () => {
+    begin()
+    await gate
+  }
+  return { turn, started, release: () => open() }
+}
+
+/** The text of a `session/prompt` the fake adapter was handed. */
+const promptText = (params: any): string =>
+  (params?.prompt ?? []).filter((block: any) => block?.type === 'text').map((block: any) => block.text).join('')
 
 /**
  * Move the clock the runtime throttles on, and nothing else: only `Date.now` is
@@ -172,6 +242,10 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  const { stopSubscriptionNotifier } = await import('../../server/lib/acp/subscriptions')
+  // Before the shutdown below: `adapter-exit` is one of the things a subscriber
+  // is told about, and a note delivered into the next test's database is not.
+  stopSubscriptionNotifier()
   const { acpManager } = await import('../../server/lib/acp/manager')
   await acpManager.shutdown()
   // Let the exit handler's writes land before the next truncate.
@@ -594,5 +668,261 @@ describe('the mode a session runs in', () => {
     expect(row!.modeId).toBe('plan')
     // The list is what the picker offers; it comes from the adapter, once.
     expect(row!.modes).toEqual(MODES.map(id => ({ id, name: id, description: null })))
+  })
+})
+
+/**
+ * There is no way to send a message to an agent that does not end here, and the
+ * thing that makes it interesting is a turn already running.
+ *
+ * Both installed adapters accept a second `session/prompt` mid-turn and queue
+ * it in a queue of their own — invisible to Domo and gone on restart. So Domo
+ * never sends one: a message either joins the running turn through the
+ * `_session/steering` extension, becomes an `agent_inbox` row, or cancels the
+ * turn first.
+ */
+describe('delivering a message to an agent that is already working', () => {
+  /** Start a turn and hang it, so the session really is mid-turn. */
+  async function working(options: ServeOptions = {}) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const prompts: any[] = []
+    const steered: any[] = []
+    let cancelled = 0
+    const held = heldTurn()
+
+    const running = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, held.turn, {
+      ...options,
+      onPrompt: params => prompts.push(params),
+      onSteer: params => steered.push(params),
+      onCancel: () => {
+        cancelled++
+        // A real adapter ends the turn it was told to cancel.
+        held.release()
+      }
+    })
+    await held.started
+
+    return { acpManager, agent, prompts, steered, running, release: held.release, cancelled: () => cancelled }
+  }
+
+  it('steers into the running turn instead of sending a second prompt', async () => {
+    const { acpManager, agent, prompts, steered, running, release } = await working()
+
+    const result = await acpManager.deliver(agent.id, {
+      content: [{ type: 'text', text: 'do the tests first' }],
+      delivery: 'steer'
+    })
+
+    expect(result).toMatchObject({ delivery: 'steer', outcome: 'steered' })
+    expect(steered).toHaveLength(1)
+    expect(steered[0]!.prompt).toEqual([{ type: 'text', text: 'do the tests first' }])
+    // The opt-in that keeps an idle steer from starting a turn Domo cannot see.
+    expect(steered[0]!._meta).toEqual({ steering: { idleBehavior: 'promptRequired' } })
+    // The one thing that must never happen while a turn is running.
+    expect(prompts).toHaveLength(1)
+
+    release()
+    await running
+    // The agent is about to answer it, so the transcript shows it in its place.
+    const user = (await listAgentEvents(agent.id)).filter(event => event.type === 'user_message')
+    expect(user.map(event => event.payload.content[0].text)).toEqual(['fix the build', 'do the tests first'])
+    expect(user[1]!.payload.delivery).toBe('steer')
+  })
+
+  it('queues a message as a row, and delivers it when the turn ends', async () => {
+    const { acpManager, agent, prompts, steered, running, release } = await working()
+
+    const result = await acpManager.deliver(agent.id, {
+      content: [{ type: 'text', text: 'then push it' }],
+      delivery: 'queue',
+      origin: 'voice'
+    })
+
+    expect(result).toMatchObject({ delivery: 'queue', outcome: 'queued' })
+    expect(steered).toEqual([])
+    expect(prompts).toHaveLength(1)
+    await expect(listInboxMessages(agent.id)).resolves.toMatchObject([
+      { delivery: 'queue', origin: 'voice', deliveredAt: null, content: [{ type: 'text', text: 'then push it' }] }
+    ])
+
+    release()
+    await running
+
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    expect(promptText(prompts[1])).toBe('then push it')
+    // Nothing waiting, and the row records when it went out.
+    await expect(listInboxMessages(agent.id)).resolves.toEqual([])
+    await expect(listInboxMessages(agent.id, false)).resolves.toMatchObject([
+      { deliveredAt: expect.any(String) }
+    ])
+  })
+
+  it('cancels the running turn first when told to interrupt', async () => {
+    const { acpManager, agent, prompts, running, cancelled } = await working()
+
+    const result = await acpManager.deliver(agent.id, {
+      content: [{ type: 'text', text: 'stop, do this instead' }],
+      delivery: 'interrupt'
+    })
+
+    expect(result).toMatchObject({ delivery: 'interrupt', outcome: 'prompted' })
+    expect(cancelled()).toBe(1)
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    expect(promptText(prompts[1])).toBe('stop, do this instead')
+
+    // A deliberate abort is not a failure: the session must not land in
+    // `error`, whether the adapter's `cancelled` answer or the client's own
+    // abort gets there first.
+    await expect(running).resolves.toEqual({ stopReason: 'cancelled' })
+    const types = (await listAgentEvents(agent.id)).map(event => event.type)
+    expect(types).toContain('cancelled')
+    expect(types).not.toContain('error')
+  })
+
+  it('interrupts instead of steering when the adapter cannot steer', async () => {
+    // The intent is "change course now"; queueing is the one thing it does not
+    // mean, so the fallback is the other mode that acts at once.
+    const { acpManager, agent, prompts, steered, cancelled } = await working({ steering: false })
+
+    const result = await acpManager.deliver(agent.id, {
+      content: [{ type: 'text', text: 'change of plan' }],
+      delivery: 'steer'
+    })
+
+    expect(result).toMatchObject({ delivery: 'interrupt', outcome: 'prompted' })
+    expect(steered).toEqual([])
+    expect(cancelled()).toBe(1)
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    expect(promptText(prompts[1])).toBe('change of plan')
+  })
+})
+
+describe('delivering a message to an agent that is idle', () => {
+  /** Boot a session without giving it a turn. */
+  async function idle(options: ServeOptions = {}) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const prompts: any[] = []
+    const steered: any[] = []
+
+    const starting = acpManager.start(agent.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      ...options,
+      onPrompt: params => prompts.push(params),
+      onSteer: params => steered.push(params)
+    })
+    await starting
+
+    return { acpManager, agent, prompts, steered }
+  }
+
+  it('prompts rather than steering, whatever the delivery says', async () => {
+    const { acpManager, agent, prompts, steered } = await idle()
+
+    const result = await acpManager.deliver(agent.id, {
+      content: [{ type: 'text', text: 'start here' }],
+      delivery: 'steer'
+    })
+
+    expect(result).toMatchObject({ outcome: 'prompted' })
+    await vi.waitFor(() => expect(prompts).toHaveLength(1))
+    expect(promptText(prompts[0])).toBe('start here')
+    // Sending the extension at all would hand the turn to the adapter: its
+    // output would stream, but nothing would ever resolve a `session/prompt`.
+    expect(steered).toEqual([])
+  })
+
+  it('hands over what was waiting when the adapter attaches', async () => {
+    // The point of owning the queue: a message queued before a restart is still
+    // there afterwards, and the attach is what delivers it.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    await enqueueInboxMessage({
+      agentSessionId: agent.id,
+      content: [{ type: 'text', text: 'pick this up' }],
+      delivery: 'queue',
+      origin: 'agent:ag_peer'
+    })
+
+    const prompts: any[] = []
+    const starting = acpManager.start(agent.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, { onPrompt: params => prompts.push(params) })
+    await starting
+
+    await vi.waitFor(() => expect(prompts).toHaveLength(1))
+    expect(promptText(prompts[0])).toBe('pick this up')
+    await vi.waitFor(async () => expect(await listInboxMessages(agent.id)).toEqual([]))
+  })
+})
+
+/**
+ * An agent cannot wait for a peer: its own turn ends, and the peer's finishes
+ * minutes later. A subscription is how it finds out, and the note is an
+ * ordinary queued message — so it never cuts across a turn of its own.
+ */
+describe('subscriptions between agents', () => {
+  it('tells a subscriber what the agent it follows just did', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { startSubscriptionNotifier } = await import('../../server/lib/acp/subscriptions')
+    const watcher = await session('Supervisor')
+    const target = await session('Builder')
+    await addAgentSubscription(watcher.id, target.id)
+    await startSubscriptionNotifier()
+
+    // The watcher is up and idle, so the note it is queued becomes its next turn.
+    const notes: any[] = []
+    const starting = acpManager.start(watcher.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, { onPrompt: params => notes.push(params) })
+    await starting
+
+    const running = acpManager.prompt(target.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(2))
+    serve(state.adapters[1]!, async (send) => {
+      await send(textChunk('Fixed the build.'))
+    })
+    await running
+
+    await vi.waitFor(() => expect(notes).toHaveLength(1))
+    expect(promptText(notes[0])).toBe(
+      `Agent Builder (${target.id}) finished its turn (end_turn). Latest output: Fixed the build.`
+    )
+  })
+
+  it('says which permission an agent it follows is stuck on', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { startSubscriptionNotifier } = await import('../../server/lib/acp/subscriptions')
+    const watcher = await session('Supervisor')
+    const target = await session('Builder')
+    await addAgentSubscription(watcher.id, target.id)
+    await startSubscriptionNotifier()
+
+    const held = heldTurn()
+    void acpManager.prompt(target.id, [{ type: 'text', text: 'fix the build' }]).catch(() => {})
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    const agentSide = serve(state.adapters[0]!, held.turn)
+    await held.started
+
+    void agentSide.client.request(acp.methods.client.session.requestPermission, {
+      sessionId: 'acp_fake',
+      toolCall: { toolCallId: 'c1', title: 'Run `rm -rf build`' },
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    } as any).catch(() => {})
+
+    // The watcher was never started, and a note must not be what starts it: an
+    // `adapter-exit` is one of these, and `shutdown()` raises one per session.
+    await vi.waitFor(async () => {
+      const queued = await listInboxMessages(watcher.id)
+      expect(queued).toHaveLength(1)
+      expect(queued[0]!.content[0].text).toContain('is waiting for a permission: Run `rm -rf build`')
+    })
+    expect(state.adapters).toHaveLength(1)
+    expect(await listInboxMessages(watcher.id).then(rows => rows[0]!.origin)).toBe('system')
+    held.release()
   })
 })

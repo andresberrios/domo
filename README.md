@@ -30,10 +30,16 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   [`@agentclientprotocol/codex-acp`](https://www.npmjs.com/package/@agentclientprotocol/codex-acp).
   Streaming messages, tool calls, diffs, plans, permission prompts and modes
   are all first class.
+- **Agent inbox** — every message to an agent picks how it arrives: *steer* it
+  into the turn that is running, *queue* it until that turn ends, or *interrupt*
+  the turn first. Nothing is ever silently swallowed by a busy agent, and a
+  queued message survives a restart. See
+  [Talking to a busy agent](#talking-to-a-busy-agent).
 - **Agent mesh** — every coding agent gets a built-in `domo` MCP server, served
   over HTTP by Domo itself, so agents can list each other, hand work over, spawn
-  new peers, and page the voice supervisor. Each session is handed its own
-  bearer token, so a call can only ever act as the agent that made it.
+  new peers, subscribe to each other's progress, and page the voice supervisor.
+  Each session is handed its own bearer token, so a call can only ever act as
+  the agent that made it.
 - **Custom MCP servers** — add stdio / HTTP / SSE servers in Settings and scope
   them to the voice agent, the coding agents, or both.
 - **Real-time UI** — Postgres is the source of truth, ElectricSQL streams
@@ -71,6 +77,40 @@ failing tests"*.
 
 For isolated work, open **Projects**, add a local checkout, create a
 development environment, then select that environment when starting agents.
+
+## Talking to a busy agent
+
+A coding agent spends most of its life mid-turn, and "send it a message" has to
+mean something specific when it is. Every message — typed into the composer,
+spoken to the voice agent, or sent by another agent — picks one of three ways
+to arrive:
+
+| mode | while the agent is working | while it is idle |
+| --- | --- | --- |
+| **Steer** | goes into the turn it is running now, so it changes course without losing what it has done | starts the turn |
+| **Queue** | waits for that turn to end, then starts the next one | starts the turn |
+| **Interrupt** | stops the turn first, then starts a new one | starts the turn |
+
+The composer shows the picker only while there is a turn to choose about, and
+preselects **Steer** — which is what typing at a working agent usually means.
+The voice agent defaults to Steer too (you are asking for something *now*); one
+agent messaging another defaults to **Queue**, because a peer has no idea what
+it would be cutting across. An agent whose harness cannot steer gets Interrupt
+instead of Steer, never Queue.
+
+**The queue belongs to Domo, not to the coding agent.** Anything waiting is
+shown above the composer with where it came from, can be taken back with one
+click, and is still there after a restart. Sending a second prompt to a busy
+adapter would also "work" — both harnesses quietly queue it internally — but you
+could not see it, could not cancel it, and it would vanish with the process.
+
+### Agents keeping tabs on each other
+
+An agent that hands work to a peer cannot wait for it: its own turn ends long
+before the peer's does. So it can **subscribe**: when the agent it follows
+finishes a turn, stops for a permission, or fails, Domo queues it a short note
+with that agent's latest output. `spawn_agent` subscribes by default. Because
+notes are queued, they never interrupt work of the agent's own.
 
 ### `.domo.json`
 

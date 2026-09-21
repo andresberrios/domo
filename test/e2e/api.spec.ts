@@ -9,13 +9,21 @@ import {
   appendAgentEvent,
   createAgentSession,
   createPermission,
+  enqueueInboxMessage,
   getAgentSession,
   listPermissions,
   listProjects
 } from '../../server/lib/repo'
 import { APP_BUILD_DIR } from '../helpers/app-build'
 import { startElectricStub } from '../helpers/electric-stub'
-import type { AgentEvent, AppSettings, PendingPermission, Project, VoiceSession } from '~~/shared/types'
+import type {
+  AgentEvent,
+  AgentInboxMessage,
+  AppSettings,
+  PendingPermission,
+  Project,
+  VoiceSession
+} from '~~/shared/types'
 
 /**
  * The whole stack, without a browser: a real production build of the Nitro
@@ -294,6 +302,49 @@ describe('a coding agent as the UI sees it', () => {
 
     await expect(getAgentSession(created.id).then(row => row!.model)).resolves.toBeNull()
   })
+
+  it('serves what is queued for an agent, and lets it be taken back', async () => {
+    // The adapter is a stub that exits, so nothing drains this: the row stays
+    // where it is, which is exactly the state the inbox panel renders.
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Queued', cwd: checkout })
+    const waiting = await enqueueInboxMessage({
+      agentSessionId: session.id,
+      content: [{ type: 'text', text: 'then push it' }],
+      delivery: 'queue',
+      origin: 'agent:ag_peer'
+    })
+
+    await expect($fetch<AgentInboxMessage[]>(`/api/agents/${session.id}/inbox`)).resolves.toEqual([
+      expect.objectContaining({
+        id: waiting.id,
+        delivery: 'queue',
+        origin: 'agent:ag_peer',
+        deliveredAt: null,
+        content: [{ type: 'text', text: 'then push it' }]
+      })
+    ])
+
+    await expect($fetch(`/api/agents/${session.id}/inbox/${waiting.id}`, { method: 'DELETE' }))
+      .resolves.toEqual({ ok: true, id: waiting.id })
+    await expect($fetch<AgentInboxMessage[]>(`/api/agents/${session.id}/inbox`)).resolves.toEqual([])
+
+    // Gone is gone: a second delete is a conflict, not a silent success.
+    const again = await fetch(`/api/agents/${session.id}/inbox/${waiting.id}`, { method: 'DELETE' })
+    expect(again.status).toBe(409)
+  })
+
+  it('refuses a delivery mode it does not know', async () => {
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Modes', cwd: checkout })
+
+    const response = await fetch(`/api/agents/${session.id}/prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'go', delivery: 'shout' })
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ statusMessage: 'Unknown delivery: shout' })
+  })
 })
 
 describe('settings', () => {
@@ -387,6 +438,23 @@ describe('the Electric shape proxy', () => {
 
   it('needs a table at all', async () => {
     expect((await fetch('/api/shape?offset=-1')).status).toBe(400)
+  })
+
+  it('syncs the agent inbox, which is how the UI knows what is queued', async () => {
+    const before = electric.requests.length
+    const response = await fetch(
+      '/api/shape?table=agent_inbox&where=agent_session_id+%3D+%241&params%5B1%5D=ag_1&offset=-1'
+    )
+
+    expect(response.status).toBe(200)
+    expect(Object.fromEntries(electric.requests[before]!.searchParams)).toMatchObject({
+      table: 'agent_inbox',
+      where: 'agent_session_id = $1',
+      'params[1]': 'ag_1',
+      // The inbox is rewritten in place (`delivered_at`), so a partial row
+      // would leave the panel showing a message that has already gone out.
+      replica: 'full'
+    })
   })
 
   it('forwards the shape definition and Electric\'s protocol params, and nothing else', async () => {

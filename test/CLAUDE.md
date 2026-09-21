@@ -13,7 +13,7 @@ else is a directory inside a project.
 | --- | --- | --- |
 | `unit` | `test/unit`, `test/docker` | plain node, no services, no Nuxt. Pure logic (`buildTranscript()`, formatters, settings reconciliation, `.domo.json` parsing and validation, the generated build config, the image-metadata allow-list, the `docker run` argv and the runtime volume's name, the voice tools with everything below them mocked) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
-| `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
+| `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database) plus the whole ACP client against a fake agent on a pair of pipes; `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
 | `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Opt in. |
 | `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login. Opt in. |
@@ -244,6 +244,29 @@ fails immediately with `is used by an active logical replication slot` — that
 one is loud. The quiet danger is an *inactive* slot left behind, which retains
 WAL forever until the disk fills. `pg_drop_replication_slot()` and
 `drop publication` come first.
+
+## The fake agent in `acp-stream.spec.ts`
+
+`serve()` puts the SDK's own *agent* side on the far end of the pipes the
+manager just took the client side of, so everything above the ACP boundary is
+real. Three things in it are load-bearing and easy to break:
+
+- **A turn that hangs is the only interesting state.** `steer`, `queue` and
+  `interrupt` are the same thing — a prompt — against an idle session, so the
+  delivery tests run against `heldTurn()`, which starts a turn and waits for the
+  test to release it. `working()` wraps the whole setup.
+- **The steering answer depends on whether a turn is running**, exactly as both
+  real adapters' do: `injected` with one in flight, and `promptRequired` for an
+  idle steer that opted in through `_meta`. A fake that always answered
+  `injected` would pass whatever Domo sent it.
+- **The fake answers a cancelled prompt with `stopReason: 'cancelled'`.** A real
+  adapter does, and Domo's own abort races that answer — whichever lands first,
+  the turn must settle as cancelled and never as an `error`. A fake that
+  returned `end_turn` made the `interrupt` test depend on which won.
+
+`stopSubscriptionNotifier()` runs in `afterEach` **before** `acpManager.shutdown()`:
+`adapter-exit` is one of the things a subscriber is told about, and the shutdown
+raises one per session.
 
 ## Other gotchas
 

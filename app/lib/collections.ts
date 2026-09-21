@@ -60,6 +60,13 @@ export const agentEventsCollection = (agentSessionId: string) =>
     params: [agentSessionId]
   })
 
+export const agentInboxCollection = (agentSessionId: string) =>
+  collection(`agent_inbox:${agentSessionId}`, {
+    table: 'agent_inbox',
+    where: 'agent_session_id = $1',
+    params: [agentSessionId]
+  })
+
 export const voiceMessagesCollection = (voiceSessionId: string) =>
   collection(`voice_messages:${voiceSessionId}`, {
     table: 'voice_messages',
