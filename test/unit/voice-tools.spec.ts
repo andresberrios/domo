@@ -29,6 +29,7 @@ const acpManager = {
   answerPermission: vi.fn(),
   cancel: vi.fn(),
   create: vi.fn(),
+  deliver: vi.fn(),
   promptInBackground: vi.fn(),
   setMode: vi.fn(),
   stop: vi.fn()
@@ -103,6 +104,10 @@ function environment(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  acpManager.deliver.mockImplementation(async (_id: string, input: any) => ({
+    delivery: input.delivery,
+    outcome: input.delivery === 'queue' ? 'queued' : 'prompted'
+  }))
   repo.listAgentSessions.mockResolvedValue([])
   repo.listPermissions.mockResolvedValue([])
   repo.listProjects.mockResolvedValue([])
@@ -222,6 +227,47 @@ describe('resolving which agent the user meant', () => {
   it('says so when there are no sessions at all', async () => {
     await expect(voiceTools.cancel_agent_turn!.handler({}, ctx))
       .rejects.toThrow('There are no coding agent sessions yet.')
+  })
+})
+
+describe('send_agent_message', () => {
+  const call = (args: Record<string, unknown>) => voiceTools.send_agent_message!.handler(args, ctx)
+
+  beforeEach(() => {
+    repo.listAgentSessions.mockResolvedValue([agent({ status: 'thinking' })])
+  })
+
+  it('steers by default, because the user is talking to Domo now', async () => {
+    await expect(call({ message: 'do the tests first' })).resolves.toMatchObject({
+      id: 'ag_1', delivered: true, delivery: 'steer', outcome: 'prompted'
+    })
+
+    expect(acpManager.deliver).toHaveBeenCalledWith('ag_1', {
+      content: [{ type: 'text', text: 'do the tests first' }],
+      delivery: 'steer',
+      origin: 'voice'
+    })
+  })
+
+  it('takes the mode the user asked for', async () => {
+    await expect(call({ message: 'when you are done, push it', delivery: 'queue' }))
+      .resolves.toMatchObject({ delivery: 'queue', outcome: 'queued' })
+
+    expect(acpManager.deliver).toHaveBeenCalledWith('ag_1', expect.objectContaining({ delivery: 'queue' }))
+  })
+
+  it('falls back rather than failing on a mode the model invented', async () => {
+    await call({ message: 'hello', delivery: 'whisper' })
+
+    expect(acpManager.deliver).toHaveBeenCalledWith('ag_1', expect.objectContaining({ delivery: 'steer' }))
+  })
+
+  it('is declared with the three modes and what they do', async () => {
+    const declaration = voiceToolDeclarations({ autoTitle: true })
+      .find(entry => entry.name === 'send_agent_message')
+
+    expect((declaration?.parameters?.properties?.delivery as any)?.enum)
+      .toEqual(['steer', 'queue', 'interrupt'])
   })
 })
 

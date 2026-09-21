@@ -22,6 +22,9 @@ import {
   updateVoiceSession
 } from '../repo'
 import { getSettings } from '../settings'
+import type { MessageDelivery } from '../../../shared/types'
+
+const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 
 export interface VoiceToolContext {
   voiceSessionId: string
@@ -474,20 +477,41 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'send_agent_message',
       description:
-        'Send a message to a coding agent session. The agent starts working immediately; this returns as soon as the turn has begun, so follow up with get_agent_transcript to see what happened.',
+        'Send a message to a coding agent session. This returns as soon as the message has been handed over, so follow up with get_agent_transcript to see what happened.',
       parameters: {
         type: Type.OBJECT,
         properties: {
           agentId: { type: Type.STRING, description: 'Agent session id or title. Omit for the most recently active one.' },
-          message: { type: Type.STRING, description: 'What to tell the agent.' }
+          message: { type: Type.STRING, description: 'What to tell the agent.' },
+          delivery: {
+            type: Type.STRING,
+            enum: ['steer', 'queue', 'interrupt'],
+            description:
+              'What to do when the agent is already working. "steer" (default) puts the message into the turn '
+              + 'it is running now, "queue" waits for that turn to finish, "interrupt" stops it first. '
+              + 'An idle agent starts on the message immediately either way.'
+          }
         },
         required: ['message']
       }
     },
     handler: async (args) => {
       const session = await resolveAgent(args.agentId)
-      void acpManager.promptInBackground(session.id, [{ type: 'text', text: args.message }])
-      return { id: session.id, title: session.title, delivered: true }
+      // The user is talking to Domo *now*, so the default puts the message into
+      // the turn that is running rather than behind it.
+      const delivery = DELIVERIES.find(mode => mode === args.delivery) ?? 'steer'
+      const result = await acpManager.deliver(session.id, {
+        content: [{ type: 'text', text: args.message }],
+        delivery,
+        origin: 'voice'
+      })
+      return {
+        id: session.id,
+        title: session.title,
+        delivered: true,
+        delivery: result.delivery,
+        outcome: result.outcome
+      }
     }
   },
 
