@@ -270,10 +270,16 @@ things that are easy to get wrong.
   browser, with the app half-loading. Hence the port away from the crowded 3000
   range *and* the connect-probe on both `127.0.0.1` and `::1`.
 - **`scripts/dev.mjs` sets `PORT`, and that is load-bearing.**
-  `internalBaseUrl()` (`server/lib/acp/manager.ts`) reads it to build the URL
+  `internalBaseUrl()` (`server/lib/internal-url.ts`) reads it to build the URL
   of the agent-mesh MCP endpoint handed to every adapter. `nuxt dev --port`
   does not set it, so before this agents dialled 3000 no matter what port the
   dev server was really on.
+- **The internal URL is never derived from a request's `Host` header.** A
+  middleware used to cache the first one into `NUXT_INTERNAL_URL`; behind
+  `pnpm dev` that is Caddy's HTTPS port spoken to as plain HTTP, and from inside
+  an environment `localhost` is the container itself. An operator-set
+  `NUXT_INTERNAL_URL` still wins, but a loopback host in it is rewritten to
+  `host.docker.internal` for container sessions.
 
 - **Changing `DEFAULT_SYSTEM_INSTRUCTION`? Append the old text to
   `PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS`.** The settings page saves the whole

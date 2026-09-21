@@ -15,6 +15,7 @@ import {
   readEnvironmentFile,
   writeEnvironmentFile
 } from '../dev-environments'
+import { internalBaseUrl } from '../internal-url'
 import { mintMeshToken } from '../mesh/token'
 import { getSettings } from '../settings'
 import {
@@ -742,12 +743,6 @@ function warnNoHttpMcp(adapter: AgentAdapter): void {
     + 'they cannot list, message or spawn peers, or page the voice supervisor. '
     + 'Upgrade the adapter to restore it.'
   )
-}
-
-function internalBaseUrl(fromContainer = false): string {
-  if (process.env.NUXT_INTERNAL_URL) return process.env.NUXT_INTERNAL_URL
-  const host = fromContainer ? 'host.docker.internal' : '127.0.0.1'
-  return `http://${host}:${process.env.PORT || process.env.NITRO_PORT || 3000}`
 }
 
 class AcpManager {
