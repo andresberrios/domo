@@ -1,18 +1,49 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
 import {
+  addAgentSubscription,
   appendAgentEvent,
   getAgentSession,
   getDevEnvironment,
   listAgentSessions,
+  listAgentSubscriptions,
   listDevEnvironments,
   listProjects,
+  removeAgentSubscription,
   updateDevEnvironment,
   updateProject
 } from '../repo'
 import { voiceManager } from '../voice/runtime'
+import type { MessageDelivery } from '../../../shared/types'
+
+const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
+
+/**
+ * Record that `subscriber` wants to hear about `target`.
+ *
+ * Refuses the two shapes that are only ever a mistake: following yourself, and
+ * closing a two-agent loop, where each finished turn is a message to the other
+ * and every message is a turn. Nothing here walks the whole graph — a longer
+ * cycle is possible and is the caller's business — but the pair that costs
+ * nothing to make is worth catching.
+ */
+async function subscribe(subscriberId: string, targetId: string): Promise<void> {
+  if (subscriberId === targetId) throw new Error('An agent cannot subscribe to itself.')
+  const theirs = await listAgentSubscriptions(targetId)
+  if (theirs.some(entry => entry.targetId === subscriberId)) {
+    throw new Error(
+      `Agent ${targetId} already subscribes to this session. Two agents notifying each other would never stop.`
+    )
+  }
+  // A subscription is a row, so it must never outlive the listener that acts
+  // on it; starting here costs nothing and is idempotent.
+  await startSubscriptionNotifier()
+  await addAgentSubscription(subscriberId, targetId)
+  watch(targetId)
+}
 
 /**
  * The agent mesh: what a coding agent can do to the rest of Domo.
@@ -48,12 +79,20 @@ export const MESH_TOOLS = [
   {
     name: 'message_agent',
     description:
-      'Send a message to another coding agent session. The message is delivered as a new user turn in that session and it will start working on it immediately.',
+      'Send a message to another coding agent session. By default it waits for that agent to finish what it is doing and is delivered as its next turn; nothing is lost if it is busy.',
     inputSchema: {
       type: 'object',
       properties: {
         agentId: { type: 'string', description: 'Target agent session id (from list_agents).' },
-        message: { type: 'string', description: 'What to tell that agent.' }
+        message: { type: 'string', description: 'What to tell that agent.' },
+        delivery: {
+          type: 'string',
+          enum: ['steer', 'queue', 'interrupt'],
+          description:
+            'When the agent is busy: "queue" (default) waits for its current turn to end, '
+            + '"steer" injects the message into the turn it is running now, and "interrupt" '
+            + 'cancels that turn first. An idle agent starts on it immediately either way.'
+        }
       },
       required: ['agentId', 'message'],
       additionalProperties: false
@@ -75,9 +114,40 @@ export const MESH_TOOLS = [
         model: {
           type: 'string',
           description: 'Optional model id; ids come from list_models. Omit for the default.'
+        },
+        notifyWhenDone: {
+          type: 'boolean',
+          description:
+            'Be told when the new agent finishes a turn, needs a permission, or fails. Defaults to true — '
+            + 'you cannot wait for a peer, so this is how you find out. Set false for work you will not follow up on.'
         }
       },
       required: ['title', 'prompt'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'subscribe_to_agent',
+    description:
+      'Be told when another coding agent finishes a turn, stops for a permission, or fails. The note arrives as a message in your own session, with a summary of that agent\'s latest output.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent session id to follow (from list_agents).' }
+      },
+      required: ['agentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'unsubscribe_from_agent',
+    description: 'Stop being told what another coding agent is doing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent session id to stop following.' }
+      },
+      required: ['agentId'],
       additionalProperties: false
     }
   },
@@ -214,12 +284,27 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const target = await getAgentSession(args.agentId)
       if (!target) throw new Error(`No agent ${args.agentId}`)
       const from = caller.title
-      void acpManager.promptInBackground(target.id, [
-        { type: 'text', text: `[Message from agent "${from}" (${caller.id})]\n\n${args.message}` }
-      ])
-      await appendAgentEvent(target.id, 'mesh_inbound', { from: caller.id, fromTitle: from, message: args.message })
-      await appendAgentEvent(caller.id, 'mesh_outbound', { to: target.id, toTitle: target.title, message: args.message })
-      return { delivered: true, agentId: target.id, title: target.title }
+      // An agent writing to a peer has no idea what that peer is in the middle
+      // of, so the default waits rather than cutting across it.
+      const delivery = DELIVERIES.find(mode => mode === args.delivery) ?? 'queue'
+      const result = await acpManager.deliver(target.id, {
+        content: [{ type: 'text', text: `[Message from agent "${from}" (${caller.id})]\n\n${args.message}` }],
+        delivery,
+        origin: `agent:${caller.id}`
+      })
+      await appendAgentEvent(target.id, 'mesh_inbound', {
+        from: caller.id, fromTitle: from, message: args.message, delivery: result.delivery
+      })
+      await appendAgentEvent(caller.id, 'mesh_outbound', {
+        to: target.id, toTitle: target.title, message: args.message, delivery: result.delivery
+      })
+      return {
+        delivered: true,
+        agentId: target.id,
+        title: target.title,
+        delivery: result.delivery,
+        outcome: result.outcome
+      }
     }
 
     case 'spawn_agent': {
@@ -232,8 +317,32 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         model: args.model ?? null,
         initialPrompt: args.prompt
       })
-      await appendAgentEvent(caller.id, 'mesh_spawned', { agentId: session.id, title: session.title })
-      return { id: session.id, title: session.title, cwd: session.cwd, model: session.model }
+      // The caller is an agent by definition here, and an agent cannot wait for
+      // its peer — so following it is the default, not the opt-in.
+      const notify = args.notifyWhenDone !== false
+      if (notify) await subscribe(caller.id, session.id)
+      await appendAgentEvent(caller.id, 'mesh_spawned', {
+        agentId: session.id, title: session.title, notifyWhenDone: notify
+      })
+      return {
+        id: session.id,
+        title: session.title,
+        cwd: session.cwd,
+        model: session.model,
+        notifyWhenDone: notify
+      }
+    }
+
+    case 'subscribe_to_agent': {
+      const target = await getAgentSession(args.agentId)
+      if (!target) throw new Error(`No agent ${args.agentId}`)
+      await subscribe(caller.id, target.id)
+      return { subscribed: true, agentId: target.id, title: target.title }
+    }
+
+    case 'unsubscribe_from_agent': {
+      const removed = await removeAgentSubscription(caller.id, args.agentId)
+      return { subscribed: false, agentId: args.agentId, wasSubscribed: removed }
     }
 
     case 'list_projects': {
