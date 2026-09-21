@@ -107,6 +107,40 @@ export interface DevEnvironmentPort {
   url: string | null
 }
 
+export interface EnvironmentBranch {
+  name: string
+  sha: string
+  subject: string
+}
+
+export interface EnvironmentBranches {
+  /** The branch checked out in the container, or null when its HEAD is detached. */
+  current: string | null
+  branches: EnvironmentBranch[]
+}
+
+export type BranchExportResult = 'fast-forwarded' | 'created' | 'up-to-date' | 'not-merged'
+
+export interface ExportedCommit {
+  sha: string
+  subject: string
+}
+
+/** What exporting one branch out of an environment did to the project's own checkout. */
+export interface BranchExport {
+  /** The remote-tracking ref the environment's branch was fetched into. */
+  ref: string
+  /** What that ref now points at. */
+  sha: string
+  /** What came over, newest first, relative to `into` (or to the previous tracking ref). */
+  commits: ExportedCommit[]
+  /** The local branch that was asked for, or null when only the fetch was. */
+  into: string | null
+  result: BranchExportResult
+  /** Why `into` was left alone, when it was. */
+  reason?: string
+}
+
 export interface SessionModeInfo {
   id: string
   name: string
