@@ -45,10 +45,12 @@ if (taken.length) {
 
 const children = [
   spawn('caddy', ['run', '--config', 'Caddyfile', '--adapter', 'caddyfile'], { stdio: 'inherit' }),
-  // IPv4 loopback, explicitly. Left to `localhost`, Nuxt binds `[::1]` only, and
+  // All interfaces, explicitly. Left to `localhost`, Nuxt binds `[::1]` only, and
   // Docker Desktop forwards `host.docker.internal` to 127.0.0.1: every agent in a
-  // dev environment then gets `connection refused` from the mesh.
-  spawn('nuxt', ['dev', '--port', port, '--host', '127.0.0.1'], { stdio: 'inherit' })
+  // dev environment then gets `connection refused` from the mesh. (On a Linux
+  // host `host-gateway` is the bridge address, which a loopback listener never
+  // answers on either.)
+  spawn('nuxt', ['dev', '--port', port, '--public'], { stdio: 'inherit' })
 ]
 
 console.log(`\n  ➜ HTTPS: https://${address}/\n`)

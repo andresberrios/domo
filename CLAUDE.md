@@ -352,13 +352,13 @@ things that are easy to get wrong.
   of the agent-mesh MCP endpoint handed to every adapter. `nuxt dev --port`
   does not set it, so before this agents dialled 3000 no matter what port the
   dev server was really on.
-- **`pnpm dev` binds Nuxt to `127.0.0.1`, not `localhost`.** Measured on Docker
-  Desktop: a container reaches a host listener on `127.0.0.1` through
-  `host.docker.internal`, and gets `connection refused` from one bound to `[::1]`
-  only — which is what `nuxt dev` does when left to resolve `localhost`. The
-  Caddyfile dials `127.0.0.1` for the same reason. (On a Linux host
-  `host-gateway` is the bridge address, so a loopback listener is unreachable
-  there; production Nitro binds all interfaces by default.)
+- **`pnpm dev` runs Nuxt with `--public` (all interfaces), not `localhost`.**
+  Measured on Docker Desktop: a container reaches a host listener on `127.0.0.1`
+  through `host.docker.internal`, and gets `connection refused` from one bound to
+  `[::1]` only — which is what `nuxt dev` does when left to resolve `localhost`.
+  `--public` binds the wildcard address, which covers that and the Linux
+  `host-gateway` (bridge address) case; the cost is that the dev server is
+  reachable from the LAN. The Caddyfile still dials `127.0.0.1`.
 - **The internal URL is never derived from a request's `Host` header.** A
   middleware used to cache the first one into `NUXT_INTERNAL_URL`; behind
   `pnpm dev` that is Caddy's HTTPS port spoken to as plain HTTP, and from inside
