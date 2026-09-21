@@ -34,9 +34,16 @@ const acpManager = {
   stop: vi.fn()
 }
 const devEnvironments = {
+  safeEnvironmentName: (name: string) => name,
   createEnvironment: vi.fn(),
   startEnvironment: vi.fn(),
   stopEnvironment: vi.fn()
+}
+// The export itself is `test/server/git-sync.spec.ts`, against real git; what
+// matters here is which environment and which branch the spoken call picks.
+const gitSync = {
+  exportBranch: vi.fn(),
+  listEnvironmentBranches: vi.fn()
 }
 const projects = {
   createProjectFromPath: vi.fn(),
@@ -59,6 +66,10 @@ vi.mock('../../server/lib/acp/manager', () => ({
   normalizeCwd: (input: string) => input
 }))
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
+vi.mock('../../server/lib/dev-env/git-sync', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../server/lib/dev-env/git-sync')>(),
+  ...gitSync
+}))
 vi.mock('../../server/lib/projects', () => projects)
 vi.mock('../../server/lib/settings', () => ({
   getSettings: async () => ({ defaultCwd: '/workspace', autoTitle: true })
@@ -521,5 +532,62 @@ describe('transcriptDigest', () => {
 
     expect(items[0]!.text).toHaveLength(601)
     expect(items[0]!.text.endsWith('…')).toBe(true)
+  })
+})
+
+describe('export_branch', () => {
+  const exported = {
+    ref: 'refs/remotes/domo-env/feature-auth/work',
+    sha: 'f00dcafe',
+    commits: [{ sha: 'f00dcafe', subject: 'the fix' }],
+    into: 'work',
+    result: 'fast-forwarded'
+  }
+
+  beforeEach(() => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+    gitSync.listEnvironmentBranches.mockResolvedValue({ current: 'work', branches: [] })
+    gitSync.exportBranch.mockResolvedValue(exported)
+  })
+
+  it('takes the environment by a spoken name and defaults to the branch checked out in it', async () => {
+    const result = await voiceTools.export_branch!.handler({ environment: 'auth' }, ctx)
+
+    expect(gitSync.exportBranch).toHaveBeenCalledWith({
+      environmentId: 'env_1',
+      branch: 'work',
+      into: 'work'
+    })
+    expect(result).toMatchObject({ environment: 'feature-auth', branch: 'work', result: 'fast-forwarded' })
+  })
+
+  it('passes a named branch and local branch straight through', async () => {
+    await voiceTools.export_branch!.handler({ environment: 'env_1', branch: 'main', into: 'release' }, ctx)
+
+    expect(gitSync.listEnvironmentBranches).not.toHaveBeenCalled()
+    expect(gitSync.exportBranch).toHaveBeenCalledWith({
+      environmentId: 'env_1',
+      branch: 'main',
+      into: 'release'
+    })
+  })
+
+  it('reads an empty local branch as "fetch it, touch nothing"', async () => {
+    await voiceTools.export_branch!.handler({ environment: 'auth', branch: 'main', into: '' }, ctx)
+
+    expect(gitSync.exportBranch).toHaveBeenCalledWith(expect.objectContaining({ into: null }))
+  })
+
+  it('says so when the environment has nothing checked out', async () => {
+    gitSync.listEnvironmentBranches.mockResolvedValue({ current: null, branches: [] })
+
+    await expect(voiceTools.export_branch!.handler({ environment: 'auth' }, ctx))
+      .rejects.toThrow(/no branch checked out/)
+    expect(gitSync.exportBranch).not.toHaveBeenCalled()
+  })
+
+  it('tells the model to list environments when nothing matches', async () => {
+    await expect(voiceTools.export_branch!.handler({ environment: 'billing' }, ctx))
+      .rejects.toThrow(/No development environment matches "billing"/)
   })
 })

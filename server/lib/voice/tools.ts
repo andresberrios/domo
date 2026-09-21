@@ -4,6 +4,7 @@ import { Type, type FunctionDeclaration } from '@google/genai'
 
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
 import {
@@ -467,6 +468,35 @@ export const voiceTools: Record<string, VoiceTool> = {
       const environment = await resolveEnvironment(args.environment)
       await removeProjectEnvironment(environment.id)
       return { id: environment.id, deleted: true }
+    }
+  },
+
+  export_branch: {
+    declaration: {
+      name: 'export_branch',
+      description:
+        'Copy a branch out of a development environment into the project’s checkout on this machine. Fast-forward only; nothing on this machine is rewritten.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' },
+          branch: { type: Type.STRING, description: 'Branch in the environment. Omit for the one checked out there.' },
+          into: { type: Type.STRING, description: 'Local branch to fast-forward. Omit for the same name; pass an empty string to fetch only.' }
+        },
+        required: ['environment']
+      }
+    },
+    handler: async (args) => {
+      const environment = await resolveEnvironment(args.environment)
+      const branch = String(args.branch ?? '').trim()
+        || (await listEnvironmentBranches(environment.id)).current
+      if (!branch) throw new Error(`${environment.name} has no branch checked out; name the branch to export.`)
+      const exported = await exportBranch({
+        environmentId: environment.id,
+        branch,
+        into: resolveIntoBranch(branch, args.into)
+      })
+      return { environment: environment.name, branch, ...exported }
     }
   },
 
