@@ -146,6 +146,53 @@ export interface PendingPermission {
   resolvedBy: 'user' | 'voice-agent' | 'auto' | null
 }
 
+/**
+ * How a message reaches an agent that may already be working.
+ *
+ * - `steer` injects it into the running turn through the adapter's
+ *   `_session/steering` extension; with nothing running it is simply a prompt.
+ * - `queue` parks it in `agent_inbox` until the turn ends; with nothing running
+ *   it is prompted at once.
+ * - `interrupt` cancels the running turn, waits for it to settle, then prompts.
+ *
+ * `steer` against an adapter that does not advertise steering falls back to
+ * `interrupt`: the intent is "change course now", and queueing would be the one
+ * thing it definitely does not mean.
+ */
+export type MessageDelivery = 'steer' | 'queue' | 'interrupt'
+
+/** Who sent a message to an agent; a peer names itself. */
+export type MessageOrigin = 'user' | 'voice' | 'system' | `agent:${string}`
+
+/**
+ * A message waiting for an agent whose turn is still running.
+ *
+ * Domo owns this queue rather than the adapter. Both installed adapters accept
+ * a second `session/prompt` mid-turn and queue it internally, but nothing in
+ * Domo can see that queue and it does not survive a restart — so a message that
+ * cannot be delivered now becomes a row instead.
+ */
+export interface AgentInboxMessage {
+  id: string
+  agentSessionId: string
+  seq: number
+  /** ACP content blocks, exactly as they would be sent to `session/prompt`. */
+  content: any[]
+  /** What the sender asked for. A row only exists because it could not happen yet. */
+  delivery: MessageDelivery
+  origin: MessageOrigin
+  createdAt: string
+  /** When it was handed to the adapter; null while it is still waiting. */
+  deliveredAt: string | null
+}
+
+/** One agent asking to be told what another one is doing. */
+export interface AgentSubscription {
+  subscriberId: string
+  targetId: string
+  createdAt: string
+}
+
 export type McpTransport = 'stdio' | 'http' | 'sse'
 
 export interface McpServer {
@@ -195,6 +242,7 @@ export type StreamEvent =
   | { type: 'voice-session-changed', sessionId: string }
   | { type: 'voice-list-changed' }
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
+  | { type: 'agent-inbox-changed', agentSessionId: string, message: AgentInboxMessage }
   | { type: 'settings-changed' }
   | { type: 'mcp-changed' }
   | { type: 'project-changed' }

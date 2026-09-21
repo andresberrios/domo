@@ -20,10 +20,19 @@ const TABLES = [
   'agent_sessions',
   'agent_events',
   'agent_permissions',
+  'agent_inbox',
+  'agent_subscriptions',
   'mcp_servers'
 ]
 
-const SYNCED_TABLES = TABLES.filter(table => table !== 'dev_environment_ports')
+/**
+ * `dev_environment_ports` is server-side only, and `agent_subscriptions` is one
+ * agent's view of another — neither is anything the browser renders, and
+ * `agent_subscriptions` has no single-column key for a shape to be keyed on.
+ */
+const SYNCED_TABLES = TABLES.filter(
+  table => table !== 'dev_environment_ports' && table !== 'agent_subscriptions'
+)
 
 describe('schema bootstrap', () => {
   it('creates every table the app needs', async () => {

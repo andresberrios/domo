@@ -177,6 +177,37 @@ update agent_events e
 -- Whatever is left of those runs is the deltas the heads just absorbed.
 delete from agent_events where type in ('agent_message_chunk', 'agent_thought_chunk');
 
+-- Messages waiting for an agent, because Domo owns the queue rather than the
+-- adapter. A second \`session/prompt\` sent while a turn runs is queued inside
+-- the adapter, invisibly, and lost when it restarts; a row here is neither.
+-- \`delivery\` records what was asked for, not what happened: a row only exists
+-- because the message could not be handed over at once.
+create table if not exists agent_inbox (
+  id text primary key,
+  agent_session_id text not null references agent_sessions(id) on delete cascade,
+  -- Global, not per session, for the same reason voice_messages.seq is: two
+  -- concurrent enqueues must never collide. Only the order within a session
+  -- is ever read.
+  seq bigserial not null,
+  content jsonb not null,
+  delivery text not null default 'queue',
+  origin text not null default 'user',
+  created_at text not null,
+  delivered_at text
+);
+create index if not exists agent_inbox_session_seq on agent_inbox(agent_session_id, seq);
+
+-- Who is told when an agent finishes a turn, needs a permission, or dies.
+-- Both sides cascade: a subscription to a session that no longer exists is
+-- not a thing that can be acted on.
+create table if not exists agent_subscriptions (
+  subscriber_id text not null references agent_sessions(id) on delete cascade,
+  target_id text not null references agent_sessions(id) on delete cascade,
+  created_at text not null,
+  primary key (subscriber_id, target_id)
+);
+create index if not exists agent_subscriptions_target on agent_subscriptions(target_id);
+
 create table if not exists agent_permissions (
   id text primary key,
   agent_session_id text not null references agent_sessions(id) on delete cascade,
@@ -213,6 +244,7 @@ alter table voice_messages replica identity full;
 alter table agent_sessions replica identity full;
 alter table agent_events replica identity full;
 alter table agent_permissions replica identity full;
+alter table agent_inbox replica identity full;
 alter table mcp_servers replica identity full;
 alter table settings replica identity full;
 alter table projects replica identity full;

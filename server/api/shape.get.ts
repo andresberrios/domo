@@ -9,6 +9,7 @@ const ALLOWED_TABLES = new Set([
   'agent_sessions',
   'agent_events',
   'agent_permissions',
+  'agent_inbox',
   'mcp_servers',
   'projects',
   'dev_environments'

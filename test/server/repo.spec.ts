@@ -2,8 +2,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { query } from '../../server/lib/db'
 import {
+  addAgentSubscription,
   appendAgentEvent,
   appendVoiceMessage,
+  claimNextInboxMessage,
   createAgentSession,
   createDevEnvironmentRow,
   createMcpServer,
@@ -11,20 +13,27 @@ import {
   createProject,
   createVoiceSession,
   deleteAgentSession,
+  deleteInboxMessage,
   deleteProject,
   deleteVoiceSession,
   getAgentSession,
+  enqueueInboxMessage,
   getResumptionHandle,
+  latestAgentMessage,
   listAgentEvents,
   listAgentSessions,
+  listAgentSubscribers,
+  listAgentSubscriptions,
   listDevEnvironmentPorts,
   listDevEnvironments,
+  listInboxMessages,
   listMcpServers,
   listPermissions,
   listProjects,
   listVoiceMessages,
   listVoiceSessions,
   openAgentStream,
+  removeAgentSubscription,
   resolvePermissionRow,
   setAutoTitle,
   updateAgentSession,
@@ -637,6 +646,144 @@ describe('permissions', () => {
     await resolvePermissionRow(permission.id, 'allow', 'user')
 
     expect(seen.types()).toEqual(['permission-changed', 'permission-changed'])
+  })
+})
+
+describe('the agent inbox', () => {
+  const said = (text: string) => [{ type: 'text', text }]
+
+  async function queued(agentSessionId: string, text: string) {
+    return enqueueInboxMessage({ agentSessionId, content: said(text), delivery: 'queue', origin: 'user' })
+  }
+
+  it('is a row, so a message that could not be delivered is not lost', async () => {
+    const session = await agent()
+
+    const message = await queued(session.id, 'then push it')
+
+    expect(message).toMatchObject({
+      agentSessionId: session.id,
+      content: said('then push it'),
+      delivery: 'queue',
+      origin: 'user',
+      deliveredAt: null
+    })
+    await expect(listInboxMessages(session.id)).resolves.toHaveLength(1)
+  })
+
+  it('hands messages over oldest first, one at a time', async () => {
+    const session = await agent()
+    await queued(session.id, 'first')
+    await queued(session.id, 'second')
+
+    await expect(claimNextInboxMessage(session.id)).resolves.toMatchObject({ content: said('first') })
+    await expect(claimNextInboxMessage(session.id)).resolves.toMatchObject({ content: said('second') })
+    await expect(claimNextInboxMessage(session.id)).resolves.toBeNull()
+  })
+
+  it('marks a claimed message delivered, so no drain can hand it over twice', async () => {
+    const session = await agent()
+    await queued(session.id, 'only once')
+
+    const claimed = await claimNextInboxMessage(session.id)
+
+    expect(claimed!.deliveredAt).toEqual(expect.any(String))
+    await expect(listInboxMessages(session.id)).resolves.toEqual([])
+    await expect(listInboxMessages(session.id, false)).resolves.toHaveLength(1)
+  })
+
+  it('keeps each agent\'s queue to itself', async () => {
+    const first = await agent()
+    const second = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
+    await queued(first.id, 'for the first')
+
+    await expect(claimNextInboxMessage(second.id)).resolves.toBeNull()
+    await expect(listInboxMessages(first.id)).resolves.toHaveLength(1)
+  })
+
+  it('can be taken back before it goes out, and not after', async () => {
+    const session = await agent()
+    const message = await queued(session.id, 'never mind')
+
+    await expect(deleteInboxMessage(message.id)).resolves.toMatchObject({ id: message.id })
+    await expect(deleteInboxMessage(message.id)).resolves.toBeNull()
+
+    const delivered = await queued(session.id, 'too late')
+    await claimNextInboxMessage(session.id)
+    await expect(deleteInboxMessage(delivered.id)).resolves.toBeNull()
+  })
+
+  it('announces every change, so the panel never polls', async () => {
+    const session = await agent()
+    seen.clear()
+    const message = await queued(session.id, 'watch this')
+    await claimNextInboxMessage(session.id)
+    await queued(session.id, 'and this')
+    await deleteInboxMessage(message.id)
+
+    // enqueue, claim, enqueue — the delete of an already-delivered row is not
+    // a change and says nothing.
+    expect(seen.types()).toEqual([
+      'agent-inbox-changed', 'agent-inbox-changed', 'agent-inbox-changed'
+    ])
+  })
+
+  it('goes away with the session it was queued for', async () => {
+    const session = await agent()
+    await queued(session.id, 'pending')
+
+    await deleteAgentSession(session.id)
+
+    await expect(listInboxMessages(session.id, false)).resolves.toEqual([])
+  })
+})
+
+describe('subscriptions between agents', () => {
+  it('records who is following whom, and only once', async () => {
+    const watcher = await agent()
+    const target = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
+
+    await addAgentSubscription(watcher.id, target.id)
+    await addAgentSubscription(watcher.id, target.id)
+
+    await expect(listAgentSubscribers(target.id)).resolves.toEqual([watcher.id])
+    await expect(listAgentSubscriptions(watcher.id)).resolves.toMatchObject([
+      { subscriberId: watcher.id, targetId: target.id }
+    ])
+  })
+
+  it('says whether there was anything to remove', async () => {
+    const watcher = await agent()
+    const target = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
+    await addAgentSubscription(watcher.id, target.id)
+
+    await expect(removeAgentSubscription(watcher.id, target.id)).resolves.toBe(true)
+    await expect(removeAgentSubscription(watcher.id, target.id)).resolves.toBe(false)
+  })
+
+  it('goes away with the session on either end of it', async () => {
+    const watcher = await agent()
+    const target = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
+    await addAgentSubscription(watcher.id, target.id)
+
+    await deleteAgentSession(target.id)
+
+    await expect(listAgentSubscriptions(watcher.id)).resolves.toEqual([])
+  })
+})
+
+describe('the latest thing an agent said', () => {
+  it('is the last message block, which is what a subscriber is told', async () => {
+    const session = await agent()
+    await appendAgentEvent(session.id, 'agent_message', { text: 'Looking at it.', streaming: false })
+    await appendAgentEvent(session.id, 'tool_call', { title: 'Bash' })
+    await appendAgentEvent(session.id, 'agent_message', { text: 'Fixed the build.', streaming: false })
+
+    await expect(latestAgentMessage(session.id)).resolves.toBe('Fixed the build.')
+  })
+
+  it('is empty for an agent that has not said anything', async () => {
+    await expect(latestAgentMessage((await agent()).id)).resolves.toBe('')
   })
 })
 

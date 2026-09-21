@@ -3,13 +3,17 @@ import { bus } from './bus'
 import { getSettings } from './settings'
 import type {
   AgentEvent,
+  AgentInboxMessage,
   AgentStreamType,
   AgentAdapter,
   AgentSession,
   AgentSessionStatus,
+  AgentSubscription,
   DevEnvironment,
   DevEnvironmentPort,
   McpServer,
+  MessageDelivery,
+  MessageOrigin,
   PendingPermission,
   Project,
   VoiceMessage,
@@ -141,6 +145,19 @@ function mapPermission(r: any): PendingPermission {
     resolvedAt: r.resolved_at,
     resolvedOptionId: r.resolved_option_id,
     resolvedBy: r.resolved_by
+  }
+}
+
+function mapInboxMessage(r: any): AgentInboxMessage {
+  return {
+    id: r.id,
+    agentSessionId: r.agent_session_id,
+    seq: Number(r.seq),
+    content: r.content ?? [],
+    delivery: r.delivery,
+    origin: r.origin,
+    createdAt: r.created_at,
+    deliveredAt: r.delivered_at ?? null
   }
 }
 
@@ -621,6 +638,141 @@ export async function writeAgentStream(
   const event = mapAgentEvent(row)
   bus.publish({ type: 'agent-event', agentSessionId: event.agentSessionId, event })
   return event
+}
+
+/**
+ * The text of the agent's most recent message block.
+ *
+ * What a subscriber is told about a peer, so it has to be the *last* thing the
+ * agent said rather than the whole log: one indexed row, not two thousand.
+ */
+export async function latestAgentMessage(agentSessionId: string): Promise<string> {
+  const row = await queryOne<{ text: string | null }>(
+    `select payload->>'text' as text from agent_events
+      where agent_session_id = $1 and type = 'agent_message'
+      order by seq desc limit 1`,
+    [agentSessionId]
+  )
+  return row?.text ?? ''
+}
+
+/* ------------------------------------------------------------------ */
+/* the agent inbox                                                     */
+/* ------------------------------------------------------------------ */
+
+/** Park a message until the agent's turn ends. */
+export async function enqueueInboxMessage(input: {
+  agentSessionId: string
+  content: any[]
+  delivery: MessageDelivery
+  origin: MessageOrigin
+}): Promise<AgentInboxMessage> {
+  const row = await queryOne(
+    `insert into agent_inbox (id, agent_session_id, content, delivery, origin, created_at)
+     values ($1, $2, $3::jsonb, $4, $5, $6) returning *`,
+    [newId('in'), input.agentSessionId, JSON.stringify(input.content), input.delivery, input.origin, nowIso()]
+  )
+  const message = mapInboxMessage(row)
+  bus.publish({ type: 'agent-inbox-changed', agentSessionId: input.agentSessionId, message })
+  return message
+}
+
+export async function listInboxMessages(
+  agentSessionId: string,
+  pendingOnly = true
+): Promise<AgentInboxMessage[]> {
+  const rows = await query(
+    `select * from agent_inbox where agent_session_id = $1
+      ${pendingOnly ? 'and delivered_at is null' : ''} order by seq asc`,
+    [agentSessionId]
+  )
+  return rows.map(mapInboxMessage)
+}
+
+/**
+ * Take the oldest waiting message, marking it delivered in the same statement.
+ *
+ * One statement so two drains — a turn ending while the adapter reattaches, say
+ * — can never hand the same message over twice. The claim happens before the
+ * prompt, so a turn that fails to start loses the message rather than replaying
+ * it forever; the failure is recorded as an `error` event on the session.
+ */
+export async function claimNextInboxMessage(agentSessionId: string): Promise<AgentInboxMessage | null> {
+  const row = await queryOne(
+    `update agent_inbox set delivered_at = $2
+      where id = (
+        select id from agent_inbox
+         where agent_session_id = $1 and delivered_at is null
+         order by seq asc limit 1
+         for update skip locked
+      )
+      returning *`,
+    [agentSessionId, nowIso()]
+  )
+  if (!row) return null
+  const message = mapInboxMessage(row)
+  bus.publish({ type: 'agent-inbox-changed', agentSessionId, message })
+  return message
+}
+
+/** Drop a message that is still waiting. Returns false if it already went out. */
+export async function deleteInboxMessage(id: string): Promise<AgentInboxMessage | null> {
+  const row = await queryOne(
+    'delete from agent_inbox where id = $1 and delivered_at is null returning *',
+    [id]
+  )
+  if (!row) return null
+  const message = mapInboxMessage(row)
+  bus.publish({ type: 'agent-inbox-changed', agentSessionId: message.agentSessionId, message })
+  return message
+}
+
+/* ------------------------------------------------------------------ */
+/* subscriptions between agents                                        */
+/* ------------------------------------------------------------------ */
+
+export async function addAgentSubscription(subscriberId: string, targetId: string): Promise<void> {
+  await query(
+    `insert into agent_subscriptions (subscriber_id, target_id, created_at)
+     values ($1, $2, $3) on conflict do nothing`,
+    [subscriberId, targetId, nowIso()]
+  )
+}
+
+export async function removeAgentSubscription(subscriberId: string, targetId: string): Promise<boolean> {
+  const rows = await query(
+    'delete from agent_subscriptions where subscriber_id = $1 and target_id = $2 returning subscriber_id',
+    [subscriberId, targetId]
+  )
+  return rows.length > 0
+}
+
+/** Every agent somebody is following, so the notifier can skip the rest. */
+export async function listAllSubscriptionTargets(): Promise<string[]> {
+  const rows = await query<{ target_id: string }>('select distinct target_id from agent_subscriptions')
+  return rows.map(row => row.target_id)
+}
+
+/** Who has asked to hear about this agent. */
+export async function listAgentSubscribers(targetId: string): Promise<string[]> {
+  const rows = await query<{ subscriber_id: string }>(
+    'select subscriber_id from agent_subscriptions where target_id = $1 order by created_at asc',
+    [targetId]
+  )
+  return rows.map(row => row.subscriber_id)
+}
+
+/** What this agent has asked to hear about. */
+export async function listAgentSubscriptions(subscriberId: string): Promise<AgentSubscription[]> {
+  const rows = await query(
+    'select * from agent_subscriptions where subscriber_id = $1 order by created_at asc',
+    [subscriberId]
+  )
+  return rows.map(row => ({
+    subscriberId: row.subscriber_id,
+    targetId: row.target_id,
+    createdAt: row.created_at
+  }))
 }
 
 /* ------------------------------------------------------------------ */
