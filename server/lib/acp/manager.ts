@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname } from 'node:path'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
@@ -14,6 +14,7 @@ import {
 } from '../dev-environments'
 import { internalBaseUrl } from '../internal-url'
 import { mintMeshToken } from '../mesh/token'
+import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEntry, adapterEnv } from './adapter-process'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
@@ -806,14 +807,7 @@ class AcpManager {
   }
 }
 
-export function normalizeCwd(input: string): string {
-  const trimmed = (input || '').trim()
-  if (!trimmed) return process.cwd()
-  const expanded = trimmed.startsWith('~')
-    ? join(process.env.HOME || process.cwd(), trimmed.slice(1))
-    : trimmed
-  return isAbsolute(expanded) ? expanded : resolve(process.cwd(), expanded)
-}
+export { normalizeCwd }
 
 const globalKey = '__domo_acp_manager__'
 const g = globalThis as any

@@ -185,6 +185,16 @@ export async function createProject(input: { name: string, repoPath: string }): 
   return mapProject(row)
 }
 
+export async function updateProject(id: string, patch: { name: string }): Promise<Project | null> {
+  const row = await queryOne(
+    'update projects set name = $2, updated_at = $3 where id = $1 returning *',
+    [id, patch.name, nowIso()]
+  )
+  if (!row) return null
+  bus.publish({ type: 'project-changed' })
+  return mapProject(row)
+}
+
 export async function deleteProject(id: string): Promise<void> {
   await query('delete from projects where id = $1', [id])
   bus.publish({ type: 'project-changed' })

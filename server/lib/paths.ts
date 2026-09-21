@@ -16,3 +16,13 @@ export function uploadsDir(): string {
   mkdirSync(dir, { recursive: true })
   return dir
 }
+
+/** Resolve a user-supplied path (possibly `~`-relative) to an absolute one. */
+export function normalizeCwd(input: string): string {
+  const trimmed = (input || '').trim()
+  if (!trimmed) return process.cwd()
+  const expanded = trimmed.startsWith('~')
+    ? join(process.env.HOME || process.cwd(), trimmed.slice(1))
+    : trimmed
+  return isAbsolute(expanded) ? expanded : resolve(process.cwd(), expanded)
+}

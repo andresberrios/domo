@@ -21,6 +21,8 @@ const repo = {
   listProjects: vi.fn(),
   setAutoTitle: vi.fn(),
   updateAgentSession: vi.fn(),
+  updateDevEnvironment: vi.fn(),
+  updateProject: vi.fn(),
   updateVoiceSession: vi.fn()
 }
 const acpManager = {
@@ -30,6 +32,16 @@ const acpManager = {
   promptInBackground: vi.fn(),
   setMode: vi.fn(),
   stop: vi.fn()
+}
+const devEnvironments = {
+  createEnvironment: vi.fn(),
+  startEnvironment: vi.fn(),
+  stopEnvironment: vi.fn()
+}
+const projects = {
+  createProjectFromPath: vi.fn(),
+  removeProjectCascade: vi.fn(),
+  removeProjectEnvironment: vi.fn()
 }
 
 // The real one spawns an adapter to ask it; that is `adapter-models.spec.ts`.
@@ -46,6 +58,8 @@ vi.mock('../../server/lib/acp/manager', () => ({
   acpManager,
   normalizeCwd: (input: string) => input
 }))
+vi.mock('../../server/lib/dev-environments', () => devEnvironments)
+vi.mock('../../server/lib/projects', () => projects)
 vi.mock('../../server/lib/settings', () => ({
   getSettings: async () => ({ defaultCwd: '/workspace', autoTitle: true })
 }))
@@ -72,10 +86,27 @@ function agent(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function project(overrides: Record<string, unknown> = {}) {
+  return { id: 'prj_1', name: 'Domo', repoPath: '/repo/domo', ...overrides }
+}
+
+function environment(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'env_1',
+    projectId: 'prj_1',
+    name: 'feature-auth',
+    status: 'running',
+    workspacePath: '/workspaces/feature-auth',
+    ...overrides
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   repo.listAgentSessions.mockResolvedValue([])
   repo.listPermissions.mockResolvedValue([])
+  repo.listProjects.mockResolvedValue([])
+  repo.listDevEnvironments.mockResolvedValue([])
 })
 
 describe('cleanTitle', () => {
@@ -304,6 +335,143 @@ describe('list_agent_sessions', () => {
     const result = await voiceTools.list_agent_sessions!.handler({}, ctx)
 
     expect(result.agents.map((item: any) => item.awaitingPermission)).toEqual([2, 0])
+  })
+})
+
+describe('resolving which project or environment the user meant', () => {
+  it('matches a project on a partial name', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+    projects.removeProjectCascade.mockResolvedValue(undefined)
+
+    await voiceTools.delete_project!.handler({ project: 'domo' }, ctx)
+
+    expect(projects.removeProjectCascade).toHaveBeenCalledWith('prj_1')
+  })
+
+  it('tells the model to list projects when nothing matches', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+
+    await expect(voiceTools.delete_project!.handler({ project: 'billing' }, ctx))
+      .rejects.toThrow(/No project matches "billing"\. Call list_dev_environments first\./)
+  })
+
+  it('matches an environment on a partial name', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+    projects.removeProjectEnvironment.mockResolvedValue(undefined)
+
+    await voiceTools.delete_dev_environment!.handler({ environment: 'auth' }, ctx)
+
+    expect(projects.removeProjectEnvironment).toHaveBeenCalledWith('env_1')
+  })
+
+  it('tells the model to list environments when nothing matches', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+
+    await expect(voiceTools.delete_dev_environment!.handler({ environment: 'billing' }, ctx))
+      .rejects.toThrow(/No development environment matches "billing"\. Call list_dev_environments first\./)
+  })
+})
+
+describe('create_project', () => {
+  it('creates a project from a repo path', async () => {
+    projects.createProjectFromPath.mockResolvedValue(project())
+
+    await expect(voiceTools.create_project!.handler({ repoPath: '/repo/domo' }, ctx))
+      .resolves.toEqual({ id: 'prj_1', name: 'Domo', repoPath: '/repo/domo' })
+    expect(projects.createProjectFromPath).toHaveBeenCalledWith({ name: undefined, repoPath: '/repo/domo' })
+  })
+})
+
+describe('update_project', () => {
+  it('renames a project the user names by its current name', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+    repo.updateProject.mockResolvedValue(project({ name: 'Renamed' }))
+
+    await expect(voiceTools.update_project!.handler({ project: 'domo', name: 'Renamed' }, ctx))
+      .resolves.toEqual({ id: 'prj_1', name: 'Renamed' })
+    expect(repo.updateProject).toHaveBeenCalledWith('prj_1', { name: 'Renamed' })
+  })
+
+  it('refuses an empty name', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+
+    await expect(voiceTools.update_project!.handler({ project: 'domo', name: '  ' }, ctx))
+      .rejects.toThrow('A name is required.')
+    expect(repo.updateProject).not.toHaveBeenCalled()
+  })
+})
+
+describe('delete_project', () => {
+  it('removes the project and everything under it', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+
+    await expect(voiceTools.delete_project!.handler({ project: 'prj_1' }, ctx))
+      .resolves.toEqual({ id: 'prj_1', deleted: true })
+    expect(projects.removeProjectCascade).toHaveBeenCalledWith('prj_1')
+  })
+})
+
+describe('create_dev_environment', () => {
+  it('creates an environment for the named project', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+    devEnvironments.createEnvironment.mockResolvedValue(environment())
+
+    const result = await voiceTools.create_dev_environment!.handler({ project: 'domo', name: 'feature-auth' }, ctx)
+
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({ projectId: 'prj_1', name: 'feature-auth' })
+    expect(result).toMatchObject({ id: 'env_1', name: 'feature-auth', status: 'running' })
+  })
+
+  it('refuses an empty name', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+
+    await expect(voiceTools.create_dev_environment!.handler({ project: 'domo', name: ' ' }, ctx))
+      .rejects.toThrow('A name is required.')
+    expect(devEnvironments.createEnvironment).not.toHaveBeenCalled()
+  })
+})
+
+describe('update_dev_environment', () => {
+  it('starts the container when asked to run it', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment({ status: 'stopped' })])
+    devEnvironments.startEnvironment.mockResolvedValue(environment({ status: 'running' }))
+
+    const result = await voiceTools.update_dev_environment!.handler({ environment: 'auth', status: 'running' }, ctx)
+
+    expect(devEnvironments.startEnvironment).toHaveBeenCalledWith('env_1')
+    expect(result).toMatchObject({ status: 'running' })
+  })
+
+  it('stops the container when asked to stop it', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+    devEnvironments.stopEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
+
+    const result = await voiceTools.update_dev_environment!.handler({ environment: 'auth', status: 'stopped' }, ctx)
+
+    expect(devEnvironments.stopEnvironment).toHaveBeenCalledWith('env_1')
+    expect(result).toMatchObject({ status: 'stopped' })
+  })
+
+  it('renames the environment without touching its container', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+    repo.updateDevEnvironment.mockResolvedValue(environment({ name: 'renamed' }))
+
+    const result = await voiceTools.update_dev_environment!.handler({ environment: 'auth', name: 'renamed' }, ctx)
+
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', { name: 'renamed' })
+    expect(devEnvironments.startEnvironment).not.toHaveBeenCalled()
+    expect(devEnvironments.stopEnvironment).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ name: 'renamed' })
+  })
+})
+
+describe('delete_dev_environment', () => {
+  it('removes the environment and its agent sessions', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+
+    await expect(voiceTools.delete_dev_environment!.handler({ environment: 'env_1' }, ctx))
+      .resolves.toEqual({ id: 'env_1', deleted: true })
+    expect(projects.removeProjectEnvironment).toHaveBeenCalledWith('env_1')
   })
 })
 

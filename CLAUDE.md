@@ -86,6 +86,19 @@ things that are easy to get wrong.
   serves host and environment sessions: only the hostname differs
   (`internalBaseUrl`). The caller is whoever their bearer token says they are;
   nothing in the request body is trusted.
+- **Project and environment lifecycle has one cascade, not three.** The voice
+  agent, the agent mesh and the HTTP API can all create, rename and delete
+  projects and dev environments, and deleting either one has to stop and
+  delete the coding-agent sessions running inside it before the container
+  goes away. That orchestration lives in `server/lib/projects.ts`, one layer
+  above `dev-environments.ts` (pure Docker mechanics, no ACP import — importing
+  `acpManager` there would cycle back through it) and `acp/manager.ts` (which
+  already imports `dev-environments.ts`). All three callers share
+  `removeProjectEnvironment` / `removeProjectCascade` / `createProjectFromPath`
+  instead of repeating the stop-agents-then-remove-container sequence. The
+  mesh's `delete_project` / `delete_dev_environment` refuse a target that
+  contains the calling agent's own session — killing your own adapter process
+  mid-tool-call leaves the response undelivered.
 
 ## Gotchas (learned the hard way)
 

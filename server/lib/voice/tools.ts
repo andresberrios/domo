@@ -4,6 +4,8 @@ import { Type, type FunctionDeclaration } from '@google/genai'
 
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
+import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
 import {
   createVoiceSession,
   getAgentSession,
@@ -15,6 +17,8 @@ import {
   listProjects,
   setAutoTitle,
   updateAgentSession,
+  updateDevEnvironment,
+  updateProject,
   updateVoiceSession
 } from '../repo'
 import { getSettings } from '../settings'
@@ -45,6 +49,28 @@ async function resolveAgent(agentId?: string) {
   }
   if (!sessions.length) throw new Error('There are no coding agent sessions yet.')
   return sessions[0]!
+}
+
+/** Pick the project the user means from an id or a spoken name. */
+async function resolveProject(identifier: string) {
+  const projects = await listProjects()
+  const direct = projects.find(p => p.id === identifier)
+  if (direct) return direct
+  const byName = projects.find(p => p.name.toLowerCase() === identifier.toLowerCase())
+    ?? projects.find(p => p.name.toLowerCase().includes(identifier.toLowerCase()))
+  if (byName) return byName
+  throw new Error(`No project matches "${identifier}". Call list_dev_environments first.`)
+}
+
+/** Pick the development environment the user means from an id or a spoken name. */
+async function resolveEnvironment(identifier: string) {
+  const environments = await listDevEnvironments()
+  const direct = environments.find(e => e.id === identifier)
+  if (direct) return direct
+  const byName = environments.find(e => e.name.toLowerCase() === identifier.toLowerCase())
+    ?? environments.find(e => e.name.toLowerCase().includes(identifier.toLowerCase()))
+  if (byName) return byName
+  throw new Error(`No development environment matches "${identifier}". Call list_dev_environments first.`)
 }
 
 /** Spoken models dress titles up; the sidebar wants a plain few words. */
@@ -315,6 +341,132 @@ export const voiceTools: Record<string, VoiceTool> = {
             }))
         }))
       }
+    }
+  },
+
+  create_project: {
+    declaration: {
+      name: 'create_project',
+      description:
+        'Add a new project backed by a local Git checkout, so development environments can be created from it. Use list_directories first to find the path if the user has not given an absolute one.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          repoPath: { type: Type.STRING, description: 'Absolute path to a local Git checkout.' },
+          name: { type: Type.STRING, description: 'Display name for the project. Defaults to the directory name.' }
+        },
+        required: ['repoPath']
+      }
+    },
+    handler: async (args) => {
+      const project = await createProjectFromPath({ name: args.name, repoPath: args.repoPath })
+      return { id: project.id, name: project.name, repoPath: project.repoPath }
+    }
+  },
+
+  update_project: {
+    declaration: {
+      name: 'update_project',
+      description: 'Rename a project.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' },
+          name: { type: Type.STRING, description: 'New name.' }
+        },
+        required: ['project', 'name']
+      }
+    },
+    handler: async (args) => {
+      const project = await resolveProject(args.project)
+      const name = String(args.name ?? '').trim()
+      if (!name) throw new Error('A name is required.')
+      const updated = await updateProject(project.id, { name })
+      return { id: project.id, name: updated?.name ?? name }
+    }
+  },
+
+  delete_project: {
+    declaration: {
+      name: 'delete_project',
+      description:
+        'Delete a project along with every one of its development environments: their containers, checkouts, and coding agent sessions. This cannot be undone. Always confirm with the user before calling it.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: { project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' } },
+        required: ['project']
+      }
+    },
+    handler: async (args) => {
+      const project = await resolveProject(args.project)
+      await removeProjectCascade(project.id)
+      return { id: project.id, deleted: true }
+    }
+  },
+
+  create_dev_environment: {
+    declaration: {
+      name: 'create_dev_environment',
+      description:
+        'Create a new isolated development environment for a project: a container with its own copy of the repository. This can take a while; tell the user it is starting rather than waiting silently.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' },
+          name: { type: Type.STRING, description: 'Short name for the environment, e.g. "feature-auth".' }
+        },
+        required: ['project', 'name']
+      }
+    },
+    handler: async (args) => {
+      const project = await resolveProject(args.project)
+      const name = String(args.name ?? '').trim()
+      if (!name) throw new Error('A name is required.')
+      const environment = await createEnvironment({ projectId: project.id, name })
+      return { id: environment.id, name: environment.name, status: environment.status, workspace: environment.workspacePath }
+    }
+  },
+
+  update_dev_environment: {
+    declaration: {
+      name: 'update_dev_environment',
+      description: 'Rename a development environment, or start/stop its container.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' },
+          name: { type: Type.STRING, description: 'New name.' },
+          status: { type: Type.STRING, enum: ['running', 'stopped'], description: 'Start or stop the container.' }
+        },
+        required: ['environment']
+      }
+    },
+    handler: async (args) => {
+      const environment = await resolveEnvironment(args.environment)
+      let current = environment
+      if (args.status === 'running') current = await startEnvironment(environment.id)
+      else if (args.status === 'stopped') current = await stopEnvironment(environment.id)
+      const name = String(args.name ?? '').trim()
+      if (name) current = (await updateDevEnvironment(environment.id, { name })) ?? current
+      return { id: current.id, name: current.name, status: current.status }
+    }
+  },
+
+  delete_dev_environment: {
+    declaration: {
+      name: 'delete_dev_environment',
+      description:
+        'Delete a development environment: its container, checkout, and any coding agent sessions running in it. This cannot be undone. Always confirm with the user before calling it.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: { environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' } },
+        required: ['environment']
+      }
+    },
+    handler: async (args) => {
+      const environment = await resolveEnvironment(args.environment)
+      await removeProjectEnvironment(environment.id)
+      return { id: environment.id, deleted: true }
     }
   },
 

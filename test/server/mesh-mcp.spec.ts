@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { query } from '../../server/lib/db'
 import {
@@ -13,8 +16,9 @@ import { mintMeshToken } from '../../server/lib/mesh/token'
 /**
  * The mesh endpoint is the whole surface a coding agent has on the rest of
  * Domo, and its only authentication is the bearer token. Everything below runs
- * against the real Postgres — only the ACP manager is faked, because a real one
- * would spawn an adapter.
+ * against the real Postgres — only the ACP manager and the Docker-backed
+ * environment lifecycle are faked, because a real one would spawn an adapter
+ * or a container.
  */
 
 const acp = vi.hoisted(() => ({
@@ -32,6 +36,21 @@ vi.mock('../../server/lib/acp/manager', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../server/lib/acp/manager')>()
   return { ...original, acpManager: acp }
 })
+
+const devEnvironments = vi.hoisted(() => ({
+  createEnvironment: vi.fn(async (input: any) => ({
+    id: 'env_new',
+    projectId: input.projectId,
+    name: input.name,
+    status: 'running',
+    workspacePath: '/workspaces/env_new'
+  })),
+  startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
+  stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
+  removeEnvironment: vi.fn(async () => {})
+}))
+
+vi.mock('../../server/lib/dev-environments', () => devEnvironments)
 
 // The real one spawns an adapter to ask it; that belongs to `adapter-models.spec.ts`.
 const catalog = vi.hoisted(() => vi.fn(async (_adapter?: string) => ({
@@ -76,6 +95,10 @@ beforeEach(async () => {
   await query('truncate agent_sessions, projects cascade')
   acp.promptInBackground.mockClear()
   acp.create.mockClear()
+  devEnvironments.createEnvironment.mockClear()
+  devEnvironments.startEnvironment.mockClear()
+  devEnvironments.stopEnvironment.mockClear()
+  devEnvironments.removeEnvironment.mockClear()
 })
 
 describe('the agent-mesh MCP endpoint', () => {
@@ -98,7 +121,7 @@ describe('the agent-mesh MCP endpoint', () => {
     }
   })
 
-  it('initializes and lists exactly the four mesh tools', async () => {
+  it('initializes and lists exactly the mesh tools', async () => {
     const token = mintMeshToken((await session('caller')).id)
 
     const initialized = await call(token, 'initialize', {
@@ -115,6 +138,13 @@ describe('the agent-mesh MCP endpoint', () => {
       'list_agents',
       'message_agent',
       'spawn_agent',
+      'list_projects',
+      'create_project',
+      'update_project',
+      'delete_project',
+      'create_dev_environment',
+      'update_dev_environment',
+      'delete_dev_environment',
       'notify_supervisor'
     ])
   })
@@ -236,5 +266,176 @@ describe('list_models', () => {
     await callTool(mintMeshToken(caller.id), 'list_models', { adapter: 'gpt-42' })
 
     expect(catalog).toHaveBeenCalledWith(undefined)
+  })
+})
+
+describe('projects and dev environments', () => {
+  let repoPath: string
+
+  beforeEach(async () => {
+    repoPath = await mkdtemp(join(tmpdir(), 'domo-mesh-repo-'))
+    await mkdir(join(repoPath, '.git'))
+  })
+
+  afterEach(async () => {
+    await rm(repoPath, { recursive: true, force: true })
+  })
+
+  it('lists projects with their environments', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'list_projects')).body)
+
+    expect(body.projects).toEqual([expect.objectContaining({
+      id: project.id,
+      name: 'domo',
+      repoPath,
+      environments: [expect.objectContaining({ id: environment.id, name: 'env' })]
+    })])
+  })
+
+  it('creates a project from a local git checkout', async () => {
+    const caller = await session('caller')
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'create_project', { repoPath })).body)
+
+    expect(body).toMatchObject({ name: expect.any(String), repoPath })
+  })
+
+  it('refuses a repo path that is not a git checkout', async () => {
+    const caller = await session('caller')
+    const notGit = await mkdtemp(join(tmpdir(), 'domo-mesh-not-git-'))
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'create_project', { repoPath: notGit })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toMatch(/local Git checkout/)
+    await rm(notGit, { recursive: true, force: true })
+  })
+
+  it('renames a project', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'update_project', {
+      projectId: project.id,
+      name: 'Renamed'
+    })).body)
+
+    expect(body).toEqual({ id: project.id, name: 'Renamed' })
+  })
+
+  it('deletes a project and its environments', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'delete_project', {
+      projectId: project.id
+    })).body)
+
+    expect(body).toEqual({ id: project.id, deleted: true })
+    expect(devEnvironments.removeEnvironment).toHaveBeenCalledWith(environment.id)
+  })
+
+  it('refuses to delete the project the caller is running in', async () => {
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+    const caller = await session('caller', { devEnvironmentId: environment.id })
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'delete_project', { projectId: project.id })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toMatch(/Refusing to delete the project/)
+    expect(devEnvironments.removeEnvironment).not.toHaveBeenCalled()
+  })
+
+  it('creates a development environment for a project', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'create_dev_environment', {
+      projectId: project.id,
+      name: 'feature-x'
+    })).body)
+
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({ projectId: project.id, name: 'feature-x' })
+    expect(body).toMatchObject({ id: 'env_new', name: 'feature-x', status: 'running' })
+  })
+
+  it('starts, stops and renames a development environment', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+
+    const stopped = resultOf((await callTool(mintMeshToken(caller.id), 'update_dev_environment', {
+      environmentId: environment.id,
+      status: 'stopped'
+    })).body)
+    expect(devEnvironments.stopEnvironment).toHaveBeenCalledWith(environment.id)
+    expect(stopped).toMatchObject({ status: 'stopped' })
+
+    const renamed = resultOf((await callTool(mintMeshToken(caller.id), 'update_dev_environment', {
+      environmentId: environment.id,
+      name: 'renamed'
+    })).body)
+    expect(renamed).toMatchObject({ name: 'renamed' })
+  })
+
+  it('deletes a development environment', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'delete_dev_environment', {
+      environmentId: environment.id
+    })).body)
+
+    expect(body).toEqual({ id: environment.id, deleted: true })
+    expect(devEnvironments.removeEnvironment).toHaveBeenCalledWith(environment.id)
+  })
+
+  it('refuses to delete the environment the caller is running in', async () => {
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+    const caller = await session('caller', { devEnvironmentId: environment.id })
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'delete_dev_environment', { environmentId: environment.id })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toMatch(/Refusing to delete the environment/)
+    expect(devEnvironments.removeEnvironment).not.toHaveBeenCalled()
   })
 })

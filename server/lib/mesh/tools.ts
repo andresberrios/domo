@@ -1,6 +1,17 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
-import { appendAgentEvent, getAgentSession, listAgentSessions } from '../repo'
+import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
+import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
+import {
+  appendAgentEvent,
+  getAgentSession,
+  getDevEnvironment,
+  listAgentSessions,
+  listDevEnvironments,
+  listProjects,
+  updateDevEnvironment,
+  updateProject
+} from '../repo'
 import { voiceManager } from '../voice/runtime'
 
 /**
@@ -67,6 +78,89 @@ export const MESH_TOOLS = [
         }
       },
       required: ['title', 'prompt'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_projects',
+    description:
+      'List projects and their isolated development environments, with ids for use with the project and environment tools.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'create_project',
+    description:
+      'Add a new project backed by a local Git checkout, so development environments can be created from it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repoPath: { type: 'string', description: 'Absolute path to a local Git checkout.' },
+        name: { type: 'string', description: 'Display name for the project. Defaults to the directory name.' }
+      },
+      required: ['repoPath'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'update_project',
+    description: 'Rename a project.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Project id, from list_projects.' },
+        name: { type: 'string', description: 'New name.' }
+      },
+      required: ['projectId', 'name'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'delete_project',
+    description:
+      'Delete a project along with every one of its development environments: their containers, checkouts, and coding agent sessions. Cannot be undone.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectId: { type: 'string', description: 'Project id, from list_projects.' } },
+      required: ['projectId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'create_dev_environment',
+    description:
+      'Create a new isolated development environment for a project: a container with its own copy of the repository.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Project id, from list_projects.' },
+        name: { type: 'string', description: 'Short name for the environment, e.g. "feature-auth".' }
+      },
+      required: ['projectId', 'name'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'update_dev_environment',
+    description: 'Rename a development environment, or start/stop its container.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        environmentId: { type: 'string', description: 'Environment id, from list_projects.' },
+        name: { type: 'string', description: 'New name.' },
+        status: { type: 'string', enum: ['running', 'stopped'], description: 'Start or stop the container.' }
+      },
+      required: ['environmentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'delete_dev_environment',
+    description:
+      'Delete a development environment: its container, checkout, and any coding agent sessions running in it. Cannot be undone.',
+    inputSchema: {
+      type: 'object',
+      properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
+      required: ['environmentId'],
       additionalProperties: false
     }
   },
@@ -140,6 +234,70 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       })
       await appendAgentEvent(caller.id, 'mesh_spawned', { agentId: session.id, title: session.title })
       return { id: session.id, title: session.title, cwd: session.cwd, model: session.model }
+    }
+
+    case 'list_projects': {
+      const [projects, environments] = await Promise.all([listProjects(), listDevEnvironments()])
+      return {
+        projects: projects.map(project => ({
+          id: project.id,
+          name: project.name,
+          repoPath: project.repoPath,
+          environments: environments
+            .filter(environment => environment.projectId === project.id)
+            .map(environment => ({
+              id: environment.id,
+              name: environment.name,
+              status: environment.status,
+              workspace: environment.workspacePath
+            }))
+        }))
+      }
+    }
+
+    case 'create_project': {
+      const project = await createProjectFromPath({ name: args.name, repoPath: args.repoPath })
+      return { id: project.id, name: project.name, repoPath: project.repoPath }
+    }
+
+    case 'update_project': {
+      const name = String(args.name ?? '').trim()
+      if (!name) throw new Error('A name is required.')
+      const updated = await updateProject(args.projectId, { name })
+      if (!updated) throw new Error(`No project ${args.projectId}`)
+      return { id: updated.id, name: updated.name }
+    }
+
+    case 'delete_project': {
+      const environments = await listDevEnvironments(args.projectId)
+      if (caller.devEnvironmentId && environments.some(environment => environment.id === caller.devEnvironmentId)) {
+        throw new Error('Refusing to delete the project this agent session is running in. Ask the user or another agent to do it.')
+      }
+      await removeProjectCascade(args.projectId)
+      return { id: args.projectId, deleted: true }
+    }
+
+    case 'create_dev_environment': {
+      const environment = await createEnvironment({ projectId: args.projectId, name: args.name })
+      return { id: environment.id, name: environment.name, status: environment.status, workspace: environment.workspacePath }
+    }
+
+    case 'update_dev_environment': {
+      let current = await getDevEnvironment(args.environmentId)
+      if (!current) throw new Error(`No environment ${args.environmentId}`)
+      if (args.status === 'running') current = await startEnvironment(current.id)
+      else if (args.status === 'stopped') current = await stopEnvironment(current.id)
+      const name = String(args.name ?? '').trim()
+      if (name) current = (await updateDevEnvironment(current.id, { name })) ?? current
+      return { id: current.id, name: current.name, status: current.status }
+    }
+
+    case 'delete_dev_environment': {
+      if (caller.devEnvironmentId === args.environmentId) {
+        throw new Error('Refusing to delete the environment this agent session is running in. Ask the user or another agent to do it.')
+      }
+      await removeProjectEnvironment(args.environmentId)
+      return { id: args.environmentId, deleted: true }
     }
 
     case 'notify_supervisor': {
