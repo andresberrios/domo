@@ -92,6 +92,42 @@ things that are easy to get wrong.
   from `setMode` (the user or the voice agent) and from `current_mode_update`
   (the agent) only. The whole reconciliation returns a patch rather than
   writing one, so a start is still **one** `agent_sessions` update.
+- **Messages to an agent go through an inbox that is rows.** The prompt
+  endpoint, the voice tool, the mesh tool and a subscription note all end in
+  `AgentRuntime.deliver` (`server/lib/acp/manager.ts`), which is the one place
+  that decides what happens to a message arriving mid-turn. Three modes, one
+  enum (`MessageDelivery`): **`steer`** injects it into the running turn through
+  the adapter's `_session/steering` extension, **`queue`** parks it in
+  `agent_inbox` until the turn ends, **`interrupt`** cancels the turn, waits for
+  it to settle, then prompts. With nothing running all three are the same thing
+  — a prompt — so the mode only ever decides what happens to a message that
+  arrives mid-turn. Humans default to `steer` (the composer, the voice tool),
+  agents to `queue` (the mesh tool, and system notes): a person is talking to
+  Domo *now*, while a peer has no idea what it is cutting across. **`steer` on
+  an adapter that does not advertise steering falls back to `interrupt`**, never
+  to `queue` — the intent is "change course now", and waiting is the one thing
+  it definitely does not mean. The queue drains one row at a time in `seq`
+  order, when a turn ends (however it ends) and when an adapter attaches idle,
+  so **a queued message survives a restart**. That is the point of Domo owning
+  the queue rather than the adapter (see the gotcha below), and it is why the
+  agent page can show what is waiting and take it back.
+- **Subscriptions are how one agent hears about another.** An agent cannot wait
+  for a peer — its own turn ends long before the peer's does — so
+  `agent_subscriptions(subscriber_id, target_id)` records who wants to be told,
+  and `subscribe_to_agent` / `unsubscribe_from_agent` / `spawn_agent`'s
+  `notifyWhenDone` (default **true**, because the caller is an agent by
+  definition) write it. `server/lib/acp/subscriptions.ts` listens on the **bus**
+  — not by being imported into the runtime, which would cycle straight back
+  through `acpManager` — and on the target's `turn_end`, a pending permission,
+  or an adapter error/exit composes one message ("Agent <title> (<id>) … Latest
+  output: …") and writes it to the subscriber's inbox with origin `system`. It
+  writes the **row** rather than calling `deliver`, because `deliver` starts the
+  adapter it delivers to and `adapter-exit` is one of the things it reports —
+  `acpManager.shutdown()` raises one per session on Nitro's `close`, so a note
+  that started adapters would spawn one per subscriber as the server went down.
+  It keeps the set of followed agents in memory so an agent nobody follows costs
+  no query per turn. Both ends cascade with the session; a mutual pair is
+  refused, because each finished turn would be a message and each message a turn.
 - **Permission requests are rows, not callbacks.** `onPermission` writes a
   pending `agent_permissions` row, then parks on a promise. The UI, the voice
   agent (`answer_permission`) and the auto-approve setting all resolve the same
@@ -280,6 +316,43 @@ things that are easy to get wrong.
 - **Nuxt Icon falls back to the remote Iconify API when `ssr: false`.** The
   config pins `icon.provider: 'server'` + `clientBundle.scan`, so a local,
   offline install still has icons. Don't drop it.
+- **Never send a second `session/prompt` while a turn is running.** It does not
+  fail, which is the problem: the Claude adapter queues it in its own
+  `turnQueue` (`node_modules/@agentclientprotocol/claude-agent-acp/dist/acp-agent.js`,
+  in `prompt`), and codex-acp's `startNewTurnFromExternalPrompt` awaits the
+  previous prompt the same way. Nothing in Domo can see that queue, nothing
+  renders it, and it dies with the adapter process — which under `pnpm dev` is
+  every edit to `server/`. That is the whole reason `agent_inbox` exists, and
+  why `AgentRuntime.prompt` claims `this.turn` **synchronously**, before its
+  first `await`: an async gap there would let a delivery read a turn that is
+  already Domo's as idle and prompt into it.
+- **Steering is an extension method advertised in `_meta`, not an ACP
+  capability.** `_session/steering` is absent from `acp.methods` and from
+  `agentCapabilities`; what says it is there is the `initialize` response's
+  *top-level* `_meta.steering.supported === true`, a sibling of
+  `agentCapabilities` and not inside it. Both installed adapters set it
+  (verified in their dist bundles). Send it through the SDK's string overload,
+  `connection.agent.request(method, params)` — the same one
+  `session/set_config_option` uses.
+- **`idleBehavior: 'promptRequired'` is what stops a steer becoming a turn Domo
+  cannot see.** Without the opt-in, an idle `_session/steering` makes the
+  adapter start a *detached* turn: its output streams through `session/update`,
+  but no `session/prompt` is ever resolved, so Domo never writes a `turn_end`
+  and never drains the inbox behind it. With it, the Claude adapter answers
+  `{ outcome: 'promptRequired' }` and leaves the content with the host.
+  **codex-acp accepts the `_meta` and ignores it** (`parseSessionSteerParams`
+  reads only `sessionId` and `prompt`) and will happily start that detached
+  turn — so the opt-in is a backstop, not the mechanism. The mechanism is that
+  Domo decides from its own `this.turn` and only ever steers when it has a turn
+  in flight. A `promptRequired` or `failed` answer means the turn settled in the
+  gap, and the message is queued rather than prompted: the turn that is still
+  unwinding is what drains it a moment later.
+- **A failed start is an `error`, and the adapter exiting must not downgrade
+  it.** An adapter that cannot start exits, so the `exit` handler's
+  `setStatus('stopped')` and `ensureStarted`'s `setStatus('error', …)` race for
+  the same row. The exit handler yields to an `error` already recorded, because
+  that one carries the `lastError` the UI offers a retry on. Left racing, the
+  status after a failed spawn was a coin toss.
 - **Sequence columns are `bigserial`, not `max(seq)+1`.** Concurrent event
   appends collided and produced duplicate `seq` values within a session.
 - **Open the streaming row on the first delta, and close it before anything
@@ -575,6 +648,19 @@ and permissions are end to end because a permission is a row.
   with the header enforced and with it stripped.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
+- **Steering was read out of both adapters' shipped bundles, not assumed.**
+  `STEER_METHOD = "_session/steering"` and `_meta: { steering: { supported:
+  true } }` in claude-agent-acp's `acp-agent.js`; `SESSION_STEERING_METHOD` and
+  the same `_meta` in codex-acp's `index.js`. So is the asymmetry that matters:
+  the Claude adapter validates `_meta.steering.idleBehavior` and honours
+  `promptRequired`, while codex-acp's `parseSessionSteerParams` reads only
+  `sessionId` and `prompt` and starts a detached turn regardless. The delivery
+  path is written so that difference cannot bite, and the fake agent in
+  `test/server/acp-stream.spec.ts` mirrors the Claude behaviour.
+- The inbox UI was covered by component tests (`test/nuxt/AgentInbox.spec.ts`,
+  `AgentComposer.spec.ts`), **not** by a rendered screenshot. The a11y tree does
+  not tell you whether the panel and the composer's picker sit right above each
+  other correctly at mobile widths; that is still worth a real browser pass.
 - The dev-environment path was verified against a real Docker daemon by
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no
