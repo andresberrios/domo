@@ -29,7 +29,10 @@ vi.mock('../../server/lib/repo', () => ({
   getResumptionHandle: async () => ({ handle: null, fingerprint: null }),
   getVoiceSession: async () => null,
   listAgentSessions: async () => [],
+  countVoiceMessagesAfter: async () => 0,
   listVoiceMessages: async () => [],
+  listVoiceMessagesAfter: async () => [],
+  saveConversationSummary: async () => null,
   updateVoiceSession: async () => {}
 }))
 

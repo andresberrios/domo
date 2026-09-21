@@ -5,6 +5,7 @@ import { bus } from '../bus'
 import { getSettings } from '../settings'
 import {
   appendVoiceMessage,
+  countVoiceMessagesAfter,
   getResumptionHandle,
   getVoiceSession,
   listAgentSessions,
@@ -13,6 +14,8 @@ import {
 } from '../repo'
 import { geminiApiKey } from '../gemini'
 import { connectVoiceMcpServers, type ConnectedMcp } from './mcp'
+import { CONTEXT_MESSAGE_LIMIT, compactConversation, ensureCompacted } from './compaction'
+import { buildConversationContext } from './context'
 import { voiceToolDeclarations, voiceTools } from './tools'
 import type { VoiceServerMessage } from '../../../shared/types'
 
@@ -165,17 +168,25 @@ class VoiceRuntime {
           .join('\n')
       : '- (no coding agents yet)'
 
-    const history = await listVoiceMessages(this.voiceSessionId, 12)
-    const recap = history.length
-      ? history
-          .filter(message => message.role === 'user' || message.role === 'assistant')
-          .map(message => `${message.role}: ${message.text}`)
-          .join('\n')
-      : ''
+    // The conversation is the row and its messages, not the socket: whatever
+    // this connect is (a first one, a `goAway` reconnect, a fresh session after
+    // a tool change, a server restart), the model is handed the same thing —
+    // the durable summary of everything folded away so far, then the tail since
+    // it, verbatim and within a budget. See `./context.ts`.
+    const session = await getVoiceSession(this.voiceSessionId)
+    const history = await listVoiceMessages(this.voiceSessionId, CONTEXT_MESSAGE_LIMIT)
+    const context = buildConversationContext({
+      summary: session?.summary,
+      summaryThroughSeq: session?.summaryThroughSeq,
+      messages: history,
+      // The window above holds the newest messages; this is how many there
+      // really are, so a backlog the window cannot show is still counted as
+      // lost rather than passed over in silence.
+      uncoveredTotal: await countVoiceMessagesAfter(this.voiceSessionId, session?.summaryThroughSeq ?? 0)
+    })
 
     // Appended rather than left to the editable prompt, so the Settings switch
     // governs it even for a customised instruction.
-    const session = await getVoiceSession(this.voiceSessionId)
     const naming = !settings.autoTitle || !session
       ? ''
       : session.titleSource === 'user'
@@ -190,7 +201,7 @@ class VoiceRuntime {
       roster,
       '',
       'Default workspace directory: ' + settings.defaultCwd,
-      recap ? `\nEarlier in this conversation:\n${recap}` : ''
+      context.text ? `\n${context.text}` : ''
     ].join('\n')
   }
 
@@ -201,6 +212,10 @@ class VoiceRuntime {
     // through is gone, and a stale `modelSpeaking` would hold notes forever.
     this.modelSpeaking = false
     this.lastUserSpeechAt = 0
+    // Fold before the instruction is built, not after: a reconnect is exactly
+    // where an uncompacted middle would fall off the end of the budget, and the
+    // summary written here is what stops it. Capped, and never fatal.
+    await ensureCompacted(this.voiceSessionId)
     const settings = await getSettings()
     const session = await getVoiceSession(this.voiceSessionId)
     const apiKey = await this.apiKey()
@@ -542,6 +557,7 @@ class VoiceRuntime {
         await this.flushUser()
         await this.flushAssistant()
         this.emit({ type: 'turn-complete' })
+        this.scheduleCompaction()
         if (this.handOverTo && this.handOverTimer) this.completeHandOver()
       }
 
@@ -561,6 +577,21 @@ class VoiceRuntime {
         console.error(`[voice:${this.voiceSessionId}] tool calls failed`, error)
       })
     }
+  }
+
+  /**
+   * Fold the conversation in the background, now that a turn has ended.
+   *
+   * A turn boundary is the one moment nothing is mid-sentence, and the answer
+   * is usually "not needed" after a single query. Deliberately not awaited:
+   * the next turn must not wait on a summariser, and `compactConversation`
+   * de-duplicates the fold with whatever the next connect asks for.
+   */
+  private scheduleCompaction(): void {
+    if (this.closed) return
+    void compactConversation(this.voiceSessionId).catch((error) => {
+      console.warn(`[voice:${this.voiceSessionId}] background compaction failed`, error)
+    })
   }
 
   private async flushUser() {
