@@ -26,6 +26,10 @@ beforeEach(() => {
   process.env.CLAUDECODE = '1'
   process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
   process.env.SSH_AUTH_SOCK = '/private/tmp/com.apple.launchd.8Kq/Listeners'
+  // Whatever shell the suite was started from may have a real one, and these
+  // tests are about the precedence, not about this machine.
+  delete process.env.GH_TOKEN
+  delete process.env.NUXT_GH_TOKEN
 })
 
 afterEach(() => {

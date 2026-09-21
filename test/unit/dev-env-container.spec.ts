@@ -249,15 +249,19 @@ describe('containerRunArgs', () => {
         workspacePath: '/workspaces/api',
         paths: ['.ssh', '.gitconfig', '.config/gh'],
         present: ['.ssh', '.gitconfig', '.config/gh'],
+        sshEntries: ['config', 'id_ed25519'],
         sshAgent: { kind: 'docker-desktop' }
       })
     })
 
     expect(values(args, '--mount')).toEqual(expect.arrayContaining([
-      'type=bind,source=/Users/me/.ssh,target=/home/vscode/.ssh',
+      // `.ssh` lands beside the container's own, like `.gitconfig`: a macOS
+      // config aborts Linux ssh, so Domo writes `~/.ssh` itself.
+      'type=bind,source=/Users/me/.ssh,target=/home/vscode/.ssh-host',
       'type=bind,source=/Users/me/.config/gh,target=/home/vscode/.config/gh',
       'type=bind,source=/run/host-services/ssh-auth.sock,target=/run/host-services/ssh-auth.sock'
     ]))
+    expect(values(args, '--mount').join('\n')).not.toContain('target=/home/vscode/.ssh,')
     // `docker run`, not just the adapter: every `docker exec` inherits it.
     expect(values(args, '--env')).toContain('SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock')
   })

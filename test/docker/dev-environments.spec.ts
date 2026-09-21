@@ -291,6 +291,10 @@ describe('createEnvironment', () => {
     // Never the developer's own home, for the same reason as `~/.claude`.
     hostHome = await mkdtemp(join(tmpdir(), 'domo-env-home-'))
     await mkdir(join(hostHome, '.config', 'gh'), { recursive: true })
+    await mkdir(join(hostHome, '.ssh'), { recursive: true })
+    await writeFile(join(hostHome, '.ssh', 'config'), 'Host github.com\n  UseKeychain yes\n', 'utf8')
+    await writeFile(join(hostHome, '.ssh', 'id_ed25519'), 'key\n', 'utf8')
+    await writeFile(join(hostHome, '.ssh', 'known_hosts'), '\n', 'utf8')
     await writeFile(join(hostHome, '.gitconfig'), '[user]\n\tname = Ana\n', 'utf8')
     process.env.NUXT_HOME_OVERLAY_DIR = hostHome
     delete process.env.SSH_AUTH_SOCK
@@ -372,8 +376,52 @@ describe('createEnvironment', () => {
     expect(mounts).toContain(`type=bind,source=${hostHome}/.config/gh,target=/home/vscode/.config/gh`)
     // The host file goes beside the container's own config, read-only.
     expect(mounts).toContain(`type=bind,source=${hostHome}/.gitconfig,target=/home/vscode/.gitconfig-host,readonly`)
-    // `.ssh` was asked for and this host has none: skipped, not an error.
-    expect(mounts.join('\n')).not.toContain('/.ssh')
+    // `.ssh` goes beside it too, and read-write: ssh appends to `known_hosts`.
+    expect(mounts).toContain(`type=bind,source=${hostHome}/.ssh,target=/home/vscode/.ssh-host`)
+    expect(mounts.join('\n')).not.toContain('target=/home/vscode/.ssh,')
+  })
+
+  it('skips an entry this host does not have, without an error', async () => {
+    state.homeMounts = ['.ssh', '.kube']
+
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const mounts = dockerCalls().find(args => args[0] === 'run')!
+      .flatMap((arg, index, all) => arg === '--mount' ? [all[index + 1]!] : [])
+
+    expect(mounts.join('\n')).not.toContain('/.kube')
+  })
+
+  it('builds the container\'s own ~/.ssh, wrapping the host config it cannot use', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    // Every name arrives as argv; the script itself is fixed.
+    const setup = run.mock.calls.find(([, args]) => args.includes('/home/vscode/.ssh-host'))!
+    expect(setup[1].slice(-5)).toEqual([
+      'sh', '/home/vscode/.ssh', '/home/vscode/.ssh-host', 'id_ed25519', 'known_hosts'
+    ])
+    // `config` is the one entry that is not symlinked: Domo writes it.
+    expect(setup[1]).not.toContain('config')
+
+    const config = (setup[2] as { input: string }).input
+    // A macOS `UseKeychain yes` is fatal to Linux ssh unless this comes first.
+    expect(config.split('\n')[1]).toBe('IgnoreUnknown UseKeychain')
+    expect(config).toContain('Include ~/.ssh-host/config')
+
+    const order = [
+      stepAt('cat > "$1"', '/home/vscode/.gitconfig'),
+      stepAt('mkdir -p "$dir"', '/home/vscode/.ssh-host'),
+      stepAt('pnpm install')
+    ]
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+  })
+
+  it('builds no ~/.ssh when the host mounts do not include one', async () => {
+    state.homeMounts = ['.gitconfig']
+
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    expect(dockerCalls().flat().join('\n')).not.toContain('.ssh-host')
   })
 
   it('writes the container\'s own git config, and hands the created parents to the user', async () => {

@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises'
+import { access, readdir } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 
 import { dockerServerOs } from './docker'
@@ -78,7 +78,17 @@ export interface HomeOverlayInput {
   paths: string[]
   /** Which of `paths` this host actually has. Anything else is skipped silently. */
   present: string[]
+  /** What the host's `.ssh` holds, listed by the caller so this stays pure. */
+  sshEntries?: string[]
   sshAgent: SshAgentSource | null
+}
+
+/** The `~/.ssh` Domo builds in the container, wrapping the host's. */
+export interface SshHome {
+  /** `~/.ssh/config`, written as the remote user. */
+  config: string
+  /** Entries of the host directory to symlink into `~/.ssh`, `config` excluded. */
+  links: string[]
 }
 
 export interface HomeOverlay {
@@ -92,6 +102,8 @@ export interface HomeOverlay {
   parentDirectories: string[]
   /** The container's own global git config, written at creation. Never mounted. */
   gitconfig: string
+  /** The container's own `~/.ssh`, or null when the host's is not being shared. */
+  ssh: SshHome | null
 }
 
 /** One spelling per entry: no trailing slash, no backslashes, no doubled separators. */
@@ -163,6 +175,34 @@ export function containerGitconfig(input: {
   return `${lines.join('\n')}\n`
 }
 
+/**
+ * The container's own `~/.ssh/config`, which *includes* the host's rather than
+ * being it — for a harder reason than the git one.
+ *
+ * A macOS `~/.ssh/config` almost always says `UseKeychain yes`, and that
+ * keyword only exists in Apple's OpenSSH. Linux OpenSSH treats an unknown
+ * option as **fatal**: every `ssh` in the container dies with
+ * `Bad configuration option: usekeychain` before it connects, and `git push`
+ * reports it as "Please make sure you have the correct access rights".
+ * `IgnoreUnknown` fixes it, but only when it is read *before* the unknown
+ * option — and `/etc/ssh/ssh_config` is read after the user's file, so no
+ * system-wide setting can do it. The user file itself has to open with it.
+ *
+ * Measured on ubuntu-24.04 / OpenSSH 9.6 against a real macOS home:
+ * `ssh -o IgnoreUnknown=UseKeychain -T git@github.com` authenticates through
+ * the forwarded agent where the bare `ssh` aborts.
+ */
+export function containerSshConfig(input: { includeHostConfig: boolean }): string {
+  const lines = [
+    '# Written by Domo. The host\'s ~/.ssh is mounted at ~/.ssh-host; this wraps its config.',
+    // Before the Include, which is the whole point: ssh applies the first
+    // value it reads for a keyword, and dies on an unknown one before that.
+    'IgnoreUnknown UseKeychain'
+  ]
+  if (input.includeHostConfig) lines.push('Include ~/.ssh-host/config')
+  return `${lines.join('\n')}\n`
+}
+
 /** Ancestors of a target below the container home, shallowest first. */
 function ancestorsOf(target: string, containerHome: string): string[] {
   const prefix = `${containerHome}/`
@@ -179,6 +219,7 @@ export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
   const mounts: HomeBindMount[] = []
   const seen = new Set<string>()
   let includeHostConfig = false
+  let ssh: SshHome | null = null
 
   for (const raw of input.paths) {
     const entry = normalizeHomeMount(raw)
@@ -186,6 +227,24 @@ export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
     if (seen.has(entry)) continue
     seen.add(entry)
     if (!input.present.includes(entry)) continue
+    if (entry === '.ssh') {
+      // Beside the real one, like `.gitconfig`, but read-write: ssh appends to
+      // `known_hosts` through it, and that belongs back on the host.
+      const entries = input.sshEntries ?? []
+      ssh = {
+        config: containerSshConfig({ includeHostConfig: entries.includes('config') }),
+        // Everything but `config`: the keys, `known_hosts`, certificates. An
+        // `IdentityFile ~/.ssh/id_ed25519` in the host's config, and ssh's own
+        // defaults, both name `~/.ssh` — so the names have to resolve there.
+        links: entries.filter(name => name !== 'config')
+      }
+      mounts.push({
+        type: 'bind',
+        source: join(input.sourceHome, entry),
+        target: `${input.containerHome}/.ssh-host`
+      })
+      continue
+    }
     if (entry === '.gitconfig') {
       // Read-only, and beside the real one: Domo writes `~/.gitconfig` itself.
       includeHostConfig = true
@@ -233,13 +292,14 @@ export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
       containerHome: input.containerHome,
       workspacePath: input.workspacePath,
       includeHostConfig
-    })
+    }),
+    ssh
   }
 }
 
 /** An overlay that mounts nothing — what an environment gets when there is no home to read. */
 export function emptyHomeOverlay(input: { containerHome: string, workspacePath: string }): HomeOverlay {
-  return homeOverlay({ ...input, sourceHome: '', paths: [], present: [], sshAgent: null })
+  return homeOverlay({ ...input, sourceHome: '', paths: [], present: [], sshEntries: [], sshAgent: null })
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -276,7 +336,7 @@ export async function resolveHomeOverlay(input: {
   const sshAgent = await detectSshAgent()
   const sourceHome = overlaySourceHome()
   if (!sourceHome) {
-    return homeOverlay({ ...input, sourceHome: '', paths: [], present: [], sshAgent })
+    return homeOverlay({ ...input, sourceHome: '', paths: [], present: [], sshEntries: [], sshAgent })
   }
   const paths = input.paths.map(normalizeHomeMount)
   const present: string[] = []
@@ -284,5 +344,10 @@ export async function resolveHomeOverlay(input: {
     if (validateHomeMount(entry)) continue
     if (await exists(join(sourceHome, entry))) present.push(entry)
   }
-  return homeOverlay({ ...input, sourceHome, paths, present, sshAgent })
+  // The one listing the overlay cannot do for itself: what to symlink into the
+  // container's own `~/.ssh`.
+  const sshEntries = present.includes('.ssh')
+    ? await readdir(join(sourceHome, '.ssh')).catch(() => [] as string[])
+    : []
+  return homeOverlay({ ...input, sourceHome, paths, present, sshEntries, sshAgent })
 }

@@ -148,6 +148,25 @@ things that are easy to get wrong.
   inside a container. And the signing keys are not in there, so `commit.gpgsign`
   / `tag.gpgsign` are off. Identity comes through the include, so a rename on
   the host reaches an existing environment; nothing is copied.
+- **The container's `~/.ssh` is Domo's own directory too, for a harder reason.**
+  A macOS `~/.ssh/config` says `UseKeychain yes`, and that keyword exists only
+  in Apple's OpenSSH. Linux OpenSSH treats an unknown option as **fatal**:
+  measured on the ubuntu-24.04 base (OpenSSH 9.6), every `ssh` died with
+  `/home/vscode/.ssh/config: line 10: Bad configuration option: usekeychain`
+  before connecting, and `git push` reported it as "Please make sure you have
+  the correct access rights" — the forwarded agent was never even consulted.
+  `IgnoreUnknown UseKeychain` fixes it, but **only if ssh reads it before the
+  unknown option**, and `/etc/ssh/ssh_config` is read *after* the user's file,
+  so no system-wide setting can do it: the user's own file has to open with it.
+  So the host directory is mounted read-write at `~/.ssh-host` (read-write
+  because ssh appends to `known_hosts`), Domo writes `~/.ssh/config` with
+  `IgnoreUnknown` then `Include ~/.ssh-host/config`, and every other entry of
+  the host directory is symlinked into `~/.ssh` — an
+  `IdentityFile ~/.ssh/id_ed25519` in the host's config, and ssh's own default
+  identity and `known_hosts` paths, all name `~/.ssh`. The directory is 700 and
+  the config 600, or ssh refuses to read either. A path a user lists *under*
+  `.ssh` (`.ssh/known_hosts`) stays an ordinary mount; only the exact `.ssh`
+  entry is treated this way.
 - **`.docker` is deliberately not a default home mount.** Docker Desktop writes
   `"credsStore": "desktop"` into `~/.docker/config.json` and the helper binary
   is on the host only: with the file mounted, every `docker pull` inside the
@@ -176,11 +195,12 @@ things that are easy to get wrong.
   socket over owned by root**, so `keepAliveScript()` chmods it before the
   entrypoints — in the container's command, because it has to happen on every
   `docker start`, not only at creation.
-- **On Linux, `~/.ssh` is only usable if the uids match.** `ssh` refuses a key
-  file it does not own with `Bad owner or permissions`, and the container user's
-  uid (`vscode` is usually 1000, but an image may differ) is not necessarily the
-  host user's. The agent socket still works, which is the main path; the
-  directory mount is then only good for `config` and `known_hosts`.
+- **On Linux, the symlinked keys are only usable if the uids match.** `ssh`
+  refuses a key file it does not own with `Bad owner or permissions`, and it
+  follows the symlink to the host's file — whose uid (`vscode` is usually 1000,
+  but an image may differ) is not necessarily the container user's. The agent
+  socket still works, which is the main path; the linked files are then only
+  good for `config` and `known_hosts`.
 - **A mount target's missing parent is created by Docker as root.** Mount only
   `~/.config/gh` and `~/.config` belongs to root, after which gcloud cannot
   write its own directory beside it. `createEnvironment` chowns each ancestor

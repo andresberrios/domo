@@ -206,12 +206,33 @@ not in the container. It also means VS Code's *Attach to Running Container*,
 which writes its own helper into the container's global git config, cannot
 reach back into yours.
 
+**Your `~/.ssh` is wrapped, not mounted in place** — for a blunter reason than
+the git one. A macOS `~/.ssh/config` almost always contains `UseKeychain yes`,
+and that keyword exists only in Apple's OpenSSH: Linux OpenSSH treats an unknown
+option as **fatal**, so every `ssh` in the container would die with
+`Bad configuration option: usekeychain` before connecting, and `git push` would
+report it as "Please make sure you have the correct access rights". So your
+directory is mounted at `~/.ssh-host`, and the environment's own `~/.ssh/config`
+is written by Domo:
+
+```
+IgnoreUnknown UseKeychain
+Include ~/.ssh-host/config
+```
+
+`IgnoreUnknown` has to come first (ssh dies on the unknown keyword before it
+would reach it, and `/etc/ssh/ssh_config` is read *after* your file, so a
+system-wide setting cannot help). Everything else in your `~/.ssh` — keys,
+`known_hosts`, certificates — is symlinked into `~/.ssh` under its own name, so
+an `IdentityFile ~/.ssh/id_ed25519` in your config still resolves, and
+`known_hosts` is shared both ways.
+
 **The SSH agent is forwarded**, so keys in a keychain, in 1Password or behind a
 passphrase work too; `SSH_AUTH_SOCK` is set in every session. On Docker Desktop
 this uses Docker Desktop's own agent forwarding, elsewhere the socket the Domo
-process itself is using. On Linux, note that `ssh` refuses a `~/.ssh` it does
-not own — if the container user's uid differs from yours, the mounted directory
-is only good for `config` and `known_hosts` and the agent does the signing.
+process itself is using. On Linux, note that `ssh` refuses a key file it does
+not own — if the container user's uid differs from yours, the linked keys are
+unusable and the agent is what does the signing.
 
 **GitHub comes through `gh`.** The built-in environment definition installs the
 `github-cli` Feature, and Domo passes `GH_TOKEN` into every environment session:

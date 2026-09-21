@@ -126,6 +126,28 @@ async function preflight(containerId: string, wantsDocker: boolean): Promise<voi
   }
 }
 
+/**
+ * Builds the container's own `~/.ssh`: a real directory holding the config
+ * Domo generates, and a symlink per entry of the host's `~/.ssh-host`.
+ *
+ * Not a mount, because a macOS config aborts Linux ssh — see
+ * `containerSshConfig()`. The names still have to resolve under `~/.ssh`,
+ * which is what the symlinks are for, and the modes are what ssh insists on
+ * before it will read either.
+ *
+ * The directory, the mount point and every entry name arrive as argv; nothing
+ * is interpolated into the script.
+ */
+const SSH_HOME_SCRIPT = [
+  'set -e',
+  'dir="$1"; host="$2"; shift 2',
+  'mkdir -p "$dir"',
+  'chmod 700 "$dir"',
+  'cat > "$dir/config"',
+  'chmod 600 "$dir/config"',
+  'for entry in "$@"; do ln -sfn "$host/$entry" "$dir/$entry"; done'
+].join('\n')
+
 export async function createEnvironment(input: {
   projectId: string
   name: string
@@ -228,6 +250,12 @@ export async function createEnvironment(input: {
       ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home }, interactive: true }),
       'sh', '-c', 'cat > "$1"', 'sh', `${home}/.gitconfig`
     ], { input: overlay.gitconfig })
+    if (overlay.ssh) {
+      await run('docker', [
+        ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home }, interactive: true }),
+        'sh', '-c', SSH_HOME_SCRIPT, 'sh', `${home}/.ssh`, `${home}/.ssh-host`, ...overlay.ssh.links
+      ], { input: overlay.ssh.config })
+    }
     // After the preflight, because it runs the CLI out of the runtime volume.
     await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
     if (resolved.config.postCreateCommand) {

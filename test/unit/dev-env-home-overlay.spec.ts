@@ -4,6 +4,7 @@ import {
   CONTAINER_SSH_AUTH_SOCK,
   DEFAULT_HOME_MOUNTS,
   containerGitconfig,
+  containerSshConfig,
   emptyHomeOverlay,
   homeOverlay,
   normalizeHomeMount,
@@ -87,41 +88,41 @@ describe('validateHomeMount', () => {
 
 describe('homeOverlay', () => {
   it('bind-mounts each entry into the container home, read-write', () => {
-    const result = overlay({ paths: ['.ssh', '.config/gh', '.aws'] })
+    const result = overlay({ paths: ['.kube', '.config/gh', '.aws'] })
 
     expect(result.mounts).toEqual([
-      { type: 'bind', source: '/Users/me/.ssh', target: '/home/vscode/.ssh' },
+      { type: 'bind', source: '/Users/me/.kube', target: '/home/vscode/.kube' },
       { type: 'bind', source: '/Users/me/.config/gh', target: '/home/vscode/.config/gh' },
       { type: 'bind', source: '/Users/me/.aws', target: '/home/vscode/.aws' }
     ])
   })
 
   it('reads the entries from wherever sourceHome points, which is the multi-user hook', () => {
-    const result = overlay({ sourceHome: '/srv/domo/homes/ana', paths: ['.ssh'] })
+    const result = overlay({ sourceHome: '/srv/domo/homes/ana', paths: ['.aws'] })
 
-    expect(sources(result)['/home/vscode/.ssh']).toBe('/srv/domo/homes/ana/.ssh')
+    expect(sources(result)['/home/vscode/.aws']).toBe('/srv/domo/homes/ana/.aws')
   })
 
   it('follows the container home, root included', () => {
-    const result = overlay({ containerHome: '/root', paths: ['.ssh'] })
+    const result = overlay({ containerHome: '/root', paths: ['.aws'] })
 
-    expect(result.mounts[0]!.target).toBe('/root/.ssh')
+    expect(result.mounts[0]!.target).toBe('/root/.aws')
   })
 
   it('skips an entry the host does not have, silently', () => {
-    const result = overlay({ paths: ['.ssh', '.kube'], present: ['.ssh'] })
+    const result = overlay({ paths: ['.aws', '.kube'], present: ['.aws'] })
 
-    expect(result.mounts.map(mount => mount.target)).toEqual(['/home/vscode/.ssh'])
+    expect(result.mounts.map(mount => mount.target)).toEqual(['/home/vscode/.aws'])
   })
 
   it('skips an entry that would be refused, so a bad stored setting cannot mount it', () => {
-    const result = overlay({ paths: ['.claude', '/etc', '.ssh'], present: ['.claude', '/etc', '.ssh'] })
+    const result = overlay({ paths: ['.claude', '/etc', '.aws'], present: ['.claude', '/etc', '.aws'] })
 
-    expect(result.mounts.map(mount => mount.target)).toEqual(['/home/vscode/.ssh'])
+    expect(result.mounts.map(mount => mount.target)).toEqual(['/home/vscode/.aws'])
   })
 
   it('mounts a repeated entry once', () => {
-    expect(overlay({ paths: ['.ssh', '.ssh/'] }).mounts).toHaveLength(1)
+    expect(overlay({ paths: ['.aws', '.aws/'] }).mounts).toHaveLength(1)
   })
 
   it('mounts nothing when nothing is configured', () => {
@@ -130,6 +131,7 @@ describe('homeOverlay', () => {
     expect(empty.mounts).toEqual([])
     expect(empty.env).toEqual({})
     expect(empty.parentDirectories).toEqual([])
+    expect(empty.ssh).toBeNull()
   })
 
   describe('the gitconfig special case', () => {
@@ -165,7 +167,7 @@ describe('homeOverlay', () => {
 
     it.each([
       ['the host has none', { paths: ['.gitconfig'], present: [] }],
-      ['it was taken out of the list', { paths: ['.ssh'] }]
+      ['it was taken out of the list', { paths: ['.aws'] }]
     ])('skips the include when %s', (_label, input) => {
       const result = overlay(input)
 
@@ -183,6 +185,83 @@ describe('homeOverlay', () => {
       })
 
       expect(config.indexOf('    helper =\n')).toBeLessThan(config.indexOf('!gh auth git-credential'))
+    })
+  })
+
+  /**
+   * A macOS `~/.ssh/config` says `UseKeychain yes`, Linux OpenSSH calls an
+   * unknown option fatal, and `/etc/ssh/ssh_config` is read *after* the user's
+   * file — so the only place `IgnoreUnknown` can go is the top of the user's
+   * own config, which means Domo has to write that file.
+   */
+  describe('the ssh special case', () => {
+    function sshOverlay(entries: string[]) {
+      return overlay({ paths: ['.ssh'], present: ['.ssh'], sshEntries: entries })
+    }
+
+    it('mounts the host directory beside the container\'s own, read-write', () => {
+      // Read-write: ssh appends to `known_hosts`, and that belongs on the host.
+      expect(sshOverlay(['config', 'id_ed25519']).mounts).toEqual([
+        { type: 'bind', source: '/Users/me/.ssh', target: '/home/vscode/.ssh-host' }
+      ])
+    })
+
+    it('never mounts anything at ~/.ssh — that has to be a real directory', () => {
+      const result = sshOverlay(['config', 'id_ed25519'])
+
+      expect(result.mounts.map(mount => mount.target)).not.toContain('/home/vscode/.ssh')
+    })
+
+    it('opens the config with IgnoreUnknown, before the include', () => {
+      const config = sshOverlay(['config']).ssh!.config
+
+      expect(config).toBe([
+        '# Written by Domo. The host\'s ~/.ssh is mounted at ~/.ssh-host; this wraps its config.',
+        'IgnoreUnknown UseKeychain',
+        'Include ~/.ssh-host/config',
+        ''
+      ].join('\n'))
+      // ssh reads the file top to bottom and dies on the unknown keyword, so
+      // the order is the whole fix.
+      expect(config.indexOf('IgnoreUnknown')).toBeLessThan(config.indexOf('Include'))
+    })
+
+    it('skips the include when the host has no config of its own', () => {
+      const config = sshOverlay(['id_ed25519', 'known_hosts']).ssh!.config
+
+      expect(config).toContain('IgnoreUnknown UseKeychain')
+      expect(config).not.toContain('Include')
+    })
+
+    it('symlinks every entry but the config, so ~/.ssh/<name> resolves', () => {
+      // `IdentityFile ~/.ssh/id_ed25519` in the host's own config, and ssh's
+      // default identity and known_hosts paths, all name `~/.ssh`.
+      const result = sshOverlay(['config', 'id_ed25519', 'id_ed25519.pub', 'known_hosts', 'id_rsa-cert.pub'])
+
+      expect(result.ssh!.links).toEqual(['id_ed25519', 'id_ed25519.pub', 'known_hosts', 'id_rsa-cert.pub'])
+    })
+
+    it('has an empty link list for an empty host directory', () => {
+      expect(sshOverlay([]).ssh).toEqual({ config: containerSshConfig({ includeHostConfig: false }), links: [] })
+    })
+
+    it.each([
+      ['the host has no .ssh', { paths: ['.ssh'], present: [], sshEntries: ['config'] }],
+      ['it was taken out of the list', { paths: ['.gitconfig'], sshEntries: ['config'] }]
+    ])('builds no ssh home when %s', (_label, input) => {
+      const result = overlay(input)
+
+      expect(result.ssh).toBeNull()
+      expect(result.mounts.map(mount => mount.target)).not.toContain('/home/vscode/.ssh-host')
+    })
+
+    it('leaves a path the user listed underneath .ssh an ordinary mount', () => {
+      const result = overlay({ paths: ['.ssh/known_hosts'], present: ['.ssh/known_hosts'] })
+
+      expect(result.ssh).toBeNull()
+      expect(result.mounts).toEqual([
+        { type: 'bind', source: '/Users/me/.ssh/known_hosts', target: '/home/vscode/.ssh/known_hosts' }
+      ])
     })
   })
 
@@ -207,9 +286,9 @@ describe('homeOverlay', () => {
     })
 
     it('offers nothing, and sets nothing, when there is no agent', () => {
-      const result = overlay({ paths: ['.ssh'], sshAgent: null })
+      const result = overlay({ paths: ['.aws'], sshAgent: null })
 
-      expect(result.mounts.map(mount => mount.target)).toEqual(['/home/vscode/.ssh'])
+      expect(result.mounts.map(mount => mount.target)).toEqual(['/home/vscode/.aws'])
       expect(result.env).toEqual({})
     })
   })

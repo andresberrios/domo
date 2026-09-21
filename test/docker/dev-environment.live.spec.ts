@@ -162,7 +162,12 @@ async function hostHome(): Promise<string> {
       // A helper the container does not have, which is the reason the host file
       // is included rather than used as the container's own config.
       + '[credential]\n\thelper = osxkeychain\n',
-    '.ssh/config': 'Host example.com\n  User git\n',
+    // `UseKeychain` is Apple's alone, and Linux OpenSSH calls an unknown
+    // option fatal — this is the line that used to abort every `ssh` in the
+    // container, `git push` included.
+    '.ssh/config': 'Host github.com\n  UseKeychain yes\n  IdentityFile ~/.ssh/id_ed25519\n',
+    '.ssh/id_ed25519': 'not a real key\n',
+    '.ssh/known_hosts': 'github.com ssh-ed25519 AAAAdummy\n',
     '.config/gh/hosts.yml': 'github.com:\n  user: domo-live-test\n'
   })
   return home
@@ -272,7 +277,7 @@ describe('an environment for a project with no .domo.json', () => {
     expect(all).toContainEqual(expect.objectContaining({
       Type: 'bind',
       Source: join(process.env.NUXT_HOME_OVERLAY_DIR!, '.ssh'),
-      Destination: `${home}/.ssh`
+      Destination: `${home}/.ssh-host`
     }))
     // `.kube` was asked for and this host has none: skipped, not a failure.
     expect(all.map(mount => mount.Destination)).not.toContain(`${home}/.kube`)
@@ -299,6 +304,29 @@ describe('an environment for a project with no .domo.json', () => {
     expect(helpers.slice(-2)).toEqual(['', '!gh auth git-credential'])
     await expect(inContainer(environment, 'git', 'config', 'commit.gpgsign')).resolves.toBe('false')
     // safe.directory is the reason the `git status` above answered at all.
+
+    // `~/.ssh` is Domo's own directory, not a mount: a macOS config would abort
+    // every `ssh` in here before it connected.
+    expect(all.map(mount => mount.Destination)).not.toContain(`${home}/.ssh`)
+    await expect(inContainer(environment, 'stat', '-c', '%F %a', `${home}/.ssh`)).resolves.toBe('directory 700')
+    const sshConfig = await readEnvironmentFile(environment, `${home}/.ssh/config`)
+    expect(sshConfig.split('\n')[1]).toBe('IgnoreUnknown UseKeychain')
+    expect(sshConfig).toContain('Include ~/.ssh-host/config')
+    // The host's own entries resolve under `~/.ssh`, which is what its
+    // `IdentityFile ~/.ssh/id_ed25519` and ssh's own defaults name.
+    await expect(inContainer(environment, 'readlink', `${home}/.ssh/id_ed25519`))
+      .resolves.toBe(`${home}/.ssh-host/id_ed25519`)
+    await expect(readEnvironmentFile(environment, `${home}/.ssh/id_ed25519`)).resolves.toBe('not a real key\n')
+    await expect(inContainer(environment, 'test', '-e', `${home}/.ssh/known_hosts`)).resolves.toBe('')
+    // The measurement that matters: ssh parses the whole config and exits 0
+    // instead of dying on `UseKeychain`. `-G` stops before connecting, and
+    // `run` rejects on a non-zero exit, which is what used to happen here.
+    const parsed = await run('docker', [
+      'exec', '--user', environment.remoteUser!, environment.containerId!,
+      'ssh', '-G', 'github.com'
+    ])
+    // The line only exists in the *host's* config, so the Include was read too.
+    expect(parsed.stdout).toMatch(/^identityfile .*\.ssh\/id_ed25519$/m)
 
     // The agent socket is forwarded, named in the container's environment so
     // every `docker exec` inherits it, and reachable by the remote user.
