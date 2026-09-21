@@ -130,6 +130,33 @@ describe('projects', () => {
 
     expect(response.status).toBe(400)
   })
+
+  // The export itself needs a container; these are the routes and their errors.
+  // `test/server/git-sync.spec.ts` drives the real git both ways.
+  it('will not export a branch without naming one', async () => {
+    const response = await fetch('/api/dev-environments/env_nope/export', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ into: 'main' })
+    })
+
+    expect(response.status).toBe(400)
+  })
+
+  it('says which part is missing when the environment is not there', async () => {
+    for (const request of [
+      fetch('/api/dev-environments/env_nope/branches'),
+      fetch('/api/dev-environments/env_nope/export', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ branch: 'main' })
+      })
+    ]) {
+      const response = await request
+      expect(response.status).toBe(500)
+      expect((await response.json()).statusMessage).toMatch(/Development environment not found/)
+    }
+  })
 })
 
 describe('conversations', () => {
@@ -245,18 +272,18 @@ describe('a coding agent as the UI sees it', () => {
   })
 
   it('puts the requested model on the new session\'s row', async () => {
-    // The stub adapter exits, so the session lands in `error` — but the row is
-    // written before the spawn, which is the part this covers.
+    // The row is written before the spawn, which is the part this covers. The
+    // stub adapter exits immediately, and whether that leaves `error` (the boot
+    // that failed) or `stopped` (the exit handler, which runs after it) is a
+    // race not worth pinning down here.
     const created = await $fetch<{ id: string }>('/api/agents', {
       method: 'POST',
       body: { title: 'Cheap', adapter: 'codex', cwd: checkout, model: 'gpt-5.6-luna' }
     })
 
-    await expect(getAgentSession(created.id)).resolves.toMatchObject({
-      adapter: 'codex',
-      model: 'gpt-5.6-luna',
-      status: 'error'
-    })
+    const session = await getAgentSession(created.id)
+    expect(session).toMatchObject({ adapter: 'codex', model: 'gpt-5.6-luna' })
+    expect(['error', 'stopped']).toContain(session!.status)
   })
 
   it('leaves the model null when none is asked for', async () => {
