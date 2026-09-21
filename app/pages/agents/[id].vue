@@ -11,6 +11,7 @@ const { sessions } = useAgentSessions()
 const { environments } = useDevEnvironments()
 const { events } = useAgentEvents(agentId)
 const { permissions, pending } = usePermissions(agentId)
+const { queued } = useAgentInbox(agentId)
 
 const { data: fetched, refresh } = await useFetch<AgentSession>(
   () => `/api/agents/${agentId.value}`,
@@ -221,6 +222,10 @@ const menuItems = computed(() => [
             :key="permission.id"
             :permission="permission"
           />
+        </div>
+
+        <div v-if="queued.length" class="shrink-0 pt-2">
+          <AgentInbox :agent-session-id="agentId" :messages="queued" />
         </div>
 
         <div class="shrink-0 pt-2">

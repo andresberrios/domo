@@ -1,17 +1,38 @@
 <script setup lang="ts">
-import type { AgentSession } from '~~/shared/types'
+import type { AgentSession, MessageDelivery } from '~~/shared/types'
 
 const props = defineProps<{ session: AgentSession }>()
 
 const toast = useToast()
 const text = ref('')
 const sending = ref(false)
+
+/**
+ * What happens to a message sent while the agent is mid-turn.
+ *
+ * `steer` is preselected because that is what typing at a working agent
+ * normally means; it only matters while something is running, so the picker is
+ * hidden the rest of the time.
+ */
+const DELIVERY_ITEMS = [
+  { value: 'steer' as const, label: 'Steer', icon: 'i-lucide-git-branch', description: 'Put it into the turn it is running now' },
+  { value: 'queue' as const, label: 'Queue', icon: 'i-lucide-inbox', description: 'Wait for the current turn to finish' },
+  { value: 'interrupt' as const, label: 'Interrupt', icon: 'i-lucide-octagon-x', description: 'Stop the current turn first' }
+]
+const delivery = ref<MessageDelivery>('steer')
 const uploading = ref(false)
 const attachments = ref<Array<{ name: string, path: string, mimeType: string, size: number }>>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const busy = computed(() => props.session.status === 'thinking' || props.session.status === 'starting')
 const status = computed(() => (busy.value ? ('streaming' as const) : ('ready' as const)))
+
+const placeholder = computed(() => {
+  if (!busy.value) return 'Message this agent…'
+  if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
+  if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'
+  return 'The agent is working — this goes into the turn it is running…'
+})
 
 async function onFiles(event: Event) {
   const input = event.target as HTMLInputElement
@@ -55,7 +76,10 @@ async function submit() {
     }
     if (body) content.push({ type: 'text', text: body })
 
-    await $fetch(`/api/agents/${props.session.id}/prompt`, { method: 'POST', body: { content } })
+    await $fetch(`/api/agents/${props.session.id}/prompt`, {
+      method: 'POST',
+      body: { content, delivery: delivery.value }
+    })
     text.value = ''
     attachments.value = []
   } catch (error: any) {
@@ -104,7 +128,7 @@ async function stop() {
 
     <UChatPrompt
       v-model="text"
-      :placeholder="busy ? 'The agent is working — type to queue a follow-up…' : 'Message this agent…'"
+      :placeholder="placeholder"
       :autoresize="true"
       :maxrows="10"
       variant="outline"
@@ -130,9 +154,18 @@ async function stop() {
               class="hidden"
               @change="onFiles"
             >
-            <span class="hidden text-xs text-dimmed sm:inline">
+            <span v-if="!busy" class="hidden text-xs text-dimmed sm:inline">
               {{ shortPath(session.cwd, 3) }}
             </span>
+            <USelectMenu
+              v-else
+              v-model="delivery"
+              :items="DELIVERY_ITEMS"
+              value-key="value"
+              size="xs"
+              variant="ghost"
+              class="w-32"
+            />
           </div>
 
           <UChatPromptSubmit
