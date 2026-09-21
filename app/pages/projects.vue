@@ -149,6 +149,7 @@ async function deleteProject(project: Project) {
                   <p class="mt-0.5 truncate font-mono text-xs text-dimmed">{{ environment.containerName }} · {{ environment.workspacePath }}</p>
                   <p v-if="environment.lastError" class="mt-1 text-xs text-error">{{ environment.lastError }}</p>
                   </div>
+                  <ExportBranchModal :environment="environment" />
                   <OpenInVsCode :environment="environment" />
                   <UButton
                     v-if="environment.status === 'running'"
