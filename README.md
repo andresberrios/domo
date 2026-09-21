@@ -161,8 +161,9 @@ Domo at it instead of duplicating anything:
   the host or other environments. Without it the container is unprivileged.
 - The checkout and any nested containers persist across stop/start, and the
   container, both volumes and the image are removed when the environment is
-  deleted. **The checkout exists only in the volume**, so push what you want to
-  keep (or `docker cp` it out) before deleting.
+  deleted. **The checkout exists only in the volume**, so before deleting one,
+  push what you want to keep — or bring the branch back with
+  [Export branch](#getting-a-branch-out-of-an-environment).
 
 ### Git, SSH and CLI logins inside environments
 
@@ -249,6 +250,32 @@ port on `127.0.0.1`. Domo also scans running environments for listening TCP
 ports every five seconds. Undeclared ports appear in the same card and can be
 forwarded with one click, without VS Code and without recreating the container.
 The **Open** action launches the forwarded address in the host browser.
+
+### Getting a branch out of an environment
+
+An environment's checkout lives in a Docker volume, so the usual way back to
+your own copy is `git push` and `git pull`. **Export branch**, on a running
+environment, is the direct route: your project's checkout fetches straight from
+the container, with nothing published anywhere.
+
+- Pick the branch in the environment (its checked-out one is preselected) and
+  the local branch to land it on (the same name, by default). Leave the local
+  branch blank to fetch without touching any branch.
+- It always arrives at `refs/remotes/domo-env/<environment>/<branch>` — a
+  remote-tracking ref, like any other remote's — and the modal lists the commits
+  that came over.
+- The local branch is only ever **fast-forwarded**, and it is created if it does
+  not exist. Nothing is force-updated, merged, rebased or stashed: if your
+  branch has commits the environment's does not, or if it is checked out with a
+  dirty working tree, the export says so and leaves it alone. The commits are
+  still at the tracking ref, so `git merge domo-env/<environment>/<branch>` is
+  yours to run.
+
+Under the hood it is one `git fetch` over git's `ext::` transport, running
+`git-upload-pack` inside the container through `docker exec` — a real fetch, so
+only the objects you are missing cross. The voice agent and the coding agents
+can do it too: *"export main from the sidebar environment"*, or the
+`export_branch` tool in the agent mesh.
 
 ### Open an environment in VS Code
 

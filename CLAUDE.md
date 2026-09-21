@@ -131,6 +131,21 @@ things that are easy to get wrong.
   mesh's `delete_project` / `delete_dev_environment` refuse a target that
   contains the calling agent's own session — killing your own adapter process
   mid-tool-call leaves the response undelivered.
+- **A branch leaves an environment by `git fetch`, not by a copy.**
+  `server/lib/dev-env/git-sync.ts` builds an `ext::docker exec … git-upload-pack
+  <workspace>` URL and the *host* repository fetches through it: a real fetch
+  with real negotiation, where only the missing objects cross, and no bundle, no
+  temp file and no bind mount anywhere. It lands in
+  `refs/remotes/domo-env/<env>/<branch>` — a remote-tracking namespace, forced
+  like any remote's — and only then, if a local branch was named, is that branch
+  **fast-forwarded**: `merge --ff-only` when it is the checked-out one (refused
+  outright if the working tree is dirty), `update-ref` when it is not, creation
+  when it does not exist. Nothing is ever forced, merged, rebased or stashed;
+  a diverged branch comes back as `not-merged` with the reason and the ref to
+  look at. One function serves the API, the mesh's `export_branch` and the voice
+  tool of the same name, and the transport is an injected parameter so the whole
+  thing is tested against two temp repos with no Docker
+  (`test/server/git-sync.spec.ts`).
 
 ## Gotchas (learned the hard way)
 
@@ -315,6 +330,30 @@ things that are easy to get wrong.
   out the Domo data dir when `NUXT_DATA_DIR` sits inside the project. Bind
   mounts on Docker Desktop cost 15–35x on metadata-heavy work (`git add` on 20k
   files: 22.8 s vs 0.65 s), which is why the volume exists at all.
+- **`protocol.ext.allow=always` is passed with `-c` on the one `git fetch` that
+  needs it, and written to no config, ever.** The `ext::` transport runs an
+  arbitrary command, and git disables it by default for exactly that reason; a
+  `git config --global` would hand every repository on the machine a transport
+  that executes whatever a URL says. One invocation, one repository, one fetch.
+- **The `ext::` command is split on whitespace and `%`-expanded, so every part
+  of it has to be a bare word.** There is no quoting: a workspace path with a
+  space in it would become two arguments to `git-upload-pack`. All the inputs
+  are words already (`safeEnvironmentName()`, a hex container id, a unix user
+  name), and `uploadPackTransport()` still refuses one that is not, because the
+  failure mode is a command that quietly means something else.
+- **The exec has to run as the environment's remote user, with `HOME` set.**
+  Without `-u` git finds the checkout owned by another uid and refuses it as
+  "dubious ownership"; without `HOME` it never reads the `~/.gitconfig` Domo
+  generated, which is where the `safe.directory` that answers that lives. Both
+  or neither — one alone still fails.
+- **`docker cp` cannot read a container's tmpfs, which is why the export is a
+  fetch and not a bundle.** The obvious design — `git bundle create /tmp/x` in
+  the container, `docker cp` it out — dies on the copy: measured on Docker
+  29.8.1, a file written to a `--tmpfs /tmp` is there in `docker exec ls` and
+  `docker cp` answers `Could not find the file /tmp/f.txt in container`. Writing
+  the bundle into the workspace volume instead would dirty the agent's own
+  checkout. The `ext::` fetch needs no intermediate file at all, and it
+  negotiates: only the objects the host is missing cross.
 - **A voice session's `model` / `voice` columns are a record, not an input.** The
   runtime reads `liveModel` / `voiceName` from Settings on every connect and
   writes them back to the row. Preferring the row froze whatever default was
