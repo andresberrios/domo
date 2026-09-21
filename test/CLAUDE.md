@@ -71,11 +71,28 @@ The shared runtime volume is deliberately *not* swept: it is the expensive part
 the second environment reuses it. It is named `domo-live-test-runtime-<hash>`
 under the test prefix, so `docker volume rm` it by hand if a pin changes.
 
+**Both `test/docker` specs mock `server/lib/settings` and point
+`NUXT_HOME_OVERLAY_DIR` at a scratch directory.** The home overlay is the one
+thing in the environment lifecycle that reads settings, and neither project has
+a Postgres; the scratch home is for the same reason `NUXT_CLAUDE_CONFIG_DIR` is
+one — a test must never mount the developer's real `~/.ssh` or `~/.gitconfig`
+into a container. The live spec also listens on a throwaway unix socket and
+points `SSH_AUTH_SOCK` at it, which exercises the non-Docker-Desktop agent
+branch.
+
+**A dev container's own `~/.docker/config.json` can break `pnpm test:docker`.**
+VS Code writes `"credsStore": "dev-containers-<id>"` into it, and that helper
+only answers while the editor's own session is alive; outside it every pull
+fails with `error getting credentials - err: exit status 255` before a single
+assertion runs. Point `DOCKER_CONFIG` at a scratch directory holding `{}` —
+every image the suite uses is public. It is the same failure `.docker` would
+cause inside an environment, which is why it is not a default home mount.
+
 **The ordering assertions in `dev-environments.spec.ts` are the contract.**
-Build before run, preflight before the `chown`, `chown` before
-`postCreateCommand`, and a full teardown (container, workspace volume, DinD
-volume, image) at every failure point. None of that is visible in any single
-argv, and all of it has been wrong at some point.
+Build before run, preflight before the `chown`, `chown` before the generated
+`~/.gitconfig` before `postCreateCommand`, and a full teardown (container,
+workspace volume, DinD volume, image) at every failure point. None of that is
+visible in any single argv, and all of it has been wrong at some point.
 
 What is deliberately *not* tested: a real Gemini Live session and
 `useVoiceChannel` (a real browser and a real Live session; only the request the

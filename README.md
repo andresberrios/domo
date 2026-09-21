@@ -117,7 +117,10 @@ The built-in definition, used when there is no `.domo.json`, is:
 {
   "devEnvironment": {
     "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
-    "features": { "ghcr.io/devcontainers/features/node:1": { "version": "22" } },
+    "features": {
+      "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+      "ghcr.io/devcontainers/features/github-cli:1": { "version": "latest" }
+    },
     "docker": true
   }
 }
@@ -160,6 +163,63 @@ Domo at it instead of duplicating anything:
   container, both volumes and the image are removed when the environment is
   deleted. **The checkout exists only in the volume**, so push what you want to
   keep (or `docker cp` it out) before deleting.
+
+### Git, SSH and CLI logins inside environments
+
+An environment is a parallelism and namespace mechanism, not a security
+boundary: it runs on your machine, for you. So Domo **bind-mounts your login
+state into the environment's home directory**, and an agent in there can push,
+open a PR and talk to the clouds you are already signed in to.
+
+What is mounted is a list in **Settings → Development environments → Home
+directory mounts**, one path per line, relative to your home directory. The
+default is:
+
+```
+.ssh
+.gitconfig
+.config/gh
+.config/gcloud
+.aws
+.kube
+```
+
+- Entries are **read-write** (gh and gcloud refresh their tokens in place), and
+  an entry you do not have is skipped silently.
+- `.claude`, `.claude.json` and `.codex` are refused — see
+  [Claude authentication](#claude-authentication) for the first two; Codex has
+  its own mount already.
+- **`.docker` is not there on purpose.** Docker Desktop writes
+  `"credsStore": "desktop"` into `~/.docker/config.json`, and that helper only
+  exists on your machine: with the file mounted, every `docker pull` inside the
+  environment fails with `docker-credential-desktop: executable file not found`.
+- Mounts are fixed when the container is created, so a change applies to
+  environments you create afterwards.
+
+**Your `~/.gitconfig` is included, not replaced.** It is mounted read-only at
+`~/.gitconfig-host`, and Domo writes the environment's own `~/.gitconfig` with
+an `[include]` of it. Your identity therefore follows you, but the environment
+gets its own credential helper (`gh auth git-credential`, replacing an
+`osxkeychain` or similar that does not exist in there), its own
+`safe.directory`, and commit signing off — the signing key is on your machine,
+not in the container. It also means VS Code's *Attach to Running Container*,
+which writes its own helper into the container's global git config, cannot
+reach back into yours.
+
+**The SSH agent is forwarded**, so keys in a keychain, in 1Password or behind a
+passphrase work too; `SSH_AUTH_SOCK` is set in every session. On Docker Desktop
+this uses Docker Desktop's own agent forwarding, elsewhere the socket the Domo
+process itself is using. On Linux, note that `ssh` refuses a `~/.ssh` it does
+not own — if the container user's uid differs from yours, the mounted directory
+is only good for `config` and `known_hosts` and the agent does the signing.
+
+**GitHub comes through `gh`.** The built-in environment definition installs the
+`github-cli` Feature, and Domo passes `GH_TOKEN` into every environment session:
+`NUXT_GH_TOKEN` if you set it, otherwise whatever `gh auth token` answers on
+your machine (on macOS the token lives in the Keychain, so the mounted
+`~/.config/gh` alone would not be enough). That is what makes both `gh` and
+`git push` over HTTPS work in there. A project with its own `.domo.json` should
+add the Feature if it wants `gh`.
 
 ### Forwarding application ports
 
@@ -207,6 +267,8 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `NUXT_DEV_ENV_DOCKER_READY_MS` | How long a nested Docker daemon gets to start before creation fails (default `30000`) |
 | `NUXT_CLAUDE_CONFIG_DIR` | Where the Claude config *copied* into a new environment is read from (defaults to `~/.claude`) |
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
+| `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts are read from (defaults to `$HOME`) |
+| `NUXT_GH_TOKEN` | GitHub token given to environment sessions; falls back to `gh auth token` on this machine |
 | `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` | Default model for new sessions of that adapter, when the session names none |
 
 ### Claude authentication
@@ -243,6 +305,10 @@ otherwise your work would quietly bill the API instead of your subscription.
 
 Codex is different and needs none of this: its `~/.codex` directory is mounted,
 and `auth.json` there is one shared copy rather than a forked chain.
+
+The same reasoning is why `.claude` and `.claude.json` are refused as
+[home directory mounts](#git-ssh-and-cli-logins-inside-environments), whatever
+you put in the setting.
 
 ### About the Live model id
 

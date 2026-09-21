@@ -52,6 +52,22 @@ things that are easy to get wrong.
   gives it a private DinD daemon. Multiple agent sessions may share one
   environment. Their ACP adapters run through `docker exec`; legacy sessions
   without `dev_environment_id` still run directly on the host.
+- **An environment is a namespace, not a security boundary, so the host user's
+  login state is shared with it.** An agent in a container has to be able to
+  `git push`, open a PR and reach whatever cloud the developer is already logged
+  into, and the container runs on the same machine, for the same person. The
+  *home overlay* (`server/lib/dev-env/home-overlay.ts`) bind-mounts a
+  configurable list of paths under the host home into the container user's home
+  — `.ssh`, `.gitconfig`, `.config/gh`, `.config/gcloud`, `.aws`, `.kube` by
+  default, read-write because gh and gcloud refresh their tokens in place — and
+  forwards the SSH agent. It is written as a pure
+  `{ sourceHome, containerHome, paths, present, sshAgent } -> { mounts, env,
+  parentDirectories, gitconfig }` on purpose: the one thing a multi-user Domo
+  would have to change is *whose* home it reads, so that is an input rather than
+  a `process.env.HOME` read in the middle of `createEnvironment`. The setting
+  (`homeMounts`) is validated at save time; `.claude`, `.claude.json` and
+  `.codex` are refused outright. Mounts are fixed at `docker run`, so a change
+  applies to environments created afterwards.
 - **The Dev Container CLI builds the image and nothing else.** `devcontainer
   build` is how a Feature gets baked in, and that is all it is used for
   (`server/lib/dev-env/image.ts`); Domo composes `docker run` itself
@@ -119,6 +135,56 @@ things that are easy to get wrong.
   `HOME`/`USER`/`LOGNAME` explicitly. Measured: identical session, clean env
   succeeds, host `TMPDIR` fails, host `PATH` alone is harmless.
 
+- **The container's `~/.gitconfig` *includes* the host's; it is never the
+  host's.** The host file is mounted read-only at `~/.gitconfig-host` and Domo
+  writes `~/.gitconfig` itself at creation (replacing the old `git config
+  --global --add safe.directory` exec, which is now a `[safe]` section in it).
+  Three reasons, all load-bearing. The host names credential helpers the
+  container does not have (`osxkeychain`, or VS Code's own helper script), so
+  the multi-value list is reset with an empty `helper =` and replaced with
+  `!gh auth git-credential`. **VS Code's "attach to running container" writes
+  its own helper and identity into the container's global config** — if that
+  file were the host's, the host would inherit a helper pointing at a path
+  inside a container. And the signing keys are not in there, so `commit.gpgsign`
+  / `tag.gpgsign` are off. Identity comes through the include, so a rename on
+  the host reaches an existing environment; nothing is copied.
+- **`.docker` is deliberately not a default home mount.** Docker Desktop writes
+  `"credsStore": "desktop"` into `~/.docker/config.json` and the helper binary
+  is on the host only: with the file mounted, every `docker pull` inside the
+  environment dies with `docker-credential-desktop: executable file not found`.
+  A VS Code dev container does the same thing with its own helper name, and it
+  is just as broken outside the editor's own terminal — which is why
+  `pnpm test:docker` in one needs `DOCKER_CONFIG` pointed at a scratch
+  `{}` config.
+- **`GH_TOKEN` is passed to container sessions, because the mounted `.config/gh`
+  may carry no token at all.** On macOS `gh` keeps it in the Keychain, so
+  `hosts.yml` names the account and has no `oauth_token`: the environment's `gh`
+  would be half logged in and `gh auth git-credential` — the credential helper
+  in the generated git config — would answer nothing. `adapterEnv()` takes
+  `NUXT_GH_TOKEN` / `GH_TOKEN`, else asks the host's own `gh auth token` (5 s
+  timeout, cached 5 minutes, any failure means "no token" and warns once). The
+  lookup is an injected parameter: nothing in `test/unit` may spawn `gh`.
+- **The SSH agent is forwarded at a fixed path, and Docker Desktop is a special
+  case.** Keys in a keychain, in 1Password or behind a passphrase are only
+  usable through the agent. On Docker Desktop the daemon is in a VM and the
+  host's own `SSH_AUTH_SOCK` path is not mountable, so what gets mounted is
+  Docker Desktop's *own* forwarded copy, `/run/host-services/ssh-auth.sock`;
+  everywhere else it is the Domo process's `SSH_AUTH_SOCK`. Both land at
+  `/run/host-services/ssh-auth.sock` inside and are named by `docker run --env`
+  so every `docker exec` inherits it (`SSH_AUTH_SOCK` is in `HOST_ONLY_ENV`, so
+  `adapterEnv` never overwrites it with a host path). **Docker Desktop hands the
+  socket over owned by root**, so `keepAliveScript()` chmods it before the
+  entrypoints — in the container's command, because it has to happen on every
+  `docker start`, not only at creation.
+- **On Linux, `~/.ssh` is only usable if the uids match.** `ssh` refuses a key
+  file it does not own with `Bad owner or permissions`, and the container user's
+  uid (`vscode` is usually 1000, but an image may differ) is not necessarily the
+  host user's. The agent socket still works, which is the main path; the
+  directory mount is then only good for `config` and `known_hosts`.
+- **A mount target's missing parent is created by Docker as root.** Mount only
+  `~/.config/gh` and `~/.config` belongs to root, after which gcloud cannot
+  write its own directory beside it. `createEnvironment` chowns each ancestor
+  (non-recursively — the mounted content is the host's) after `docker run`.
 - **Never copy a Claude login into a container, and never mount `~/.claude`.**
   Anthropic rotates the OAuth refresh token on every refresh and the old one
   stops working, so two Claude Codes on one credential log each other out — and
