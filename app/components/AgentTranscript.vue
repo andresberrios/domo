@@ -1,14 +1,27 @@
 <script setup lang="ts">
 import type { AgentEvent, AgentSession, PendingPermission } from '~~/shared/types'
-import type { TranscriptItem } from '~/utils/agentTranscript'
+import type { CondensedItem } from '~/utils/agentTranscript'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   session: AgentSession
   events: AgentEvent[]
   permissions: PendingPermission[]
-}>()
+  /** Collapse runs of tool activity into one row. On unless told otherwise. */
+  condensed?: boolean
+}>(), { condensed: true })
 
-const items = computed(() => buildTranscript(props.events, props.permissions))
+/**
+ * Two passes, and only the first one is about the log: `buildTranscript()` says
+ * what happened, `condenseTranscript()` decides what to draw.
+ */
+const built = computed(() => buildTranscript(props.events, props.permissions))
+
+/** A trailing thought is the live tail only while the agent is still working. */
+const live = computed(() => props.session.status === 'thinking' || props.session.status === 'starting')
+
+const items = computed<CondensedItem[]>(() =>
+  props.condensed ? condenseTranscript(built.value, { live: live.value }) : built.value
+)
 
 /**
  * UChatMessages speaks UIMessage: the rich item rides in `metadata` and is
@@ -16,7 +29,7 @@ const items = computed(() => buildTranscript(props.events, props.permissions))
  * (UChatMessages skips messages with no parts, and the text is what a copy or a
  * screen reader gets).
  */
-function plainText(item: TranscriptItem): string {
+function plainText(item: CondensedItem): string {
   switch (item.kind) {
     case 'user':
     case 'assistant':
@@ -30,6 +43,8 @@ function plainText(item: TranscriptItem): string {
       return item.title
     case 'notice':
       return item.text
+    case 'activity':
+      return activityLabel(item)
   }
 }
 
@@ -47,14 +62,12 @@ const status = computed(() => {
   return 'ready' as const
 })
 
-const pendingById = computed(() => {
-  const map = new Map<string, PendingPermission>()
-  for (const permission of props.permissions) map.set(permission.id, permission)
-  return map
-})
+const pendingPermissionIds = computed(() =>
+  props.permissions.filter(permission => !permission.resolvedAt).map(permission => permission.id)
+)
 
-function itemOf(message: any): TranscriptItem {
-  return message.metadata.item as TranscriptItem
+function itemOf(message: any): CondensedItem {
+  return message.metadata.item as CondensedItem
 }
 </script>
 
@@ -68,75 +81,15 @@ function itemOf(message: any): TranscriptItem {
     :ui="{ root: 'w-full max-w-3xl mx-auto gap-4 py-4' }"
   >
     <template #content="message">
-      <template v-if="itemOf(message).kind === 'user'">
-        <div class="space-y-2">
-          <MarkdownView :text="(itemOf(message) as any).text" />
-          <div v-if="(itemOf(message) as any).attachments?.length" class="flex flex-wrap gap-1.5">
-            <UBadge
-              v-for="attachment in (itemOf(message) as any).attachments"
-              :key="attachment.name"
-              icon="i-lucide-paperclip"
-              color="neutral"
-              variant="subtle"
-              size="sm"
-              :label="attachment.name"
-            />
-          </div>
-        </div>
-      </template>
-
-      <MarkdownView
-        v-else-if="itemOf(message).kind === 'assistant'"
-        :text="(itemOf(message) as any).text"
+      <ActivityGroup
+        v-if="itemOf(message).kind === 'activity'"
+        :group="(itemOf(message) as any)"
       />
-
-      <UCollapsible v-else-if="itemOf(message).kind === 'thought'" class="w-full">
-        <UButton
-          label="Thought"
-          icon="i-lucide-brain"
-          color="neutral"
-          variant="link"
-          size="xs"
-          trailing-icon="i-lucide-chevron-down"
-          class="px-0 text-dimmed"
-        />
-        <template #content>
-          <div class="mt-1 border-s-2 border-accented ps-3 text-sm text-muted">
-            <MarkdownView :text="(itemOf(message) as any).text" />
-          </div>
-        </template>
-      </UCollapsible>
-
-      <ToolCallCard
-        v-else-if="itemOf(message).kind === 'tool'"
-        :tool="(itemOf(message) as any).tool"
+      <TranscriptItemView
+        v-else
+        :item="(itemOf(message) as any)"
+        :pending-permission-ids="pendingPermissionIds"
       />
-
-      <PlanCard
-        v-else-if="itemOf(message).kind === 'plan'"
-        :entries="(itemOf(message) as any).entries"
-      />
-
-      <!-- The actionable card is pinned above the composer; inline is a marker only. -->
-      <div
-        v-else-if="itemOf(message).kind === 'permission' && pendingById.get((itemOf(message) as any).permissionId)"
-        class="flex items-center gap-2 text-xs text-warning"
-      >
-        <UIcon name="i-lucide-shield-question" class="size-3.5 shrink-0" />
-        <span>Waiting for permission: {{ (itemOf(message) as any).title }}</span>
-      </div>
-
-      <div
-        v-else-if="itemOf(message).kind === 'notice'"
-        class="flex items-center gap-2 text-xs"
-        :class="(itemOf(message) as any).tone === 'error' ? 'text-error' : 'text-dimmed'"
-      >
-        <UIcon
-          :name="(itemOf(message) as any).tone === 'error' ? 'i-lucide-triangle-alert' : 'i-lucide-info'"
-          class="size-3.5 shrink-0"
-        />
-        <span>{{ (itemOf(message) as any).text }}</span>
-      </div>
     </template>
   </UChatMessages>
 </template>
