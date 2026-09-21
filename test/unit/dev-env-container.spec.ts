@@ -43,9 +43,7 @@ function runArgs(input: {
   metadata?: ImageMetadata
   remoteUser?: string
   ports?: Array<{ innerPort: number, protocol: 'tcp' | 'udp' }>
-  claudeConfigDir?: string | null
   codexConfigDir?: string | null
-  claudeCredentialsFile?: string | null
 } = {}): string[] {
   return containerRunArgs({
     environmentId: 'env_1',
@@ -59,9 +57,7 @@ function runArgs(input: {
     workspaceVolume: 'domo-dev-env_1-workspace',
     runtimeVolume: 'domo-dev-runtime-abc123',
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
-    claudeConfigDir: input.claudeConfigDir ?? null,
-    codexConfigDir: input.codexConfigDir ?? null,
-    claudeCredentialsFile: input.claudeCredentialsFile ?? null
+    codexConfigDir: input.codexConfigDir ?? null
   })
 }
 
@@ -226,37 +222,26 @@ describe('containerRunArgs', () => {
     ])
   })
 
-  it('mounts the tool config directories into the remote user\'s home', () => {
-    const args = runArgs({ claudeConfigDir: '/home/me/.claude', codexConfigDir: '/home/me/.codex' })
+  it('mounts the Codex config directory into the remote user\'s home', () => {
+    const args = runArgs({ codexConfigDir: '/home/me/.codex' })
 
-    expect(values(args, '--mount')).toEqual(expect.arrayContaining([
-      'type=bind,source=/home/me/.claude,target=/home/vscode/.claude',
-      'type=bind,source=/home/me/.codex,target=/home/vscode/.codex'
-    ]))
+    expect(values(args, '--mount')).toContain('type=bind,source=/home/me/.codex,target=/home/vscode/.codex')
   })
 
-  it('mounts the synced credentials file after, and inside, the .claude directory', () => {
-    const args = runArgs({
-      claudeConfigDir: '/home/me/.claude',
-      claudeCredentialsFile: '/data/claude/.credentials.json'
-    })
-    const mountValues = values(args, '--mount')
+  it('puts it in root\'s home for an image with no user', () => {
+    const args = runArgs({ remoteUser: 'root', codexConfigDir: '/home/me/.codex' })
 
-    // Order is the whole point: a mount nested in another has to come second.
-    expect(mountValues.indexOf('type=bind,source=/data/claude/.credentials.json,'
-      + 'target=/home/vscode/.claude/.credentials.json'))
-      .toBeGreaterThan(mountValues.indexOf('type=bind,source=/home/me/.claude,target=/home/vscode/.claude'))
+    expect(values(args, '--mount')).toContain('type=bind,source=/home/me/.codex,target=/root/.codex')
   })
 
-  it('mounts no credentials file when there is nothing to sync', () => {
-    expect(values(runArgs({ claudeConfigDir: '/home/me/.claude' }), '--mount').join('\n'))
-      .not.toContain('.credentials.json')
-  })
+  it('never mounts the host\'s Claude config, at any path', () => {
+    // It holds `.credentials.json`, and Anthropic rotates the refresh token on
+    // every refresh: a second Claude Code on the same chain logs the developer's
+    // own machine out. The safe parts are copied in at creation instead.
+    const args = runArgs({ codexConfigDir: '/home/me/.codex' }).join('\n')
 
-  it('puts them in root\'s home for an image with no user', () => {
-    const args = runArgs({ remoteUser: 'root', claudeConfigDir: '/home/me/.claude' })
-
-    expect(values(args, '--mount')).toContain('type=bind,source=/home/me/.claude,target=/root/.claude')
+    expect(args).not.toContain('.claude')
+    expect(args).not.toContain('.credentials.json')
   })
 
   it('ends with the image and the keep-alive command, and never runs it through a shell string', () => {

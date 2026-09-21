@@ -18,6 +18,7 @@ import type { DevEnvironment } from '~~/shared/types'
 const run = vi.fn(async (_program: string, _args: string[], _options?: unknown) => ({ stdout: '', stderr: '' }))
 const inspectContainer = vi.fn()
 const populateWorkspaceVolume = vi.fn(async () => undefined)
+const copyIntoContainer = vi.fn(async () => undefined)
 const buildEnvironmentImage = vi.fn(async () => 'domo-dev-env_1')
 const readImageMetadata = vi.fn()
 const ensureRuntimeVolume = vi.fn(async () => 'domo-dev-runtime-abc123')
@@ -36,6 +37,7 @@ vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
   run,
   inspectContainer,
   populateWorkspaceVolume,
+  copyIntoContainer,
   resourcePrefix: () => 'domo-dev-'
 }))
 vi.mock('../../server/lib/dev-env/image', async (importOriginal) => ({
@@ -111,10 +113,17 @@ function stepAt(...needles: string[]): number {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Never the developer's own `~/.claude`: what the seed copies must not depend
+  // on what happens to be in the home directory running the suite.
+  process.env.NUXT_CLAUDE_CONFIG_DIR = join(tmpdir(), 'domo-no-such-claude-config')
   run.mockResolvedValue({ stdout: '', stderr: '' })
   buildEnvironmentImage.mockResolvedValue('domo-dev-env_1')
   ensureRuntimeVolume.mockResolvedValue('domo-dev-runtime-abc123')
   readImageMetadata.mockResolvedValue(EMPTY_METADATA)
+})
+
+afterEach(() => {
+  delete process.env.NUXT_CLAUDE_CONFIG_DIR
 })
 
 describe('containerExecArgs', () => {
@@ -328,10 +337,52 @@ describe('createEnvironment', () => {
       stepAt('/opt/domo/node/bin/node'),
       stepAt('chown'),
       stepAt('safe.directory'),
+      // The seed runs the CLI out of the runtime volume, so it belongs after the
+      // preflight that proves the runtime volume can run at all.
+      stepAt('claude', '--version'),
+      stepAt('.claude.json'),
       stepAt('pnpm install')
     ]
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(order.includes(-1)).toBe(false)
+  })
+
+  it('seeds the Claude home as the remote user, and never mounts the host\'s', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    expect(dockerCalls()).toContainEqual([
+      'exec', '--user', 'vscode', 'container-sha', 'mkdir', '-p', '/home/vscode/.claude'
+    ])
+    // Only if the CLI has not written one: after that it is the CLI's to manage.
+    expect(dockerCalls()).toContainEqual([
+      'exec', '--interactive', '--user', 'vscode', 'container-sha',
+      'sh', '-c', 'test -f "$1" || cat > "$1"', 'sh', '/home/vscode/.claude.json'
+    ])
+    expect(dockerCalls().find(args => args[0] === 'run')!.join('\n')).not.toContain('.claude')
+  })
+
+  it('copies only the allow-listed config, and only what the host has', async () => {
+    const source = await mkdtemp(join(tmpdir(), 'domo-claude-src-'))
+    process.env.NUXT_CLAUDE_CONFIG_DIR = source
+    await writeFile(join(source, 'CLAUDE.md'), '# global\n')
+    await writeFile(join(source, '.credentials.json'), '{"claudeAiOauth":{}}')
+
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    expect(copyIntoContainer).toHaveBeenCalledWith({
+      source,
+      entries: ['CLAUDE.md'],
+      containerId: 'container-sha',
+      user: 'vscode',
+      target: '/home/vscode/.claude'
+    })
+    await rm(source, { recursive: true, force: true })
+  })
+
+  it('copies nothing when the host has no Claude config at all', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    expect(copyIntoContainer).not.toHaveBeenCalled()
   })
 
   it('copies the checkout into a volume and declares its ports', async () => {

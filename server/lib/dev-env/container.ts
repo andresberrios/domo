@@ -124,10 +124,7 @@ export interface RunContainerInput {
   workspaceVolume: string
   runtimeVolume: string
   ports: ResolvedPortConfig[]
-  claudeConfigDir: string | null
   codexConfigDir: string | null
-  /** The synced `.credentials.json`, mounted as a file inside `~/.claude`. */
-  claudeCredentialsFile: string | null
 }
 
 function mountArg(mount: VolumeMount & { type?: string, readonly?: boolean }): string[] {
@@ -155,20 +152,11 @@ export function containerRunArgs(input: RunContainerInput): string[] {
     // Node and both ACP adapters, shared by every environment and never written to.
     ...mountArg({ source: input.runtimeVolume, target: '/opt/domo', readonly: true })
   ]
-  if (input.claudeConfigDir) {
-    args.push(...mountArg({ type: 'bind', source: input.claudeConfigDir, target: `${home}/.claude` }))
-  }
-  // Nested inside the directory mount above, and after it, so it wins. On macOS
-  // the login lives in the Keychain, so `~/.claude` alone authenticates nothing;
-  // `syncClaudeCredentials()` writes the file this points at. Docker follows the
-  // source path's inode, which is why that file is rewritten and never replaced.
-  if (input.claudeCredentialsFile) {
-    args.push(...mountArg({
-      type: 'bind',
-      source: input.claudeCredentialsFile,
-      target: `${home}/.claude/.credentials.json`
-    }))
-  }
+  // There is deliberately no mount of the host's `~/.claude`. It carries
+  // `.credentials.json`, and Anthropic rotates the refresh token on every
+  // refresh: a second Claude Code reading the same chain logs the first one out,
+  // which here would be the developer's own machine. The non-secret parts are
+  // *copied* in at creation instead — see `seedClaudeHome()`.
   if (input.codexConfigDir) {
     args.push(...mountArg({ type: 'bind', source: input.codexConfigDir, target: `${home}/.codex` }))
   }

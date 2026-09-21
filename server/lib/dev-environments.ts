@@ -2,9 +2,9 @@ import { access } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
 import type { DevEnvironment } from '../../shared/types'
-import { syncClaudeCredentials } from './claude-credentials'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
+import { seedClaudeHome } from './dev-env/claude-home'
 import { resolveEnvironmentConfig, resolveForwardPorts } from './dev-env/config'
 import {
   containerRunArgs,
@@ -144,9 +144,9 @@ export async function createEnvironment(input: {
     for (const port of declaredPorts) {
       await upsertDevEnvironmentPort({ environmentId: id, ...port, source: 'declared' })
     }
-    const claudeConfigDir = await toolConfigDir('NUXT_CLAUDE_CONFIG_DIR', '.claude')
+    // Codex keeps a single `auth.json` that the mount shares rather than forks,
+    // so its directory is still mounted. Claude's is *copied* — see seedClaudeHome().
     const codexConfigDir = await toolConfigDir('NUXT_CODEX_CONFIG_DIR', '.codex')
-    const claudeCredentialsFile = await syncClaudeCredentials()
 
     const runtimeVolume = await ensureRuntimeVolume()
     const workspaceVolume = await copyRepository(project.repoPath, id)
@@ -170,9 +170,7 @@ export async function createEnvironment(input: {
       workspaceVolume,
       runtimeVolume,
       ports: declaredPorts,
-      claudeConfigDir,
-      codexConfigDir,
-      claudeCredentialsFile
+      codexConfigDir
     }))
     const inspection = await inspectContainer(containerId)
     if (!inspection) throw new Error('The environment container was created but could not be inspected.')
@@ -202,6 +200,8 @@ export async function createEnvironment(input: {
       ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home } }),
       'git', 'config', '--global', '--add', 'safe.directory', workspacePath
     ])
+    // After the preflight, because it runs the CLI out of the runtime volume.
+    await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
     if (resolved.config.postCreateCommand) {
       await run('docker', [
         ...execArgs({ containerId: inspection.id, user: remoteUser, workdir: workspacePath, env: { HOME: home } }),
@@ -246,10 +246,6 @@ export async function startEnvironment(id: string): Promise<DevEnvironment> {
   if (!environment) throw new Error('Development environment not found')
   const inspection = await inspectContainer(containerReference(environment))
   if (!inspection) throw new Error('The environment container no longer exists. Delete and recreate the environment.')
-  // The mount source is a fixed path, so refreshing the file's *contents* is the
-  // whole of re-mounting it: an access token that expired while the environment
-  // was stopped would otherwise be all the agent inside it ever sees.
-  await syncClaudeCredentials()
   if (!inspection.running) await run('docker', ['start', inspection.id])
   const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
   await refreshEnvironmentPorts(id)

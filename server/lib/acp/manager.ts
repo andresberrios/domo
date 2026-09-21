@@ -129,14 +129,16 @@ const PASSTHROUGH_ENV = [
 /**
  * Environment for the adapter process.
  *
- * The Claude branch is a precedence, not a union: `ANTHROPIC_API_KEY` wins
- * *inside* Claude Code, so passing it alongside a subscription login silently
- * moves the work onto API billing. A `claude setup-token` OAuth token first,
- * then whatever login the host already has (the macOS Keychain here, the
- * `.credentials.json` Domo syncs from it inside an environment), and only then
- * the API key.
+ * The Claude branch is a precedence, not a union: `ANTHROPIC_API_KEY` outranks
+ * every OAuth path *inside* Claude Code and, in non-interactive mode, is used
+ * with no approval prompt — so passing it alongside a subscription login
+ * silently moves the work onto API billing. A `claude setup-token` token first,
+ * then the host's own login, and only then the key.
+ *
+ * Inside an environment only the token can apply: nothing copies a login into a
+ * container, so there is no Keychain and no credentials file to ask about.
  */
-async function adapterEnv(adapter: AgentAdapter): Promise<NodeJS.ProcessEnv> {
+async function adapterEnv(adapter: AgentAdapter, inContainer: boolean): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
     const value = process.env[key]
@@ -146,7 +148,7 @@ async function adapterEnv(adapter: AgentAdapter): Promise<NodeJS.ProcessEnv> {
     const oauthToken = process.env.NUXT_CLAUDE_CODE_OAUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN
     const apiKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
     if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
-    else if (apiKey && !await hasClaudeSubscriptionLogin()) env.ANTHROPIC_API_KEY = apiKey
+    else if (apiKey && (inContainer || !await hasClaudeSubscriptionLogin())) env.ANTHROPIC_API_KEY = apiKey
   } else {
     const codexKey = process.env.NUXT_CODEX_API_KEY || process.env.CODEX_API_KEY
     const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
@@ -379,7 +381,7 @@ class AgentRuntime {
     await this.setStatus('starting', { lastError: null })
 
     let environment: DevEnvironment | null = null
-    const env = await adapterEnv(session.adapter)
+    const env = await adapterEnv(session.adapter, !!session.devEnvironmentId)
     let proc: ChildProcessWithoutNullStreams
     if (session.devEnvironmentId) {
       environment = await ensureEnvironmentRunning(session.devEnvironmentId)

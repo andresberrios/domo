@@ -90,21 +90,24 @@ export async function dockerServerArch(): Promise<string> {
 }
 
 /**
- * Stream the host checkout into a named volume: `tar` on the host into `tar -x` in a throwaway
- * container. No bind mount of the host tree, so it does not depend on Docker Desktop file
- * sharing (or on the daemon being on this machine at all).
+ * `tar` on the host piped into a `tar -x` that Docker runs, wherever that is.
+ *
+ * The host tree is never bind-mounted, so this does not depend on Docker Desktop
+ * file sharing — or on the daemon being on this machine at all.
  */
-export async function populateWorkspaceVolume(input: {
+async function tarInto(input: {
   source: string
-  volume: string
-  helperImage: string
-  /** Paths relative to `source` to leave out (the data directory when it lives in the project). */
+  /** Paths relative to `source` to copy. `['.']` is the whole tree. */
+  entries: string[]
   exclude?: string[]
+  /** The `docker` argv that receives the archive on stdin. */
+  consumerArgs: string[]
+  label: string
 }): Promise<void> {
   const tarArgs = [
     '-C', input.source,
     ...(input.exclude ?? []).flatMap(path => ['--exclude', `./${path}`]),
-    '-cf', '-', '.'
+    '-cf', '-', ...input.entries
   ]
   await new Promise<void>((resolvePromise, reject) => {
     // COPYFILE_DISABLE stops macOS tar from adding AppleDouble `._*` companion files.
@@ -112,10 +115,7 @@ export async function populateWorkspaceVolume(input: {
       env: { ...process.env, COPYFILE_DISABLE: '1' },
       stdio: ['ignore', 'pipe', 'pipe']
     })
-    const consumer = spawn('docker', [
-      'run', '--rm', '--interactive', '--volume', `${input.volume}:/workspace`, input.helperImage,
-      'tar', '-xf', '-', '-C', '/workspace', '--no-same-owner'
-    ], { stdio: ['pipe', 'ignore', 'pipe'] })
+    const consumer = spawn('docker', input.consumerArgs, { stdio: ['pipe', 'ignore', 'pipe'] })
     let stderr = ''
     for (const child of [producer, consumer]) {
       child.stderr!.setEncoding('utf8')
@@ -128,9 +128,51 @@ export async function populateWorkspaceVolume(input: {
       codes.push(code ?? 1)
       if (codes.length < 2) return
       if (codes.every(value => value === 0)) resolvePromise()
-      else reject(new Error(`copying the checkout into ${input.volume} failed: ${stderr.trim() || `exit ${codes}`}`))
+      else reject(new Error(`copying ${input.label} failed: ${stderr.trim() || `exit ${codes}`}`))
     }
     producer.once('close', done)
     consumer.once('close', done)
+  })
+}
+
+/** The checkout, into the named volume that becomes the environment's workspace. */
+export async function populateWorkspaceVolume(input: {
+  source: string
+  volume: string
+  helperImage: string
+  /** Paths relative to `source` to leave out (the data directory when it lives in the project). */
+  exclude?: string[]
+}): Promise<void> {
+  await tarInto({
+    source: input.source,
+    entries: ['.'],
+    exclude: input.exclude,
+    label: `the checkout into ${input.volume}`,
+    consumerArgs: [
+      'run', '--rm', '--interactive', '--volume', `${input.volume}:/workspace`, input.helperImage,
+      'tar', '-xf', '-', '-C', '/workspace', '--no-same-owner'
+    ]
+  })
+}
+
+/**
+ * Named entries of a host directory into a path in a running container, owned by
+ * the user the extraction runs as.
+ */
+export async function copyIntoContainer(input: {
+  source: string
+  entries: string[]
+  containerId: string
+  user: string
+  target: string
+}): Promise<void> {
+  await tarInto({
+    source: input.source,
+    entries: input.entries,
+    label: `${input.entries.join(', ')} into ${input.target}`,
+    consumerArgs: [
+      'exec', '--interactive', '--user', input.user, input.containerId,
+      'tar', '-xf', '-', '-C', input.target, '--no-same-owner'
+    ]
   })
 }
