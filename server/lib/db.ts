@@ -35,6 +35,11 @@ create table if not exists voice_sessions (
 );
 alter table voice_sessions add column if not exists title_source text;
 alter table voice_sessions add column if not exists resumption_fingerprint text;
+-- The rolling summary of everything up to summary_through_seq: what a
+-- reconnecting Live session is told instead of a transcript it cannot fit.
+alter table voice_sessions add column if not exists summary text;
+alter table voice_sessions add column if not exists summary_through_seq bigint;
+alter table voice_sessions add column if not exists summary_updated_at text;
 -- Rows from before auto-titling: anything but the placeholder was a rename.
 update voice_sessions
    set title_source = case when title = 'New conversation' then 'auto' else 'user' end

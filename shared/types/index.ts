@@ -18,6 +18,14 @@ export interface VoiceSession {
   updatedAt: string
   lastActivityAt: string | null
   archived: boolean
+  /**
+   * Rolling summary of everything up to `summaryThroughSeq`, folded in as the
+   * conversation grows so a reconnect never has to replay the whole log.
+   */
+  summary: string | null
+  /** The last `voice_messages.seq` the summary covers; null before the first fold. */
+  summaryThroughSeq: number | null
+  summaryUpdatedAt: string | null
 }
 
 export type VoiceMessageRole = 'user' | 'assistant' | 'system' | 'tool'

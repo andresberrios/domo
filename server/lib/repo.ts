@@ -35,7 +35,12 @@ function mapVoiceSession(r: any): VoiceSession {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     lastActivityAt: r.last_activity_at,
-    archived: r.archived
+    archived: r.archived,
+    summary: r.summary ?? null,
+    summaryThroughSeq: r.summary_through_seq === null || r.summary_through_seq === undefined
+      ? null
+      : Number(r.summary_through_seq),
+    summaryUpdatedAt: r.summary_updated_at ?? null
   }
 }
 
@@ -432,6 +437,35 @@ export async function setAutoTitle(id: string, title: string): Promise<VoiceSess
   return mapVoiceSession(row)
 }
 
+/**
+ * Store a fold of the conversation's own history.
+ *
+ * Guarded on the seq it advances past, so a summary can only ever move
+ * forward: two folds racing (a connect and the turn that triggered one) end
+ * with the further of the two, and the other is dropped rather than rewinding
+ * the row to cover fewer messages than it already did.
+ *
+ * Only `voice-session-changed` is published: a summary changes nothing about
+ * where the conversation sits in the sidebar, and the row reaches the browser
+ * through Electric either way.
+ */
+export async function saveConversationSummary(
+  id: string,
+  input: { summary: string, throughSeq: number }
+): Promise<VoiceSession | null> {
+  const now = nowIso()
+  const row = await queryOne(
+    `update voice_sessions
+        set summary = $2, summary_through_seq = $3, summary_updated_at = $4, updated_at = $4
+      where id = $1 and coalesce(summary_through_seq, 0) < $3
+      returning *`,
+    [id, input.summary, input.throughSeq, now]
+  )
+  if (!row) return null
+  bus.publish({ type: 'voice-session-changed', sessionId: id })
+  return mapVoiceSession(row)
+}
+
 /** The handle to resume with, and the fingerprint of the setup that issued it. */
 export async function getResumptionHandle(id: string): Promise<{ handle: string | null, fingerprint: string | null }> {
   const row = await queryOne<{ resumption_handle: string | null, resumption_fingerprint: string | null }>(
@@ -454,6 +488,38 @@ export async function listVoiceMessages(sessionId: string, limit = 500): Promise
     [sessionId, limit]
   )
   return rows.map(mapVoiceMessage)
+}
+
+/**
+ * The messages after a seq, oldest first — the fold's own query.
+ *
+ * `listVoiceMessages` answers with the *newest* rows, which is what a connect
+ * wants and the opposite of what compaction does: a fold has to start exactly
+ * at the boundary the last one left, or it would claim to cover messages it
+ * never saw. With a backlog bigger than `limit` this simply folds the oldest
+ * chunk and leaves the rest for the next fold.
+ */
+export async function listVoiceMessagesAfter(
+  sessionId: string,
+  afterSeq: number,
+  limit = 200
+): Promise<VoiceMessage[]> {
+  const rows = await query(
+    `select * from voice_messages
+      where session_id = $1 and seq > $2
+      order by seq asc limit $3`,
+    [sessionId, afterSeq, limit]
+  )
+  return rows.map(mapVoiceMessage)
+}
+
+/** How many messages no summary covers — including ones outside a tail window. */
+export async function countVoiceMessagesAfter(sessionId: string, afterSeq: number): Promise<number> {
+  const row = await queryOne<{ count: number }>(
+    'select count(*)::int as count from voice_messages where session_id = $1 and seq > $2',
+    [sessionId, afterSeq]
+  )
+  return row?.count ?? 0
 }
 
 export async function appendVoiceMessage(input: {

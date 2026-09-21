@@ -48,7 +48,10 @@ export function useVoiceSessions() {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         lastActivityAt: row.last_activity_at ?? null,
-        archived: !!row.archived
+        archived: !!row.archived,
+        summary: row.summary ?? null,
+        summaryThroughSeq: row.summary_through_seq == null ? null : asNumber(row.summary_through_seq),
+        summaryUpdatedAt: row.summary_updated_at ?? null
       }))
       .filter(session => !session.archived)
       .sort(byRecency)
