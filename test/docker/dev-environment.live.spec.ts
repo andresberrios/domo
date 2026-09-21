@@ -80,6 +80,7 @@ const {
   removeEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
+const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
 
 const HOUR = 60 * 60 * 1000
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
@@ -490,6 +491,65 @@ describe('two environments of the same project', () => {
     const built = await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${PREFIX}runtime-`])
     expect(built.stdout.split('\n').filter(Boolean)).toEqual([shared])
   }, HOUR / 2)
+})
+
+describe('exporting a branch out of an environment', () => {
+  it('fetches it straight from the container into the project\'s own checkout', async () => {
+    const repo = await checkout()
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    state.ports.length = 0
+
+    const environment = await create('Export Live')
+    /** A command in the environment that must succeed — `inContainer` swallows failures. */
+    const exec = (...command: string[]) => run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, ...command
+    ])
+
+    // Work done in the environment, on its own branch and with its own identity
+    // (which arrives through the included host gitconfig).
+    await exec('git', 'checkout', '--quiet', '-b', 'from-the-environment')
+    await exec('sh', '-c', 'echo shipped > shipped.txt')
+    await exec('git', 'add', 'shipped.txt')
+    await exec('git', 'commit', '--quiet', '-m', 'shipped from the environment')
+    const sha = (await exec('git', 'rev-parse', 'HEAD')).stdout
+
+    const branches = await listEnvironmentBranches(environment.id)
+    expect(branches.current).toBe('from-the-environment')
+    expect(branches.branches).toContainEqual({
+      name: 'from-the-environment',
+      sha,
+      subject: 'shipped from the environment'
+    })
+
+    const result = await exportBranch({
+      environmentId: environment.id,
+      branch: 'from-the-environment',
+      into: 'from-the-environment'
+    })
+
+    expect(result).toMatchObject({
+      ref: 'refs/remotes/domo-env/export-live/from-the-environment',
+      sha,
+      result: 'created'
+    })
+    expect(result.commits.map(commit => commit.subject)).toEqual(['shipped from the environment'])
+
+    // It really is in the host checkout: the branch, the tracking ref and the blob.
+    const host = (...args: string[]) => run('git', ['-C', repo, ...args])
+    await expect(host('rev-parse', 'refs/heads/from-the-environment')).resolves.toMatchObject({ stdout: sha })
+    await expect(host('rev-parse', 'refs/remotes/domo-env/export-live/from-the-environment'))
+      .resolves.toMatchObject({ stdout: sha })
+    await expect(host('show', 'from-the-environment:shipped.txt')).resolves.toMatchObject({ stdout: 'shipped' })
+    // The checked-out branch was not the target and was left exactly as it was.
+    await expect(host('symbolic-ref', '--short', 'HEAD')).resolves.toMatchObject({ stdout: 'main' })
+    await expect(host('status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
+    // `protocol.ext.allow` is passed per invocation and written nowhere: this
+    // repository did not gain a transport that runs arbitrary commands.
+    await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()
+
+    await removeEnvironment(environment.id)
+  }, HOUR / 4)
 })
 
 describe('populateWorkspaceVolume', () => {
