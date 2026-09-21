@@ -319,8 +319,13 @@ describe('an environment for a bare glibc image with no Node of its own', () => 
 
 describe('an environment whose image cannot run Domo\'s runtime', () => {
   it('fails creation with a readable message and leaves nothing behind', async () => {
+    // With git, so the preflight gets as far as the bundled Node and reports the real
+    // problem: the binary is glibc-linked and musl has no loader for it.
     const repo = await checkout({
-      '.domo.json': JSON.stringify({ devEnvironment: { image: 'alpine:3', docker: false } })
+      'Dockerfile.alpine': 'FROM alpine:3\nRUN apk add --no-cache git\n',
+      '.domo.json': JSON.stringify({
+        devEnvironment: { build: { dockerfile: 'Dockerfile.alpine' }, docker: false }
+      })
     })
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
 
