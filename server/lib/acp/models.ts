@@ -7,11 +7,19 @@ import * as acp from '@agentclientprotocol/sdk'
 
 import { adapterEntry, adapterEnv } from './adapter-process'
 import { availableModelOptions, currentModel, modelConfigOption } from './model'
-import type { AgentAdapter } from '../../../shared/types'
+import { availableModes, currentModeId } from './mode'
+import type { AgentAdapter, SessionModeInfo } from '../../../shared/types'
 
+/**
+ * What one `session/new` probe answered with. Modes ride along with the models
+ * because they come from the same response and cost the same spawn — and
+ * because they are the same kind of thing: a list only the adapter knows.
+ */
 export interface AdapterModels {
   models: Array<{ id: string, name: string }>
   current: string | null
+  modes: SessionModeInfo[]
+  currentMode: string | null
 }
 
 /**
@@ -29,14 +37,15 @@ const cache = new Map<AgentAdapter, { at: number, value: AdapterModels }>()
 const inFlight = new Map<AgentAdapter, Promise<AdapterModels>>()
 
 /**
- * What an adapter offers, asked by starting a throwaway session and reading the
- * `configOptions` it answers with.
+ * What an adapter offers — models and permission modes — asked by starting a
+ * throwaway session and reading the `configOptions` and `modes` it answers
+ * with.
  *
- * There is no cheaper way: an adapter only reports its models in a `session/new`
- * response, and the list depends on the account. Always probed on the **host** —
- * the runtime volume installs the identical adapter versions, so the list is the
- * same, and a container is minutes of environment lifecycle for an answer that
- * does not differ.
+ * There is no cheaper way: an adapter only reports either list in a
+ * `session/new` response, and the models depend on the account. Always probed
+ * on the **host** — the runtime volume installs the identical adapter versions,
+ * so the lists are the same, and a container is minutes of environment
+ * lifecycle for an answer that does not differ.
  *
  * Cached for an hour and de-duplicated, so a modal opening twice is one spawn.
  */
@@ -73,13 +82,19 @@ export interface AdapterCatalogEntry {
   models: Array<{ id: string, name: string }>
   /** What a session gets when it asks for no model in particular. */
   default: string | null
+  /** The permission modes this adapter offers; the two adapters share none. */
+  modes: SessionModeInfo[]
+  /** The mode a session starts in when it asks for none. */
+  defaultMode: string | null
   /** Why this adapter could not be asked, when it could not be. */
   error?: string
 }
 
 /**
- * Every harness Domo can run and the models each offers, for an agent that has
- * to turn "the cheap OpenAI one" into an id that exists.
+ * Every harness Domo can run, with the models and the permission modes each
+ * offers — for an agent that has to turn "the cheap OpenAI one" into an id that
+ * exists, and for the Settings page, which cannot hard-code either list because
+ * the two adapters share not one mode id.
  *
  * One adapter failing — not logged in, not installed — is reported on its own
  * entry rather than failing the call: the other adapter's list is still the
@@ -89,14 +104,16 @@ export async function listAdapterCatalog(only?: AgentAdapter): Promise<{ adapter
   const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex']
   const adapters = await Promise.all(wanted.map(async (id): Promise<AdapterCatalogEntry> => {
     try {
-      const { models, current } = await listAdapterModels(id)
-      return { id, name: ADAPTER_NAMES[id], models, default: current }
+      const { models, current, modes, currentMode } = await listAdapterModels(id)
+      return { id, name: ADAPTER_NAMES[id], models, default: current, modes, defaultMode: currentMode }
     } catch (error) {
       return {
         id,
         name: ADAPTER_NAMES[id],
         models: [],
         default: null,
+        modes: [],
+        defaultMode: null,
         error: error instanceof Error ? error.message : String(error)
       }
     }
@@ -160,7 +177,9 @@ async function probe(adapter: AgentAdapter): Promise<AdapterModels> {
     const option = modelConfigOption(created)
     return {
       models: availableModelOptions(option),
-      current: currentModel(option)?.value ?? null
+      current: currentModel(option)?.value ?? null,
+      modes: availableModes(created),
+      currentMode: currentModeId(created)
     }
   } finally {
     if (timer) clearTimeout(timer)

@@ -10,7 +10,10 @@ import NewAgentModal from '~/components/NewAgentModal.vue'
  * the menu is opened and its items render, which is why nothing but a mounted,
  * opened dialog can catch it.
  */
-registerEndpoint('/api/settings', () => ({ defaultCwd: '/work' }))
+registerEndpoint('/api/settings', () => ({
+  defaultCwd: '/work',
+  defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only' }
+}))
 
 const posted: any[] = []
 registerEndpoint('/api/agents', {
@@ -26,7 +29,13 @@ registerEndpoint('/api/adapters/models', () => {
   if (modelsFail) throw createError({ statusCode: 502, statusMessage: 'Not logged in' })
   return {
     models: [{ id: 'sonnet', name: 'Sonnet 5' }, { id: 'haiku', name: 'Haiku 4.5' }],
-    current: 'sonnet'
+    current: 'sonnet',
+    // One probe answers both lists, and the mode ids are the adapter's own.
+    modes: [
+      { id: 'default', name: 'Manual', description: 'Always ask' },
+      { id: 'plan', name: 'Plan', description: 'Plan first' }
+    ],
+    currentMode: 'default'
   }
 })
 
@@ -85,6 +94,30 @@ describe('NewAgentModal', () => {
     wrapper.unmount()
   })
 
+  it('offers the adapter\'s own permission modes, preselected to the setting', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = await open()
+
+    // "Plan" is what `/api/settings` says this install defaults Claude Code to —
+    // there is no hard-coded list here and no hard-coded default either.
+    const trigger = await vi.waitFor(() => {
+      const found = selectTrigger('Plan')
+      expect(found).toBeTruthy()
+      return found!
+    })
+
+    trigger.click()
+    await vi.waitFor(() => {
+      const listbox = [...document.body.querySelectorAll('[role="listbox"]')]
+        .find(element => element.textContent?.includes('Plan'))
+      expect(listbox?.textContent).toContain('Manual')
+    })
+
+    expect(errors).not.toHaveBeenCalled()
+    errors.mockRestore()
+    wrapper.unmount()
+  })
+
   it('submits no model while the default is selected', async () => {
     posted.length = 0
     const wrapper = await open()
@@ -106,7 +139,8 @@ describe('NewAgentModal', () => {
 
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     expect(posted[0].model).toBeUndefined()
-    expect(posted[0]).toMatchObject({ title: 'auth refactor', adapter: 'claude-code' })
+    // The mode *is* sent: it is a per-session choice, preselected from Settings.
+    expect(posted[0]).toMatchObject({ title: 'auth refactor', adapter: 'claude-code', modeId: 'plan' })
     wrapper.unmount()
   })
 

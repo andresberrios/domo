@@ -66,6 +66,54 @@ describe('getSettings', () => {
     await expect(getSettings()).resolves.toMatchObject({ vscodeSshHost: 'you@server' })
   })
 
+  /**
+   * The permission mode is per adapter because the two adapters share no mode
+   * id at all. One string could only ever have been right for one of them, and
+   * it was: `defaultAgentMode` was a Claude Code id, silently ignored by Codex.
+   */
+  it('defaults each adapter to its own starting mode', async () => {
+    expect(DEFAULTS.defaultAgentModes).toEqual({ 'claude-code': 'default', codex: 'agent' })
+    await expect(getSettings()).resolves.toMatchObject({
+      defaultAgentModes: { 'claude-code': 'default', codex: 'agent' }
+    })
+  })
+
+  it('keeps a stored per-adapter choice', async () => {
+    stored({ defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only' } })
+
+    await expect(getSettings()).resolves.toMatchObject({
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only' }
+    })
+  })
+
+  it('reads the old single-mode key as the Claude Code choice', async () => {
+    // What every install that predates the split has stored.
+    stored({ defaultAgentMode: 'acceptEdits' })
+
+    await expect(getSettings()).resolves.toMatchObject({
+      defaultAgentModes: { 'claude-code': 'acceptEdits', codex: 'agent' }
+    })
+  })
+
+  it('lets the new key win over the old one once it has been saved', async () => {
+    stored({
+      defaultAgentMode: 'acceptEdits',
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent-full-access' }
+    })
+
+    await expect(getSettings()).resolves.toMatchObject({
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent-full-access' }
+    })
+  })
+
+  it('keeps an adapter the stored object does not mention on its own default', async () => {
+    stored({ defaultAgentModes: { 'claude-code': 'plan' } })
+
+    await expect(getSettings()).resolves.toMatchObject({
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent' }
+    })
+  })
+
   it('reads values that were stored unwrapped', async () => {
     // Older rows hold the bare value instead of `{ v: … }`.
     query.mockResolvedValue([{ key: 'voiceName', value: 'Kore' }])

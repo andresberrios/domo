@@ -173,7 +173,14 @@ export interface AppSettings {
   proactiveNotifications: boolean
   /** Auto-answer coding-agent permission prompts with the first "allow once" option. */
   autoApprovePermissions: boolean
-  defaultAgentMode: string
+  /**
+   * The permission mode a new session of each adapter starts in. Per adapter,
+   * because the two share no mode ids at all: Claude Code offers `default` /
+   * `acceptEdits` / `plan` / `auto` / `bypassPermissions`, Codex `read-only` /
+   * `agent` / `agent-full-access`. One string could only ever be right for one
+   * of them, and it was — the other silently kept the adapter's own default.
+   */
+  defaultAgentModes: Record<AgentAdapter, string>
   language: string
   /** Let the voice agent name conversations, and rename them as the topic moves. */
   autoTitle: boolean

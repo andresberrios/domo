@@ -100,7 +100,11 @@ export const DEFAULTS: AppSettings = {
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
   proactiveNotifications: true,
   autoApprovePermissions: false,
-  defaultAgentMode: 'default',
+  // Each adapter's own starting mode, so the default changes nothing until the
+  // operator picks something: Claude Code's `default` ("Manual") and Codex's
+  // `agent` ("Approve for me"). The ids are not interchangeable — see
+  // `AppSettings.defaultAgentModes`.
+  defaultAgentModes: { 'claude-code': 'default', codex: 'agent' },
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
@@ -112,7 +116,35 @@ export async function getSettings(): Promise<AppSettings> {
   const stored: Record<string, any> = {}
   for (const row of rows) stored[row.key] = row.value?.v ?? row.value
   if (PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS.includes(stored.systemInstruction)) delete stored.systemInstruction
-  return { ...DEFAULTS, ...stored } as AppSettings
+  return {
+    ...DEFAULTS,
+    ...stored,
+    defaultAgentModes: storedAgentModes(stored)
+  } as AppSettings
+}
+
+/**
+ * The per-adapter default modes, reading the install's own row.
+ *
+ * `defaultAgentMode` — one string for both adapters — is what installs before
+ * this stored, and it could only ever have been a Claude Code id, so that is
+ * what it becomes. It is not migrated away: the settings page writes the whole
+ * form, so the new key appears on the next save and the old one is simply
+ * ignored from then on. An adapter missing from a stored object keeps its own
+ * default rather than becoming undefined.
+ */
+function storedAgentModes(stored: Record<string, any>): AppSettings['defaultAgentModes'] {
+  const modes = { ...DEFAULTS.defaultAgentModes }
+  if (typeof stored.defaultAgentMode === 'string' && stored.defaultAgentMode) {
+    modes['claude-code'] = stored.defaultAgentMode
+  }
+  const current = stored.defaultAgentModes
+  if (current && typeof current === 'object') {
+    for (const adapter of Object.keys(modes) as Array<keyof typeof modes>) {
+      if (typeof current[adapter] === 'string' && current[adapter]) modes[adapter] = current[adapter]
+    }
+  }
+  return modes
 }
 
 export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSettings> {

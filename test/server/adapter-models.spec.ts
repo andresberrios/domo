@@ -5,7 +5,9 @@ import * as acp from '@agentclientprotocol/sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
- * The model probe: a throwaway adapter session asked what it could run on.
+ * The adapter probe: a throwaway session asked what it could run on, and in
+ * which permission modes. Both come out of one `session/new` response, so one
+ * spawn answers both.
  *
  * `spawn` is replaced by a pair of pipes with the SDK's own *agent* side on the
  * far end, the same trick `acp-stream.spec.ts` uses — so everything above the
@@ -56,8 +58,16 @@ class FakeAdapter extends EventEmitter {
   }
 }
 
-/** An adapter that answers `session/new` with the given model selector. */
-function serve(adapter: FakeAdapter, models: { current: string, ids: string[] } | null) {
+/**
+ * An adapter that answers `session/new` with the given model selector, and
+ * optionally with the ACP `modes` object. Modes come out of the same response
+ * as the models — that is the whole reason one probe answers both.
+ */
+function serve(
+  adapter: FakeAdapter,
+  models: { current: string, ids: string[] } | null,
+  modes?: { current: string, ids: string[] }
+) {
   return acp
     .agent({ name: 'fake' })
     .onRequest(acp.methods.agent.initialize, () => ({
@@ -77,6 +87,14 @@ function serve(adapter: FakeAdapter, models: { current: string, ids: string[] } 
               options: models.ids.map(id => ({ value: id, name: id.toUpperCase() }))
             }]
           }
+        : {}),
+      ...(modes
+        ? {
+            modes: {
+              currentModeId: modes.current,
+              availableModes: modes.ids.map(id => ({ id, name: id.toUpperCase(), description: `the ${id} mode` }))
+            }
+          }
         : {})
     }))
     .connect(adapter.stream())
@@ -87,10 +105,13 @@ function serve(adapter: FakeAdapter, models: { current: string, ids: string[] } 
  * zero: a test that probes twice would otherwise re-serve the first one and the
  * second probe would wait for the full timeout.
  */
-async function answerWith(models: { current: string, ids: string[] } | null) {
+async function answerWith(
+  models: { current: string, ids: string[] } | null,
+  modes?: { current: string, ids: string[] }
+) {
   const baseline = state.adapters.length
   await vi.waitFor(() => expect(state.adapters.length).toBeGreaterThan(baseline))
-  serve(state.adapters[baseline]!, models)
+  serve(state.adapters[baseline]!, models, modes)
 }
 
 type Answer = { current: string, ids: string[] } | null | 'fail'
@@ -102,7 +123,10 @@ type Answer = { current: string, ids: string[] } | null | 'fail'
  * one exists to be served, and the order they spawn in is a race — waiting for
  * them one at a time deadlocks the second probe until its timeout.
  */
-function autoServe(answers: Partial<Record<'claude-code' | 'codex', Answer>>): () => void {
+function autoServe(
+  answers: Partial<Record<'claude-code' | 'codex', Answer>>,
+  modes?: Partial<Record<'claude-code' | 'codex', { current: string, ids: string[] }>>
+): () => void {
   const timer = setInterval(() => {
     for (const adapter of state.adapters) {
       if (adapter.served || !(adapter.which in answers)) continue
@@ -112,7 +136,7 @@ function autoServe(answers: Partial<Record<'claude-code' | 'codex', Answer>>): (
         adapter.stderr.write('Not logged in\n')
         setTimeout(() => adapter.emit('exit', 1, null), 20)
       } else {
-        serve(adapter, answer)
+        serve(adapter, answer, modes?.[adapter.which])
       }
     }
   }, 5)
@@ -140,8 +164,37 @@ describe('listAdapterModels', () => {
 
     await expect(probing).resolves.toEqual({
       models: [{ id: 'sonnet', name: 'SONNET' }, { id: 'haiku', name: 'HAIKU' }],
-      current: 'sonnet'
+      current: 'sonnet',
+      modes: [],
+      currentMode: null
     })
+  })
+
+  it('captures the permission modes out of the same response', async () => {
+    // One spawn answers both questions; asking separately would cost another.
+    const { listAdapterModels } = await import('../../server/lib/acp/models')
+    const probing = listAdapterModels('claude-code')
+    await answerWith(
+      { current: 'sonnet', ids: ['sonnet'] },
+      { current: 'default', ids: ['default', 'plan', 'auto'] }
+    )
+
+    await expect(probing).resolves.toMatchObject({
+      modes: [
+        { id: 'default', name: 'DEFAULT', description: 'the default mode' },
+        { id: 'plan', name: 'PLAN', description: 'the plan mode' },
+        { id: 'auto', name: 'AUTO', description: 'the auto mode' }
+      ],
+      currentMode: 'default'
+    })
+  })
+
+  it('reports no modes for an adapter that answers with none', async () => {
+    const { listAdapterModels } = await import('../../server/lib/acp/models')
+    const probing = listAdapterModels('claude-code')
+    await answerWith({ current: 'sonnet', ids: ['sonnet'] })
+
+    await expect(probing).resolves.toMatchObject({ modes: [], currentMode: null })
   })
 
   it('spawns once for two concurrent callers', async () => {
@@ -181,7 +234,7 @@ describe('listAdapterModels', () => {
     const probing = listAdapterModels('claude-code')
     await answerWith(null)
 
-    await expect(probing).resolves.toEqual({ models: [], current: null })
+    await expect(probing).resolves.toEqual({ models: [], current: null, modes: [], currentMode: null })
   })
 
   it('gives up rather than hanging when the adapter never answers', async () => {
@@ -235,15 +288,43 @@ describe('listAdapterCatalog', () => {
           id: 'claude-code',
           name: 'Claude Code',
           models: [{ id: 'sonnet', name: 'SONNET' }, { id: 'haiku', name: 'HAIKU' }],
-          default: 'sonnet'
+          default: 'sonnet',
+          modes: [],
+          defaultMode: null
         },
         {
           id: 'codex',
           name: 'Codex',
           models: [{ id: 'gpt-5.6-terra', name: 'GPT-5.6-TERRA' }, { id: 'gpt-5.6-luna', name: 'GPT-5.6-LUNA' }],
-          default: 'gpt-5.6-terra'
+          default: 'gpt-5.6-terra',
+          modes: [],
+          defaultMode: null
         }
       ]
+    })
+  })
+
+  it('carries each harness\'s own modes, which share not one id', async () => {
+    const { listAdapterCatalog } = await import('../../server/lib/acp/models')
+    const stop = autoServe(
+      { 'claude-code': { current: 'sonnet', ids: ['sonnet'] }, codex: { current: 'gpt-5.5', ids: ['gpt-5.5'] } },
+      {
+        'claude-code': { current: 'default', ids: ['default', 'acceptEdits'] },
+        codex: { current: 'agent', ids: ['read-only', 'agent'] }
+      }
+    )
+
+    const { adapters } = await listAdapterCatalog().finally(stop)
+
+    expect(adapters[0]).toMatchObject({
+      id: 'claude-code',
+      defaultMode: 'default',
+      modes: [{ id: 'default', name: 'DEFAULT' }, { id: 'acceptEdits', name: 'ACCEPTEDITS' }]
+    })
+    expect(adapters[1]).toMatchObject({
+      id: 'codex',
+      defaultMode: 'agent',
+      modes: [{ id: 'read-only', name: 'READ-ONLY' }, { id: 'agent', name: 'AGENT' }]
     })
   })
 
@@ -266,6 +347,8 @@ describe('listAdapterCatalog', () => {
     expect(adapters[0]).toMatchObject({ id: 'claude-code', default: 'sonnet' })
     expect(adapters[1]!.id).toBe('codex')
     expect(adapters[1]!.models).toEqual([])
+    expect(adapters[1]!.modes).toEqual([])
+    expect(adapters[1]!.defaultMode).toBeNull()
     expect(adapters[1]!.error).toMatch(/Not logged in/)
   })
 })

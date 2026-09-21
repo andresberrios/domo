@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentAdapter } from '~~/shared/types'
+import type { AgentAdapter, SessionModeInfo } from '~~/shared/types'
 
 const open = defineModel<boolean>('open', { default: false })
 
@@ -23,15 +23,21 @@ const adapterItems = [
 const ADAPTER_DEFAULT = 'adapter-default'
 const model = ref(ADAPTER_DEFAULT)
 
-// The adapter only reports its models in a `session/new` response, so the list
-// comes from the server probing it. Keyed on the adapter, and lazy: nothing is
-// spawned until the modal is actually opened.
+// The adapter only reports its models *and its permission modes* in a
+// `session/new` response, so both lists come from the server probing it — one
+// request, one spawn. Keyed on the adapter, and lazy: nothing is spawned until
+// the modal is actually opened.
 const {
   data: modelData,
   status: modelStatus,
   error: modelError,
   refresh: refreshModels
-} = await useFetch<{ models: Array<{ id: string, name: string }>, current: string | null }>(
+} = await useFetch<{
+  models: Array<{ id: string, name: string }>
+  current: string | null
+  modes: SessionModeInfo[]
+  currentMode: string | null
+}>(
   '/api/adapters/models',
   {
     query: computed(() => ({ adapter: adapter.value })),
@@ -52,6 +58,31 @@ const modelItems = computed(() => [
 ])
 
 const { data: settings } = await useFetch('/api/settings', { lazy: true })
+
+// The permission mode this session starts in, preselected to the install's
+// default for the chosen adapter. Never a sentinel: an empty v-model would show
+// a blank menu, so the selected id is always one of the items — probed, typed,
+// or the default itself while the probe is still out.
+const mode = ref('')
+const typedModes = ref<string[]>([])
+
+function defaultMode(): string {
+  return settings.value?.defaultAgentModes?.[adapter.value] ?? ''
+}
+
+const modeItems = computed(() => {
+  const items = (modelData.value?.modes ?? []).map(entry => ({ label: entry.name, value: entry.id }))
+  for (const id of [mode.value, ...typedModes.value]) {
+    if (id && !items.some(item => item.value === id)) items.push({ label: id, value: id })
+  }
+  return items
+})
+
+// Settings are fetched lazily and may land after the modal is already open.
+watch(settings, () => {
+  if (open.value && !mode.value) mode.value = defaultMode()
+})
+
 const { environments } = useDevEnvironments()
 const { projects } = useProjects()
 
@@ -84,6 +115,8 @@ watch([open, adapter], ([isOpen]) => {
   if (!isOpen) return
   model.value = ADAPTER_DEFAULT
   typedModels.value = []
+  mode.value = defaultMode()
+  typedModes.value = []
   refreshModels()
 }, { immediate: true })
 
@@ -98,6 +131,7 @@ async function create() {
         adapter: adapter.value,
         cwd: cwd.value.trim() || undefined,
         model: model.value === ADAPTER_DEFAULT ? undefined : model.value,
+        modeId: mode.value || undefined,
         devEnvironmentId: devEnvironmentId.value === LOCAL ? undefined : devEnvironmentId.value,
         voiceSessionId: props.voiceSessionId ?? null,
         initialPrompt: task.value.trim() || undefined
@@ -155,6 +189,25 @@ async function create() {
             </span>
             <span v-else class="text-xs text-muted">
               Leave on the default unless this agent needs a specific model.
+            </span>
+          </template>
+        </UFormField>
+
+        <UFormField label="Permission mode">
+          <USelectMenu
+            v-model="mode"
+            :items="modeItems"
+            value-key="value"
+            :loading="modelStatus === 'pending'"
+            create-item
+            class="w-full"
+            placeholder="Agent default"
+            @create="(id: string) => { typedModes.push(id); mode = id }"
+          />
+          <template #help>
+            <span class="text-xs text-muted">
+              How much this agent may do before it asks. Defaults to your setting for
+              {{ adapter === 'codex' ? 'Codex' : 'Claude Code' }}.
             </span>
           </template>
         </UFormField>

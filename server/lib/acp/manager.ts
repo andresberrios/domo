@@ -427,11 +427,13 @@ class AgentRuntime {
         }))
       : null
     const reported: string | null = state?.currentModeId ?? null
-    const desired = session.modeId || settings.defaultAgentMode
+    // The default is per adapter: the two share no mode ids at all.
+    const fallback = settings.defaultAgentModes[session.adapter]
+    const desired = session.modeId || fallback
     // A `session/load` may answer with no mode state even for an adapter that
     // has modes, so the row's own list is the other half of the question.
     const hasModes = !!state || !!session.modes?.length
-    let effective = reported ?? session.modeId ?? settings.defaultAgentMode
+    let effective = reported ?? session.modeId ?? fallback
 
     if (desired && hasModes && desired !== reported) {
       try {
@@ -790,7 +792,7 @@ class AcpManager {
       title,
       cwd,
       voiceSessionId: input.voiceSessionId ?? null,
-      modeId: input.modeId ?? settings.defaultAgentMode,
+      modeId: input.modeId ?? settings.defaultAgentModes[input.adapter ?? 'claude-code'],
       model: input.model?.trim() || null,
       devEnvironmentId: environment?.id ?? null
     })

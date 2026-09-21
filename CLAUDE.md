@@ -334,18 +334,45 @@ things that are easy to get wrong.
   records the truth rather than the request. Claude Code *also* honours
   `ANTHROPIC_MODEL` at the top of its own priority list, but the ACP call is one
   mechanism for both adapters, so that is the one used.
-- **An adapter only lists its models in a `session/new` response**, which is why
-  the picker is backed by `server/lib/acp/models.ts` spawning a throwaway
-  session (cached an hour, de-duplicated, timeout-capped). The ids are not what
-  you would guess: Claude Code lists `default` / `sonnet` / `opus` / `haiku`,
-  **not** `claude-haiku-4-5`, and codex-acp lists `gpt-6-astra` / `gpt-5.6-sol` /
-  `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` with **no `*-mini` or `*-nano` at
-  all**. `resolveModel()` therefore accepts an exact id, a display name or a
-  containment match either way, and fails the session rather than guessing.
+- **An adapter only lists its models *and its permission modes* in a
+  `session/new` response**, which is why both pickers are backed by
+  `server/lib/acp/models.ts` spawning a throwaway session (cached an hour,
+  de-duplicated, timeout-capped). One probe answers both — they arrive in the
+  same response, so asking separately would cost a second spawn for nothing —
+  and `listAdapterModels` returns `{ models, current, modes, currentMode }`.
+  The ids are not what you would guess: Claude Code lists `default` / `sonnet` /
+  `opus` / `haiku`, **not** `claude-haiku-4-5`, and codex-acp lists
+  `gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5`
+  with **no `*-mini` or `*-nano` at all**. `resolveModel()` therefore accepts an
+  exact id, a display name or a containment match either way, and fails the
+  session rather than guessing.
+- **The two adapters share not one permission-mode id, so nothing may hard-code
+  a list and the default is per adapter.** Claude Code answers `default`
+  ("Manual") / `acceptEdits` / `plan` / `auto` / `bypassPermissions` — the last
+  only when bypass is allowed, and `auto` falls back to `acceptEdits` on a model
+  that does not support it. codex-acp answers `read-only` ("Ask for approval") /
+  `agent` ("Approve for me", its own default) / `agent-full-access`. Both read
+  off the adapters' own sources (`SessionModeManager.buildAvailableModes`,
+  `AgentMode.all()`) and pinned in `test/unit/acp-model-options.spec.ts`. The
+  setting is therefore `defaultAgentModes: { 'claude-code', codex }`, each
+  defaulting to that adapter's own starting mode; `getSettings()` reads an
+  install's old single `defaultAgentMode` string as the claude-code value, so a
+  choice made before the split survives. The Settings page used to hard-code
+  `default`/`acceptEdits`/`plan`/`bypassPermissions` — missing `auto` and wrong
+  for Codex in every entry — and `manager.ts` then wrote an impossible id onto
+  every Codex row.
+- **`modes` is ACP's own object, not a `configOptions` select.** An adapter
+  publishes the mode both ways, but `session/set_mode` acts on
+  `modes.currentModeId`, so `server/lib/acp/mode.ts` reads
+  `modes.availableModes` / `modes.currentModeId` and nothing else. (Models are
+  the other way round: there is no `models` object, only the `configOptions`
+  entry whose `category` is `model`.)
 - **That endpoint is `/api/adapters/models`, not `/api/agents/models`.** A
   literal segment beside `/api/agents/[id]` collapses the typed route for every
   agent call to the methods the literal one supports, and
-  `$fetch('/api/agents/' + id, { method: 'PATCH' })` stops type-checking.
+  `$fetch('/api/agents/' + id, { method: 'PATCH' })` stops type-checking. It
+  serves the modes too, under that name: a rename would cost every caller for a
+  word.
 
 - **`devcontainer build` gets a scratch `.devcontainer/` all to itself.** The CLI
   writes its Feature lockfile *beside the config it was given*, so the generated

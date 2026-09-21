@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AppSettings, McpServer } from '~~/shared/types'
+import type { AgentAdapter, AppSettings, McpServer, SessionModeInfo } from '~~/shared/types'
 
 const toast = useToast()
 const { servers } = useMcpServers()
@@ -25,7 +25,7 @@ const form = reactive<AppSettings>({
   defaultCwd: '',
   proactiveNotifications: true,
   autoApprovePermissions: false,
-  defaultAgentMode: 'default',
+  defaultAgentModes: { 'claude-code': 'default', codex: 'agent' },
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
@@ -41,7 +41,7 @@ watchEffect(() => {
     defaultCwd: settings.value.defaultCwd,
     proactiveNotifications: settings.value.proactiveNotifications,
     autoApprovePermissions: settings.value.autoApprovePermissions,
-    defaultAgentMode: settings.value.defaultAgentMode,
+    defaultAgentModes: { ...settings.value.defaultAgentModes },
     language: settings.value.language,
     autoTitle: settings.value.autoTitle,
     vscodeSshHost: settings.value.vscodeSshHost,
@@ -84,12 +84,60 @@ const modelItems = computed(() => {
 
 const VOICES = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr']
 
-const MODES = [
-  { label: 'Ask every time', value: 'default' },
-  { label: 'Accept edits', value: 'acceptEdits' },
-  { label: 'Plan first', value: 'plan' },
-  { label: 'Bypass permissions', value: 'bypassPermissions' }
+/* Permission modes are per adapter and only the adapter knows them: the two
+ * share no mode id at all (Claude Code `default`/`acceptEdits`/`plan`/`auto`/
+ * `bypassPermissions`, Codex `read-only`/`agent`/`agent-full-access`), so the
+ * list that used to be hard-coded here was wrong for one of them whichever way
+ * it was written. Same probe and same endpoint as the model picker, so opening
+ * this page costs at most one adapter spawn each, cached server-side for an
+ * hour. */
+type AdapterProbe = {
+  models: Array<{ id: string, name: string }>
+  current: string | null
+  modes: SessionModeInfo[]
+  currentMode: string | null
+}
+
+const ADAPTERS: Array<{ id: AgentAdapter, label: string }> = [
+  { id: 'claude-code', label: 'Claude Code' },
+  { id: 'codex', label: 'Codex' }
 ]
+
+const probes = {
+  'claude-code': await useFetch<AdapterProbe>('/api/adapters/models', {
+    key: 'adapter-probe-claude-code',
+    query: { adapter: 'claude-code' },
+    lazy: true
+  }),
+  codex: await useFetch<AdapterProbe>('/api/adapters/models', {
+    key: 'adapter-probe-codex',
+    query: { adapter: 'codex' },
+    lazy: true
+  })
+}
+
+/* A mode id the adapter has not listed — one that shipped after this Domo, or
+ * the value this install already had. The selected value is always among the
+ * items, or the menu would render blank. */
+const typedModes = reactive<Record<AgentAdapter, string[]>>({ 'claude-code': [], codex: [] })
+
+function modeItems(adapter: AgentAdapter) {
+  const items = (probes[adapter].data.value?.modes ?? []).map(mode => ({ label: mode.name, value: mode.id }))
+  for (const id of [form.defaultAgentModes[adapter], ...typedModes[adapter]]) {
+    if (id && !items.some(item => item.value === id)) items.push({ label: id, value: id })
+  }
+  return items
+}
+
+function addTypedMode(adapter: AgentAdapter, id: string) {
+  typedModes[adapter].push(id)
+  form.defaultAgentModes[adapter] = id
+}
+
+function probeError(adapter: AgentAdapter): string | null {
+  const error = probes[adapter].error.value as any
+  return error ? (error.statusMessage ?? error.message ?? String(error)) : null
+}
 
 const mcpOpen = ref(false)
 const editing = ref<McpServer | null>(null)
@@ -220,14 +268,34 @@ async function deleteServer(server: McpServer) {
             <DirectoryPicker v-model="form.defaultCwd" />
           </UFormField>
 
-          <UFormField label="Default permission mode">
-            <USelectMenu
-              v-model="form.defaultAgentMode"
-              :items="MODES"
-              value-key="value"
-              class="w-full"
-            />
-          </UFormField>
+          <div class="space-y-2">
+            <p class="text-sm font-medium">
+              Default permission mode
+            </p>
+            <p class="text-xs text-muted">
+              How much a new session may do before it asks. Each agent has its own list and its own
+              default — they share no mode ids — and both lists come from the agent itself.
+            </p>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField v-for="entry in ADAPTERS" :key="entry.id" :label="entry.label">
+                <USelectMenu
+                  v-model="form.defaultAgentModes[entry.id]"
+                  :items="modeItems(entry.id)"
+                  value-key="value"
+                  :loading="probes[entry.id].status.value === 'pending'"
+                  create-item
+                  class="w-full"
+                  @create="(id: string) => addTypedMode(entry.id, id)"
+                />
+                <template #help>
+                  <span v-if="probeError(entry.id)" class="text-xs text-error">
+                    Could not ask {{ entry.label }} which modes it offers: {{ probeError(entry.id) }} —
+                    type the id manually.
+                  </span>
+                </template>
+              </UFormField>
+            </div>
+          </div>
 
           <USwitch
             v-model="form.autoApprovePermissions"
