@@ -43,6 +43,13 @@ const titleDraft = ref('')
 
 const transcript = computed(() => messages.value.filter(message => message.role !== 'tool'))
 
+// How much of the log the rolling summary stands in for. The transcript still
+// shows every message; this is only what Domo replays to the model.
+const foldedCount = computed(() => {
+  const through = session.value?.summaryThroughSeq ?? 0
+  return through ? messages.value.filter(message => message.seq <= through).length : 0
+})
+
 const toolMessages = computed(() =>
   messages.value.filter(message => message.role === 'tool').slice(-20)
 )
@@ -200,6 +207,13 @@ function roleMeta(role: string) {
                   @click="toggleMic"
                 />
               </div>
+
+              <ConversationSummary
+                v-if="session?.summary"
+                :summary="session.summary"
+                :folded="foldedCount"
+                :updated-at="session.summaryUpdatedAt"
+              />
 
               <div
                 v-for="message in transcript"
