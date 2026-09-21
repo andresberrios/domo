@@ -243,3 +243,128 @@ export const TOOL_STATUS_META: Record<string, { color: 'neutral' | 'primary' | '
   completed: { color: 'success', label: 'Done' },
   failed: { color: 'error', label: 'Failed' }
 }
+
+/**
+ * One collapsed run of tool activity. It carries the items it stands for, so
+ * expanding it is a matter of rendering them — there is no second lookup and
+ * nothing to re-derive.
+ */
+export interface ActivityGroup {
+  id: string
+  seq: number
+  at: string
+  kind: 'activity'
+  items: TranscriptItem[]
+  toolCalls: number
+  thoughts: number
+  failed: number
+  names: Array<{ name: string, count: number }>
+}
+
+export type CondensedItem = TranscriptItem | ActivityGroup
+
+export interface CondenseOptions {
+  /** Runs shorter than this are left alone: one card is not clutter. */
+  minRun?: number
+  /** The session is still working, so a trailing thought is the live tail. */
+  live?: boolean
+}
+
+function toolName(item: Extract<TranscriptItem, { kind: 'tool' }>): string {
+  return item.tool.name || item.tool.title || 'Tool'
+}
+
+/** A run of `tool` / `thought` items, in the order they happened. */
+function groupOf(run: TranscriptItem[]): ActivityGroup {
+  const counts = new Map<string, number>()
+  let toolCalls = 0
+  let thoughts = 0
+  let failed = 0
+
+  for (const item of run) {
+    if (item.kind === 'thought') {
+      thoughts += 1
+      continue
+    }
+    if (item.kind !== 'tool') continue
+    toolCalls += 1
+    if (item.tool.status === 'failed') failed += 1
+    const name = toolName(item)
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+
+  const first = run[0]!
+  return {
+    // Stable across re-renders: the first item's id does not move, so a group
+    // the user expanded stays the same group while events stream in below it.
+    id: `activity:${first.id}`,
+    seq: first.seq,
+    at: first.at,
+    kind: 'activity',
+    items: run,
+    toolCalls,
+    thoughts,
+    failed,
+    // Most frequent first; ties keep the order they first appeared in.
+    names: [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
+  }
+}
+
+/**
+ * The second pass over `buildTranscript()`'s output: what happened is already
+ * decided, this only decides what to *draw*. Every maximal run of `tool` /
+ * `thought` items becomes one `activity` row; everything else is passed
+ * through untouched, so a pending permission is never swallowed by a group.
+ *
+ * The live tail stays open — a tool that is still running, or a trailing
+ * thought while the session is working, renders on its own below the group, so
+ * the user can always see what the agent is doing right now.
+ */
+export function condenseTranscript(
+  items: TranscriptItem[],
+  options: CondenseOptions = {}
+): CondensedItem[] {
+  const minRun = options.minRun ?? 2
+  const last = items[items.length - 1]
+  const tailIsLive = !!last && (
+    (last.kind === 'tool' && (last.tool.status === 'pending' || last.tool.status === 'in_progress'))
+    || (last.kind === 'thought' && !!options.live)
+  )
+  const end = tailIsLive ? items.length - 1 : items.length
+
+  const out: CondensedItem[] = []
+  let run: TranscriptItem[] = []
+
+  const flush = () => {
+    if (run.length >= minRun) out.push(groupOf(run))
+    else out.push(...run)
+    run = []
+  }
+
+  for (let index = 0; index < end; index += 1) {
+    const item = items[index]!
+    if (item.kind === 'tool' || item.kind === 'thought') {
+      run.push(item)
+      continue
+    }
+    flush()
+    out.push(item)
+  }
+  flush()
+
+  if (tailIsLive) out.push(last!)
+  return out
+}
+
+/** "12 tool calls · 3 thoughts" — the one-line summary of a collapsed run. */
+export function activityLabel(group: ActivityGroup): string {
+  const parts: string[] = []
+  if (group.toolCalls) parts.push(`${group.toolCalls} tool call${group.toolCalls === 1 ? '' : 's'}`)
+  if (group.thoughts) parts.push(`${group.thoughts} thought${group.thoughts === 1 ? '' : 's'}`)
+  return parts.join(' · ')
+}
+
+/** "Read ×5, Bash ×4" — the per-tool breakdown behind the label. */
+export function activityBreakdown(group: ActivityGroup): string {
+  return group.names.map(entry => `${entry.name} ×${entry.count}`).join(', ')
+}
