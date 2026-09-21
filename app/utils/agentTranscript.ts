@@ -28,6 +28,7 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
       : null,
   cancelled: () => 'Turn cancelled',
   mode_changed: payload => `Mode set to ${payload?.modeId}`,
+  model_changed: payload => `Model: ${payload?.name || payload?.modelId}`,
   'adapter-exit': payload =>
     `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
   mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,

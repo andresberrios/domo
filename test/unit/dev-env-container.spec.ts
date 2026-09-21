@@ -45,6 +45,7 @@ function runArgs(input: {
   ports?: Array<{ innerPort: number, protocol: 'tcp' | 'udp' }>
   claudeConfigDir?: string | null
   codexConfigDir?: string | null
+  claudeCredentialsFile?: string | null
 } = {}): string[] {
   return containerRunArgs({
     environmentId: 'env_1',
@@ -59,7 +60,8 @@ function runArgs(input: {
     runtimeVolume: 'domo-dev-runtime-abc123',
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
     claudeConfigDir: input.claudeConfigDir ?? null,
-    codexConfigDir: input.codexConfigDir ?? null
+    codexConfigDir: input.codexConfigDir ?? null,
+    claudeCredentialsFile: input.claudeCredentialsFile ?? null
   })
 }
 
@@ -231,6 +233,24 @@ describe('containerRunArgs', () => {
       'type=bind,source=/home/me/.claude,target=/home/vscode/.claude',
       'type=bind,source=/home/me/.codex,target=/home/vscode/.codex'
     ]))
+  })
+
+  it('mounts the synced credentials file after, and inside, the .claude directory', () => {
+    const args = runArgs({
+      claudeConfigDir: '/home/me/.claude',
+      claudeCredentialsFile: '/data/claude/.credentials.json'
+    })
+    const mountValues = values(args, '--mount')
+
+    // Order is the whole point: a mount nested in another has to come second.
+    expect(mountValues.indexOf('type=bind,source=/data/claude/.credentials.json,'
+      + 'target=/home/vscode/.claude/.credentials.json'))
+      .toBeGreaterThan(mountValues.indexOf('type=bind,source=/home/me/.claude,target=/home/vscode/.claude'))
+  })
+
+  it('mounts no credentials file when there is nothing to sync', () => {
+    expect(values(runArgs({ claudeConfigDir: '/home/me/.claude' }), '--mount').join('\n'))
+      .not.toContain('.credentials.json')
   })
 
   it('puts them in root\'s home for an image with no user', () => {

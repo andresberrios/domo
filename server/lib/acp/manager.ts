@@ -8,6 +8,7 @@ import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
 import { bus } from '../bus'
+import { hasClaudeSubscriptionLogin } from '../claude-credentials'
 import { adapterCommandPath } from '../dev-env/runtime-volume'
 import {
   containerExecArgs,
@@ -18,6 +19,7 @@ import {
 import { internalBaseUrl } from '../internal-url'
 import { mintMeshToken } from '../mesh/token'
 import { getSettings } from '../settings'
+import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
 import {
   appendAgentEvent,
   createAgentSession,
@@ -124,15 +126,27 @@ const PASSTHROUGH_ENV = [
   'PATHEXT'
 ]
 
-function adapterEnv(adapter: AgentAdapter): NodeJS.ProcessEnv {
+/**
+ * Environment for the adapter process.
+ *
+ * The Claude branch is a precedence, not a union: `ANTHROPIC_API_KEY` wins
+ * *inside* Claude Code, so passing it alongside a subscription login silently
+ * moves the work onto API billing. A `claude setup-token` OAuth token first,
+ * then whatever login the host already has (the macOS Keychain here, the
+ * `.credentials.json` Domo syncs from it inside an environment), and only then
+ * the API key.
+ */
+async function adapterEnv(adapter: AgentAdapter): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
     const value = process.env[key]
     if (value !== undefined) env[key] = value
   }
   if (adapter === 'claude-code') {
+    const oauthToken = process.env.NUXT_CLAUDE_CODE_OAUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN
     const apiKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
-    if (apiKey) env.ANTHROPIC_API_KEY = apiKey
+    if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
+    else if (apiKey && !await hasClaudeSubscriptionLogin()) env.ANTHROPIC_API_KEY = apiKey
   } else {
     const codexKey = process.env.NUXT_CODEX_API_KEY || process.env.CODEX_API_KEY
     const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
@@ -365,7 +379,7 @@ class AgentRuntime {
     await this.setStatus('starting', { lastError: null })
 
     let environment: DevEnvironment | null = null
-    const env = adapterEnv(session.adapter)
+    const env = await adapterEnv(session.adapter)
     let proc: ChildProcessWithoutNullStreams
     if (session.devEnvironmentId) {
       environment = await ensureEnvironmentRunning(session.devEnvironmentId)
@@ -459,9 +473,10 @@ class AgentRuntime {
     const mcpServers = await this.mcpServersForSession(environment, httpMcp)
     const settings = await getSettings()
 
+    let sessionResponse: any = null
     if (session.acpSessionId) {
       try {
-        await connection.agent.request(acp.methods.agent.session.load, {
+        sessionResponse = await connection.agent.request(acp.methods.agent.session.load, {
           sessionId: session.acpSessionId,
           cwd: session.cwd,
           mcpServers
@@ -477,6 +492,7 @@ class AgentRuntime {
         cwd: session.cwd,
         mcpServers
       } as any)) as any
+      sessionResponse = created
       this.acpSessionId = created.sessionId
       const modes = created.modes
         ? {
@@ -499,7 +515,56 @@ class AgentRuntime {
       }
     }
 
+    await this.applyPinnedModel(session.adapter, sessionResponse)
     await this.setStatus('idle', { touch: true })
+  }
+
+  /**
+   * Put the session on the model the operator pinned, and record which one it
+   * ended up on either way.
+   *
+   * Both adapters expose the choice as an ACP `configOptions` select in the
+   * category `model` and take `session/set_config_option`, so there is one
+   * mechanism rather than `ANTHROPIC_MODEL` for one and a config key for the
+   * other. The recorded event is what makes "it really ran on the cheap model"
+   * something that can be asserted afterwards rather than assumed.
+   */
+  private async applyPinnedModel(adapter: AgentAdapter, sessionResponse: any): Promise<void> {
+    const option = modelConfigOption(sessionResponse)
+    if (!option) return
+
+    const preference = pinnedModel(adapter)
+    let chosen = currentModel(option)
+
+    if (preference) {
+      const wanted = resolveModel(option, preference)
+      if (!wanted) {
+        throw new Error(
+          `The ${adapter} adapter does not offer a model matching "${preference}". `
+          + `It offers: ${availableModelIds(option).join(', ') || '(none)'}.`
+        )
+      }
+      if (wanted.value !== chosen?.value) {
+        const response = (await this.connection!.agent.request(acp.methods.agent.session.setConfigOption, {
+          sessionId: this.acpSessionId,
+          configId: wanted.configId,
+          value: wanted.value
+        } as any)) as any
+        // The adapter answers with the full set of options; believe it about
+        // what actually took, rather than what was asked for.
+        chosen = currentModel(modelConfigOption(response)) ?? wanted
+      } else {
+        chosen = wanted
+      }
+    }
+
+    if (chosen) {
+      await appendAgentEvent(this.agentSessionId, 'model_changed', {
+        modelId: chosen.value,
+        name: chosen.name,
+        pinned: preference ?? null
+      })
+    }
   }
 
   private async mcpServersForSession(environment: DevEnvironment | null, httpMcp: boolean) {

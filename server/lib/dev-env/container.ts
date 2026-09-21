@@ -126,6 +126,8 @@ export interface RunContainerInput {
   ports: ResolvedPortConfig[]
   claudeConfigDir: string | null
   codexConfigDir: string | null
+  /** The synced `.credentials.json`, mounted as a file inside `~/.claude`. */
+  claudeCredentialsFile: string | null
 }
 
 function mountArg(mount: VolumeMount & { type?: string, readonly?: boolean }): string[] {
@@ -155,6 +157,17 @@ export function containerRunArgs(input: RunContainerInput): string[] {
   ]
   if (input.claudeConfigDir) {
     args.push(...mountArg({ type: 'bind', source: input.claudeConfigDir, target: `${home}/.claude` }))
+  }
+  // Nested inside the directory mount above, and after it, so it wins. On macOS
+  // the login lives in the Keychain, so `~/.claude` alone authenticates nothing;
+  // `syncClaudeCredentials()` writes the file this points at. Docker follows the
+  // source path's inode, which is why that file is rewritten and never replaced.
+  if (input.claudeCredentialsFile) {
+    args.push(...mountArg({
+      type: 'bind',
+      source: input.claudeCredentialsFile,
+      target: `${home}/.claude/.credentials.json`
+    }))
   }
   if (input.codexConfigDir) {
     args.push(...mountArg({ type: 'bind', source: input.codexConfigDir, target: `${home}/.codex` }))
