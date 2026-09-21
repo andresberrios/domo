@@ -71,6 +71,7 @@ export function useAgentSessions() {
         status: row.status,
         modeId: row.mode_id ?? null,
         modes: row.modes ?? null,
+        model: row.model ?? null,
         lastError: row.last_error ?? null,
         summary: row.summary ?? null,
         createdAt: row.created_at,

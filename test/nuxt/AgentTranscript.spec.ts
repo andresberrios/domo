@@ -16,6 +16,7 @@ const session: AgentSession = {
   status: 'idle',
   modeId: 'default',
   modes: null,
+  model: null,
   lastError: null,
   summary: null,
   createdAt: '2026-01-01T00:00:00.000Z',

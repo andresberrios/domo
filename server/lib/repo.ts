@@ -60,6 +60,7 @@ function mapAgentSession(r: any): AgentSession {
     status: r.status,
     modeId: r.mode_id,
     modes: r.modes,
+    model: r.model ?? null,
     lastError: r.last_error,
     summary: r.summary,
     createdAt: r.created_at,
@@ -482,14 +483,18 @@ export async function createAgentSession(input: {
   cwd: string
   voiceSessionId?: string | null
   modeId?: string | null
+  model?: string | null
   devEnvironmentId?: string | null
 }): Promise<AgentSession> {
   const now = nowIso()
   const row = await queryOne(
     `insert into agent_sessions
-       (id, voice_session_id, adapter, title, cwd, dev_environment_id, status, mode_id, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, 'starting', $7, $8, $8) returning *`,
-    [newId('ag'), input.voiceSessionId ?? null, input.adapter, input.title, input.cwd, input.devEnvironmentId ?? null, input.modeId ?? null, now]
+       (id, voice_session_id, adapter, title, cwd, dev_environment_id, status, mode_id, model, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, 'starting', $7, $8, $9, $9) returning *`,
+    [
+      newId('ag'), input.voiceSessionId ?? null, input.adapter, input.title, input.cwd,
+      input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, now
+    ]
   )
   bus.publish({ type: 'agent-list-changed' })
   return mapAgentSession(row)
@@ -504,6 +509,7 @@ export async function updateAgentSession(
     acpSessionId: string | null
     modeId: string | null
     modes: any
+    model: string | null
     lastError: string | null
     summary: string | null
     archived: boolean
@@ -525,6 +531,7 @@ export async function updateAgentSession(
     params.push(JSON.stringify(patch.modes))
     sets.push(`modes = $${params.length}::jsonb`)
   }
+  if (patch.model !== undefined) push('model', patch.model)
   if (patch.lastError !== undefined) push('last_error', patch.lastError)
   if (patch.summary !== undefined) push('summary', patch.summary)
   if (patch.archived !== undefined) push('archived', patch.archived)

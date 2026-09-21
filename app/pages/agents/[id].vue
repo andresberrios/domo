@@ -150,6 +150,14 @@ const menuItems = computed(() => [
             :label="`${session?.adapter === 'codex' ? 'Codex' : 'Claude Code'} · ACP`"
           />
           <UBadge
+            v-if="session?.model"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            class="font-mono"
+            :label="session.model"
+          />
+          <UBadge
             v-if="environment"
             color="primary"
             variant="subtle"

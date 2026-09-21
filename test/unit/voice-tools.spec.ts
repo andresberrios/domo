@@ -32,7 +32,16 @@ const acpManager = {
   stop: vi.fn()
 }
 
+// The real one spawns an adapter to ask it; that is `adapter-models.spec.ts`.
+const catalog = vi.hoisted(() => vi.fn(async (_adapter?: string) => ({
+  adapters: [
+    { id: 'claude-code', name: 'Claude Code', models: [{ id: 'haiku', name: 'Haiku 4.5' }], default: 'sonnet' },
+    { id: 'codex', name: 'Codex', models: [{ id: 'gpt-5.6-luna', name: '5.6 Luna' }], default: 'gpt-5.6-terra' }
+  ]
+})))
+
 vi.mock('../../server/lib/repo', () => repo)
+vi.mock('../../server/lib/acp/models', () => ({ listAdapterCatalog: catalog }))
 vi.mock('../../server/lib/acp/manager', () => ({
   acpManager,
   normalizeCwd: (input: string) => input
@@ -245,6 +254,42 @@ describe('create_agent_session', () => {
       initialPrompt: 'write the readme'
     }))
     expect(result).toMatchObject({ started: true })
+  })
+
+  it('passes a requested model through, and asks for none when it is omitted', async () => {
+    acpManager.create.mockResolvedValue({ ...agent(), status: 'starting' })
+
+    await voiceTools.create_agent_session!.handler({ title: 'Cheap', model: 'haiku' }, ctx)
+    expect(acpManager.create).toHaveBeenCalledWith(expect.objectContaining({ model: 'haiku' }))
+
+    await voiceTools.create_agent_session!.handler({ title: 'Default' }, ctx)
+    expect(acpManager.create).toHaveBeenLastCalledWith(expect.objectContaining({ model: undefined }))
+  })
+})
+
+describe('list_models', () => {
+  it('reports every harness and the models it offers', async () => {
+    const result = await voiceTools.list_models!.handler({}, ctx) as any
+
+    // The same cached probe the picker uses; the tool adds no second spawn path.
+    expect(catalog).toHaveBeenCalledWith(undefined)
+    expect(result.adapters[0]).toMatchObject({ id: 'claude-code', name: 'Claude Code' })
+  })
+
+  it('filters to one harness, and ignores a name it does not know', async () => {
+    await voiceTools.list_models!.handler({ adapter: 'codex' }, ctx)
+    expect(catalog).toHaveBeenCalledWith('codex')
+
+    // The model invents ids; an unknown one must not fail the call.
+    await voiceTools.list_models!.handler({ adapter: 'gpt-42' }, ctx)
+    expect(catalog).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('is declared to the model as the thing to call before picking a model', async () => {
+    const declaration = voiceToolDeclarations({ autoTitle: true }).find(entry => entry.name === 'list_models')
+
+    expect(declaration?.description).toMatch(/call this before spawning/i)
+    expect(declaration?.parameters?.required ?? []).toEqual([])
   })
 })
 

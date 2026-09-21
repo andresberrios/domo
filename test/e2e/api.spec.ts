@@ -9,6 +9,7 @@ import {
   appendAgentEvent,
   createAgentSession,
   createPermission,
+  getAgentSession,
   listPermissions,
   listProjects
 } from '../../server/lib/repo'
@@ -53,7 +54,12 @@ await setup({
     NUXT_GEMINI_API_KEY: '',
     NUXT_ANTHROPIC_API_KEY: '',
     NUXT_CODEX_API_KEY: '',
-    NUXT_OPENAI_API_KEY: ''
+    NUXT_OPENAI_API_KEY: '',
+    // Blanking the keys is *not* enough to keep a real agent out of this layer:
+    // on macOS Claude Code reads its login from the Keychain and starts a real,
+    // billable session. Both adapters are pointed at a stub that exits instead.
+    NUXT_CLAUDE_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
+    NUXT_CODEX_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs')
   }
 })
 
@@ -236,6 +242,30 @@ describe('a coding agent as the UI sees it', () => {
 
   it('404s on an agent session that does not exist', async () => {
     expect((await fetch('/api/agents/ag_nope')).status).toBe(404)
+  })
+
+  it('puts the requested model on the new session\'s row', async () => {
+    // The stub adapter exits, so the session lands in `error` — but the row is
+    // written before the spawn, which is the part this covers.
+    const created = await $fetch<{ id: string }>('/api/agents', {
+      method: 'POST',
+      body: { title: 'Cheap', adapter: 'codex', cwd: checkout, model: 'gpt-5.6-luna' }
+    })
+
+    await expect(getAgentSession(created.id)).resolves.toMatchObject({
+      adapter: 'codex',
+      model: 'gpt-5.6-luna',
+      status: 'error'
+    })
+  })
+
+  it('leaves the model null when none is asked for', async () => {
+    const created = await $fetch<{ id: string }>('/api/agents', {
+      method: 'POST',
+      body: { title: 'Default', cwd: checkout }
+    })
+
+    await expect(getAgentSession(created.id).then(row => row!.model)).resolves.toBeNull()
   })
 })
 

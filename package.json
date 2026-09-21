@@ -18,6 +18,7 @@
     "test:integration": "vitest run --project integration",
     "test:electric": "vitest run --project electric",
     "test:docker": "vitest run --project unit --project docker-live test/docker",
+    "test:agents": "vitest run --project agents-live",
     "test:watch": "vitest --project unit --project nuxt"
   },
   "dependencies": {

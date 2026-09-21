@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { Type, type FunctionDeclaration } from '@google/genai'
 
 import { acpManager, normalizeCwd } from '../acp/manager'
+import { listAdapterCatalog } from '../acp/models'
 import {
   createVoiceSession,
   getAgentSession,
@@ -211,6 +212,28 @@ export const voiceTools: Record<string, VoiceTool> = {
     }
   },
 
+  list_models: {
+    declaration: {
+      name: 'list_models',
+      description:
+        'List the coding-agent harnesses Domo can run and the models each offers; call this before spawning with a specific model so you pick a real id.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          adapter: {
+            type: Type.STRING,
+            enum: ['claude-code', 'codex'],
+            description: 'Only this harness. Omit for all of them.'
+          }
+        }
+      }
+    },
+    // The same cached probe the picker uses; there is no second spawn path.
+    handler: async args => listAdapterCatalog(
+      args.adapter === 'codex' || args.adapter === 'claude-code' ? args.adapter : undefined
+    )
+  },
+
   create_agent_session: {
     declaration: {
       name: 'create_agent_session',
@@ -233,6 +256,10 @@ export const voiceTools: Record<string, VoiceTool> = {
           devEnvironmentId: {
             type: Type.STRING,
             description: 'Development environment id from list_dev_environments. Prefer this over cwd.'
+          },
+          model: {
+            type: Type.STRING,
+            description: 'Optional model id; ids come from list_models. Omit for the default.'
           }
         },
         required: ['title']
@@ -245,6 +272,7 @@ export const voiceTools: Record<string, VoiceTool> = {
         cwd: args.cwd,
         devEnvironmentId: args.devEnvironmentId,
         voiceSessionId: ctx.voiceSessionId,
+        model: args.model,
         initialPrompt: args.task
       })
       return {
@@ -252,6 +280,7 @@ export const voiceTools: Record<string, VoiceTool> = {
         title: session.title,
         adapter: session.adapter,
         cwd: session.cwd,
+        model: session.model,
         status: session.status,
         started: !!args.task
       }

@@ -65,6 +65,22 @@ interface ServeOptions {
   capabilities?: Record<string, unknown>
   /** Handed the `session/new` params, so a test can look at `mcpServers`. */
   onNewSession?: (params: any) => void
+  /** The model select this adapter offers, if any. */
+  models?: { current: string, ids: string[] }
+  /** Every `session/set_config_option` the adapter is asked for. */
+  onSetConfigOption?: (params: any) => void
+}
+
+/** A `configOptions` model selector shaped the way both real adapters send one. */
+function modelOption(models: { current: string, ids: string[] }) {
+  return {
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    type: 'select' as const,
+    currentValue: models.current,
+    options: models.ids.map(id => ({ value: id, name: id.toUpperCase() }))
+  }
 }
 
 /** Serve one turn, scripted by the test, then answer `session/prompt`. */
@@ -77,7 +93,17 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
     }))
     .onRequest(acp.methods.agent.session.new, (ctx: any) => {
       options.onNewSession?.(ctx.params)
-      return { sessionId: 'acp_fake' }
+      return {
+        sessionId: 'acp_fake',
+        ...(options.models ? { configOptions: [modelOption(options.models)] } : {})
+      }
+    })
+    .onRequest(acp.methods.agent.session.setConfigOption, (ctx: any) => {
+      options.onSetConfigOption?.(ctx.params)
+      // The adapter answers with the full set, reporting what actually took.
+      return {
+        configOptions: [modelOption({ current: ctx.params.value, ids: options.models?.ids ?? [] })]
+      }
     })
     .onRequest(acp.methods.agent.session.prompt, async (ctx: any) => {
       await turn(update =>
@@ -322,5 +348,93 @@ describe('the agent mesh handed to a new session', () => {
 
     expect(params.mcpServers.find((server: any) => server.name === 'domo')).toBeUndefined()
     warn.mockRestore()
+  })
+})
+
+describe('the model a session runs on', () => {
+  /** Start a session, serve one empty turn, and report what the adapter was asked. */
+  async function boot(model: string | null, models?: { current: string, ids: string[] }) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Model',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      model
+    })
+    const asked: any[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, { models, onSetConfigOption: params => asked.push(params) })
+    await started
+    return { agent, asked }
+  }
+
+  it('asks the adapter for the model on the row, and records what it landed on', async () => {
+    const { agent, asked } = await boot('haiku', { current: 'sonnet', ids: ['sonnet', 'haiku', 'opus'] })
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
+    // The row becomes a record of the truth, not of the request.
+    await expect(getAgentSession(agent.id).then(row => row!.model)).resolves.toBe('haiku')
+    expect((await listAgentEvents(agent.id)).find(event => event.type === 'model_changed')?.payload)
+      .toMatchObject({ modelId: 'haiku', requested: 'haiku' })
+  })
+
+  it('resolves a written-out id against the ids the adapter actually offers', async () => {
+    // Claude Code lists `haiku`, not `claude-haiku-4-5`; both have to work.
+    const { asked } = await boot('claude-haiku-4-5', { current: 'sonnet', ids: ['sonnet', 'haiku'] })
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
+  })
+
+  it('asks for nothing when the session is already on the model it wants', async () => {
+    const { agent, asked } = await boot('haiku', { current: 'haiku', ids: ['sonnet', 'haiku'] })
+
+    expect(asked).toEqual([])
+    await expect(getAgentSession(agent.id).then(row => row!.model)).resolves.toBe('haiku')
+  })
+
+  it('pins nothing when the row names no model and no default is set', async () => {
+    const { agent, asked } = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku'] })
+
+    expect(asked).toEqual([])
+    // Still recorded: what it is running on is worth knowing either way.
+    await expect(getAgentSession(agent.id).then(row => row!.model)).resolves.toBe('sonnet')
+  })
+
+  it('falls back to the install-wide default for a row with no model', async () => {
+    process.env.NUXT_CLAUDE_MODEL = 'haiku'
+    try {
+      const { asked } = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku'] })
+
+      expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
+    } finally {
+      delete process.env.NUXT_CLAUDE_MODEL
+    }
+  })
+
+  it('is a no-op for an adapter that offers no model selector', async () => {
+    const { agent, asked } = await boot('haiku')
+
+    expect(asked).toEqual([])
+    await expect(getAgentSession(agent.id).then(row => row!.model)).resolves.toBe('haiku')
+  })
+
+  it('fails the session rather than silently running on the wrong model', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Model',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      model: 'gemini-3-pro'
+    })
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, { models: { current: 'sonnet', ids: ['sonnet', 'haiku'] } })
+
+    await expect(started).rejects.toThrow(/does not offer a model matching "gemini-3-pro"/)
+    // The message names what was on offer, so the operator can fix it.
+    const row = await getAgentSession(agent.id)
+    expect(row!.status).toBe('error')
+    expect(row!.lastError).toContain('sonnet, haiku')
   })
 })

@@ -18,6 +18,39 @@ const adapterItems = [
   { label: 'Codex', value: 'codex' }
 ]
 
+// Reka's select items may not have an empty-string value, so "let the adapter
+// decide" is a named sentinel rather than ''.
+const ADAPTER_DEFAULT = 'adapter-default'
+const model = ref(ADAPTER_DEFAULT)
+
+// The adapter only reports its models in a `session/new` response, so the list
+// comes from the server probing it. Keyed on the adapter, and lazy: nothing is
+// spawned until the modal is actually opened.
+const {
+  data: modelData,
+  status: modelStatus,
+  error: modelError,
+  refresh: refreshModels
+} = await useFetch<{ models: Array<{ id: string, name: string }>, current: string | null }>(
+  '/api/adapters/models',
+  {
+    query: computed(() => ({ adapter: adapter.value })),
+    immediate: false,
+    lazy: true,
+    watch: false
+  }
+)
+
+// A model id the adapter has not listed yet — the escape hatch for one that
+// shipped after this Domo, or an account-specific alias.
+const typedModels = ref<string[]>([])
+
+const modelItems = computed(() => [
+  { label: 'Adapter default', value: ADAPTER_DEFAULT },
+  ...(modelData.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id })),
+  ...typedModels.value.map(id => ({ label: id, value: id }))
+])
+
 const { data: settings } = await useFetch('/api/settings', { lazy: true })
 const { environments } = useDevEnvironments()
 const { projects } = useProjects()
@@ -38,10 +71,21 @@ watch(open, async (value) => {
   if (!value) return
   title.value = ''
   task.value = ''
+  model.value = ADAPTER_DEFAULT
   adapter.value = 'claude-code'
   cwd.value = settings.value?.defaultCwd ?? ''
   devEnvironmentId.value = environments.value.find(environment => environment.status === 'running')?.id ?? LOCAL
 })
+
+// Asking costs an adapter spawn, so it happens when the modal opens and again
+// only if the adapter changes — never on every keystroke elsewhere in the form.
+// `immediate`, because the modal may be mounted already open.
+watch([open, adapter], ([isOpen]) => {
+  if (!isOpen) return
+  model.value = ADAPTER_DEFAULT
+  typedModels.value = []
+  refreshModels()
+}, { immediate: true })
 
 async function create() {
   if (!title.value.trim() && !task.value.trim()) return
@@ -53,6 +97,7 @@ async function create() {
         title: title.value.trim() || task.value.trim().slice(0, 60),
         adapter: adapter.value,
         cwd: cwd.value.trim() || undefined,
+        model: model.value === ADAPTER_DEFAULT ? undefined : model.value,
         devEnvironmentId: devEnvironmentId.value === LOCAL ? undefined : devEnvironmentId.value,
         voiceSessionId: props.voiceSessionId ?? null,
         initialPrompt: task.value.trim() || undefined
@@ -91,6 +136,27 @@ async function create() {
 
         <UFormField label="Name" hint="How you'll refer to it out loud">
           <UInput v-model="title" placeholder="auth refactor" class="w-full" autofocus />
+        </UFormField>
+
+        <UFormField label="Model">
+          <USelectMenu
+            v-model="model"
+            :items="modelItems"
+            value-key="value"
+            :loading="modelStatus === 'pending'"
+            create-item
+            class="w-full"
+            @create="(id: string) => { typedModels.push(id); model = id }"
+          />
+          <template #help>
+            <span v-if="modelError" class="text-xs text-error">
+              Could not ask {{ adapter === 'codex' ? 'Codex' : 'Claude Code' }} which models it offers:
+              {{ modelError.statusMessage ?? modelError.message }}
+            </span>
+            <span v-else class="text-xs text-muted">
+              Leave on the default unless this agent needs a specific model.
+            </span>
+          </template>
         </UFormField>
 
         <UFormField label="Development environment">

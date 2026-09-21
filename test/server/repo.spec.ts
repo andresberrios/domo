@@ -13,6 +13,7 @@ import {
   deleteAgentSession,
   deleteProject,
   deleteVoiceSession,
+  getAgentSession,
   getResumptionHandle,
   listAgentEvents,
   listAgentSessions,
@@ -385,6 +386,35 @@ describe('agent sessions', () => {
 
     expect(session).toMatchObject({ status: 'starting', adapter: 'claude-code', archived: false })
     expect(seen.types()).toEqual(['agent-list-changed'])
+  })
+
+  it('has no model until one is asked for, so the adapter picks', async () => {
+    const session = await agent()
+
+    expect(session.model).toBeNull()
+  })
+
+  it('round-trips the model it was created with, and what it later landed on', async () => {
+    // The model is per session, so two agents can be on different ones at once.
+    const session = await agent({
+      adapter: 'claude-code', title: 'Auth refactor', cwd: '/srv/api', model: 'claude-haiku-4-5'
+    })
+
+    expect(session.model).toBe('claude-haiku-4-5')
+
+    // The adapter reports what it actually resolved to; the row records that.
+    const updated = await updateAgentSession(session.id, { model: 'haiku' })
+
+    expect(updated!.model).toBe('haiku')
+    await expect(getAgentSession(session.id).then(row => row!.model)).resolves.toBe('haiku')
+  })
+
+  it('lets the model be cleared back to the adapter\'s default', async () => {
+    const session = await agent({
+      adapter: 'codex', title: 'Docs', cwd: '/srv/api', model: 'gpt-5.6-luna'
+    })
+
+    await expect(updateAgentSession(session.id, { model: null }).then(row => row!.model)).resolves.toBeNull()
   })
 
   it('keeps an unknown adapter out of the domain type', async () => {

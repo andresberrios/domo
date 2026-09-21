@@ -1,15 +1,33 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
+import { listAdapterCatalog } from '../acp/models'
 import { appendAgentEvent, getAgentSession, listAgentSessions } from '../repo'
 import { voiceManager } from '../voice/runtime'
 
 /**
  * The agent mesh: what a coding agent can do to the rest of Domo.
  *
- * Every session Domo spawns gets these four tools through the built-in `domo`
+ * Every session Domo spawns gets these five tools through the built-in `domo`
  * MCP server (`server/api/internal/mcp.ts`). They are how agents see each
- * other, hand work over, spawn peers and page the voice supervisor.
+ * other, hand work over, spawn peers, pick a model and page the voice
+ * supervisor.
  */
 export const MESH_TOOLS = [
+  {
+    name: 'list_models',
+    description:
+      'List the coding-agent harnesses Domo can run and the models each offers; call this before spawning with a specific model so you pick a real id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        adapter: {
+          type: 'string',
+          enum: ['claude-code', 'codex'],
+          description: 'Only this harness. Omit for all of them.'
+        }
+      },
+      additionalProperties: false
+    }
+  },
   {
     name: 'list_agents',
     description:
@@ -42,6 +60,10 @@ export const MESH_TOOLS = [
         cwd: {
           type: 'string',
           description: 'Absolute working directory for host sessions. Agents in a dev environment always spawn their peer in the same environment.'
+        },
+        model: {
+          type: 'string',
+          description: 'Optional model id; ids come from list_models. Omit for the default.'
         }
       },
       required: ['title', 'prompt'],
@@ -74,6 +96,10 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
   const args = (input ?? {}) as any
 
   switch (tool) {
+    case 'list_models':
+      // The same cached probe the picker uses; there is no second spawn path.
+      return listAdapterCatalog(args.adapter === 'codex' || args.adapter === 'claude-code' ? args.adapter : undefined)
+
     case 'list_agents': {
       const sessions = await listAgentSessions()
       return {
@@ -109,10 +135,11 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         cwd: caller.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller.cwd),
         devEnvironmentId: caller.devEnvironmentId ?? null,
         voiceSessionId: caller.voiceSessionId ?? null,
+        model: args.model ?? null,
         initialPrompt: args.prompt
       })
       await appendAgentEvent(caller.id, 'mesh_spawned', { agentId: session.id, title: session.title })
-      return { id: session.id, title: session.title, cwd: session.cwd }
+      return { id: session.id, title: session.title, cwd: session.cwd, model: session.model }
     }
 
     case 'notify_supervisor': {

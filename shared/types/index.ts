@@ -55,6 +55,8 @@ export interface AgentSession {
   status: AgentSessionStatus
   modeId: string | null
   modes: SessionModeInfo[] | null
+  /** The model this session runs on, as the adapter reports it. Null is "the adapter's default". */
+  model: string | null
   lastError: string | null
   createdAt: string
   updatedAt: string

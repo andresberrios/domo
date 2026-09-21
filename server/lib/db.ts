@@ -112,6 +112,7 @@ create table if not exists agent_sessions (
   status text not null default 'idle',
   mode_id text,
   modes jsonb,
+  model text,
   last_error text,
   summary text,
   created_at text not null,
@@ -121,6 +122,9 @@ create table if not exists agent_sessions (
 );
 
 alter table agent_sessions add column if not exists dev_environment_id text references dev_environments(id) on delete set null;
+-- The model this session runs on, so two agents can be on different ones at
+-- once. Written back from what the adapter says it actually landed on.
+alter table agent_sessions add column if not exists model text;
 
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.

@@ -80,3 +80,8 @@ export function resolveModel(option: any, preference: string): ModelChoice | nul
 export function availableModelIds(option: any): string[] {
   return flattenOptions(option?.options).map(entry => entry.value!)
 }
+
+/** The same list, with the labels a picker needs. */
+export function availableModelOptions(option: any): Array<{ id: string, name: string }> {
+  return flattenOptions(option?.options).map(entry => ({ id: entry.value!, name: entry.name ?? entry.value! }))
+}

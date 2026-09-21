@@ -127,6 +127,27 @@ export default defineConfig(async () => ({
           include: ['test/docker/**/*.live.spec.ts'],
           testTimeout: 60_000
         }
+      },
+
+      // 6. Real coding agents, in a real environment, on real accounts: the one
+      //    boundary every other layer stops at. Needs Postgres *and* Docker *and*
+      //    a Claude and a Codex login, so it can never be part of the default
+      //    run. Opt in: `pnpm test:agents`.
+      {
+        resolve: { alias },
+        test: {
+          name: 'agents-live',
+          environment: 'node',
+          include: ['test/agents/**/*.live.spec.ts'],
+          // One environment and one database, shared by the files in turn.
+          fileParallelism: false,
+          globalSetup: [resolve(rootDir, 'test/agents/global-setup.ts')],
+          setupFiles: [resolve(rootDir, 'test/setup/database.ts')],
+          // A cold environment build is minutes; a turn on a real model is tens
+          // of seconds.
+          hookTimeout: 900_000,
+          testTimeout: 300_000
+        }
       }
     ]
   }

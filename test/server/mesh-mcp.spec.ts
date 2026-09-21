@@ -33,6 +33,16 @@ vi.mock('../../server/lib/acp/manager', async (importOriginal) => {
   return { ...original, acpManager: acp }
 })
 
+// The real one spawns an adapter to ask it; that belongs to `adapter-models.spec.ts`.
+const catalog = vi.hoisted(() => vi.fn(async (_adapter?: string) => ({
+  adapters: [
+    { id: 'claude-code', name: 'Claude Code', models: [{ id: 'haiku', name: 'Haiku 4.5' }], default: 'sonnet' },
+    { id: 'codex', name: 'Codex', models: [{ id: 'gpt-5.6-luna', name: '5.6 Luna' }], default: 'gpt-5.6-terra' }
+  ]
+})))
+
+vi.mock('../../server/lib/acp/models', () => ({ listAdapterCatalog: catalog }))
+
 let nextId = 1
 
 async function call(token: string | null, method: string, params?: unknown) {
@@ -101,6 +111,7 @@ describe('the agent-mesh MCP endpoint', () => {
 
     const listed = await call(token, 'tools/list')
     expect(listed.body.result.tools.map((tool: any) => tool.name)).toEqual([
+      'list_models',
       'list_agents',
       'message_agent',
       'spawn_agent',
@@ -175,5 +186,55 @@ describe('the agent-mesh MCP endpoint', () => {
     await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
       { type: 'mesh_spawned', payload: { agentId: 'ag_spawned', title: 'docs' } }
     ])
+  })
+
+  it('passes a requested model through to the new session', async () => {
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      title: 'docs',
+      prompt: 'write the README',
+      model: 'haiku'
+    })
+
+    expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ model: 'haiku' }))
+  })
+
+  it('asks for no model when none is given, so the default applies', async () => {
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'docs', prompt: 'go' })
+
+    expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ model: null }))
+  })
+})
+
+describe('list_models', () => {
+  // The catalog itself — including one adapter failing without taking the other
+  // down — is covered in `adapter-models.spec.ts`, where the spawn is faked.
+  // Here it is only that the mesh reaches it and passes the filter through.
+  it('hands back the catalog the picker uses, with no second spawn path', async () => {
+    const caller = await session('caller')
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'list_models')).body)
+
+    expect(catalog).toHaveBeenCalledWith(undefined)
+    expect(body.adapters[0]).toMatchObject({ id: 'claude-code', default: 'sonnet' })
+  })
+
+  it('filters to one harness when asked', async () => {
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'list_models', { adapter: 'codex' })
+
+    expect(catalog).toHaveBeenCalledWith('codex')
+  })
+
+  it('ignores a harness name it does not know rather than failing the call', async () => {
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'list_models', { adapter: 'gpt-42' })
+
+    expect(catalog).toHaveBeenCalledWith(undefined)
   })
 })

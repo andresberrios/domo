@@ -100,6 +100,17 @@ describe('booting on top of a pre-title_source database', () => {
     ])
   })
 
+  it('adds the per-session model column', async () => {
+    // Two agents may be on different models at once, so it is a column and not
+    // a setting. `add column if not exists` is what carries a real old install.
+    const rows = await query<{ column_name: string, is_nullable: string }>(
+      `select column_name, is_nullable from information_schema.columns
+        where table_name = 'agent_sessions' and column_name = 'model'`
+    )
+
+    expect(rows).toEqual([{ column_name: 'model', is_nullable: 'YES' }])
+  })
+
   it('backfills the user only for environments built by the old node image', async () => {
     const rows = await query<{ id: string, remote_user: string | null, config_source: string }>(
       'select id, remote_user, config_source from dev_environments order by id'
