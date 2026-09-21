@@ -433,6 +433,23 @@ things that are easy to get wrong.
   on every tool response, so a hung handler (e.g. an adapter that never answers
   `session/new`) used to leave the voice agent silent; agent notes are held until
   the response has gone out.
+- **Client content pre-empts generation, so a proactive note has one gate and
+  one drain.** Sending `sendClientContent` while the model is speaking *cancels*
+  that generation — the symptom was the voice agent cutting itself off
+  mid-sentence whenever an agent finished a turn. `injectNote()` therefore holds
+  a note while a tool call is pending (a note mid-tool-call can leave the turn
+  stuck), while the model is mid-turn (`modelTurn` parts or `outputTranscription`
+  seen, cleared by `generationComplete` / `turnComplete` / `interrupted`), or
+  while the user is still talking (input transcription within
+  `USER_SILENCE_MS`, 1.5 s — transcription arrives in bursts, so a shorter gap
+  is a pause mid-sentence, and a completed turn ends the window outright).
+  Every release point calls the same `drainNotes()`, and what was held goes out
+  **coalesced into one** client-content message: three agents finishing while
+  the model spoke is one thing to say, not three turns racing each other. The
+  `voice_messages` row is written when the note is *made*, not when it is
+  delivered — the screen should show agent news at once, and only the speaking
+  waits — so the drain stores nothing. `turnComplete` on a batch is true unless
+  every note in it was `speak: false`.
 
 - **`pnpm dev` is `scripts/dev.mjs`**: Nuxt on `DOMO_DEV_PORT` (pinned, so the
   proxy target can't drift) plus Caddy on `DOMO_HTTPS_ADDRESS`. The Caddyfile
@@ -559,8 +576,10 @@ inside a project.
   the database" must not be derived from `error.message` alone.
 
 What is deliberately *not* tested: a real Gemini Live session and
-`useVoiceChannel` (a real browser and a real Live session; the model/voice the
-runtime sends is covered with the SDK faked). **Spawning ACP adapters is now
+`useVoiceChannel` (a real browser and a real Live session; what the runtime
+*sends* is covered with the SDK faked — the model and voice in
+`test/server/voice-runtime-model.spec.ts`, and when a proactive note is allowed
+out in `test/unit/voice-runtime-notes.spec.ts`). **Spawning ACP adapters is now
 covered** — `pnpm test:agents` runs both, for real, inside a real environment.
 Everything above that boundary is still covered without an account:
 `test/server/acp-stream.spec.ts` mocks `spawn` with a pair of pipes and puts the
