@@ -92,11 +92,11 @@ important case that nothing else exercises.
 - **Its `globalSetup` names everything that is missing at once**, not one thing
   per run: the database, the daemon, `NUXT_CLAUDE_CODE_OAUTH_TOKEN`, and a Codex
   login. No skip, no opt-out, same rule as every other service-backed project.
-- **The mesh server runs in the test process, bound to `0.0.0.0`.** It has to be
+- **The mesh server runs in the test process, bound to `127.0.0.1`.** It has to be
   this process — the token secret is `randomBytes(32)` at module scope and a
-  token minted here verifies only here — and it has to be `0.0.0.0`, because
-  `host.docker.internal` resolves to the host *gateway* address and a listener on
-  `127.0.0.1` is simply unreachable from a container.
+  token minted here verifies only here. The address matches what `pnpm dev`
+  binds: Docker Desktop forwards `host.docker.internal` to the host's IPv4
+  loopback (a listener on `[::1]` alone is refused).
 - **Everything it creates is named `domo-agents-test-…`**, and the last test
   asserts that no container, workspace volume or image with that prefix
   survives. The shared runtime volume is deliberately kept, exactly as in

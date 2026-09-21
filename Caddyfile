@@ -11,5 +11,5 @@
 
 {$DOMO_HTTPS_ADDRESS:localhost:3666} {
 	tls internal
-	reverse_proxy localhost:{$DOMO_DEV_PORT:3667}
+	reverse_proxy 127.0.0.1:{$DOMO_DEV_PORT:3667}
 }

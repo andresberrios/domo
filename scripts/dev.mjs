@@ -10,9 +10,9 @@ import { connect } from 'node:net'
 const port = process.env.DOMO_DEV_PORT ??= '3667'
 const address = process.env.DOMO_HTTPS_ADDRESS ??= 'localhost:3666'
 
-// Nitro reads PORT, and `internalBaseUrl()` in server/lib/acp/manager.ts is
-// what tells the agent-mesh MCP server where to call Domo back. `nuxt dev
-// --port` leaves PORT unset, so the mesh dialled 3000 whatever the flag said.
+// Nitro reads PORT, and `internalBaseUrl()` (server/lib/internal-url.ts) builds
+// the agent-mesh URL handed to every coding agent from it. `nuxt dev --port`
+// leaves PORT unset, so agents dialled 3000 whatever the flag said.
 process.env.PORT = port
 
 if (spawnSync('caddy', ['version']).error) {
@@ -45,7 +45,10 @@ if (taken.length) {
 
 const children = [
   spawn('caddy', ['run', '--config', 'Caddyfile', '--adapter', 'caddyfile'], { stdio: 'inherit' }),
-  spawn('nuxt', ['dev', '--port', port], { stdio: 'inherit' })
+  // IPv4 loopback, explicitly. Left to `localhost`, Nuxt binds `[::1]` only, and
+  // Docker Desktop forwards `host.docker.internal` to 127.0.0.1: every agent in a
+  // dev environment then gets `connection refused` from the mesh.
+  spawn('nuxt', ['dev', '--port', port, '--host', '127.0.0.1'], { stdio: 'inherit' })
 ]
 
 console.log(`\n  ➜ HTTPS: https://${address}/\n`)

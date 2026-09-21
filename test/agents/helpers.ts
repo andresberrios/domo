@@ -31,10 +31,10 @@ export interface MeshHarness {
  * scope in `mesh/token.ts` and is never persisted, so a token minted here only
  * verifies here.
  *
- * Bound to `0.0.0.0`, and that is not a matter of taste. `host.docker.internal`
- * resolves to the host *gateway* address, so a server listening only on
- * `127.0.0.1` is not reachable from inside a container at all — the connection
- * is refused, and the symptom is an MCP server the agent says it cannot reach.
+ * Bound to `127.0.0.1`, as `pnpm dev` binds Nuxt: Docker Desktop forwards
+ * `host.docker.internal` to the host's IPv4 loopback, so this is the path a real
+ * agent takes. (`[::1]` alone is refused; that was measured, and it is why the
+ * dev script passes `--host 127.0.0.1`.)
  */
 export async function startMeshServer(): Promise<MeshHarness> {
   const calls: MeshCall[] = []
@@ -67,7 +67,7 @@ export async function startMeshServer(): Promise<MeshHarness> {
   })
 
   const port: number = await new Promise((resolvePort) => {
-    server.listen(0, '0.0.0.0', () => resolvePort((server.address() as any).port))
+    server.listen(0, '127.0.0.1', () => resolvePort((server.address() as any).port))
   })
   return {
     server,
