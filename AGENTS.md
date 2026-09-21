@@ -37,6 +37,26 @@ things that are easy to get wrong.
   folds events into a render model. Never render from an in-memory server cache:
   a browser that connects mid-turn has to see the half-written message, and the
   only thing it reads is Postgres through Electric.
+- **The transcript has two passes: `buildTranscript` says what happened,
+  `condenseTranscript` decides what to draw.** Both live in
+  `app/utils/agentTranscript.ts`, and the second is pure and takes the first's
+  output — it never reads an event, so there is one account of the log and no
+  way for the two to disagree. Condensed mode (on by default, a `localStorage`
+  switch on the agent page through `useCondensedTranscript()`) replaces every
+  maximal run of `tool` / `thought` items with one `activity` row, because a
+  working agent produces hundreds of tool cards and buries the text the user
+  came for. Two rules are load-bearing. **Only `tool` and `thought` are ever
+  absorbed** — a `permission` item in particular ends the run and renders on its
+  own, or the thing the turn is *blocked on* would be hidden behind a click.
+  And **the live tail stays open**: a trailing tool call that is `pending` or
+  `in_progress`, or a trailing thought while the session is working (the
+  caller's `live` option), is rendered normally below the group, so the user can
+  always see what the agent is doing right now. The group's id is derived from
+  the first item in the run, so it survives re-renders and a group the user
+  expanded stays expanded while events stream in below it. `ActivityGroup.vue`
+  expands to the ordinary cards through `TranscriptItemView.vue`, the one
+  per-item renderer both it and `AgentTranscript.vue` use.
+
 - **`agent_events` is append-only except for streaming text.** Discrete updates
   (`user_message`, `tool_call`, `permission_request`, `turn_end`, …) are
   inserted once and never touched. A run of `agent_message_chunk` /
@@ -748,6 +768,15 @@ and permissions are end to end because a permission is a row.
   with the header enforced and with it stripped.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
+- **The condensed transcript was covered in happy-dom, not in a browser.**
+  `test/nuxt/ActivityGroup.spec.ts` and the `condensed` block of
+  `test/nuxt/AgentTranscript.spec.ts` assert the label, the breakdown, the
+  failed count, that a click expands to the real `ToolCallCard`s and collapses
+  again, and that a pending permission and the running call stay outside the
+  group; `test/unit/condenseTranscript.spec.ts` pins the pass itself. No
+  screenshot: the environment this was written in has no browser, so how the
+  row *looks* beside the cards around it — and how it wraps at mobile widths —
+  is still worth a real rendered pass.
 - **Steering was read out of both adapters' shipped bundles, not assumed.**
   `STEER_METHOD = "_session/steering"` and `_meta: { steering: { supported:
   true } }` in claude-agent-acp's `acp-agent.js`; `SESSION_STEERING_METHOD` and
