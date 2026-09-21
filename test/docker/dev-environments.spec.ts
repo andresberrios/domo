@@ -17,6 +17,10 @@ import type { DevEnvironment } from '~~/shared/types'
 
 const state = vi.hoisted(() => ({ homeMounts: [] as string[] }))
 const run = vi.fn(async (_program: string, _args: string[], _options?: unknown) => ({ stdout: '', stderr: '' }))
+// The daemon's OS decides which SSH agent branch `detectSshAgent()` takes. Mocked,
+// because the real probe runs `docker info` on whatever machine runs the tests:
+// on a Mac it answers "Docker Desktop" and the socket test below fails.
+const dockerServerOs = vi.fn(async () => 'Ubuntu 24.04.3 LTS')
 const inspectContainer = vi.fn()
 const populateWorkspaceVolume = vi.fn(async () => undefined)
 const copyIntoContainer = vi.fn(async () => undefined)
@@ -36,6 +40,7 @@ const repo = {
 vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   run,
+  dockerServerOs,
   inspectContainer,
   populateWorkspaceVolume,
   copyIntoContainer,
@@ -453,6 +458,21 @@ describe('createEnvironment', () => {
     const runArgs = dockerCalls().find(args => args[0] === 'run')!
     expect(runArgs).toContain(`type=bind,source=${socket},target=/run/host-services/ssh-auth.sock`)
     expect(runArgs).toContain('SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock')
+  })
+
+  it('mounts Docker Desktop\'s own forwarded socket, whatever SSH_AUTH_SOCK says', async () => {
+    // The daemon is in a VM there: the host's socket path is not one it can mount.
+    dockerServerOs.mockResolvedValueOnce('Docker Desktop')
+    const socket = join(hostHome, 'agent.sock')
+    await writeFile(socket, '', 'utf8')
+    process.env.SSH_AUTH_SOCK = socket
+
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const runArgs = dockerCalls().find(args => args[0] === 'run')!
+    expect(runArgs).toContain('type=bind,source=/run/host-services/ssh-auth.sock,target=/run/host-services/ssh-auth.sock')
+    expect(runArgs).toContain('SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock')
+    expect(runArgs.join('\n')).not.toContain(socket)
   })
 
   it('seeds the Claude home as the remote user, and never mounts the host\'s', async () => {
