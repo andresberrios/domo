@@ -20,8 +20,10 @@ import { adapterEntry, adapterEnv } from './adapter-process'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
 import {
   appendAgentEvent,
+  claimNextInboxMessage,
   createAgentSession,
   createPermission,
+  enqueueInboxMessage,
   getAgentSession,
   listAgentSessions,
   listMcpServers,
@@ -38,12 +40,57 @@ import type {
   AgentStreamType,
   AppSettings,
   DevEnvironment,
+  MessageDelivery,
+  MessageOrigin,
   PendingPermission
 } from '../../../shared/types'
 
 interface PendingPermissionWaiter {
   permission: PendingPermission
   resolve: (optionId: string | null) => void
+}
+
+/**
+ * The extension request both installed adapters take to inject a message into
+ * the turn that is already running.
+ *
+ * This is *not* a core ACP method and not an `agentCapabilities` entry: it is
+ * advertised in the `initialize` response's top-level `_meta.steering.supported`
+ * and named by the agreed steering wire protocol. Sending it to an adapter that
+ * does not advertise it would be a bare "method not found".
+ */
+const STEERING_METHOD = '_session/steering'
+
+/**
+ * Ask the adapter to hand a steer back rather than start a turn of its own when
+ * the session turns out to be idle.
+ *
+ * Without it, an idle steer starts a turn the adapter owns: its output streams
+ * through `session/update` but nothing ever resolves a `session/prompt`, so
+ * Domo would never see the turn end and would never drain the inbox behind it.
+ * The Claude adapter honours the opt-in and answers `{ outcome:
+ * 'promptRequired' }`; codex-acp accepts the `_meta` and ignores it, which is
+ * why the decision of whether a turn is running is Domo's own and the steering
+ * request is only ever sent when Domo has one in flight.
+ */
+const STEERING_META = { steering: { idleBehavior: 'promptRequired' } }
+
+/** A turn Domo started and is waiting on. */
+interface Turn {
+  cancel: () => void
+  /** Resolves once the turn has settled, however it settled. */
+  done: Promise<void>
+  /** Set by an `interrupt` delivery: the abort is deliberate, not a failure. */
+  interrupted: boolean
+}
+
+/** What a delivery ended up doing, after the fallbacks. */
+export interface DeliveryResult {
+  /** The mode that actually applied — `steer` becomes `interrupt` without support. */
+  delivery: MessageDelivery
+  outcome: 'prompted' | 'steered' | 'queued'
+  /** The `agent_inbox` row, when the message is waiting. */
+  inboxId?: string
 }
 
 /** A run of streaming text that is being coalesced into one `agent_events` row. */
@@ -94,7 +141,16 @@ class AgentRuntime {
   private acpSessionId: string | null = null
   private booting: Promise<void> | null = null
   private waiters = new Map<string, PendingPermissionWaiter>()
-  private turn: { cancel: () => void } | null = null
+  /**
+   * The turn in flight, claimed synchronously by `prompt`.
+   *
+   * `deliver` reads it to decide whether a message steers, queues or
+   * interrupts, so an async gap between claiming it and sending the request
+   * would make a turn that is already Domo's look idle.
+   */
+  private turn: Turn | null = null
+  /** Whether the adapter advertised `_session/steering`; per connection. */
+  private steering = false
   private containerName: string | null = null
   private containerPidFile: string | null = null
   /** Everything the agent said this turn, which becomes the session summary. */
@@ -115,6 +171,15 @@ class AgentRuntime {
    * scramble streamed text. Every event write goes through this chain.
    */
   private writes: Promise<unknown> = Promise.resolve()
+  /**
+   * Serialises every decision that may start a turn — a delivery and a drain.
+   *
+   * Only the decision is held, never the turn itself: a critical section ends
+   * as soon as `prompt` has claimed the turn slot. Without it, the drain a
+   * finishing turn kicks off would race the `interrupt` that was waiting for
+   * exactly that moment, and both would prompt into the same idle gap.
+   */
+  private deliveries: Promise<unknown> = Promise.resolve()
 
   constructor(agentSessionId: string) {
     this.agentSessionId = agentSessionId
@@ -123,6 +188,12 @@ class AgentRuntime {
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.writes.then(fn, fn)
     this.writes = run.catch(() => {})
+    return run
+  }
+
+  private serialDeliver<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.deliveries.then(fn, fn)
+    this.deliveries = run.catch(() => {})
     return run
   }
 
@@ -303,7 +374,12 @@ class AgentRuntime {
       void this.serial(async () => {
         await this.closeStream(block)
         await appendAgentEvent(this.agentSessionId, 'adapter-exit', { code, signal })
-        await this.setStatus('stopped')
+        // An adapter that could not start exits, so this handler and the boot
+        // failure's own `setStatus('error')` race for the same row — and which
+        // of the two lands last is not something the caller should have to
+        // guess at. The error is the one that says *why*, and `lastError` beside
+        // it is what the UI offers a retry on, so it wins either way.
+        if (this.status !== 'error') await this.setStatus('stopped')
       }).catch(() => {})
     })
 
@@ -347,6 +423,11 @@ class AgentRuntime {
       clientInfo: { name: 'domo', title: 'Domo', version: '1.0.0' }
     } as any)) as any
 
+    // Steering is an extension, so it is advertised in the response's top-level
+    // `_meta` and not in `agentCapabilities`. Both installed adapters set it;
+    // one that does not gets `interrupt` where it would have got `steer`.
+    this.steering = initialized?._meta?.steering?.supported === true
+
     // The mesh is an HTTP MCP server now; an adapter that cannot speak that
     // transport gets no mesh rather than a server it would fail to connect to.
     const httpMcp = !!initialized?.agentCapabilities?.mcpCapabilities?.http
@@ -389,6 +470,12 @@ class AgentRuntime {
 
     await this.applyRequestedModel(session, sessionResponse)
     await this.setStatus('idle', { touch: true })
+
+    // Queued messages outlive the process that queued them — that is the whole
+    // point of owning the queue — so an attach is one of the two moments they
+    // get delivered. It is a no-op when this boot is a `prompt` starting the
+    // adapter, because that turn has already claimed the slot.
+    this.drainInbox()
   }
 
   /**
@@ -640,7 +727,44 @@ class AgentRuntime {
 
   /* ---------------- turns ---------------- */
 
-  async prompt(content: any[]): Promise<{ stopReason: string }> {
+  get busy() {
+    return !!this.turn
+  }
+
+  /**
+   * Start a turn now and see it through.
+   *
+   * Deliberately not `async`: the turn slot has to be claimed before the first
+   * await, or a message arriving in that gap would read the session as idle and
+   * send a second `session/prompt`. The adapter would accept it and queue it in
+   * its own turn queue, where Domo cannot see it and a restart loses it — which
+   * is exactly what the inbox exists to avoid. Everything that is not the
+   * initial prompt of a session should go through `deliver`.
+   */
+  prompt(content: any[]): Promise<{ stopReason: string }> {
+    const controller = new AbortController()
+    let settle!: () => void
+    const turn: Turn = {
+      interrupted: false,
+      cancel: () => controller.abort(),
+      done: new Promise<void>((resolve) => { settle = resolve })
+    }
+    this.turn = turn
+
+    return this.runTurn(content, turn, controller).finally(() => {
+      if (this.turn === turn) this.turn = null
+      settle()
+      // A turn ending — normally, cancelled, or failed — is the other moment
+      // the inbox drains.
+      this.drainInbox()
+    })
+  }
+
+  private async runTurn(
+    content: any[],
+    turn: Turn,
+    controller: AbortController
+  ): Promise<{ stopReason: string }> {
     await this.ensureStarted()
     if (!this.connection || !this.acpSessionId) throw new Error('agent not started')
 
@@ -651,9 +775,6 @@ class AgentRuntime {
       await appendAgentEvent(this.agentSessionId, 'user_message', { content })
       await this.setStatus('thinking', { touch: true })
     })
-
-    const controller = new AbortController()
-    this.turn = { cancel: () => controller.abort() }
 
     try {
       const response = (await this.connection.agent.request(
@@ -673,6 +794,10 @@ class AgentRuntime {
       })
       return { stopReason: response?.stopReason ?? 'end_turn' }
     } catch (error) {
+      // An `interrupt` aborts this request on purpose and `cancel` has already
+      // written the `cancelled` line; calling that an error would put the
+      // session in `error` for doing what it was told.
+      if (turn.interrupted) return { stopReason: 'cancelled' }
       const message = error instanceof Error ? error.message : String(error)
       const block = this.takeStream()
       await this.serial(async () => {
@@ -681,9 +806,123 @@ class AgentRuntime {
         await this.setStatus('error', { lastError: message, touch: true })
       })
       throw error
-    } finally {
-      this.turn = null
     }
+  }
+
+  /* ---------------- delivery ---------------- */
+
+  /**
+   * Hand a message to the agent the way the sender asked for.
+   *
+   * With nothing running all three modes are the same thing — a prompt — so the
+   * mode only ever decides what happens to a message that arrives mid-turn.
+   */
+  deliver(input: {
+    content: any[]
+    delivery: MessageDelivery
+    origin: MessageOrigin
+  }): Promise<DeliveryResult> {
+    return this.serialDeliver(async () => {
+      await this.ensureStarted()
+
+      if (!this.turn) {
+        const turn = this.prompt(input.content)
+        turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
+        return { delivery: input.delivery, outcome: 'prompted' as const }
+      }
+
+      switch (input.delivery) {
+        case 'queue':
+          return this.enqueue(input.content, 'queue', input.origin)
+        case 'interrupt':
+          return this.interruptWith(input.content)
+        default:
+          return this.steerInto(input.content, input.origin)
+      }
+    })
+  }
+
+  private async enqueue(
+    content: any[],
+    delivery: MessageDelivery,
+    origin: MessageOrigin
+  ): Promise<DeliveryResult> {
+    const row = await enqueueInboxMessage({
+      agentSessionId: this.agentSessionId,
+      content,
+      delivery,
+      origin
+    })
+    return { delivery, outcome: 'queued', inboxId: row.id }
+  }
+
+  /** Cancel what is running, wait for it to settle, then prompt. */
+  private async interruptWith(content: any[]): Promise<DeliveryResult> {
+    const running = this.turn
+    if (running) {
+      running.interrupted = true
+      await this.cancel()
+      await running.done
+    }
+    // The drain that turn kicked off is queued behind this critical section, so
+    // it finds the slot taken and leaves the queue for the turn below.
+    const turn = this.prompt(content)
+    turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
+    return { delivery: 'interrupt', outcome: 'prompted' }
+  }
+
+  /** Inject into the running turn, or fall back when the adapter cannot. */
+  private async steerInto(content: any[], origin: MessageOrigin): Promise<DeliveryResult> {
+    // "Change course now" is what was asked for, and queueing is the one thing
+    // it definitely does not mean.
+    if (!this.steering) return this.interruptWith(content)
+
+    let outcome: string
+    try {
+      const response = (await this.connection!.agent.request(STEERING_METHOD, {
+        sessionId: this.acpSessionId,
+        prompt: content,
+        _meta: STEERING_META
+      } as any)) as any
+      outcome = String(response?.outcome ?? 'failed')
+    } catch (error) {
+      console.error(`[acp:${this.agentSessionId}] steering failed, queueing instead`, error)
+      return this.enqueue(content, 'steer', origin)
+    }
+
+    if (outcome === 'promptRequired' || outcome === 'failed') {
+      // The turn settled inside the adapter between our check and the request.
+      // Queue rather than prompt: our own `session/prompt` may still be in
+      // flight, and its end is what drains the queue a moment later.
+      return this.enqueue(content, 'steer', origin)
+    }
+
+    // The message joined the running turn, so the transcript has to show it in
+    // its place — the agent is about to answer it.
+    const block = this.takeStream()
+    await this.serial(async () => {
+      await this.closeStream(block)
+      await appendAgentEvent(this.agentSessionId, 'user_message', { content, delivery: 'steer' })
+      await this.touchIfStale()
+    })
+    return { delivery: 'steer', outcome: 'steered' }
+  }
+
+  /**
+   * Hand over the oldest waiting message, if the agent is free to take it.
+   *
+   * Fire-and-forget on purpose: the callers are a turn that has just ended and
+   * an adapter that has just attached, and neither should wait on a whole turn.
+   */
+  drainInbox(): void {
+    void this.serialDeliver(async () => {
+      if (this.turn || !this.alive || !this.acpSessionId) return
+      const next = await claimNextInboxMessage(this.agentSessionId)
+      if (!next) return
+      const turn = this.prompt(next.content)
+      // The turn drains again when it ends, so one claim per step is enough.
+      turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
+    }).catch(error => console.error(`[acp:${this.agentSessionId}] could not drain the inbox`, error))
   }
 
   async cancel(): Promise<void> {
@@ -823,6 +1062,33 @@ class AcpManager {
 
   async prompt(agentSessionId: string, content: any[]) {
     return this.runtime(agentSessionId).prompt(content)
+  }
+
+  /**
+   * Send a message to an agent that may already be working.
+   *
+   * Every way of reaching a coding agent — the prompt endpoint, the voice tool,
+   * the mesh tool, a subscription note — comes through here, so "what happens
+   * to a message that arrives mid-turn" is decided in one place.
+   */
+  async deliver(
+    agentSessionId: string,
+    input: { content: any[], delivery?: MessageDelivery, origin?: MessageOrigin }
+  ): Promise<DeliveryResult> {
+    return this.runtime(agentSessionId).deliver({
+      content: input.content,
+      delivery: input.delivery ?? 'steer',
+      origin: input.origin ?? 'user'
+    })
+  }
+
+  /** Hand over anything waiting, if the agent is free to take it. */
+  drainInbox(agentSessionId: string): void {
+    this.runtimes.get(agentSessionId)?.drainInbox()
+  }
+
+  isBusy(agentSessionId: string) {
+    return this.runtimes.get(agentSessionId)?.busy ?? false
   }
 
   async cancel(agentSessionId: string) {
