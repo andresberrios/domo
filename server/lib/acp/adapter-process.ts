@@ -1,7 +1,9 @@
+import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 
 import { hasClaudeSubscriptionLogin } from '../claude-credentials'
 import type { AgentAdapter } from '../../../shared/types'
@@ -79,6 +81,9 @@ const PASSTHROUGH_ENV = [
   'no_proxy',
   'XDG_CONFIG_HOME',
   'XDG_DATA_HOME',
+  // The host's SSH agent, so a host session can push. A container session gets
+  // the forwarded one from the container's own environment instead.
+  'SSH_AUTH_SOCK',
   // Windows needs these to spawn anything at all.
   'SystemRoot',
   'APPDATA',
@@ -112,6 +117,9 @@ const HOST_ONLY_ENV = new Set([
   'XDG_DATA_HOME',
   'NODE_EXTRA_CA_CERTS',
   'SSL_CERT_FILE',
+  // The environment has its own, set on the container by `docker run` and
+  // inherited by every `docker exec`. The host's path is not a path in there.
+  'SSH_AUTH_SOCK',
   'SystemRoot',
   'APPDATA',
   'LOCALAPPDATA',
@@ -121,6 +129,43 @@ const HOST_ONLY_ENV = new Set([
   'COMSPEC',
   'PATHEXT'
 ])
+
+/** How long a `gh auth token` answer is reused before asking again. */
+const GH_TOKEN_TTL_MS = 5 * 60_000
+const GH_TOKEN_TIMEOUT_MS = 5_000
+
+let ghTokenCache: { value: string | null, expires: number } | null = null
+let warnedNoGhToken = false
+
+export type GhTokenLookup = () => Promise<string | null>
+
+/**
+ * The GitHub token the host's `gh` is logged in with.
+ *
+ * On macOS `gh` keeps it in the Keychain, so the mounted `~/.config/gh` carries
+ * the account but no `oauth_token` at all: inside an environment `gh` would be
+ * half logged in and `gh auth git-credential` — which the generated git config
+ * names as the credential helper — would answer nothing. Asking the host's own
+ * `gh` is the one place the token is reachable whatever it is stored in.
+ *
+ * Cached, because it is asked on every session boot and `gh` is not fast, and
+ * best-effort: no `gh`, no login, or a hung call all mean "no token".
+ */
+export async function hostGhToken(): Promise<string | null> {
+  if (ghTokenCache && ghTokenCache.expires > Date.now()) return ghTokenCache.value
+  const value = await promisify(execFile)('gh', ['auth', 'token'], { timeout: GH_TOKEN_TIMEOUT_MS })
+    .then(({ stdout }) => stdout.trim() || null)
+    .catch(() => null)
+  ghTokenCache = { value, expires: Date.now() + GH_TOKEN_TTL_MS }
+  if (!value && !warnedNoGhToken) {
+    warnedNoGhToken = true
+    console.warn(
+      '[acp] no GitHub token for development environments: `gh auth token` answered nothing. '
+      + 'Run `gh auth login` on this machine, or set NUXT_GH_TOKEN, if agents need to push.'
+    )
+  }
+  return value
+}
 
 /**
  * Environment for the adapter process.
@@ -134,12 +179,24 @@ const HOST_ONLY_ENV = new Set([
  * Inside an environment only the token can apply: nothing copies a login into a
  * container, so there is no Keychain and no credentials file to ask about.
  */
-export async function adapterEnv(adapter: AgentAdapter, inContainer: boolean): Promise<NodeJS.ProcessEnv> {
+export async function adapterEnv(
+  adapter: AgentAdapter,
+  inContainer: boolean,
+  /** Injected by the unit layer: `gh` must never be spawned from a test. */
+  ghToken: GhTokenLookup = hostGhToken
+): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
     if (inContainer && HOST_ONLY_ENV.has(key)) continue
     const value = process.env[key]
     if (value !== undefined) env[key] = value
+  }
+  if (inContainer) {
+    // `GH_TOKEN` is what makes both `gh` and the `gh auth git-credential`
+    // helper in the environment's git config work. On the host neither needs
+    // it: `gh` there reads its own login.
+    const token = process.env.NUXT_GH_TOKEN || process.env.GH_TOKEN || await ghToken()
+    if (token) env.GH_TOKEN = token
   }
   if (adapter === 'claude-code') {
     const oauthToken = process.env.NUXT_CLAUDE_CODE_OAUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN

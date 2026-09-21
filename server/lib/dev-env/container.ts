@@ -1,4 +1,5 @@
 import { run } from './docker'
+import { CONTAINER_SSH_AUTH_SOCK, type HomeOverlay } from './home-overlay'
 import type {
   DevEnvironmentConfig,
   ImageMetadata,
@@ -16,11 +17,17 @@ import type {
  * command instead of being executed once after creation. `exec "$@"` is a no-op here
  * (the image's own command is not kept), and the `sleep` loop is what holds the
  * container open while staying interruptible by the `trap`.
+ *
+ * The `chmod` is the forwarded SSH agent socket. Docker Desktop hands it over
+ * owned by root with no group or world access, so the remote user cannot reach
+ * it; this command runs as root, and it has to happen on every `docker start`,
+ * not only at creation.
  */
 export function keepAliveScript(entrypoints: string[]): string {
   return [
     'echo Container started',
     'trap "exit 0" 15',
+    `[ -S ${CONTAINER_SSH_AUTH_SOCK} ] && chmod 666 ${CONTAINER_SSH_AUTH_SOCK}`,
     ...entrypoints,
     'exec "$@"',
     'while sleep 1 & wait $!; do :; done'
@@ -125,6 +132,8 @@ export interface RunContainerInput {
   runtimeVolume: string
   ports: ResolvedPortConfig[]
   codexConfigDir: string | null
+  /** The host user's login state, projected into the container's home. */
+  homeOverlay: HomeOverlay
 }
 
 function mountArg(mount: VolumeMount & { type?: string, readonly?: boolean }): string[] {
@@ -160,11 +169,17 @@ export function containerRunArgs(input: RunContainerInput): string[] {
   if (input.codexConfigDir) {
     args.push(...mountArg({ type: 'bind', source: input.codexConfigDir, target: `${home}/.codex` }))
   }
+  // The rest of the host's login state: SSH keys, gh/gcloud/aws/kube logins and
+  // the git identity. An environment is a namespace, not a security boundary,
+  // and an agent in one is expected to push. `.gitconfig` is the exception —
+  // the overlay puts it at `~/.gitconfig-host` and Domo writes `~/.gitconfig`.
+  for (const mount of input.homeOverlay.mounts) args.push(...mountArg(mount))
   for (const mount of input.metadata.volumeMounts) args.push(...mountArg(mount))
   for (const port of input.ports) {
     args.push('--publish', `127.0.0.1:0:${port.innerPort}/${port.protocol}`)
   }
   args.push('--env', `DOMO_DEV_ENVIRONMENT_ID=${input.environmentId}`)
+  for (const [key, value] of Object.entries(input.homeOverlay.env)) args.push('--env', `${key}=${value}`)
   // The project's own containerEnv wins over anything a Feature contributed.
   for (const [key, value] of Object.entries({ ...input.metadata.containerEnv, ...input.config.containerEnv })) {
     args.push('--env', `${key}=${value}`)

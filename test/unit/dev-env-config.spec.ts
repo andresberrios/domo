@@ -52,7 +52,10 @@ describe('the default configuration', () => {
       displayPath: null,
       config: {
         image: DEFAULT_IMAGE,
-        features: { 'ghcr.io/devcontainers/features/node:1': { version: '22' } },
+        features: {
+          'ghcr.io/devcontainers/features/node:1': { version: '22' },
+          'ghcr.io/devcontainers/features/github-cli:1': { version: 'latest' }
+        },
         docker: true,
         containerEnv: {},
         forwardPorts: [],
@@ -202,7 +205,10 @@ describe('buildFeatures', () => {
   it('leaves the Features alone when it did not', () => {
     const features = buildFeatures({ ...defaultEnvironmentConfig(), docker: false })
 
-    expect(Object.keys(features)).toEqual(['ghcr.io/devcontainers/features/node:1'])
+    expect(Object.keys(features)).toEqual([
+      'ghcr.io/devcontainers/features/node:1',
+      'ghcr.io/devcontainers/features/github-cli:1'
+    ])
   })
 
   it('does not add a second one when the project pinned its own', () => {

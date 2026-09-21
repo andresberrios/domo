@@ -1,3 +1,4 @@
+import { createServer } from 'node:net'
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,7 +25,8 @@ import type { DevEnvironment } from '~~/shared/types'
 const state = vi.hoisted(() => ({
   rows: new Map<string, any>(),
   ports: [] as any[],
-  project: null as any
+  project: null as any,
+  homeMounts: [] as string[]
 }))
 
 vi.mock('../../server/lib/repo', () => ({
@@ -55,6 +57,9 @@ vi.mock('../../server/lib/repo', () => ({
   deleteDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) }
 }))
+// Settings live in Postgres, which this project does not have. The home
+// overlay is the only thing under test that reads them.
+vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
 vi.mock('../../server/lib/dev-environment-ports', () => ({
   refreshEnvironmentPorts: async () => [],
   stopEnvironmentForwarders: () => {}
@@ -87,6 +92,7 @@ const BARE_IMAGE_DOCKERFILE = 'FROM debian:bookworm-slim\n'
 const created: string[] = []
 const scratch: string[] = []
 const volumes: string[] = []
+const servers: Array<{ close: (done: () => void) => void }> = []
 
 async function temp(prefix: string): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), `domo-live-${prefix}-`))
@@ -144,6 +150,33 @@ async function create(name = 'Live Test'): Promise<DevEnvironment> {
   return environment
 }
 
+/**
+ * A stand-in for the host user's home: a git identity, an SSH directory and a
+ * `gh` config. Never the real one — the whole point of the overlay is that it
+ * mounts the developer's actual credentials.
+ */
+async function hostHome(): Promise<string> {
+  const home = await temp('home')
+  await writeIn(home, {
+    '.gitconfig': '[user]\n\tname = Domo Live Test\n\temail = live@example.com\n'
+      // A helper the container does not have, which is the reason the host file
+      // is included rather than used as the container's own config.
+      + '[credential]\n\thelper = osxkeychain\n',
+    '.ssh/config': 'Host example.com\n  User git\n',
+    '.config/gh/hosts.yml': 'github.com:\n  user: domo-live-test\n'
+  })
+  return home
+}
+
+/** A real listening unix socket, standing in for the host's SSH agent. */
+async function agentSocket(): Promise<string> {
+  const path = join(await temp('agent'), 'agent.sock')
+  const server = createServer()
+  await new Promise<void>(ready => server.listen(path, ready))
+  servers.push(server)
+  return path
+}
+
 beforeAll(async () => {
   // `docker info` first: with no daemon every test below would fail with a much less
   // helpful message from several layers down.
@@ -154,6 +187,9 @@ beforeAll(async () => {
   // hand a test the real ones.
   process.env.NUXT_CLAUDE_CONFIG_DIR = await temp('claude')
   process.env.NUXT_CODEX_CONFIG_DIR = await temp('codex')
+  process.env.NUXT_HOME_OVERLAY_DIR = await hostHome()
+  process.env.SSH_AUTH_SOCK = await agentSocket()
+  state.homeMounts = ['.ssh', '.gitconfig', '.config/gh', '.kube']
 })
 
 afterEach(async () => {
@@ -182,6 +218,9 @@ afterAll(async () => {
   delete process.env.NUXT_DATA_DIR
   delete process.env.NUXT_CLAUDE_CONFIG_DIR
   delete process.env.NUXT_CODEX_CONFIG_DIR
+  delete process.env.NUXT_HOME_OVERLAY_DIR
+  delete process.env.SSH_AUTH_SOCK
+  for (const server of servers) await new Promise<void>(done => server.close(() => done()))
   for (const path of scratch) await rm(path, { recursive: true, force: true })
 })
 
@@ -227,6 +266,47 @@ describe('an environment for a project with no .domo.json', () => {
     expect(await isPrivileged(environment.containerId!)).toBe(true)
     await expect(inContainer(environment, 'docker', 'info', '--format', '{{.ServerVersion}}'))
       .resolves.toMatch(/^\d+\.\d+/)
+
+    // The host's login state is in there, at the container user's home.
+    const home = `/home/${environment.remoteUser}`
+    expect(all).toContainEqual(expect.objectContaining({
+      Type: 'bind',
+      Source: join(process.env.NUXT_HOME_OVERLAY_DIR!, '.ssh'),
+      Destination: `${home}/.ssh`
+    }))
+    // `.kube` was asked for and this host has none: skipped, not a failure.
+    expect(all.map(mount => mount.Destination)).not.toContain(`${home}/.kube`)
+    // Docker created `~/.config` as root for the `gh` mount; gcloud has to be
+    // able to write beside it.
+    await expect(inContainer(environment, 'stat', '-c', '%U', `${home}/.config`))
+      .resolves.toBe(environment.remoteUser)
+
+    // The host gitconfig is included, never mounted in place: VS Code's attach
+    // writes its own credential helper into the container's own file.
+    expect(all.map(mount => mount.Destination)).toContain(`${home}/.gitconfig-host`)
+    expect(all.map(mount => mount.Destination)).not.toContain(`${home}/.gitconfig`)
+    const gitconfig = await readEnvironmentFile(environment, `${home}/.gitconfig`)
+    expect(gitconfig).toContain('path = ~/.gitconfig-host')
+    expect(gitconfig).toContain(`directory = ${environment.workspacePath}`)
+    // The identity arrives through the include, and the host's own helper is
+    // reset rather than inherited — `osxkeychain` does not exist in here.
+    await expect(inContainer(environment, 'git', 'config', 'user.name')).resolves.toBe('Domo Live Test')
+    // `--get-all` still lists the included `osxkeychain`: git applies the
+    // empty-value reset when it *uses* the list, so what matters is that the
+    // last two entries are the reset and gh's helper, in that order.
+    const helpers = (await inContainer(environment, 'git', 'config', '--get-all', 'credential.helper')).split('\n')
+    expect(helpers.at(-3)).toBe('osxkeychain')
+    expect(helpers.slice(-2)).toEqual(['', '!gh auth git-credential'])
+    await expect(inContainer(environment, 'git', 'config', 'commit.gpgsign')).resolves.toBe('false')
+    // safe.directory is the reason the `git status` above answered at all.
+
+    // The agent socket is forwarded, named in the container's environment so
+    // every `docker exec` inherits it, and reachable by the remote user.
+    await expect(inContainer(environment, 'printenv', 'SSH_AUTH_SOCK'))
+      .resolves.toBe('/run/host-services/ssh-auth.sock')
+    await expect(inContainer(environment, 'test', '-S', '/run/host-services/ssh-auth.sock')).resolves.toBe('')
+    await expect(inContainer(environment, 'stat', '-c', '%a', '/run/host-services/ssh-auth.sock'))
+      .resolves.toBe('666')
 
     // The project's own checkout was only read.
     await expect(run('git', ['-C', repo, 'status', '--porcelain'])).resolves.toMatchObject({ stdout: '' })
@@ -333,7 +413,9 @@ describe('an environment whose image cannot run Domo\'s runtime', () => {
     await expect(
       createEnvironment({ projectId: 'prj_live', name: 'Live Test Alpine' })
         .catch((error) => {
-          id = [...state.rows.keys()][0]!
+          // The newest row, not the first: rows of earlier tests are still in
+          // the map whenever one of them failed before its teardown ran.
+          id = [...state.rows.keys()].at(-1)!
           throw error
         })
     ).rejects.toThrow(/glibc-based/)

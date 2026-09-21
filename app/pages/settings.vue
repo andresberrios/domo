@@ -28,7 +28,8 @@ const form = reactive<AppSettings>({
   defaultAgentMode: 'default',
   language: 'en-US',
   autoTitle: true,
-  vscodeSshHost: ''
+  vscodeSshHost: '',
+  homeMounts: []
 })
 
 watchEffect(() => {
@@ -43,8 +44,18 @@ watchEffect(() => {
     defaultAgentMode: settings.value.defaultAgentMode,
     language: settings.value.language,
     autoTitle: settings.value.autoTitle,
-    vscodeSshHost: settings.value.vscodeSshHost
+    vscodeSshHost: settings.value.vscodeSshHost,
+    homeMounts: [...settings.value.homeMounts]
   })
+})
+
+/* One path per line is how people write a list of paths. It stays text while
+ * it is being edited — parsing on every keystroke would eat the newline the
+ * moment you press Enter — and becomes an array on save. */
+const homeMountsText = ref('')
+
+watchEffect(() => {
+  if (settings.value) homeMountsText.value = settings.value.homeMounts.join('\n')
 })
 
 const saving = ref(false)
@@ -52,7 +63,8 @@ const saving = ref(false)
 async function save() {
   saving.value = true
   try {
-    await $fetch('/api/settings', { method: 'PATCH', body: { ...form } })
+    const homeMounts = homeMountsText.value.split('\n').map(line => line.trim()).filter(Boolean)
+    await $fetch('/api/settings', { method: 'PATCH', body: { ...form, homeMounts } })
     await refresh()
     toast.add({ title: 'Settings saved', color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
@@ -230,6 +242,13 @@ async function deleteServer(server: McpServer) {
           <h2 class="text-sm font-semibold">
             Development environments
           </h2>
+
+          <UFormField
+            label="Home directory mounts"
+            help="Paths under your home directory, one per line, bind-mounted read-write into a new environment's home so agents can push and use your CLI logins. One you do not have is skipped. .gitconfig is mounted read-only as .gitconfig-host and included from the environment's own config; .claude, .claude.json and .codex are refused, and .docker is a bad idea (its credential helper only exists on this machine, so docker pull fails in there). Mounts are fixed when a container is created, so this applies to environments created from now on."
+          >
+            <UTextarea v-model="homeMountsText" :rows="6" class="w-full font-mono text-xs" />
+          </UFormField>
 
           <UFormField
             label="VS Code SSH host"

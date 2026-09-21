@@ -45,6 +45,21 @@ describe('getSettings', () => {
     await expect(getSettings()).resolves.toMatchObject({ vscodeSshHost: '' })
   })
 
+  it('defaults the home mounts to the login state a developer has', async () => {
+    // `.docker` is deliberately not among them: Docker Desktop's config names a
+    // credential helper that exists on the host only, and every `docker pull`
+    // inside an environment would fail on it.
+    expect(DEFAULTS.homeMounts).toEqual(['.ssh', '.gitconfig', '.config/gh', '.config/gcloud', '.aws', '.kube'])
+    expect(DEFAULTS.homeMounts).not.toContain('.docker')
+    await expect(getSettings()).resolves.toMatchObject({ homeMounts: DEFAULTS.homeMounts })
+  })
+
+  it('keeps a stored home mount list, including an empty one', async () => {
+    stored({ homeMounts: [] })
+
+    await expect(getSettings()).resolves.toMatchObject({ homeMounts: [] })
+  })
+
   it('keeps a stored VS Code SSH host', async () => {
     stored({ vscodeSshHost: 'you@server' })
 

@@ -8,6 +8,7 @@ import {
   postCreateArgs,
   resolveRemoteUser
 } from '../../server/lib/dev-env/container'
+import { emptyHomeOverlay, homeOverlay, type HomeOverlay } from '../../server/lib/dev-env/home-overlay'
 import type { DevEnvironmentConfig, ImageMetadata, ImageMetadataEntry } from '../../server/lib/dev-env/types'
 
 /**
@@ -44,6 +45,7 @@ function runArgs(input: {
   remoteUser?: string
   ports?: Array<{ innerPort: number, protocol: 'tcp' | 'udp' }>
   codexConfigDir?: string | null
+  homeOverlay?: HomeOverlay
 } = {}): string[] {
   return containerRunArgs({
     environmentId: 'env_1',
@@ -57,7 +59,9 @@ function runArgs(input: {
     workspaceVolume: 'domo-dev-env_1-workspace',
     runtimeVolume: 'domo-dev-runtime-abc123',
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
-    codexConfigDir: input.codexConfigDir ?? null
+    codexConfigDir: input.codexConfigDir ?? null,
+    homeOverlay: input.homeOverlay
+      ?? emptyHomeOverlay({ containerHome: '/home/vscode', workspacePath: '/workspaces/api' })
   })
 }
 
@@ -156,6 +160,9 @@ describe('keepAliveScript', () => {
     expect(keepAliveScript(['/usr/local/share/docker-init.sh'])).toBe([
       'echo Container started',
       'trap "exit 0" 15',
+      // Docker Desktop hands the forwarded agent socket over owned by root.
+      // This runs as root, and on every start rather than only at creation.
+      '[ -S /run/host-services/ssh-auth.sock ] && chmod 666 /run/host-services/ssh-auth.sock',
       '/usr/local/share/docker-init.sh',
       'exec "$@"',
       'while sleep 1 & wait $!; do :; done'
@@ -232,6 +239,53 @@ describe('containerRunArgs', () => {
     const args = runArgs({ remoteUser: 'root', codexConfigDir: '/home/me/.codex' })
 
     expect(values(args, '--mount')).toContain('type=bind,source=/home/me/.codex,target=/root/.codex')
+  })
+
+  it('mounts the host\'s login state into the container\'s home, and its agent socket', () => {
+    const args = runArgs({
+      homeOverlay: homeOverlay({
+        sourceHome: '/Users/me',
+        containerHome: '/home/vscode',
+        workspacePath: '/workspaces/api',
+        paths: ['.ssh', '.gitconfig', '.config/gh'],
+        present: ['.ssh', '.gitconfig', '.config/gh'],
+        sshAgent: { kind: 'docker-desktop' }
+      })
+    })
+
+    expect(values(args, '--mount')).toEqual(expect.arrayContaining([
+      'type=bind,source=/Users/me/.ssh,target=/home/vscode/.ssh',
+      'type=bind,source=/Users/me/.config/gh,target=/home/vscode/.config/gh',
+      'type=bind,source=/run/host-services/ssh-auth.sock,target=/run/host-services/ssh-auth.sock'
+    ]))
+    // `docker run`, not just the adapter: every `docker exec` inherits it.
+    expect(values(args, '--env')).toContain('SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock')
+  })
+
+  it('never mounts the host gitconfig over the container\'s own', () => {
+    // VS Code's "attach to container" writes its credential helper into the
+    // container's global config; the host must not inherit that.
+    const args = runArgs({
+      homeOverlay: homeOverlay({
+        sourceHome: '/Users/me',
+        containerHome: '/home/vscode',
+        workspacePath: '/workspaces/api',
+        paths: ['.gitconfig'],
+        present: ['.gitconfig'],
+        sshAgent: null
+      })
+    })
+
+    expect(values(args, '--mount')).toContain(
+      'type=bind,source=/Users/me/.gitconfig,target=/home/vscode/.gitconfig-host,readonly'
+    )
+    expect(values(args, '--mount').join('\n')).not.toContain('target=/home/vscode/.gitconfig,')
+    expect(values(args, '--mount')).not.toContain('type=bind,source=/Users/me/.gitconfig,target=/home/vscode/.gitconfig')
+  })
+
+  it('mounts nothing of the home when the overlay is empty', () => {
+    expect(values(runArgs(), '--mount')).toHaveLength(2)
+    expect(values(runArgs(), '--env')).toEqual(['DOMO_DEV_ENVIRONMENT_ID=env_1'])
   })
 
   it('never mounts the host\'s Claude config, at any path', () => {

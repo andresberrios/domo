@@ -14,9 +14,11 @@ import {
   resolveRemoteUser
 } from './dev-env/container'
 import { inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './dev-env/docker'
+import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { dataDir } from './paths'
+import { getSettings } from './settings'
 import {
   createDevEnvironmentRow,
   deleteDevEnvironmentRow,
@@ -79,8 +81,11 @@ function execArgs(input: {
   user?: string
   workdir?: string
   env?: Record<string, string>
+  /** Needed whenever the command is fed on stdin. */
+  interactive?: boolean
 }): string[] {
   const args = ['exec']
+  if (input.interactive) args.push('--interactive')
   if (input.user) args.push('--user', input.user)
   if (input.workdir) args.push('--workdir', input.workdir)
   for (const [key, value] of Object.entries(input.env ?? {})) args.push('--env', `${key}=${value}`)
@@ -158,6 +163,14 @@ export async function createEnvironment(input: {
     })
     const metadata = await readImageMetadata(imageName, id)
     const remoteUser = resolveRemoteUser(resolved.config, metadata)
+    const home = homeDirectory(remoteUser)
+    // Bind mounts are fixed at `docker run`, so the setting applies to
+    // environments created from here on, not to ones that already exist.
+    const overlay = await resolveHomeOverlay({
+      containerHome: home,
+      workspacePath,
+      paths: (await getSettings()).homeMounts
+    })
     const { stdout: containerId } = await run('docker', containerRunArgs({
       environmentId: id,
       projectId: project.id,
@@ -170,7 +183,8 @@ export async function createEnvironment(input: {
       workspaceVolume,
       runtimeVolume,
       ports: declaredPorts,
-      codexConfigDir
+      codexConfigDir,
+      homeOverlay: overlay
     }))
     const inspection = await inspectContainer(containerId)
     if (!inspection) throw new Error('The environment container was created but could not be inspected.')
@@ -194,12 +208,26 @@ export async function createEnvironment(input: {
         ...execArgs({ containerId: inspection.id, user: 'root' }),
         'chown', '--recursive', `${remoteUser}:`, workspacePath
       ])
+      // A mount target's missing parent (`~/.config`, when only `~/.config/gh`
+      // is mounted) is created by Docker as root, and gcloud then cannot write
+      // beside its own directory. Not recursive: the mounted content is the
+      // host's and stays as it is.
+      if (overlay.parentDirectories.length) {
+        await run('docker', [
+          ...execArgs({ containerId: inspection.id, user: 'root' }),
+          'chown', `${remoteUser}:`, ...overlay.parentDirectories
+        ]).catch((error) => {
+          console.warn(`[dev-env] could not hand the mounted home directories to ${remoteUser}: ${error}`)
+        })
+      }
     }
-    const home = homeDirectory(remoteUser)
+    // The container's own git config. It *includes* the host's rather than
+    // being it — see `containerGitconfig()` for why — and carries the
+    // safe.directory this used to set with `git config --global --add`.
     await run('docker', [
-      ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home } }),
-      'git', 'config', '--global', '--add', 'safe.directory', workspacePath
-    ])
+      ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home }, interactive: true }),
+      'sh', '-c', 'cat > "$1"', 'sh', `${home}/.gitconfig`
+    ], { input: overlay.gitconfig })
     // After the preflight, because it runs the CLI out of the runtime volume.
     await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
     if (resolved.config.postCreateCommand) {

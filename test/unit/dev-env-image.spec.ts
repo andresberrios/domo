@@ -18,6 +18,7 @@ describe('generatedBuildConfig', () => {
       image: defaultEnvironmentConfig().image,
       features: {
         'ghcr.io/devcontainers/features/node:1': { version: '22' },
+        'ghcr.io/devcontainers/features/github-cli:1': { version: 'latest' },
         [DIND_FEATURE]: { version: 'latest' }
       }
     })

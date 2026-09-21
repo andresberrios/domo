@@ -1,4 +1,5 @@
 import { query } from './db'
+import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
 import type { AppSettings } from '../../shared/types'
 
 export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code and Codex — for a developer,
@@ -102,7 +103,8 @@ export const DEFAULTS: AppSettings = {
   defaultAgentMode: 'default',
   language: 'en-US',
   autoTitle: true,
-  vscodeSshHost: ''
+  vscodeSshHost: '',
+  homeMounts: [...DEFAULT_HOME_MOUNTS]
 }
 
 export async function getSettings(): Promise<AppSettings> {

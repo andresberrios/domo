@@ -286,6 +286,39 @@ describe('settings', () => {
       autoTitle: true
     })
   })
+
+  it('serves the home mounts a new install gets', async () => {
+    const settings = await $fetch<AppSettings>('/api/settings')
+
+    expect(settings.homeMounts).toEqual(['.ssh', '.gitconfig', '.config/gh', '.config/gcloud', '.aws', '.kube'])
+  })
+
+  it('stores home mounts a line at a time, dropping the blank ones', async () => {
+    await $fetch('/api/settings', { method: 'PATCH', body: { homeMounts: ['.ssh', '  ', '.config/gh/'] } })
+
+    await expect($fetch<AppSettings>('/api/settings')).resolves.toMatchObject({
+      homeMounts: ['.ssh', '.config/gh']
+    })
+  })
+
+  it.each([
+    ['an absolute path', '/etc/passwd'],
+    ['an escape', '../../etc'],
+    // A shared `.credentials.json` logs this machine's own Claude Code out.
+    ['the Claude config', '.claude'],
+    ['the Codex config, which has its own mount', '.codex']
+  ])('refuses %s as a home mount, with a reason', async (_label, entry) => {
+    const response = await fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ homeMounts: ['.ssh', entry] })
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ message: expect.stringContaining(entry) })
+    // And nothing was stored.
+    await expect($fetch<AppSettings>('/api/settings')).resolves.not.toMatchObject({ homeMounts: ['.ssh', entry] })
+  })
 })
 
 describe('mcp servers', () => {

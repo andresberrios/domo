@@ -179,6 +179,11 @@ export interface AppSettings {
   autoTitle: boolean
   /** SSH target VS Code reaches Docker through; empty when it is the same machine. */
   vscodeSshHost: string
+  /**
+   * Paths under the host user's home directory bind-mounted into a new
+   * environment's home: SSH keys, the git identity, CLI logins.
+   */
+  homeMounts: string[]
 }
 
 /** Server -> browser events on the /api/stream SSE channel. */

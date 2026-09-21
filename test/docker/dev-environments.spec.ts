@@ -15,6 +15,7 @@ import type { DevEnvironment } from '~~/shared/types'
  * see the `.live` spec for the handful of tests that need a real one.
  */
 
+const state = vi.hoisted(() => ({ homeMounts: [] as string[] }))
 const run = vi.fn(async (_program: string, _args: string[], _options?: unknown) => ({ stdout: '', stderr: '' }))
 const inspectContainer = vi.fn()
 const populateWorkspaceVolume = vi.fn(async () => undefined)
@@ -59,6 +60,9 @@ vi.mock('../../server/lib/dev-environment-ports', () => ({
   stopEnvironmentForwarders: vi.fn()
 }))
 vi.mock('../../server/lib/repo', () => repo)
+// Settings live in Postgres, and this project has none. The home overlay is the
+// only thing here that reads them.
+vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
 
 const {
   containerExecArgs,
@@ -279,10 +283,18 @@ describe('start, stop and remove', () => {
 describe('createEnvironment', () => {
   let repoPath: string
   let dataRoot: string
+  let hostHome: string
 
   beforeEach(async () => {
     dataRoot = await mkdtemp(join(tmpdir(), 'domo-env-data-'))
     repoPath = await mkdtemp(join(tmpdir(), 'domo-env-repo-'))
+    // Never the developer's own home, for the same reason as `~/.claude`.
+    hostHome = await mkdtemp(join(tmpdir(), 'domo-env-home-'))
+    await mkdir(join(hostHome, '.config', 'gh'), { recursive: true })
+    await writeFile(join(hostHome, '.gitconfig'), '[user]\n\tname = Ana\n', 'utf8')
+    process.env.NUXT_HOME_OVERLAY_DIR = hostHome
+    delete process.env.SSH_AUTH_SOCK
+    state.homeMounts = ['.ssh', '.gitconfig', '.config/gh']
     process.env.NUXT_DATA_DIR = dataRoot
     await mkdir(join(repoPath, '.git'), { recursive: true })
     await writeFile(join(repoPath, 'README.md'), '# project\n', 'utf8')
@@ -319,8 +331,11 @@ describe('createEnvironment', () => {
 
   afterEach(async () => {
     delete process.env.NUXT_DATA_DIR
+    delete process.env.NUXT_HOME_OVERLAY_DIR
+    state.homeMounts = []
     await rm(dataRoot, { recursive: true, force: true })
     await rm(repoPath, { recursive: true, force: true })
+    await rm(hostHome, { recursive: true, force: true })
   })
 
   it('builds, runs, preflights, chowns and only then runs postCreateCommand', async () => {
@@ -336,7 +351,8 @@ describe('createEnvironment', () => {
       stepAt('git', '--version'),
       stepAt('/opt/domo/node/bin/node'),
       stepAt('chown'),
-      stepAt('safe.directory'),
+      // The container's own git config, which replaced `git config --global`.
+      stepAt('cat > "$1"', '/home/vscode/.gitconfig'),
       // The seed runs the CLI out of the runtime volume, so it belongs after the
       // preflight that proves the runtime volume can run at all.
       stepAt('claude', '--version'),
@@ -345,6 +361,50 @@ describe('createEnvironment', () => {
     ]
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(order.includes(-1)).toBe(false)
+  })
+
+  it('mounts the host\'s login state, skipping what this host does not have', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const mounts = dockerCalls().find(args => args[0] === 'run')!
+      .flatMap((arg, index, all) => arg === '--mount' ? [all[index + 1]!] : [])
+
+    expect(mounts).toContain(`type=bind,source=${hostHome}/.config/gh,target=/home/vscode/.config/gh`)
+    // The host file goes beside the container's own config, read-only.
+    expect(mounts).toContain(`type=bind,source=${hostHome}/.gitconfig,target=/home/vscode/.gitconfig-host,readonly`)
+    // `.ssh` was asked for and this host has none: skipped, not an error.
+    expect(mounts.join('\n')).not.toContain('/.ssh')
+  })
+
+  it('writes the container\'s own git config, and hands the created parents to the user', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const write = run.mock.calls.find(([, args]) => args.at(-1) === '/home/vscode/.gitconfig')!
+    expect(write[1]).toEqual([
+      'exec', '--interactive', '--user', 'vscode', '--env', 'HOME=/home/vscode', 'container-sha',
+      'sh', '-c', 'cat > "$1"', 'sh', '/home/vscode/.gitconfig'
+    ])
+    const contents = (write[2] as { input: string }).input
+    expect(contents).toContain('path = ~/.gitconfig-host')
+    // What `git config --global --add safe.directory` used to do.
+    expect(contents).toContain('directory = /workspaces/api')
+
+    // Docker creates `~/.config` as root when it makes the `gh` mount target.
+    expect(dockerCalls()).toContainEqual([
+      'exec', '--user', 'root', 'container-sha', 'chown', 'vscode:', '/home/vscode/.config'
+    ])
+  })
+
+  it('offers the SSH agent socket when this machine has one', async () => {
+    const socket = join(hostHome, 'agent.sock')
+    await writeFile(socket, '', 'utf8')
+    process.env.SSH_AUTH_SOCK = socket
+
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const runArgs = dockerCalls().find(args => args[0] === 'run')!
+    expect(runArgs).toContain(`type=bind,source=${socket},target=/run/host-services/ssh-auth.sock`)
+    expect(runArgs).toContain('SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock')
   })
 
   it('seeds the Claude home as the remote user, and never mounts the host\'s', async () => {

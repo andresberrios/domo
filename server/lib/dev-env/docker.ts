@@ -90,6 +90,18 @@ export async function dockerServerArch(): Promise<string> {
 }
 
 /**
+ * The daemon's operating system, as it describes itself: `Docker Desktop`, or
+ * the host distribution (`Ubuntu 24.04.3 LTS`, …).
+ *
+ * It is asked because Docker Desktop runs the daemon in a VM, so a host path is
+ * not automatically a path the daemon can bind-mount — see `detectSshAgent()`.
+ */
+export async function dockerServerOs(): Promise<string> {
+  const { stdout } = await run('docker', ['info', '--format', '{{.OperatingSystem}}'], { allowFailure: true })
+  return stdout || 'unknown'
+}
+
+/**
  * `tar` on the host piped into a `tar -x` that Docker runs, wherever that is.
  *
  * The host tree is never bind-mounted, so this does not depend on Docker Desktop

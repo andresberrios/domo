@@ -15,6 +15,7 @@ export const DOMO_CONFIG_FILE = '.domo.json'
 export const DEFAULT_IMAGE = process.env.NUXT_DEV_ENV_IMAGE
   || 'mcr.microsoft.com/devcontainers/base:ubuntu-24.04'
 export const DIND_FEATURE = 'ghcr.io/devcontainers/features/docker-in-docker:2'
+export const GITHUB_CLI_FEATURE = 'ghcr.io/devcontainers/features/github-cli:1'
 
 /**
  * Every key `.domo.json` understands. Anything else — a typo, or a devcontainer
@@ -62,7 +63,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function defaultEnvironmentConfig(): DevEnvironmentConfig {
   return {
     image: DEFAULT_IMAGE,
-    features: { 'ghcr.io/devcontainers/features/node:1': { version: '22' } },
+    features: {
+      'ghcr.io/devcontainers/features/node:1': { version: '22' },
+      // `gh` is the credential helper the generated `~/.gitconfig` names, so an
+      // agent in the default environment can push with the host's GitHub login.
+      [GITHUB_CLI_FEATURE]: { version: 'latest' }
+    },
     docker: true,
     containerEnv: {},
     forwardPorts: [],
