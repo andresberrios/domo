@@ -16,6 +16,7 @@ else is a directory inside a project.
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
 | `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Opt in. |
+| `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
 them but a label; `test/server` and `test/e2e` share one because they have the
@@ -36,6 +37,7 @@ daemon is not something the default run may assume.
 | `pnpm test:integration` | Postgres | `integration`. |
 | `pnpm test:electric` | Postgres + `electric-e2e` | `electric`. |
 | `pnpm test:docker` | a Docker daemon | every `test/docker` file, live ones included. |
+| `pnpm test:agents` | Postgres + Docker + real accounts | `agents-live`. ~90 s warm, minutes cold. |
 | `pnpm test:watch` | nothing | `unit` + `nuxt` in watch mode. |
 
 ### An unreachable service fails the run
@@ -77,10 +79,39 @@ argv, and all of it has been wrong at some point.
 
 What is deliberately *not* tested: a real Gemini Live session and
 `useVoiceChannel` (a real browser and a real Live session; only the request the
-runtime sends is covered, with the SDK faked — `test/server/voice-runtime-model.spec.ts`), and spawning ACP
-adapters (a real Claude Code / Codex account). Permissions are still covered
-end to end, because a permission is a row — `answerPermission` resolves it with
-no adapter attached.
+runtime sends is covered, with the SDK faked —
+`test/server/voice-runtime-model.spec.ts`). That is the whole list now: spawning
+ACP adapters used to be on it and is covered by `agents-live`.
+
+## The `agents-live` layer
+
+`pnpm test:agents`. One environment (`docker: false`, so unprivileged and quick)
+shared by every session, and both adapters run in it in turn — a supported and
+important case that nothing else exercises.
+
+- **Its `globalSetup` names everything that is missing at once**, not one thing
+  per run: the database, the daemon, `NUXT_CLAUDE_CODE_OAUTH_TOKEN`, and a Codex
+  login. No skip, no opt-out, same rule as every other service-backed project.
+- **The mesh server runs in the test process, bound to `0.0.0.0`.** It has to be
+  this process — the token secret is `randomBytes(32)` at module scope and a
+  token minted here verifies only here — and it has to be `0.0.0.0`, because
+  `host.docker.internal` resolves to the host *gateway* address and a listener on
+  `127.0.0.1` is simply unreachable from a container.
+- **Everything it creates is named `domo-agents-test-…`**, and the last test
+  asserts that no container, workspace volume or image with that prefix
+  survives. The shared runtime volume is deliberately kept, exactly as in
+  `docker-live`.
+- **What makes each adapter ask permission is not the same**, and both were
+  measured rather than assumed. Claude Code's default "Manual" mode asks about
+  its *own* tools only: Domo advertises `fs/writeTextFile`, and a write the
+  adapter delegates to the client raises no permission at all, so the probe is a
+  shell command. codex-acp starts in `agent` ("Approve for me") and asks for
+  nothing; in `read-only` it asks to edit files rather than about the command.
+  `ASKS` in the spec records both.
+- **Keep the prompts single-turn and the models cheap.** `haiku` for Claude and
+  `gpt-5.6-luna` for Codex, chosen off a real `session/new` — and note neither id
+  is guessable (Claude lists `haiku`, not `claude-haiku-4-5`; Codex has no
+  `*-mini`).
 
 ## The test-database lifecycle
 

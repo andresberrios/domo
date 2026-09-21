@@ -44,9 +44,10 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
 - Node 22+ and pnpm 10+
 - Docker (for Postgres + Electric)
 - A Gemini API key ([AI Studio](https://aistudio.google.com/apikey))
-- Access to at least one coding agent: a local Claude Code login or
-  `NUXT_ANTHROPIC_API_KEY`; or a local Codex login, `NUXT_CODEX_API_KEY`, or
-  `NUXT_OPENAI_API_KEY`
+- Access to at least one coding agent: a `claude setup-token` token (see
+  [Claude authentication](#claude-authentication)), a local Claude Code login,
+  or `NUXT_ANTHROPIC_API_KEY`; and/or a local Codex login, `NUXT_CODEX_API_KEY`,
+  or `NUXT_OPENAI_API_KEY`
 
 ## Quick start
 
@@ -190,7 +191,8 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | Variable | Purpose |
 | --- | --- |
 | `NUXT_GEMINI_API_KEY` | Gemini key for the voice agent (required) |
-| `NUXT_ANTHROPIC_API_KEY` | Optional; forwarded to the Claude Code adapter |
+| `NUXT_CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`; how Claude Code authenticates inside a development environment — see [Claude authentication](#claude-authentication) |
+| `NUXT_ANTHROPIC_API_KEY` | Optional fallback; **bills the API, not your subscription**, and is passed only when there is no other credential |
 | `NUXT_CODEX_API_KEY` | Optional; forwarded as `CODEX_API_KEY` to the Codex adapter |
 | `NUXT_OPENAI_API_KEY` | Optional; forwarded as `OPENAI_API_KEY` to the Codex adapter |
 | `DATABASE_URL` | Postgres, defaults to the compose service |
@@ -203,8 +205,44 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `NUXT_DEV_ENV_HELPER_IMAGE` | Image used to copy a checkout into its volume (default `busybox:1.37`; set it for offline installs) |
 | `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix of the containers, images and volumes Domo creates (default `domo-dev-`) |
 | `NUXT_DEV_ENV_DOCKER_READY_MS` | How long a nested Docker daemon gets to start before creation fails (default `30000`) |
-| `NUXT_CLAUDE_CONFIG_DIR` | Claude config directory mounted into environments (defaults to `~/.claude`) |
+| `NUXT_CLAUDE_CONFIG_DIR` | Where the Claude config *copied* into a new environment is read from (defaults to `~/.claude`) |
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
+| `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` | Default model for new sessions of that adapter, when the session names none |
+
+### Claude authentication
+
+**Run `claude setup-token` once and put the token in `.env` as
+`NUXT_CLAUDE_CODE_OAUTH_TOKEN`.** It is a one-year token, billed to your Claude
+subscription, and it is how Claude Code authenticates inside a development
+environment.
+
+Domo deliberately **never copies your Claude login into a container.** Anthropic
+rotates the OAuth refresh token every time Claude Code refreshes, and the
+previous one stops working — so two Claude Codes sharing one credential log each
+other out. If the copy in a long-lived container refreshed first, the loser
+would be your own machine, and the only fix is an interactive `/login`. (Widely
+reported, though not documented by Anthropic:
+[#88583](https://github.com/anthropics/claude-code/issues/88583),
+[#48786](https://github.com/anthropics/claude-code/issues/48786),
+[#78020](https://github.com/anthropics/claude-code/issues/78020).) A setup token
+has no refresh chain to fork, which is why it is the supported answer for
+headless and CI use.
+
+What an environment *does* get is a copy, taken at creation, of the harmless
+parts of `~/.claude`: `CLAUDE.md`, `settings.json`, `skills/`, `commands/` and
+`agents/`. Never `.credentials.json`, and never `projects/`, `todos/`, `history`
+or `sessions` — those are transcripts of everything else you have ever asked
+Claude Code. Because it is a snapshot, editing your global `CLAUDE.md` afterwards
+does not reach an environment that already exists.
+
+Precedence, which Claude Code defines and Domo follows: `ANTHROPIC_API_KEY` beats
+`CLAUDE_CODE_OAUTH_TOKEN`, which beats a stored `/login`. An API key in the
+environment is used **with no prompt** in non-interactive mode, so Domo passes
+`NUXT_ANTHROPIC_API_KEY` only when there is no OAuth token and no host login —
+otherwise your work would quietly bill the API instead of your subscription.
+
+Codex is different and needs none of this: its `~/.codex` directory is mounted,
+and `auth.json` there is one shared copy rather than a forked chain.
 
 ### About the Live model id
 

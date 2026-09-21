@@ -85,9 +85,11 @@ export async function fixtureRepo(): Promise<string> {
   await mkdir(join(repo, 'src'), { recursive: true })
   await writeFile(join(repo, 'src', 'index.ts'), 'export {}\n')
   // `docker: false` keeps it unprivileged and quick: nothing here needs a nested
-  // daemon, and DinD is already covered by the docker-live layer.
+  // daemon, and DinD is already covered by the docker-live layer. Node comes
+  // from the shared runtime volume, so the image only has to provide `git`.
+  const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
   await writeFile(join(repo, '.domo.json'), JSON.stringify({
-    devEnvironment: { docker: false }
+    devEnvironment: { image: DEFAULT_IMAGE, docker: false, remoteUser: 'vscode' }
   }))
   for (const args of [
     ['add', '--all'],
@@ -96,23 +98,6 @@ export async function fixtureRepo(): Promise<string> {
     await run('git', ['-C', repo, ...args])
   }
   return repo
-}
-
-/** Wait for something the agent does asynchronously, without a fixed sleep. */
-export async function until<T>(
-  describe: string,
-  probe: () => Promise<T | null | undefined | false>,
-  timeoutMs = 180_000
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const found = await probe().catch(() => null)
-    if (found) return found as T
-    if (Date.now() >= deadline) {
-      throw new Error(`timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${describe}`)
-    }
-    await new Promise(wait => setTimeout(wait, 500))
-  }
 }
 
 export async function events(agentSessionId: string): Promise<AgentEvent[]> {

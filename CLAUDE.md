@@ -90,11 +90,51 @@ things that are easy to get wrong.
 ## Gotchas (learned the hard way)
 
 - **Scrub the environment when spawning the ACP adapter.** `adapterEnv()` in
-  `server/lib/acp/manager.ts` passes an allow-list only. Inheriting a parent
-  Claude Code session's `CLAUDE_*` / `CLAUDECODE` variables makes the nested CLI
-  adopt the parent's flags — the symptom was `session/new` failing with a bare
-  "Internal error" (really `--dangerously-skip-permissions cannot be used with
-  root/sudo privileges`).
+  `server/lib/acp/adapter-process.ts` passes an allow-list only. Inheriting a
+  parent Claude Code session's `CLAUDE_*` / `CLAUDECODE` variables makes the
+  nested CLI adopt the parent's flags — the symptom was `session/new` failing
+  with a bare "Internal error" (really `--dangerously-skip-permissions cannot be
+  used with root/sudo privileges`).
+- **The allow-list is still too much for a container: `HOST_ONLY_ENV` is
+  subtracted again.** A variable that describes *this machine* means something
+  else inside an environment. `TMPDIR` is the one that bites — on macOS it is a
+  per-user `/var/folders/…/T/` that does not exist in the container, and Claude
+  Code exits 1 with `EACCES: permission denied, mkdir '/var/folders'`, which the
+  adapter reports as (again) a bare **"Internal error"** with nothing else in the
+  log. `PATH`, `SHELL`, `XDG_*`, `SSL_CERT_FILE` and the Windows variables go the
+  same way; `docker exec` supplies the image's own `PATH`, and `boot()` sets
+  `HOME`/`USER`/`LOGNAME` explicitly. Measured: identical session, clean env
+  succeeds, host `TMPDIR` fails, host `PATH` alone is harmless.
+
+- **Never copy a Claude login into a container, and never mount `~/.claude`.**
+  Anthropic rotates the OAuth refresh token on every refresh and the old one
+  stops working, so two Claude Codes on one credential log each other out — and
+  the loser would be the developer's own Mac, recoverable only by an interactive
+  `/login`. Undocumented by Anthropic but very well attested
+  (anthropics/claude-code#88583 has an instrumented 3-day log; #48786, #78020).
+  The supported path for a headless agent is `claude setup-token` →
+  `NUXT_CLAUDE_CODE_OAUTH_TOKEN`: one year, subscription-billed, no chain to
+  fork. `seedClaudeHome()` copies only `CLAUDE.md`, `settings.json`, `skills/`,
+  `commands/`, `agents/` — an allow-list, because the same directory holds
+  `.credentials.json` and every transcript the developer has. A **file** bind
+  mount would not have worked anyway: Claude Code deletes and recreates
+  `.credentials.json` on refresh (#18443), so the container would hold a
+  dangling inode.
+- **`ANTHROPIC_API_KEY` outranks every OAuth path inside Claude Code**, and in
+  non-interactive mode it is used with no approval prompt. Passing it alongside
+  a subscription login silently moves the work onto API billing, so `adapterEnv`
+  passes it *only* when there is no token and (on the host) no login —
+  `hasClaudeSubscriptionLogin()` asks the Keychain **without `-w`**, which
+  answers the question without triggering a GUI prompt.
+- **`~/.claude.json` lives in `$HOME`, beside `~/.claude` and not inside it**, so
+  copying the directory misses it; it holds onboarding state and per-project
+  trust. `seedClaudeOnboarding()` writes it if absent, with the CLI version read
+  out of the runtime volume (the SDK package version is a different number:
+  0.3.270 ships CLI 2.1.270). Measured on 2.1.270: the reported silent
+  `exit 0` first-run gate (#95217, #46259) does **not** reproduce — with and
+  without the file the CLI fails identically on auth and writes its own
+  `.claude.json`. The seed is kept as cheap insurance, not as a fix for an
+  observed failure.
 - **Resolve the adapter entry from `process.cwd()`.** The production bundle runs
   from a virtual module path, so `createRequire(import.meta.url).resolve(...)`
   fails there. `adapterEntry()` tries cwd first, then `import.meta.url`, then
@@ -165,7 +205,32 @@ things that are easy to get wrong.
   writes them back to the row. Preferring the row froze whatever default was
   current when the conversation was created, so a Settings change never applied.
 - **Reka select items cannot have `value: ''`** (it throws when the menu opens).
-  Use a named sentinel for "none" — see `LOCAL` in `NewAgentModal.vue`.
+  Use a named sentinel for "none" — see `LOCAL` and `ADAPTER_DEFAULT` in
+  `NewAgentModal.vue`.
+
+- **The model is per session, and the adapter is the authority on it.** It is a
+  column on `agent_sessions`, not a setting, because two agents may run on
+  different models at once; `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` are only
+  the default for a row that names none. There is **no `session/set_model`** in
+  `@agentclientprotocol/sdk` ^1.4 — the mechanism is `session/set_config_option`
+  against the `configOptions` entry whose `category` is `model`, and both
+  adapters speak it (codex-acp keeps `session/set_model` only as a legacy
+  alias). What the adapter answers with is written back to the row, so it
+  records the truth rather than the request. Claude Code *also* honours
+  `ANTHROPIC_MODEL` at the top of its own priority list, but the ACP call is one
+  mechanism for both adapters, so that is the one used.
+- **An adapter only lists its models in a `session/new` response**, which is why
+  the picker is backed by `server/lib/acp/models.ts` spawning a throwaway
+  session (cached an hour, de-duplicated, timeout-capped). The ids are not what
+  you would guess: Claude Code lists `default` / `sonnet` / `opus` / `haiku`,
+  **not** `claude-haiku-4-5`, and codex-acp lists `gpt-6-astra` / `gpt-5.6-sol` /
+  `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5` with **no `*-mini` or `*-nano` at
+  all**. `resolveModel()` therefore accepts an exact id, a display name or a
+  containment match either way, and fails the session rather than guessing.
+- **That endpoint is `/api/adapters/models`, not `/api/agents/models`.** A
+  literal segment beside `/api/agents/[id]` collapses the typed route for every
+  agent call to the methods the literal one supports, and
+  `$fetch('/api/agents/' + id, { method: 'PATCH' })` stops type-checking.
 
 - **`devcontainer build` gets a scratch `.devcontainer/` all to itself.** The CLI
   writes its Feature lockfile *beside the config it was given*, so the generated
@@ -331,9 +396,19 @@ inside a project.
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | real Postgres: `repo.ts` and the schema directly, plus a production Nitro build driven over HTTP. |
 | `electric` | `test/electric` | the full loop without a browser — a page mounted in happy-dom drives the real server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. |
 | `docker-live` | `test/docker/*.live.spec.ts` | the few things needing a real daemon. Opt in: `pnpm test:docker`. |
+| `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real, in a real environment, on real accounts. Opt in: `pnpm test:agents`. |
 
 `pnpm test` runs the first four projects; `test:unit` / `test:nuxt` /
 `test:integration` / `test:electric` pick one layer; `test:watch` is unit + nuxt.
+
+- **`pnpm test` must never start a real coding agent.** `test/e2e` drives the
+  real `POST /api/agents`, which really spawns an adapter, and blanking
+  `NUXT_ANTHROPIC_API_KEY` does **not** prevent it: on macOS Claude Code reads
+  its login straight out of the Keychain and a billable session started inside
+  the default suite. Both adapter entries are pointed at
+  `test/helpers/dead-adapter.mjs`. For the same reason nothing in `unit` may call
+  `security find-generic-password` — the first read opens a GUI prompt and the
+  run blocks on it.
 
 - **An unreachable service fails the run, and there is no opt-out.** Each
   service-backed project checks what it needs in a `globalSetup` and throws
@@ -361,10 +436,11 @@ inside a project.
   arrives as an `AggregateError` with an *empty* message, so "could not reach
   the database" must not be derived from `error.message` alone.
 
-What is deliberately *not* tested: a real Gemini Live session and `useVoiceChannel`
-(a real browser and a real Live session; the model/voice the runtime sends is
-covered with the SDK faked), and *spawning* ACP adapters (a real
-Claude Code / Codex account). Everything above that boundary is covered —
+What is deliberately *not* tested: a real Gemini Live session and
+`useVoiceChannel` (a real browser and a real Live session; the model/voice the
+runtime sends is covered with the SDK faked). **Spawning ACP adapters is now
+covered** — `pnpm test:agents` runs both, for real, inside a real environment.
+Everything above that boundary is still covered without an account:
 `test/server/acp-stream.spec.ts` mocks `spawn` with a pair of pipes and puts the
 SDK's own agent side on the far end, so `onUpdate` runs against real Postgres,
 and permissions are end to end because a permission is a row.
@@ -381,6 +457,17 @@ and permissions are end to end because a permission is a row.
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no
   Node of its own, and an Alpine image failing the preflight and cleaning up.
+- **Both agents were verified end to end inside a real environment**
+  (`pnpm test:agents`, 11 tests, ~85 s warm): `session/new` through `docker exec`
+  for Claude Code and Codex in one shared environment, each pinned to its cheap
+  model and asserted to have landed on it; a prompt that writes `hello.txt` into
+  the workspace volume and reads it back, streamed as coalesced `agent_message`
+  rows plus `tool_call`s and `turn_end`; a permission raised as a row and
+  answered through `acpManager.answerPermission`; and a `list_agents` call
+  arriving at Domo's own mesh endpoint from inside the container with a bearer
+  that verifies back to the calling session. The same prompt also runs as a host
+  session per adapter, so a regression can be attributed to "container" or
+  "adapter".
 - The ACP path was verified end to end against a real Claude Code account:
   `session/new` with the agent-mesh MCP server attached (then a stdio shim,
   now the HTTP endpoint), streaming

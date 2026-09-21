@@ -91,6 +91,38 @@ const PASSTHROUGH_ENV = [
 ]
 
 /**
+ * Variables that describe *this machine* and mean something else inside a
+ * container, so they are dropped for an environment-backed session.
+ *
+ * `TMPDIR` is the one that bites: on macOS it is a per-user
+ * `/var/folders/…/T/` path that does not exist in the container, and Claude
+ * Code exits 1 with `EACCES: permission denied, mkdir '/var/folders'` — which
+ * the adapter reports as a bare "Internal error". `PATH` is equally wrong (the
+ * image's own is better, and `docker exec` supplies it), and the rest name host
+ * files or a host user.
+ */
+const HOST_ONLY_ENV = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TMPDIR',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SystemRoot',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'USERPROFILE',
+  'ProgramFiles',
+  'ProgramData',
+  'COMSPEC',
+  'PATHEXT'
+])
+
+/**
  * Environment for the adapter process.
  *
  * The Claude branch is a precedence, not a union: `ANTHROPIC_API_KEY` outranks
@@ -105,6 +137,7 @@ const PASSTHROUGH_ENV = [
 export async function adapterEnv(adapter: AgentAdapter, inContainer: boolean): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
+    if (inContainer && HOST_ONLY_ENV.has(key)) continue
     const value = process.env[key]
     if (value !== undefined) env[key] = value
   }
