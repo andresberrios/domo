@@ -91,12 +91,12 @@ describe('booting on top of a pre-title_source database', () => {
     const rows = await query<{ column_name: string }>(
       `select column_name from information_schema.columns
         where table_name = 'dev_environments'
-          and column_name in ('container_id', 'host_workspace_path', 'config_source', 'config_path', 'remote_user')
+          and column_name in ('container_id', 'config_source', 'config_path', 'remote_user')
         order by column_name`
     )
 
     expect(rows.map(row => row.column_name)).toEqual([
-      'config_path', 'config_source', 'container_id', 'host_workspace_path', 'remote_user'
+      'config_path', 'config_source', 'container_id', 'remote_user'
     ])
   })
 

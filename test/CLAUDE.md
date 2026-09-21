@@ -11,11 +11,11 @@ else is a directory inside a project.
 
 | project | directories | what it is |
 | --- | --- | --- |
-| `unit` | `test/unit`, `test/docker` | plain node, no services, no Nuxt. Pure logic (`buildTranscript()`, formatters, settings reconciliation, devcontainer config parsing, the voice tools with everything below them mocked) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
+| `unit` | `test/unit`, `test/docker` | plain node, no services, no Nuxt. Pure logic (`buildTranscript()`, formatters, settings reconciliation, `.domo.json` parsing and validation, the generated build config, the image-metadata allow-list, the `docker run` argv and the runtime volume's name, the voice tools with everything below them mocked) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
-| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real Dev Container CLI, five project shapes including Compose, plus the tar copy into the volume; minutes on a cold cache, needs the network). Opt in. |
+| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
 them but a label; `test/server` and `test/e2e` share one because they have the
@@ -56,13 +56,24 @@ then kept in step by hand for no benefit. Do not reintroduce either.
 `test:unit` and `test:nuxt` are the ones that need no services, and they need no
 flag to say so.
 
-**Asserting on the argv handed to `docker` cannot tell you the CLI accepts it.**
+**Asserting on the argv handed to `docker` cannot tell you Docker accepts it.**
 `test/docker/dev-environments.spec.ts` was green while every environment for a
 project without a `.devcontainer/` failed to start. The live spec exists for
 that gap; when the environment lifecycle changes, run `pnpm test:docker`. It
 leaves nothing behind, and its `afterEach` removes containers, workspace volumes,
-Docker-in-Docker volumes and compose projects when an assertion fails halfway.
-Everything it creates is named `domo-live-test-…`.
+Docker-in-Docker volumes and per-environment images when an assertion fails
+halfway. Everything it creates is named `domo-live-test-…`.
+
+The shared runtime volume is deliberately *not* swept: it is the expensive part
+(a Node copy and an `npm install` of both adapters) and the point of it is that
+the second environment reuses it. It is named `domo-live-test-runtime-<hash>`
+under the test prefix, so `docker volume rm` it by hand if a pin changes.
+
+**The ordering assertions in `dev-environments.spec.ts` are the contract.**
+Build before run, preflight before the `chown`, `chown` before
+`postCreateCommand`, and a full teardown (container, workspace volume, DinD
+volume, image) at every failure point. None of that is visible in any single
+argv, and all of it has been wrong at some point.
 
 What is deliberately *not* tested: a real Gemini Live session and
 `useVoiceChannel` (a real browser and a real Live session; only the request the

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { run } from '../../server/lib/devcontainer/client'
+import { run } from '../../server/lib/dev-env/docker'
 
 /**
  * `run()` is the only way Domo shells out. It spawns without a shell, so the

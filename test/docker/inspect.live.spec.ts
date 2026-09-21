@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { inspectContainer, run } from '../../server/lib/devcontainer/client'
+import { inspectContainer, run } from '../../server/lib/dev-env/docker'
 
 /**
  * The one place a real Docker daemon earns its keep: `inspectContainer` parses

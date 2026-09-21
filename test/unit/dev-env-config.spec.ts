@@ -5,17 +5,27 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  buildFeatures,
   DEFAULT_IMAGE,
+  defaultEnvironmentConfig,
+  DIND_FEATURE,
   DOMO_CONFIG_FILE,
   parseForwardPort,
-  resolveDevcontainerConfig,
+  resolveEnvironmentConfig,
   resolveForwardPorts
-} from '../../server/lib/devcontainer/config'
+} from '../../server/lib/dev-env/config'
+
+/**
+ * `.domo.json` is the only environment definition Domo reads. A project's
+ * `.devcontainer/devcontainer.json` is not consulted at all, and anything in
+ * `devEnvironment` that Domo does not implement is an error rather than something
+ * silently dropped — a config that looks honoured but is not is worse than a refusal.
+ */
 
 let workspace: string
 
 beforeEach(async () => {
-  workspace = await mkdtemp(join(tmpdir(), 'domo-devcontainer-'))
+  workspace = await mkdtemp(join(tmpdir(), 'domo-dev-env-'))
 })
 
 afterEach(async () => {
@@ -29,107 +39,177 @@ async function write(relativePath: string, contents: string) {
   return path
 }
 
-describe('resolveDevcontainerConfig', () => {
-  it('prefers .devcontainer/devcontainer.json', async () => {
-    const path = await write('.devcontainer/devcontainer.json', '{ "image": "node:22" }')
-    await write('.devcontainer.json', '{ "image": "node:18" }')
-    await write(DOMO_CONFIG_FILE, '{ "devEnvironment": { "image": "node:16" } }')
+async function domoJson(devEnvironment: unknown) {
+  await write(DOMO_CONFIG_FILE, JSON.stringify({ devEnvironment }))
+  return resolveEnvironmentConfig(workspace)
+}
 
-    const resolved = await resolveDevcontainerConfig(workspace, 'api')
-
-    expect(resolved).toMatchObject({
-      source: 'devcontainer',
-      path,
-      displayPath: '.devcontainer/devcontainer.json',
-      config: { image: 'node:22' }
+describe('the default configuration', () => {
+  it('is what a project with no .domo.json gets', async () => {
+    await expect(resolveEnvironmentConfig(workspace)).resolves.toEqual({
+      source: 'default',
+      path: null,
+      displayPath: null,
+      config: {
+        image: DEFAULT_IMAGE,
+        features: { 'ghcr.io/devcontainers/features/node:1': { version: '22' } },
+        docker: true,
+        containerEnv: {},
+        forwardPorts: [],
+        portsAttributes: {}
+      }
     })
   })
 
-  it('falls back to a root .devcontainer.json', async () => {
+  it('is also what a .domo.json about something else entirely gets', async () => {
+    await write(DOMO_CONFIG_FILE, '{ "somethingElse": true }')
+
+    await expect(resolveEnvironmentConfig(workspace)).resolves.toMatchObject({ source: 'default' })
+  })
+
+  it('does not read a project\'s own devcontainer.json', async () => {
+    await write('.devcontainer/devcontainer.json', '{ "image": "node:22" }')
     await write('.devcontainer.json', '{ "image": "node:18" }')
 
-    await expect(resolveDevcontainerConfig(workspace, 'api')).resolves.toMatchObject({
-      source: 'devcontainer',
-      displayPath: '.devcontainer.json'
+    await expect(resolveEnvironmentConfig(workspace)).resolves.toMatchObject({
+      source: 'default',
+      config: { image: DEFAULT_IMAGE }
+    })
+  })
+})
+
+describe('resolveEnvironmentConfig', () => {
+  it('takes a .domo.json exactly as written', async () => {
+    const resolved = await domoJson({
+      image: '  ghcr.io/acme/dev:latest  ',
+      features: { 'ghcr.io/devcontainers/features/python:1': {} },
+      remoteUser: 'dev',
+      containerEnv: { API_URL: 'http://localhost:3000' },
+      forwardPorts: [3000, '5432/tcp'],
+      portsAttributes: { 3000: { label: 'web', protocol: 'http' } },
+      postCreateCommand: 'pnpm install'
+    })
+
+    expect(resolved).toEqual({
+      source: 'domo',
+      path: join(workspace, DOMO_CONFIG_FILE),
+      displayPath: DOMO_CONFIG_FILE,
+      config: {
+        image: 'ghcr.io/acme/dev:latest',
+        features: { 'ghcr.io/devcontainers/features/python:1': {} },
+        // Nothing is injected: a project that wrote a config gets that config.
+        docker: false,
+        remoteUser: 'dev',
+        containerEnv: { API_URL: 'http://localhost:3000' },
+        forwardPorts: [3000, '5432/tcp'],
+        portsAttributes: { 3000: { label: 'web', protocol: 'http' } },
+        postCreateCommand: 'pnpm install'
+      }
     })
   })
 
-  it('reads JSONC: comments and trailing commas are normal in devcontainer.json', async () => {
-    await write('.devcontainer/devcontainer.json', `{
+  it('fills in the build context and keeps args and target', async () => {
+    const resolved = await domoJson({
+      build: { dockerfile: 'Dockerfile.dev', args: { MARK: 'yes' }, target: 'dev' }
+    })
+
+    expect(resolved.config.build).toEqual({
+      dockerfile: 'Dockerfile.dev',
+      context: '.',
+      args: { MARK: 'yes' },
+      target: 'dev'
+    })
+  })
+
+  it('reads JSONC: comments and trailing commas', async () => {
+    await write(DOMO_CONFIG_FILE, `{
       // the image the team uses
-      "image": "node:22",
-      /* block comments too */
-      "forwardPorts": [3000,],
+      "devEnvironment": {
+        "image": "node:22",
+        /* block comments too */
+        "forwardPorts": [3000,],
+      },
     }`)
 
-    const resolved = await resolveDevcontainerConfig(workspace, 'api')
+    const resolved = await resolveEnvironmentConfig(workspace)
 
     expect(resolved.config).toMatchObject({ image: 'node:22', forwardPorts: [3000] })
   })
 
   it('names the offending file when the JSON is broken', async () => {
-    await write('.devcontainer/devcontainer.json', '{ "image": }')
+    await write(DOMO_CONFIG_FILE, '{ "devEnvironment": }')
 
-    await expect(resolveDevcontainerConfig(workspace, 'api')).rejects.toThrow(/Invalid JSONC in .*devcontainer\.json/)
+    await expect(resolveEnvironmentConfig(workspace)).rejects.toThrow(/Invalid JSONC in .*\.domo\.json/)
   })
 
   it('rejects a file that is not a JSON object', async () => {
-    await write('.devcontainer/devcontainer.json', '["node:22"]')
+    await write(DOMO_CONFIG_FILE, '["node:22"]')
 
-    await expect(resolveDevcontainerConfig(workspace, 'api')).rejects.toThrow(/must contain a JSON object/)
+    await expect(resolveEnvironmentConfig(workspace)).rejects.toThrow(/must contain a JSON object/)
+  })
+})
+
+describe('validation', () => {
+  it('names every unsupported key, and lists the ones that exist', async () => {
+    const failure = domoJson({ image: 'node:22', mounts: [], runArgs: ['--gpus=all'] })
+
+    await expect(failure).rejects.toThrow(/does not support "mounts", "runArgs"/)
+    await expect(failure).rejects.toThrow(/Supported keys are: image, build, features, docker, remoteUser/)
   })
 
-  it('builds a config from .domo.json for repos that only pick an image', async () => {
-    await write(DOMO_CONFIG_FILE, JSON.stringify({
-      devEnvironment: {
-        image: '  ghcr.io/acme/dev:latest  ',
-        remoteUser: 'vscode',
-        forwardPorts: [3000],
-        portsAttributes: { 3000: { label: 'Web app', protocol: 'http' } }
-      }
-    }))
-
-    const resolved = await resolveDevcontainerConfig(workspace, 'acme api')
-
-    expect(resolved).toMatchObject({
-      source: 'domo',
-      displayPath: DOMO_CONFIG_FILE,
-      config: {
-        name: 'acme api',
-        image: 'ghcr.io/acme/dev:latest',
-        remoteUser: 'vscode',
-        forwardPorts: [3000]
-      }
-    })
+  it.each([
+    ['neither image nor build', {}],
+    ['both image and build', { image: 'node:22', build: { dockerfile: 'Dockerfile' } }]
+  ])('refuses %s', async (_label, config) => {
+    await expect(domoJson(config)).rejects.toThrow(/needs exactly one of "image" or "build"/)
   })
 
-  it('refuses a .domo.json devEnvironment without an image', async () => {
-    await write(DOMO_CONFIG_FILE, '{ "devEnvironment": { "remoteUser": "vscode" } }')
-
-    await expect(resolveDevcontainerConfig(workspace, 'api')).rejects.toThrow(/must define devEnvironment\.image/)
+  it.each([
+    ['image', { image: 42 }, /image must be a non-empty string/],
+    ['image', { image: '  ' }, /image must be a non-empty string/],
+    ['build', { build: 'Dockerfile' }, /build must be an object/],
+    ['build.dockerfile', { build: {} }, /build\.dockerfile must be a non-empty string/],
+    ['build', { build: { dockerfile: 'D', cacheFrom: 'x' } }, /build does not support "cacheFrom"/],
+    ['build.args', { build: { dockerfile: 'D', args: { A: 1 } } }, /build\.args\.A must be a string/],
+    ['features', { image: 'i', features: [] }, /features must be an object/],
+    ['docker', { image: 'i', docker: 'yes' }, /docker must be true or false/],
+    ['remoteUser', { image: 'i', remoteUser: '' }, /remoteUser must be a non-empty string/],
+    ['containerEnv', { image: 'i', containerEnv: { A: 1 } }, /containerEnv\.A must be a string/],
+    ['forwardPorts', { image: 'i', forwardPorts: 3000 }, /forwardPorts must be an array/],
+    ['forwardPorts', { image: 'i', forwardPorts: [{}] }, /forwardPorts may only contain numbers and strings/],
+    ['portsAttributes', { image: 'i', portsAttributes: { 3000: 'web' } }, /portsAttributes\.3000 must be an object/],
+    ['postCreateCommand', { image: 'i', postCreateCommand: 7 }, /postCreateCommand must be a string/]
+  ])('refuses a bad %s', async (_field, config, message) => {
+    await expect(domoJson(config)).rejects.toThrow(message)
   })
 
-  it('ignores a .domo.json that is about something else entirely', async () => {
-    await write(DOMO_CONFIG_FILE, '{ "somethingElse": true }')
+  it.each([
+    ['..', { dockerfile: '../evil/Dockerfile' }],
+    ['an absolute path', { dockerfile: '/etc/Dockerfile' }],
+    ['a context outside the project', { dockerfile: 'Dockerfile', context: '../..' }]
+  ])('refuses a build path that escapes the project through %s', async (_label, build) => {
+    await expect(domoJson({ build })).rejects.toThrow(/must stay inside the project/)
+  })
+})
 
-    await expect(resolveDevcontainerConfig(workspace, 'api')).resolves.toMatchObject({ source: 'default' })
+describe('buildFeatures', () => {
+  it('injects docker-in-docker when the environment asked for Docker', () => {
+    const features = buildFeatures({ ...defaultEnvironmentConfig(), docker: true })
+
+    expect(features).toHaveProperty(DIND_FEATURE)
   })
 
-  it('falls back to the built-in Ubuntu definition', async () => {
-    const resolved = await resolveDevcontainerConfig(workspace, 'api')
+  it('leaves the Features alone when it did not', () => {
+    const features = buildFeatures({ ...defaultEnvironmentConfig(), docker: false })
 
-    expect(resolved).toEqual({
-      source: 'default',
-      path: null,
-      displayPath: null,
-      config: {
-        name: 'api',
-        image: DEFAULT_IMAGE,
-        remoteUser: 'vscode',
-        forwardPorts: [],
-        portsAttributes: {}
-      }
-    })
+    expect(Object.keys(features)).toEqual(['ghcr.io/devcontainers/features/node:1'])
+  })
+
+  it('does not add a second one when the project pinned its own', () => {
+    const own = { 'ghcr.io/devcontainers/features/docker-in-docker:2': { moby: false } }
+    const features = buildFeatures({ ...defaultEnvironmentConfig(), docker: true, features: own })
+
+    expect(features).toEqual(own)
   })
 })
 
@@ -159,7 +239,7 @@ describe('parseForwardPort', () => {
 
 describe('resolveForwardPorts', () => {
   it('drops unusable entries and de-duplicates the rest', () => {
-    const ports = resolveForwardPorts({ forwardPorts: [3000, '3000', 'nope', 0, 5432] })
+    const ports = resolveForwardPorts({ forwardPorts: [3000, '3000', 'nope', 0, 5432], portsAttributes: {} })
 
     expect(ports.map(port => port.innerPort)).toEqual([3000, 5432])
   })
@@ -189,6 +269,6 @@ describe('resolveForwardPorts', () => {
   })
 
   it('is empty when nothing is declared', () => {
-    expect(resolveForwardPorts({})).toEqual([])
+    expect(resolveForwardPorts({ forwardPorts: [], portsAttributes: {} })).toEqual([])
   })
 })
