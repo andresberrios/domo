@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process'
 import { createServer, type Server, type Socket } from 'node:net'
 
 import type { DevEnvironment, DevEnvironmentPort } from '../../shared/types'
-import { devcontainerMetadata, inspectContainer, run } from './devcontainer/client'
-import type { PortAttributes } from './devcontainer/types'
+import { inspectContainer, run } from './dev-env/docker'
+import { RUNTIME_ROOT } from './dev-env/runtime-volume'
+import type { PortAttributes } from './dev-env/types'
 import {
   getDevEnvironment,
   listDevEnvironmentPorts,
@@ -29,17 +30,26 @@ function reference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
 }
 
+/** What `createEnvironment` stamped on the container as `domo.portsAttributes`. */
+function labelPortAttributes(labels: Record<string, string>): Record<string, PortAttributes> {
+  try {
+    const parsed = JSON.parse(labels['domo.portsAttributes'] ?? '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 function detectedPortAttributes(
   innerPort: number,
-  configured: Record<string, PortAttributes>,
-  fallback?: PortAttributes
+  configured: Record<string, PortAttributes>
 ): PortAttributes | undefined {
   if (configured[String(innerPort)]) return configured[String(innerPort)]
   for (const [range, attributes] of Object.entries(configured)) {
     const match = range.match(/^(\d+)-(\d+)$/)
     if (match && innerPort >= Number(match[1]) && innerPort <= Number(match[2])) return attributes
   }
-  return fallback
+  return undefined
 }
 
 async function startUserlandForward(
@@ -59,7 +69,9 @@ async function startUserlandForward(
   const server = createServer((client: Socket) => {
     const proxy = spawn('docker', [
       'exec', '--interactive', inspection.id,
-      'node', '--eval', CONTAINER_PROXY_SCRIPT, String(port.innerPort)
+      // Domo's own Node, from the runtime volume: the project picks the image, and it
+      // is not required to have a Node of its own.
+      `${RUNTIME_ROOT}/node/bin/node`, '--eval', CONTAINER_PROXY_SCRIPT, String(port.innerPort)
     ], { stdio: ['pipe', 'pipe', 'pipe'] })
     proxy.stderr.resume()
     client.pipe(proxy.stdin)
@@ -134,9 +146,9 @@ export async function refreshEnvironmentPorts(environmentId: string): Promise<De
 
   const listening = await listeningTcpPorts(environment)
   const existing = await listDevEnvironmentPorts(environmentId)
-  // Port attributes come from the container's own devcontainer.metadata label, so they no longer
-  // depend on a host copy of the repository being around.
-  const resolved = devcontainerMetadata(inspection.labels)
+  // Port attributes travel on the container's own label, so they do not depend on the
+  // project's config still saying what it said when the environment was created.
+  const configured = labelPortAttributes(inspection.labels)
   for (const port of existing) {
     const published = inspection.publishedPorts.find(item =>
       item.innerPort === port.innerPort && item.protocol === port.protocol
@@ -148,11 +160,7 @@ export async function refreshEnvironmentPorts(environmentId: string): Promise<De
   }
   for (const innerPort of listening) {
     if (innerPort === 22 || existing.some(port => port.innerPort === innerPort && port.protocol === 'tcp')) continue
-    const attributes = detectedPortAttributes(
-      innerPort,
-      resolved.portsAttributes,
-      resolved.otherPortsAttributes
-    )
+    const attributes = detectedPortAttributes(innerPort, configured)
     if (attributes?.onAutoForward === 'ignore') continue
     await upsertDevEnvironmentPort({
       environmentId,

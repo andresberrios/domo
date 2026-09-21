@@ -109,7 +109,6 @@ export function useDevEnvironments() {
       containerName: row.container_name,
       containerId: row.container_id ?? null,
       workspacePath: row.workspace_path,
-      hostWorkspacePath: row.host_workspace_path ?? null,
       configSource: row.config_source ?? 'default',
       configPath: row.config_path ?? null,
       remoteUser: row.remote_user ?? null,
