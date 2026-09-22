@@ -12,12 +12,48 @@ accurate the story is.
 
 ## The test that decides what goes in
 
-For every candidate line, ask: **does the reader do something differently
-having read this?** Act on it, worry about it, remember it for later, or
-approve it. If nothing changes, cut it — including things you are proud of.
+**The default is to say nothing.** A point has to earn its way in, and the
+only thing that earns it is the reader having to act: decide something, worry
+about something, or remember something for later. If nothing changes for
+them, cut it — including things you are proud of, and especially things that
+went well.
 
-Verification (tests, builds, checks) is a special case. Report it as one line
-of evidence, not as a section: it changes what they do only if it *failed*.
+Over-reporting is not a venial sin here. A reader who has to wade through six
+points to find the one that needed them is a reader who falls behind, and
+being behind is worse than missing a detail. Protect their attention and their
+working memory the way you would protect a production database.
+
+## Never report these
+
+Each of these feels informative and is not. They are the failure mode, and
+they are seductive because they are all true things you did.
+
+- **A decision you made, are confident in, and that is cheap to reverse.** It
+  is yours. Only surface a call you would want overruled, or one that is
+  expensive to undo later.
+- **That you are on top of something, tracking it, or will check it later.**
+  That is your job, not news. Report the thing when it turns into a decision
+  or a risk, and not before.
+- **Verification that passed.** One line of evidence at the end, or nothing.
+  Report it only when it *failed*.
+- **Work in progress, or what an agent is currently doing.** Report on work
+  when it lands.
+- **How you did something.** The mechanism, the sequence, the obstacle you got
+  around, the clever bit. Nobody is grading the method.
+- **A problem you hit and fully solved**, unless it will recur.
+
+## Answering a direct question
+
+When the reader asked you something, the report *is* the answer. Give it,
+say where the work went if it went somewhere, and stop. Two sentences is
+normal. Do not attach your reasoning, the alternatives, or a summary of what
+you did about it — if they want the reasoning they will ask, and the marker
+below is how they know they can.
+
+> Yes, it's worth capturing — it proved its value this session already. I've
+> added it to the "clean-workspace-populate" agent.
+
+That is a complete report. Anything more is for you, not for them.
 
 ## Structure
 
@@ -90,7 +126,12 @@ instruction.
 
 ## Length
 
-A report on a day of work should be readable in under a minute. If it runs
-long, the compression failed — look for points that are really one point, and
-for lines that survived because they were interesting rather than because they
-were actionable.
+Most reports are one to three points. A report on a full day of parallel work
+should still be readable in well under a minute.
+
+If it runs long, the compression failed. Check for the two usual causes:
+points that are really one point, and lines that survived because they were
+*interesting* rather than because they were *actionable*. Interesting is not
+the bar. Then check the harder one — whether you wrote a point to show that
+the work was done well, which is the instinct this whole format exists to
+suppress.
