@@ -25,6 +25,10 @@ vi.mock('../../server/lib/repo', () => ({
   appendVoiceMessage: async (row: any) => ({ id: 'vm_1', ...row }),
   getResumptionHandle: async () => ({ handle: handle.value, fingerprint: handle.fingerprint }),
   getVoiceSession: async () => null,
+  // The compaction path a connect runs through; nothing to fold in these tests.
+  countVoiceMessagesAfter: async () => 0,
+  listVoiceMessagesAfter: async () => [],
+  saveConversationSummary: async () => null,
   listAgentSessions: async () => [],
   listVoiceMessages: async () => [],
   setVoiceUsage,
