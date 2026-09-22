@@ -9,7 +9,15 @@
 	skip_install_trust
 }
 
-{$DOMO_HTTPS_ADDRESS:localhost:3666} {
+# `host.docker.internal` is here so an agent in a dev environment can open Domo
+# in its own browser. The port was always reachable from a container — Caddy
+# binds the wildcard — but with only `localhost` named there was no certificate
+# for that SNI and the handshake was refused outright. Without it the single
+# reachable address is the Nuxt dev server on plain HTTP, where Electric's shape
+# long-polls exhaust HTTP/1.1's six connections per origin: the first tab
+# renders and every later one comes back blank. The container does not trust
+# Caddy's local CA and does not need to; the browser is told to ignore that.
+{$DOMO_HTTPS_ADDRESS:localhost:3666}, host.docker.internal:{$DOMO_HTTPS_PORT:3666} {
 	tls internal
 	reverse_proxy 127.0.0.1:{$DOMO_DEV_PORT:3667}
 }

@@ -10,6 +10,11 @@ import { connect } from 'node:net'
 const port = process.env.DOMO_DEV_PORT ??= '3667'
 const address = process.env.DOMO_HTTPS_ADDRESS ??= 'localhost:3666'
 
+// The Caddyfile names `host.docker.internal` as a second site address so an
+// agent in a dev environment can open Domo, and it has to be on the same port
+// as the first however that was overridden.
+process.env.DOMO_HTTPS_PORT = address.split(':').pop() || '3666'
+
 // Nitro reads PORT, and `internalBaseUrl()` (server/lib/internal-url.ts) builds
 // the agent-mesh URL handed to every coding agent from it. `nuxt dev --port`
 // leaves PORT unset, so agents dialled 3000 whatever the flag said.

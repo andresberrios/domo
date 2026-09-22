@@ -5,17 +5,22 @@ const toast = useToast()
 const { data: settings, refresh } = await useFetch<AppSettings>('/api/settings')
 const vscodeSshHost = ref('')
 const homeMountsText = ref('')
+const browserTools = ref(true)
 watchEffect(() => {
   if (!settings.value) return
   vscodeSshHost.value = settings.value.vscodeSshHost
   homeMountsText.value = settings.value.homeMounts.join('\n')
+  browserTools.value = settings.value.browserTools
 })
 const saving = ref(false)
 async function save() {
   saving.value = true
   try {
     const homeMounts = homeMountsText.value.split('\n').map(line => line.trim()).filter(Boolean)
-    await $fetch('/api/settings', { method: 'PATCH', body: { vscodeSshHost: vscodeSshHost.value, homeMounts } })
+    await $fetch('/api/settings', {
+      method: 'PATCH',
+      body: { vscodeSshHost: vscodeSshHost.value, homeMounts, browserTools: browserTools.value }
+    })
     await refresh()
     toast.add({ title: 'Settings saved', color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
@@ -39,6 +44,11 @@ async function save() {
     >
       <UTextarea v-model="homeMountsText" :rows="7" class="w-full font-mono text-xs" />
     </UFormField>
+    <USwitch
+      v-model="browserTools"
+      label="Headless browser"
+      description="Mount a shared Chromium and a browser MCP server into new environments, so an agent can open a dev server and look at it. Built once per machine, a few hundred megabytes, and shared by every environment. Like every other mount it is fixed when a container is created, so this applies to environments made from now on."
+    />
     <UFormField label="VS Code SSH host" help="Leave empty when VS Code and Docker are on the same machine. Otherwise use an SSH target such as you@server.">
       <UInput v-model="vscodeSshHost" class="w-full font-mono text-xs" placeholder="you@server" />
     </UFormField>

@@ -1,3 +1,4 @@
+import { BROWSER_ROOT } from './browser-volume'
 import { run } from './docker'
 import { CONTAINER_SSH_AUTH_SOCK, type HomeOverlay } from './home-overlay'
 import type {
@@ -130,6 +131,8 @@ export interface RunContainerInput {
   workspacePath: string
   workspaceVolume: string
   runtimeVolume: string
+  /** The shared headless-browser volume, when the install has one. */
+  browserVolume: string | null
   ports: ResolvedPortConfig[]
   codexConfigDir: string | null
   /** The host user's login state, projected into the container's home. */
@@ -161,6 +164,14 @@ export function containerRunArgs(input: RunContainerInput): string[] {
     // Node and the ACP adapters, shared by every environment and never written to.
     ...mountArg({ source: input.runtimeVolume, target: '/opt/domo', readonly: true })
   ]
+  // Chromium, its libraries and its fonts, shared by every environment. Not on
+  // anything's PATH and not named by any container-wide variable: the browser
+  // needs `LD_LIBRARY_PATH` to find the libraries beside it, and setting that
+  // for the whole container would put them ahead of the image's own for every
+  // process in it. Only the `browser` MCP server gets it — see `browserEnv()`.
+  if (input.browserVolume) {
+    args.push(...mountArg({ source: input.browserVolume, target: BROWSER_ROOT, readonly: true }))
+  }
   // There is deliberately no mount of the host's `~/.claude`. It carries
   // `.credentials.json`, and Anthropic rotates the refresh token on every
   // refresh: a second Claude Code reading the same chain logs the first one out,
