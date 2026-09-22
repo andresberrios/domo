@@ -1,66 +1,67 @@
 import { describe, expect, it } from 'vitest'
 
-import { revivalState } from '../../shared/retention'
+import { sessionStartability } from '../../shared/retention'
 import type { AgentSession, DevEnvironment } from '../../shared/types'
 
 /**
- * The rule that decides whether a retired session can come back.
+ * The rule that decides whether a session can be started.
  *
- * It is pure and it is shared, which is the whole point: the archive page and
- * the agent page render the Revive button off it, and `POST /revive` refuses
- * off it, so the UI can never offer an action the server would reject. These
- * are the four answers it has to keep giving.
+ * It is pure and it is shared, which is the whole point: the server refuses off
+ * it and the UI explains off it, so the composer is never offered for something
+ * a prompt would reject. These are the answers it has to keep giving.
  */
 
 function session(overrides: Partial<AgentSession> = {}) {
-  return {
-    retiredAt: '2026-09-20T10:00:00.000Z',
-    devEnvironmentId: null,
-    ...overrides
-  } as Pick<AgentSession, 'retiredAt' | 'devEnvironmentId'>
+  return { devEnvironmentId: null, cwd: '/work/domo', ...overrides } as
+    Pick<AgentSession, 'devEnvironmentId' | 'cwd'>
 }
 
 function environment(overrides: Partial<DevEnvironment> = {}) {
-  return { name: 'api', deletedAt: null, ...overrides } as Pick<DevEnvironment, 'name' | 'deletedAt'>
+  return { name: 'feature-auth', retiredAt: null, ...overrides } as
+    Pick<DevEnvironment, 'name' | 'retiredAt'>
 }
 
-describe('revivalState', () => {
-  it('refuses a session that is not retired', () => {
-    expect(revivalState(session({ retiredAt: null }), null)).toEqual({
-      revivable: false,
-      reason: 'This session is not retired.'
-    })
+describe('sessionStartability', () => {
+  it('starts a host session whose directory is there, or not checked', () => {
+    expect(sessionStartability(session(), null, true)).toEqual({ startable: true })
+    // `null` is "nobody looked" — only the start path stats the filesystem, and
+    // everything above it asks the environment question alone.
+    expect(sessionStartability(session(), null)).toEqual({ startable: true })
   })
 
-  it('revives a host session, whatever its working directory looks like now', () => {
-    // No environment means no container to have lost. Whether the cwd is still
-    // on disk is the adapter's problem at start time, and it says so readably;
-    // refusing here would block a revival that would have worked.
-    expect(revivalState(session(), null)).toEqual({ revivable: true })
+  it('refuses a host session whose working directory has gone, and names it', () => {
+    const state = sessionStartability(session({ cwd: '/work/gone' }), null, false)
+
+    expect(state.startable).toBe(false)
+    expect(state.startable === false && state.reason).toContain('/work/gone')
   })
 
-  it('revives a container session whose environment is still there', () => {
-    expect(revivalState(session({ devEnvironmentId: 'env_1' }), environment())).toEqual({
-      revivable: true
-    })
+  it('starts a container session while its environment is live', () => {
+    expect(sessionStartability(session({ devEnvironmentId: 'env_1' }), environment()))
+      .toEqual({ startable: true })
   })
 
-  it('refuses one whose environment was deleted, and names it', () => {
-    const state = revivalState(
+  it('refuses one whose environment has been retired, and names it', () => {
+    const state = sessionStartability(
       session({ devEnvironmentId: 'env_1' }),
-      environment({ name: 'feature-auth', deletedAt: '2026-09-21T09:00:00.000Z' })
+      environment({ retiredAt: '2026-09-21T09:00:00.000Z' })
     )
 
-    expect(state.revivable).toBe(false)
-    expect(state.revivable === false && state.reason).toContain('feature-auth')
+    expect(state.startable).toBe(false)
+    expect(state.startable === false && state.reason).toContain('feature-auth')
   })
 
   it('refuses one whose environment row has gone entirely', () => {
-    // `pruneEmptyTombstones` only drops a tombstone once nothing references it,
-    // so this is the legacy case: a session pointing at an environment deleted
-    // before tombstones existed.
-    const state = revivalState(session({ devEnvironmentId: 'env_gone' }), null)
+    // `pruneRetiredRecords` only drops a retired environment once nothing
+    // references it, so this is the case where the row was never kept at all.
+    expect(sessionStartability(session({ devEnvironmentId: 'env_gone' }), null).startable).toBe(false)
+  })
 
-    expect(state.revivable).toBe(false)
+  it('never lets a missing working directory refuse a container session', () => {
+    // The container's checkout is in a volume; the host path is meaningless
+    // there, and stating it would refuse every environment session on a host
+    // whose workspace path happens not to exist locally.
+    expect(sessionStartability(session({ devEnvironmentId: 'env_1' }), environment(), false))
+      .toEqual({ startable: true })
   })
 })

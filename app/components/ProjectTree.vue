@@ -10,8 +10,8 @@ import type { DevEnvironment, Project } from '~~/shared/types'
  * for inline actions to live, and every row here has to be all three.
  */
 const { projects } = useProjects()
-const { environments } = useDevEnvironments()
-const { sessions: agentSessions } = useAgentSessions()
+const { environments, showRetired } = useDevEnvironments()
+const { sessions: agentSessions, showArchived } = useAgentSessions()
 const { sessions: voiceSessions } = useVoiceSessions()
 const { pending } = usePermissions()
 
@@ -123,14 +123,37 @@ function openNewAgent(environment: DevEnvironment) {
         <p class="text-[11px] font-medium uppercase tracking-wide text-dimmed">
           Projects
         </p>
-        <UButton
-          icon="i-lucide-plus"
-          color="neutral"
-          variant="ghost"
-          size="xs"
-          aria-label="New project"
-          @click="newProjectOpen = true"
-        />
+        <div class="flex items-center gap-0.5">
+          <!--
+            Two switches, never one. Archiving is what the user put away;
+            retiring an environment is a place whose container is gone. Every
+            session in a retired environment is unstartable and none of them is
+            archived, so neither switch can stand in for the other.
+          -->
+          <UDropdownMenu
+            :items="[[
+              { label: 'Show archived sessions', icon: 'i-lucide-archive', type: 'checkbox' as const, checked: showArchived, onUpdateChecked: (value: boolean) => { showArchived = value } },
+              { label: 'Show retired environments', icon: 'i-lucide-box', type: 'checkbox' as const, checked: showRetired, onUpdateChecked: (value: boolean) => { showRetired = value } }
+            ]]"
+            :content="{ align: 'end' }"
+          >
+            <UButton
+              icon="i-lucide-eye"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              aria-label="What to show"
+            />
+          </UDropdownMenu>
+          <UButton
+            icon="i-lucide-plus"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            aria-label="New project"
+            @click="newProjectOpen = true"
+          />
+        </div>
       </div>
 
       <p v-if="!projects.length" class="px-2 pb-1 text-xs text-dimmed">

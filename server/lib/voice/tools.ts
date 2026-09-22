@@ -15,7 +15,7 @@ import {
 } from '../dev-env/git-sync'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
-import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
+import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import {
   createCronJob,
@@ -39,6 +39,7 @@ import {
 import { getSettings } from '../settings'
 import type { AgentSession, MessageDelivery } from '../../../shared/types'
 import { isAgentAdapter } from '../../../shared/agent-adapters'
+import { sessionStartability } from '../../../shared/retention'
 
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 
@@ -194,20 +195,31 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'list_agent_sessions',
       description:
-        'List every coding agent session with its id, title, working directory, status, and a short summary of its latest output. Call this before answering any question about what the agents are doing.',
+        'List every coding agent session with its id, title, working directory, status, and a short summary of its latest output. Call this before answering any question about what the agents are doing. An agent whose development environment has been retired is still listed and still readable, but is marked startable:false — it cannot be sent anything, and saying so is more useful than trying.',
       parameters: { type: Type.OBJECT, properties: {} }
     },
     handler: async () => {
       const sessions = await listAgentSessions()
       const pending = await listPermissions(undefined, true)
+      // Retired environments included: an agent that ran in one is still worth
+      // talking *about*, and the reason it cannot be worked with is exactly
+      // what the user would otherwise have to be told twice.
+      const environments = await listDevEnvironments(undefined, true)
       return {
-        agents: sessions.map(session => ({
+        agents: sessions.map((session) => {
+          const startable = sessionStartability(
+            session,
+            environments.find(environment => environment.id === session.devEnvironmentId) ?? null
+          )
+          return {
           id: session.id,
           title: session.title,
           adapter: session.adapter,
           cwd: session.cwd,
           devEnvironmentId: session.devEnvironmentId,
           status: session.status,
+          startable: startable.startable,
+          ...startable.startable ? {} : { cannotStart: startable.reason },
           mode: session.modeId,
           lastActivityAt: session.lastActivityAt,
           summary: summarise(session.summary, 300),
@@ -218,7 +230,8 @@ export const voiceTools: Record<string, VoiceTool> = {
           ...contextUsedPercent(session.usage) === null
             ? {}
             : { contextUsedPercent: contextUsedPercent(session.usage) }
-        }))
+          }
+        })
       }
     }
   },
@@ -446,11 +459,11 @@ export const voiceTools: Record<string, VoiceTool> = {
     }
   },
 
-  delete_project: {
+  retire_project: {
     declaration: {
-      name: 'delete_project',
+      name: 'retire_project',
       description:
-        'Delete a project along with every one of its development environments: their containers, checkouts, and coding agent sessions. This cannot be undone. Always confirm with the user before calling it.',
+        'Retire a project and all of its development environments: their containers and copies of the checkout are destroyed for good. The records are kept — every coding agent transcript stays readable — but those agents can never run again. Always confirm with the user before calling it.',
       parameters: {
         type: Type.OBJECT,
         properties: { project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' } },
@@ -459,8 +472,8 @@ export const voiceTools: Record<string, VoiceTool> = {
     },
     handler: async (args) => {
       const project = await resolveProject(args.project)
-      await removeProjectCascade(project.id)
-      return { id: project.id, deleted: true }
+      await retireProjectCascade(project.id)
+      return { id: project.id, retired: true }
     }
   },
 
@@ -530,11 +543,11 @@ export const voiceTools: Record<string, VoiceTool> = {
     }
   },
 
-  delete_dev_environment: {
+  retire_dev_environment: {
     declaration: {
-      name: 'delete_dev_environment',
+      name: 'retire_dev_environment',
       description:
-        'Delete a development environment: its container, checkout, and any coding agent sessions running in it. This cannot be undone. Always confirm with the user before calling it.',
+        'Retire a development environment: its container and its copy of the checkout are destroyed for good. The records are kept — the transcript of every coding agent that ran in it stays readable — but those agents can never run again. Always confirm with the user before calling it.',
       parameters: {
         type: Type.OBJECT,
         properties: { environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' } },
@@ -543,8 +556,12 @@ export const voiceTools: Record<string, VoiceTool> = {
     },
     handler: async (args) => {
       const environment = await resolveEnvironment(args.environment)
-      await removeProjectEnvironment(environment.id)
-      return { id: environment.id, deleted: true }
+      const retirement = await retireProjectEnvironment(environment.id)
+      return {
+        id: environment.id,
+        retired: true,
+        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title }))
+      }
     }
   },
 

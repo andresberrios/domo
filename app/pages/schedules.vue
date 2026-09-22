@@ -3,8 +3,8 @@ import type { CronJob } from '~~/shared/types'
 
 const toast = useToast()
 // `agents` is who you may schedule *for*; `all` is who a job may point *at*.
-// Retiring a session disables its jobs but leaves them in this list, and a row
-// naming a bare id rather than the agent is the one case that reads as a bug.
+// Retiring an environment disables its sessions' jobs but leaves them in this
+// list, and a row naming a bare id rather than the agent reads as a bug.
 const { sessions: agents, all: allAgents } = useAgentSessions()
 const { jobs } = useCronJobs()
 const saving = ref(false)
@@ -39,7 +39,7 @@ const agentItems = computed(() => agents.value.map(agent => ({ label: agent.titl
 function agentName(id: string) {
   const agent = allAgents.value.find(item => item.id === id)
   if (!agent) return id
-  return agent.retiredAt ? `${agent.title} (retired)` : agent.title
+  return agent.archived ? `${agent.title} (archived)` : agent.title
 }
 
 function when(job: CronJob) {

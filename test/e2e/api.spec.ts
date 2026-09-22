@@ -8,11 +8,14 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   appendAgentEvent,
   createAgentSession,
+  createDevEnvironmentRow,
   createPermission,
+  createProject,
   enqueueInboxMessage,
   getAgentSession,
   listPermissions,
-  listProjects
+  listProjects,
+  retireDevEnvironmentRow
 } from '../../server/lib/repo'
 import { APP_BUILD_DIR } from '../helpers/app-build'
 import { startElectricStub } from '../helpers/electric-stub'
@@ -127,10 +130,11 @@ describe('projects', () => {
     expect(response.status).toBe(400)
   })
 
-  it('deletes a project and everything under it', async () => {
+  it('retires a project and everything under it', async () => {
     const project = await $fetch<Project>('/api/projects', { method: 'POST', body: { repoPath: checkout } })
 
-    await expect($fetch(`/api/projects/${project.id}`, { method: 'DELETE' })).resolves.toEqual({ ok: true })
+    await expect($fetch(`/api/projects/${project.id}`, { method: 'DELETE' }))
+      .resolves.toEqual({ ok: true, retired: true })
     await expect($fetch<Project[]>('/api/projects')).resolves.not.toContainEqual(
       expect.objectContaining({ id: project.id })
     )
@@ -404,60 +408,29 @@ describe('a coding agent as the UI sees it', () => {
     await expect(response.json()).resolves.toMatchObject({ statusMessage: 'Unknown delivery: shout' })
   })
 
-  it('retires on DELETE and keeps the transcript', async () => {
-    // DELETE used to delete, and the transcript went with it. It tombstones
-    // now: the row and its events stay, and the session is read-only.
-    const session = await createAgentSession({ adapter: 'claude-code', title: 'Retiring', cwd: checkout })
+  it('archives on DELETE and keeps the transcript', async () => {
+    // DELETE used to delete, and the transcript went with it. It archives now:
+    // the row and its events stay, and the session is one switch away.
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Archiving', cwd: checkout })
     await appendAgentEvent(session.id, 'agent_message', { text: 'what I did', streaming: false })
 
     await expect($fetch(`/api/agents/${session.id}`, { method: 'DELETE' }))
-      .resolves.toMatchObject({ ok: true, retired: true })
+      .resolves.toMatchObject({ ok: true, archived: true })
 
-    await expect(getAgentSession(session.id)).resolves.toMatchObject({ retiredReason: 'user', archived: true })
+    await expect(getAgentSession(session.id)).resolves.toMatchObject({ archived: true })
     const events = await $fetch<AgentEvent[]>(`/api/agents/${session.id}/events`)
-    expect(events.map(event => event.type)).toEqual(['agent_message', 'retired'])
-    // Off the live list, still reachable by id and through ?retired=true.
+    expect(events.map(event => event.type)).toEqual(['agent_message'])
+
     const live = await $fetch<AgentSession[]>('/api/agents')
     expect(live.map(row => row.id)).not.toContain(session.id)
-    const retired = await $fetch<AgentSession[]>('/api/agents', { query: { retired: 'true' } })
-    expect(retired.map(row => row.id)).toContain(session.id)
+    const all = await $fetch<AgentSession[]>('/api/agents', { query: { includeArchived: 'true' } })
+    expect(all.map(row => row.id)).toContain(session.id)
   })
 
-  it('answers 409 on every write to a retired session', async () => {
-    const session = await createAgentSession({ adapter: 'claude-code', title: 'Closed', cwd: checkout })
-    await $fetch(`/api/agents/${session.id}`, { method: 'DELETE' })
-
-    for (const [path, init] of [
-      [`/api/agents/${session.id}/prompt`, { method: 'POST', body: JSON.stringify({ text: 'go' }) }],
-      [`/api/agents/${session.id}/start`, { method: 'POST' }],
-      [`/api/agents/${session.id}`, { method: 'PATCH', body: JSON.stringify({ modeId: 'plan' }) }],
-      [`/api/agents/${session.id}`, { method: 'PATCH', body: JSON.stringify({ archived: false }) }]
-    ] as const) {
-      const response = await fetch(path, {
-        ...init,
-        headers: { 'content-type': 'application/json' }
-      } as RequestInit)
-
-      expect.soft(`${init.method} ${path} -> ${response.status}`).toContain('409')
-      await expect.soft(response.json()).resolves.toMatchObject({ statusMessage: 'Agent session is retired' })
-    }
-  })
-
-  it('revives a host session, stopped, and refuses a second revival', async () => {
-    const session = await createAgentSession({ adapter: 'claude-code', title: 'Back', cwd: checkout })
-    await $fetch(`/api/agents/${session.id}`, { method: 'DELETE' })
-
-    await expect($fetch<AgentSession>(`/api/agents/${session.id}/revive`, { method: 'POST' }))
-      .resolves.toMatchObject({ retiredAt: null, archived: false, status: 'stopped' })
-
-    const again = await fetch(`/api/agents/${session.id}/revive`, { method: 'POST' })
-    expect(again.status).toBe(409)
-  })
-
-  it('purges only after retirement', async () => {
+  it('purges only after archiving', async () => {
     const session = await createAgentSession({ adapter: 'claude-code', title: 'Gone', cwd: checkout })
 
-    // The tombstone cannot be skipped by accident.
+    // A record can never be destroyed straight off the live list.
     const early = await fetch(`/api/agents/${session.id}?purge=true`, { method: 'DELETE' })
     expect(early.status).toBe(409)
     await expect(getAgentSession(session.id)).resolves.toBeTruthy()
@@ -466,6 +439,46 @@ describe('a coding agent as the UI sees it', () => {
     await expect($fetch(`/api/agents/${session.id}?purge=true`, { method: 'DELETE' }))
       .resolves.toMatchObject({ ok: true, purged: true })
     await expect(getAgentSession(session.id)).resolves.toBeNull()
+  })
+
+  it('answers 409 on every write to a session whose environment was retired', async () => {
+    const project = await createProject({ name: 'retiring', repoPath: checkout })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'gone',
+      containerName: `domo-e2e-${Date.now()}`,
+      workspacePath: '/workspaces/gone'
+    })
+    const session = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Stranded',
+      cwd: '/workspaces/gone',
+      devEnvironmentId: environment.id
+    })
+    // Retiring the row is what makes the session unstartable; the Docker half
+    // of it needs a daemon this layer does not have.
+    await retireDevEnvironmentRow(environment.id)
+
+    for (const [path, init] of [
+      [`/api/agents/${session.id}/prompt`, { method: 'POST', body: JSON.stringify({ text: 'go' }) }],
+      [`/api/agents/${session.id}/start`, { method: 'POST' }],
+      [`/api/agents/${session.id}`, { method: 'PATCH', body: JSON.stringify({ modeId: 'plan' }) }]
+    ] as const) {
+      const response = await fetch(path, {
+        ...init,
+        headers: { 'content-type': 'application/json' }
+      } as RequestInit)
+
+      expect.soft(`${init.method} ${path} -> ${response.status}`).toContain('409')
+      await expect.soft(response.json()).resolves.toMatchObject({
+        statusMessage: 'Agent session cannot be started'
+      })
+    }
+
+    // Archiving is about visibility and stays available — putting away a
+    // session you can no longer run is the obvious thing to do with it.
+    await expect($fetch(`/api/agents/${session.id}`, { method: 'PATCH', body: { archived: true } }))
+      .resolves.toMatchObject({ archived: true })
   })
 })
 

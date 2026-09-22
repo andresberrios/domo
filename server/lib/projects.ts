@@ -1,24 +1,42 @@
 import { access, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 
-import type { Project } from '../../shared/types'
-import { removeEnvironment } from './dev-environments'
+import type { AgentSession, Project } from '../../shared/types'
+import { acpManager } from './acp/manager'
+import { retireEnvironment } from './dev-environments'
 import { normalizeCwd } from './paths'
-import { createProject, listDevEnvironments, pruneEmptyTombstones, softDeleteProject } from './repo'
-import { retireEnvironmentSessions } from './session-retention'
+import {
+  appendAgentEvent,
+  cancelPendingPermissions,
+  createProject,
+  disableCronJobsForAgent,
+  listAgentSessionsInEnvironment,
+  listDevEnvironments,
+  pruneRetiredRecords,
+  removeAllAgentSubscriptions,
+  retireProjectRow
+} from './repo'
 
 /**
- * Project and environment lifecycle, one level above `dev-environments.ts`: this is
- * where an environment's coding-agent sessions are stood down alongside its container,
- * so every caller (the HTTP API, the voice agent, the agent mesh) shares one cascade
- * instead of three copies of it.
+ * Project and environment lifecycle, one level above `dev-environments.ts`.
  *
- * The cascade used to *delete* those sessions, which threw away the only record
- * of what happened inside the environment at exactly the moment the environment
- * stopped being able to tell you. It retires them instead: the container, the
- * workspace volume and the image really do go, and the rows — the session, its
- * whole `agent_events` log, and a tombstone for the environment and project
- * they name — stay. See `server/lib/session-retention.ts`.
+ * Retiring an environment destroys its container, its workspace volume and its
+ * image, and **keeps every row**: the environment's own, and the whole
+ * transcript of each coding agent that ran inside it. An agent session is a
+ * record of work — what was tried, what was decided, what broke — and it stays
+ * worth reading long after the container is gone, so nothing here deletes one.
+ *
+ * What is torn down instead is only *forward-looking* state: schedules that
+ * would fire at an agent that cannot answer, subscriptions that would compose
+ * notes about it, a permission request nobody will ever resolve. Those sessions
+ * are **not** archived — archiving is about whether a session shows up, and
+ * that is the user's call, not a side effect of losing a container. They stay
+ * visible and simply cannot be started, which `sessionStartability` derives
+ * from the retired environment row rather than from anything written on them.
+ *
+ * This is where the adapter manager may be imported and `dev-environments.ts`
+ * is where it may not — importing `acpManager` there would cycle straight back
+ * through it.
  */
 
 export async function createProjectFromPath(input: { name?: string, repoPath: string }): Promise<Project> {
@@ -32,28 +50,79 @@ export async function createProjectFromPath(input: { name?: string, repoPath: st
   return createProject({ name: input.name?.trim() || basename(repoPath), repoPath })
 }
 
-/**
- * Tear an environment down: its sessions are retired, then the container and
- * its volumes are removed and the row is tombstoned.
- *
- * The sessions go first. Retiring stops each adapter, and an adapter still
- * holding a `docker exec` against a container being removed is the one ordering
- * here that is not cosmetic.
- */
-export async function removeProjectEnvironment(
-  environmentId: string,
-  reason: 'environment-deleted' | 'project-deleted' = 'environment-deleted'
-): Promise<void> {
-  await retireEnvironmentSessions(environmentId, reason)
-  await removeEnvironment(environmentId)
+export interface EnvironmentRetirement {
+  /** The sessions that can no longer be started. Still visible, still readable. */
+  sessions: AgentSession[]
+  cronJobsDisabled: number
+  subscriptionsRemoved: number
+  permissionsCancelled: number
 }
 
-export async function removeProjectCascade(projectId: string): Promise<void> {
-  const environments = await listDevEnvironments(projectId)
-  for (const environment of environments) {
-    await removeProjectEnvironment(environment.id, 'project-deleted')
+/**
+ * Stand down one session whose environment is going away.
+ *
+ * Deliberately does not touch `archived` or anything else that describes what
+ * happened: the events, the inbox rows and the resolved permissions are the
+ * record, and the record is the point.
+ */
+async function standDown(session: AgentSession): Promise<Omit<EnvironmentRetirement, 'sessions'>> {
+  // The adapter first: everything below describes a session that has stopped,
+  // and it has not stopped until the process is down.
+  acpManager.stop(session.id)
+
+  const [cronJobsDisabled, subscriptionsRemoved, permissionsCancelled] = await Promise.all([
+    disableCronJobsForAgent(session.id),
+    removeAllAgentSubscriptions(session.id),
+    cancelPendingPermissions(session.id)
+  ])
+  // The last line of the transcript says why it ends here.
+  await appendAgentEvent(session.id, 'environment_retired', {
+    devEnvironmentId: session.devEnvironmentId,
+    cronJobsDisabled,
+    subscriptionsRemoved,
+    permissionsCancelled
+  })
+  return { cronJobsDisabled, subscriptionsRemoved, permissionsCancelled }
+}
+
+/**
+ * Retire an environment: its sessions are stood down, then the container and
+ * its volumes are destroyed and the row is kept.
+ *
+ * The sessions go first. Standing one down stops its adapter, and an adapter
+ * still holding a `docker exec` against a container being removed is the one
+ * ordering here that is not cosmetic.
+ */
+export async function retireProjectEnvironment(environmentId: string): Promise<EnvironmentRetirement> {
+  const result: EnvironmentRetirement = {
+    sessions: [],
+    cronJobsDisabled: 0,
+    subscriptionsRemoved: 0,
+    permissionsCancelled: 0
   }
-  await softDeleteProject(projectId)
-  // A project nothing retired ever ran in leaves no tombstone behind at all.
-  await pruneEmptyTombstones()
+  for (const session of await listAgentSessionsInEnvironment(environmentId)) {
+    const counts = await standDown(session)
+    result.sessions.push(session)
+    result.cronJobsDisabled += counts.cronJobsDisabled
+    result.subscriptionsRemoved += counts.subscriptionsRemoved
+    result.permissionsCancelled += counts.permissionsCancelled
+  }
+  await retireEnvironment(environmentId)
+  return result
+}
+
+/**
+ * Retire a project and every environment under it.
+ *
+ * The project row is kept for the same reason each environment's is: an
+ * environment that outlived its project would be an orphan, and the sessions
+ * below it could no longer say where they ran.
+ */
+export async function retireProjectCascade(projectId: string): Promise<void> {
+  for (const environment of await listDevEnvironments(projectId)) {
+    await retireProjectEnvironment(environment.id)
+  }
+  await retireProjectRow(projectId)
+  // A project nothing ever ran in leaves no record behind at all.
+  await pruneRetiredRecords()
 }

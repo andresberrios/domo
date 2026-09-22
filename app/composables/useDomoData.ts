@@ -28,6 +28,7 @@ import type {
   VoiceMessage,
   VoiceSession
 } from '~~/shared/types'
+import { sessionStartability, type Startability } from '~~/shared/retention'
 import { isAgentAdapter } from '~~/shared/agent-adapters'
 
 /* Electric hands rows back exactly as Postgres stores them (snake_case), so
@@ -90,8 +91,6 @@ function toAgentSession(row: any): AgentSession {
     updatedAt: row.updated_at,
     lastActivityAt: row.last_activity_at ?? null,
     archived: !!row.archived,
-    retiredAt: row.retired_at ?? null,
-    retiredReason: row.retired_reason ?? null,
     usage: row.usage ?? null
   }
 }
@@ -99,22 +98,27 @@ function toAgentSession(row: any): AgentSession {
 /**
  * The coding agent sessions.
  *
- * The shape carries every row, archived and retired included — filtering a row
- * out of a *shape* would make it unreachable in the browser, and the whole
- * point of retention is that a retired session stays consultable. So the
- * filtering is here, and `all` is what the surfaces that must see a tombstone
- * (the agent page, the archive) read instead.
+ * The shape carries every row. Filtering one out of a *shape* would make it
+ * unreachable in the browser altogether, and a record that cannot be read is
+ * not a record — so the shape is unfiltered and the deciding happens here.
+ *
+ * `sessions` honours the "show archived" switch, which is what almost every
+ * list wants. `all` is for the few places that must see a row whatever the
+ * switch says: the agent page, which is reached by URL, and any count.
  */
 export function useAgentSessions() {
   const { data, isReady } = useLiveQuery(q => q.from({ agent: agentSessionsCollection() }))
+  const showArchived = useShowArchivedSessions()
 
   const all = computed<AgentSession[]>(() => (data.value ?? []).map(toAgentSession).sort(byRecency))
-  const sessions = computed<AgentSession[]>(() => all.value.filter(session => !session.archived))
+  const sessions = computed<AgentSession[]>(() =>
+    showArchived.value ? all.value : all.value.filter(session => !session.archived)
+  )
 
-  return { sessions, all, isReady }
+  return { sessions, all, showArchived, isReady }
 }
 
-/** One session by id, tombstone or not — what the agent page renders from. */
+/** One session by id, archived or not — what the agent page renders from. */
 export function useAgentSession(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
   const { all, isReady } = useAgentSessions()
   const session = computed<AgentSession | null>(() => {
@@ -125,28 +129,15 @@ export function useAgentSession(agentSessionId: MaybeRefOrGetter<string | null |
 }
 
 /**
- * The two ways a session leaves the sidebar, kept apart because only one of
- * them is reversible by unarchiving.
- */
-export function useArchivedAgentSessions() {
-  const { all, isReady } = useAgentSessions()
-  const archived = computed(() => all.value.filter(session => session.archived && !session.retiredAt))
-  const retired = computed(() =>
-    all.value
-      .filter(session => !!session.retiredAt)
-      .sort((a, b) => (b.retiredAt ?? '').localeCompare(a.retiredAt ?? ''))
-  )
-  return { archived, retired, isReady }
-}
-
-/**
- * Projects, live ones by default.
+ * Projects, live ones unless the "show retired environments" switch is on.
  *
- * A deleted project is a tombstone that the retired sessions under it still
- * name, so it stays in the shape and `all` is how the archive reads it.
+ * A retired project keeps its row — the environments under it, and the sessions
+ * under those, still name it — so it stays in the shape either way, and `all`
+ * is how a session finds the one it ran under whatever the switch says.
  */
 export function useProjects() {
   const { data, isReady } = useLiveQuery(q => q.from({ project: projectsCollection() }))
+  const showRetired = useShowRetiredEnvironments()
   const all = computed<Project[]>(() =>
     (data.value ?? []).map((row: any) => ({
       id: row.id,
@@ -154,16 +145,19 @@ export function useProjects() {
       repoPath: row.repo_path,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      deletedAt: row.deleted_at ?? null
+      retiredAt: row.retired_at ?? null
     })).sort((a, b) => a.name.localeCompare(b.name))
   )
-  const projects = computed(() => all.value.filter(project => !project.deletedAt))
+  const projects = computed(() =>
+    showRetired.value ? all.value : all.value.filter(project => !project.retiredAt)
+  )
   return { projects, all, isReady }
 }
 
-/** Development environments, live ones by default. See `useProjects`. */
+/** Development environments, live ones unless the switch is on. See `useProjects`. */
 export function useDevEnvironments() {
   const { data, isReady } = useLiveQuery(q => q.from({ environment: devEnvironmentsCollection() }))
+  const showRetired = useShowRetiredEnvironments()
   const all = computed<DevEnvironment[]>(() =>
     (data.value ?? []).map((row: any) => ({
       id: row.id,
@@ -179,11 +173,34 @@ export function useDevEnvironments() {
       lastError: row.last_error ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      deletedAt: row.deleted_at ?? null
+      retiredAt: row.retired_at ?? null
     })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   )
-  const environments = computed(() => all.value.filter(environment => !environment.deletedAt))
-  return { environments, all, isReady }
+  const environments = computed(() =>
+    showRetired.value ? all.value : all.value.filter(environment => !environment.retiredAt)
+  )
+  return { environments, all, showRetired, isReady }
+}
+
+/**
+ * Whether one session can be started, live.
+ *
+ * The same pure rule the server refuses with, fed from the rows the browser
+ * already has — so the UI explains exactly what `POST /prompt` would answer,
+ * and cannot offer an action the server rejects. The working directory of a
+ * host session is the one thing it cannot see, so that case reads as startable
+ * here and the start path is where it is caught.
+ */
+export function useSessionStartability(session: MaybeRefOrGetter<AgentSession | null | undefined>) {
+  const { all } = useDevEnvironments()
+  return computed(() => {
+    const current = toValue(session)
+    if (!current) return { startable: true } as Startability
+    return sessionStartability(
+      current,
+      all.value.find(environment => environment.id === current.devEnvironmentId) ?? null
+    )
+  })
 }
 
 export function useCronJobs() {

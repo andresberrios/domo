@@ -1,5 +1,5 @@
+import { setAgentSessionArchived } from '../agent-sessions'
 import { acpManager } from './manager'
-import { assertSessionLive } from './retirement'
 import { updateAgentSession } from '../repo'
 import type { AgentSession } from '../../../shared/types'
 
@@ -59,14 +59,11 @@ export interface AgentSessionPatchResult {
 export async function applyAgentSessionPatch(target: AgentSession, patch: AgentSessionPatch): Promise<AgentSessionPatchResult> {
   const result: AgentSessionPatchResult = { id: target.id, title: target.title }
 
-  // A retired session is a record, and a record can be relabelled but not
-  // reconfigured: the mode, the model and the adapter's own settings are all
-  // requests to a process that no longer exists, and un-archiving one would
-  // put it back on the live list without ever reviving it.
-  if (target.retiredAt && (patch.modeId || patch.model || patch.config || patch.archived !== undefined)) {
-    assertSessionLive(target, 'changing anything but its title')
-  }
-
+  // Nothing guards the three adapter requests here: `setMode`, `setModel` and
+  // `setConfigOption` each refuse a session that can no longer be started,
+  // because they are reachable from the HTTP route and the composer too.
+  // `title` and `archived` stay allowed whatever state the session is in —
+  // archiving one that cannot run is exactly what you would want to do with it.
   if (patch.modeId) {
     await acpManager.setMode(target.id, patch.modeId)
     result.mode = patch.modeId
@@ -91,11 +88,7 @@ export async function applyAgentSessionPatch(target: AgentSession, patch: AgentS
   // sent, not whether it was truthy. Only archiving stops anything: bringing a
   // session back leaves it stopped until somebody prompts it.
   if (patch.archived !== undefined) {
-    if (patch.archived) acpManager.stop(target.id)
-    await updateAgentSession(target.id, {
-      archived: patch.archived,
-      ...(patch.archived ? { status: 'stopped' as const } : {})
-    })
+    await setAgentSessionArchived(target.id, patch.archived)
     result.archived = patch.archived
   }
   return result

@@ -55,8 +55,8 @@ const gitSync = {
 }
 const projects = {
   createProjectFromPath: vi.fn(),
-  removeProjectCascade: vi.fn(),
-  removeProjectEnvironment: vi.fn()
+  retireProjectCascade: vi.fn(),
+  retireProjectEnvironment: vi.fn()
 }
 
 // The real one spawns an adapter to ask it; that is `adapter-models.spec.ts`.
@@ -549,33 +549,35 @@ describe('scheduled agent tasks', () => {
 describe('resolving which project or environment the user meant', () => {
   it('matches a project on a partial name', async () => {
     repo.listProjects.mockResolvedValue([project()])
-    projects.removeProjectCascade.mockResolvedValue(undefined)
+    projects.retireProjectCascade.mockResolvedValue(undefined)
 
-    await voiceTools.delete_project!.handler({ project: 'domo' }, ctx)
+    await voiceTools.retire_project!.handler({ project: 'domo' }, ctx)
 
-    expect(projects.removeProjectCascade).toHaveBeenCalledWith('prj_1')
+    expect(projects.retireProjectCascade).toHaveBeenCalledWith('prj_1')
   })
 
   it('tells the model to list projects when nothing matches', async () => {
     repo.listProjects.mockResolvedValue([project()])
 
-    await expect(voiceTools.delete_project!.handler({ project: 'billing' }, ctx))
+    await expect(voiceTools.retire_project!.handler({ project: 'billing' }, ctx))
       .rejects.toThrow(/No project matches "billing"\. Call list_dev_environments first\./)
   })
 
   it('matches an environment on a partial name', async () => {
     repo.listDevEnvironments.mockResolvedValue([environment()])
-    projects.removeProjectEnvironment.mockResolvedValue(undefined)
+    projects.retireProjectEnvironment.mockResolvedValue({
+      sessions: [], cronJobsDisabled: 0, subscriptionsRemoved: 0, permissionsCancelled: 0
+    })
 
-    await voiceTools.delete_dev_environment!.handler({ environment: 'auth' }, ctx)
+    await voiceTools.retire_dev_environment!.handler({ environment: 'auth' }, ctx)
 
-    expect(projects.removeProjectEnvironment).toHaveBeenCalledWith('env_1')
+    expect(projects.retireProjectEnvironment).toHaveBeenCalledWith('env_1')
   })
 
   it('tells the model to list environments when nothing matches', async () => {
     repo.listDevEnvironments.mockResolvedValue([environment()])
 
-    await expect(voiceTools.delete_dev_environment!.handler({ environment: 'billing' }, ctx))
+    await expect(voiceTools.retire_dev_environment!.handler({ environment: 'billing' }, ctx))
       .rejects.toThrow(/No development environment matches "billing"\. Call list_dev_environments first\./)
   })
 })
@@ -609,13 +611,13 @@ describe('update_project', () => {
   })
 })
 
-describe('delete_project', () => {
-  it('removes the project and everything under it', async () => {
+describe('retire_project', () => {
+  it('destroys the containers under it and keeps every record', async () => {
     repo.listProjects.mockResolvedValue([project()])
 
-    await expect(voiceTools.delete_project!.handler({ project: 'prj_1' }, ctx))
-      .resolves.toEqual({ id: 'prj_1', deleted: true })
-    expect(projects.removeProjectCascade).toHaveBeenCalledWith('prj_1')
+    await expect(voiceTools.retire_project!.handler({ project: 'prj_1' }, ctx))
+      .resolves.toEqual({ id: 'prj_1', retired: true })
+    expect(projects.retireProjectCascade).toHaveBeenCalledWith('prj_1')
   })
 })
 
@@ -701,13 +703,25 @@ describe('update_dev_environment', () => {
   })
 })
 
-describe('delete_dev_environment', () => {
-  it('removes the environment and its agent sessions', async () => {
+describe('retire_dev_environment', () => {
+  it('destroys the container and names the sessions it stood down', async () => {
     repo.listDevEnvironments.mockResolvedValue([environment()])
+    projects.retireProjectEnvironment.mockResolvedValue({
+      sessions: [{ id: 'ag_1', title: 'Auth refactor' }],
+      cronJobsDisabled: 0,
+      subscriptionsRemoved: 0,
+      permissionsCancelled: 0
+    })
 
-    await expect(voiceTools.delete_dev_environment!.handler({ environment: 'env_1' }, ctx))
-      .resolves.toEqual({ id: 'env_1', deleted: true })
-    expect(projects.removeProjectEnvironment).toHaveBeenCalledWith('env_1')
+    // Named rather than counted: the user may well have been talking about one
+    // of them a moment ago, and it is still readable.
+    await expect(voiceTools.retire_dev_environment!.handler({ environment: 'env_1' }, ctx))
+      .resolves.toEqual({
+        id: 'env_1',
+        retired: true,
+        sessionsStoodDown: [{ id: 'ag_1', title: 'Auth refactor' }]
+      })
+    expect(projects.retireProjectEnvironment).toHaveBeenCalledWith('env_1')
   })
 })
 

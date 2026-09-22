@@ -1,6 +1,7 @@
-import { removeProjectCascade } from '../../lib/projects'
+import { retireProjectCascade } from '../../lib/projects'
 
+/** Retire a project and every environment under it. Nothing is deleted. */
 export default defineEventHandler(async (event) => {
-  await removeProjectCascade(getRouterParam(event, 'id')!)
-  return { ok: true }
+  await retireProjectCascade(getRouterParam(event, 'id')!)
+  return { ok: true, retired: true }
 })

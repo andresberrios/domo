@@ -53,7 +53,7 @@ const devEnvironments = vi.hoisted(() => ({
   })),
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
-  removeEnvironment: vi.fn(async () => {})
+  retireEnvironment: vi.fn(async () => {})
 }))
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
@@ -152,7 +152,7 @@ beforeEach(async () => {
   devEnvironments.createEnvironment.mockClear()
   devEnvironments.startEnvironment.mockClear()
   devEnvironments.stopEnvironment.mockClear()
-  devEnvironments.removeEnvironment.mockClear()
+  devEnvironments.retireEnvironment.mockClear()
   gitSync.exportBranch.mockClear()
   gitSync.importBranch.mockClear()
   gitSync.listEnvironmentBranches.mockClear()
@@ -202,10 +202,10 @@ describe('the agent-mesh MCP endpoint', () => {
       'list_projects',
       'create_project',
       'update_project',
-      'delete_project',
+      'retire_project',
       'create_dev_environment',
       'update_dev_environment',
-      'delete_dev_environment',
+      'retire_dev_environment',
       'export_branch',
       'import_branch',
       'schedule_task',
@@ -603,7 +603,7 @@ describe('projects and dev environments', () => {
     expect(body).toEqual({ id: project.id, name: 'Renamed' })
   })
 
-  it('deletes a project and its environments', async () => {
+  it('retires a project and its environments, keeping every record', async () => {
     const caller = await session('caller')
     const project = await createProject({ name: 'domo', repoPath })
     const environment = await createDevEnvironmentRow({
@@ -613,15 +613,15 @@ describe('projects and dev environments', () => {
       workspacePath: '/workspace'
     })
 
-    const body = resultOf((await callTool(mintMeshToken(caller.id), 'delete_project', {
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'retire_project', {
       projectId: project.id
     })).body)
 
-    expect(body).toEqual({ id: project.id, deleted: true })
-    expect(devEnvironments.removeEnvironment).toHaveBeenCalledWith(environment.id)
+    expect(body).toEqual({ id: project.id, retired: true })
+    expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
-  it('refuses to delete the project the caller is running in', async () => {
+  it('refuses to retire the project the caller is running in', async () => {
     const project = await createProject({ name: 'domo', repoPath })
     const environment = await createDevEnvironmentRow({
       projectId: project.id,
@@ -631,11 +631,11 @@ describe('projects and dev environments', () => {
     })
     const caller = await session('caller', { devEnvironmentId: environment.id })
 
-    const { body } = await callTool(mintMeshToken(caller.id), 'delete_project', { projectId: project.id })
+    const { body } = await callTool(mintMeshToken(caller.id), 'retire_project', { projectId: project.id })
 
     expect(body.result.isError).toBe(true)
-    expect(body.result.content[0].text).toMatch(/Refusing to delete the project/)
-    expect(devEnvironments.removeEnvironment).not.toHaveBeenCalled()
+    expect(body.result.content[0].text).toMatch(/Refusing to retire the project/)
+    expect(devEnvironments.retireEnvironment).not.toHaveBeenCalled()
   })
 
   it('creates a development environment for a project', async () => {
@@ -698,7 +698,7 @@ describe('projects and dev environments', () => {
     expect(renamed).toMatchObject({ name: 'renamed' })
   })
 
-  it('deletes a development environment', async () => {
+  it('retires a development environment and names what it stood down', async () => {
     const caller = await session('caller')
     const project = await createProject({ name: 'domo', repoPath })
     const environment = await createDevEnvironmentRow({
@@ -708,15 +708,15 @@ describe('projects and dev environments', () => {
       workspacePath: '/workspace'
     })
 
-    const body = resultOf((await callTool(mintMeshToken(caller.id), 'delete_dev_environment', {
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'retire_dev_environment', {
       environmentId: environment.id
     })).body)
 
-    expect(body).toEqual({ id: environment.id, deleted: true })
-    expect(devEnvironments.removeEnvironment).toHaveBeenCalledWith(environment.id)
+    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [] })
+    expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
-  it('refuses to delete the environment the caller is running in', async () => {
+  it('refuses to retire the environment the caller is running in', async () => {
     const project = await createProject({ name: 'domo', repoPath })
     const environment = await createDevEnvironmentRow({
       projectId: project.id,
@@ -726,11 +726,11 @@ describe('projects and dev environments', () => {
     })
     const caller = await session('caller', { devEnvironmentId: environment.id })
 
-    const { body } = await callTool(mintMeshToken(caller.id), 'delete_dev_environment', { environmentId: environment.id })
+    const { body } = await callTool(mintMeshToken(caller.id), 'retire_dev_environment', { environmentId: environment.id })
 
     expect(body.result.isError).toBe(true)
-    expect(body.result.content[0].text).toMatch(/Refusing to delete the environment/)
-    expect(devEnvironments.removeEnvironment).not.toHaveBeenCalled()
+    expect(body.result.content[0].text).toMatch(/Refusing to retire the environment/)
+    expect(devEnvironments.retireEnvironment).not.toHaveBeenCalled()
   })
 })
 

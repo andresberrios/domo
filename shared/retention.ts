@@ -1,51 +1,57 @@
 import type { AgentSession, DevEnvironment } from './types'
 
 /**
- * When a retired session can be brought back into service — the one rule, in
- * one place, because the server enforces it and the UI has to explain it.
+ * Whether a coding agent session can be started — derived, never stored.
  *
- * Retirement is not symmetric with deletion. Retiring keeps the record; the
- * thing that decides whether the *session* can resume is whether the place it
- * ran still exists. A host session has a working directory that is still on
- * disk (or is not, which `startEnvironment`'s host equivalent will say at start
- * time); a container session has an environment whose volume holds both the
- * checkout and the adapter's own session storage, and deleting that environment
- * destroys both. So a session retired *by* an environment deletion is never
- * revivable, and saying otherwise would offer a button that cannot work.
+ * It is not a property of the session at all. It is a question about the
+ * *place* it ran: a container session needs its development environment to
+ * still be real, and a host session needs its working directory to still be on
+ * disk. Both can stop being true without anything touching the session row, so
+ * a column would only ever be a copy of this answer that is wrong from the
+ * moment an environment is retired.
  *
- * What revival does *not* promise is that the coding agent remembers anything.
- * The ACP session id Domo stores is a handle into the adapter's own storage;
- * `session/load` may still find it, and `boot()` falls back to `session/new` in
- * the same directory when it does not. Domo's transcript survives either way —
- * that is what retention means here, and it is the honest thing to tell a user.
+ * It is deliberately separate from `archived`, which is only about whether the
+ * session shows up in a list. A session in a retired environment is perfectly
+ * visible and simply not runnable, and the UI says so on the session rather
+ * than hiding it.
+ *
+ * Pure, and shared on purpose: the server refuses off this and the UI explains
+ * off this, so a button is never offered for something the server would reject.
+ *
+ * `cwdPresent` is `null` for "not checked here" — only the start path stats the
+ * filesystem, and everything above it (the inbox, the mesh, the browser) asks
+ * the environment question alone.
  */
-export type RevivalState =
-  | { revivable: true }
-  | { revivable: false, reason: string }
+export type Startability =
+  | { startable: true }
+  | { startable: false, reason: string }
 
-export function revivalState(
-  session: Pick<AgentSession, 'retiredAt' | 'devEnvironmentId'>,
-  environment: Pick<DevEnvironment, 'name' | 'deletedAt'> | null
-): RevivalState {
-  if (!session.retiredAt) return { revivable: false, reason: 'This session is not retired.' }
-  if (!session.devEnvironmentId) return { revivable: true }
-  if (!environment) {
+export function sessionStartability(
+  session: Pick<AgentSession, 'devEnvironmentId' | 'cwd'>,
+  environment: Pick<DevEnvironment, 'name' | 'retiredAt'> | null,
+  cwdPresent: boolean | null = null
+): Startability {
+  if (session.devEnvironmentId) {
+    if (!environment) {
+      return {
+        startable: false,
+        reason: 'The development environment it ran in is gone, and so is the checkout it worked on.'
+      }
+    }
+    if (environment.retiredAt) {
+      return {
+        startable: false,
+        reason: `The development environment "${environment.name}" was retired: its container and its copy of the checkout no longer exist.`
+      }
+    }
+    return { startable: true }
+  }
+
+  if (cwdPresent === false) {
     return {
-      revivable: false,
-      reason: 'The development environment it ran in is gone, and so is the checkout it worked on.'
+      startable: false,
+      reason: `Its working directory ${session.cwd} is no longer on disk.`
     }
   }
-  if (environment.deletedAt) {
-    return {
-      revivable: false,
-      reason: `The development environment "${environment.name}" was deleted, along with its container and its copy of the checkout.`
-    }
-  }
-  return { revivable: true }
+  return { startable: true }
 }
-
-/** What the user is told a revival will and will not restore. */
-export const REVIVAL_CAVEAT
-  = 'Domo\'s transcript of this session is kept either way. What may not come back is the '
-    + 'coding agent\'s own memory of it: if its harness can no longer load the session, it '
-    + 'starts a fresh one in the same working directory.'

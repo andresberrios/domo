@@ -74,7 +74,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const { acpManager } = await import('../../server/lib/acp/manager')
-  const { removeEnvironment } = await import('../../server/lib/dev-environments')
+  const { retireEnvironment } = await import('../../server/lib/dev-environments')
 
   // Cancel before killing, so a turn in flight does not leave the adapter
   // holding an open request the container never answers.
@@ -82,7 +82,7 @@ afterAll(async () => {
     await acpManager.cancel(id).catch(() => {})
     acpManager.stop(id)
   }
-  if (environment) await removeEnvironment(environment.id).catch(() => {})
+  if (environment) await retireEnvironment(environment.id).catch(() => {})
   await mesh?.close()
   for (const path of [repoPath, hostCwd]) {
     if (path) await rm(path, { recursive: true, force: true })
@@ -331,7 +331,7 @@ function answerPermissions(agentSessionId: string) {
 
 describe('cleanup', () => {
   it('leaves no container, volume or image behind', async () => {
-    const { removeEnvironment } = await import('../../server/lib/dev-environments')
+    const { retireEnvironment } = await import('../../server/lib/dev-environments')
     const { acpManager } = await import('../../server/lib/acp/manager')
     const { workspaceVolumeName } = await import('../../server/lib/dev-environments')
     const { environmentImageName } = await import('../../server/lib/dev-env/image')
@@ -341,7 +341,7 @@ describe('cleanup', () => {
       acpManager.stop(id)
     }
     const id = environment.id
-    await removeEnvironment(id)
+    await retireEnvironment(id)
     environment = null as any
 
     expect(await docker('ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`)).toBe('')

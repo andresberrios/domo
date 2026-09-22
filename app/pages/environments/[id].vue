@@ -5,8 +5,9 @@ const toast = useToast()
 
 const environmentId = computed(() => route.params.id as string)
 
-// `all`, not `environments`: a deleted environment is a tombstone kept for the
-// retired sessions that ran in it, and this page is where their badge links to.
+// `all`, not the switch-filtered list: this page is where the badge on every
+// session that ran here links to, so it has to render a retired environment
+// whatever the sidebar is currently showing.
 const { all: environments, isReady } = useDevEnvironments()
 const { all: projects } = useProjects()
 const { sessions: agentSessions, all: allAgents } = useAgentSessions()
@@ -14,10 +15,11 @@ const { pending } = usePermissions()
 
 const environment = computed(() => environments.value.find(item => item.id === environmentId.value) ?? null)
 const project = computed(() => projects.value.find(item => item.id === environment.value?.projectId) ?? null)
-const deleted = computed(() => !!environment.value?.deletedAt)
+const retired = computed(() => !!environment.value?.retiredAt)
 const agents = computed(() => agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId.value))
-const retiredAgents = computed(() =>
-  allAgents.value.filter(agent => agent.devEnvironmentId === environmentId.value && agent.retiredAt)
+/** Every session that ran here, archived ones included: this page is their record. */
+const pastAgents = computed(() =>
+  allAgents.value.filter(agent => agent.devEnvironmentId === environmentId.value)
 )
 
 const pendingByAgent = computed(() => {
@@ -34,7 +36,7 @@ const running = computed(() => environment.value?.status === 'running')
 const busy = ref(false)
 const newAgentOpen = ref(false)
 const renaming = ref(false)
-const confirmingDelete = ref(false)
+const confirmingRetire = ref(false)
 
 async function action(path: 'start' | 'stop') {
   busy.value = true
@@ -59,16 +61,17 @@ async function rename(name: string) {
   }
 }
 
-async function remove() {
-  confirmingDelete.value = false
+async function retireEnvironment() {
+  confirmingRetire.value = false
   busy.value = true
   try {
     await $fetch(`/api/dev-environments/${environmentId.value}`, { method: 'DELETE' })
-    toast.add({ title: 'Environment deleted', color: 'neutral' })
-    // The row this page renders is gone; there is nothing left to show here.
+    toast.add({ title: 'Environment retired', description: 'Its records stay readable.', color: 'neutral' })
+    // The row is still here — it is the record — but the actions are not, so
+    // the project is the more useful place to land.
     await router.push(project.value ? `/projects/${project.value.id}` : '/')
   } catch (error: any) {
-    toast.add({ title: 'Could not delete the environment', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+    toast.add({ title: 'Could not retire the environment', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     busy.value = false
   }
@@ -87,13 +90,13 @@ const importOpen = ref(false)
         </template>
 
         <template #trailing>
-          <UBadge v-if="deleted" color="neutral" variant="subtle" size="sm" label="Deleted" />
+          <UBadge v-if="retired" color="neutral" variant="subtle" size="sm" label="Retired" />
           <UBadge v-else-if="environment" :color="status.color" variant="subtle" size="sm" :label="status.label" />
         </template>
 
         <template #right>
           <UButton
-            v-if="environment && !deleted"
+            v-if="environment && !retired"
             label="New agent"
             icon="i-lucide-plus"
             size="sm"
@@ -101,7 +104,7 @@ const importOpen = ref(false)
             @click="newAgentOpen = true"
           />
           <UButton
-            v-if="environment && !deleted"
+            v-if="environment && !retired"
             :label="running ? 'Stop' : 'Start'"
             :icon="running ? 'i-lucide-square' : 'i-lucide-play'"
             color="neutral"
@@ -112,13 +115,13 @@ const importOpen = ref(false)
             @click="action(running ? 'stop' : 'start')"
           />
           <UDropdownMenu
-            v-if="environment && !deleted"
+            v-if="environment && !retired"
             :items="[[
               { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } },
               { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running, onSelect: () => { exportOpen = true } },
               { label: 'Import branch', icon: 'i-lucide-git-branch-plus', disabled: !running, onSelect: () => { importOpen = true } }
             ], [
-              { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingDelete = true } }
+              { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire = true } }
             ]]"
           >
             <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Environment actions" />
@@ -137,16 +140,16 @@ const importOpen = ref(false)
 
       <div v-else class="mx-auto w-full max-w-4xl space-y-6 py-4">
         <UAlert
-          v-if="deleted"
+          v-if="retired"
           color="neutral"
           variant="subtle"
           icon="i-lucide-archive"
-          title="Deleted"
-          :description="`The container, its checkout volume and its image were removed ${relativeTime(environment.deletedAt)}. This page is what is left of it: the sessions that ran here are retired, and their transcripts are still readable. Nothing about the environment itself can be restored.`"
+          title="Retired"
+          :description="`The container, its copy of the checkout and its image were destroyed ${relativeTime(environment.retiredAt)}. This page is the record of it: the sessions that ran here are still readable and can no longer be started. Nothing about the environment itself can be restored.`"
         />
 
         <UAlert
-          v-if="environment.lastError && !deleted"
+          v-if="environment.lastError && !retired"
           color="error"
           variant="subtle"
           icon="i-lucide-triangle-alert"
@@ -197,12 +200,12 @@ const importOpen = ref(false)
           </dl>
         </section>
 
-        <section v-if="!deleted" class="space-y-2">
+        <section v-if="!retired" class="space-y-2">
           <h2 class="text-sm font-semibold">Ports</h2>
           <DevEnvironmentPorts :environment="environment" />
         </section>
 
-        <section v-if="!deleted" class="space-y-2">
+        <section v-if="!retired" class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold">Agents</h2>
             <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" @click="newAgentOpen = true" />
@@ -223,20 +226,21 @@ const importOpen = ref(false)
           </p>
         </section>
 
-        <section v-if="retiredAgents.length" class="space-y-2">
-          <h2 class="text-sm font-semibold">Retired agents</h2>
+        <section v-if="retired && pastAgents.length" class="space-y-2">
+          <h2 class="text-sm font-semibold">Agents that ran here</h2>
           <ul class="divide-y divide-default overflow-hidden rounded-lg border border-default">
-            <li v-for="agent in retiredAgents" :key="agent.id">
+            <li v-for="agent in pastAgents" :key="agent.id">
               <NuxtLink :to="`/agents/${agent.id}`" class="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-elevated">
                 <UIcon name="i-lucide-box" class="size-4 shrink-0 text-dimmed" />
                 <span class="min-w-0 flex-1 truncate">{{ agent.title }}</span>
-                <span class="text-xs text-dimmed">{{ relativeTime(agent.retiredAt) }}</span>
+                <UBadge v-if="agent.archived" size="sm" color="neutral" variant="subtle" label="archived" />
+                <span class="text-xs text-dimmed">{{ relativeTime(agent.lastActivityAt ?? agent.createdAt) }}</span>
               </NuxtLink>
             </li>
           </ul>
         </section>
 
-        <section v-if="!deleted" class="flex flex-wrap gap-2">
+        <section v-if="!retired" class="flex flex-wrap gap-2">
           <OpenInVsCode :environment="environment" />
           <ExportBranchModal v-model:open="exportOpen" :environment="environment" />
           <ImportBranchModal v-model:open="importOpen" :environment="environment" />
@@ -256,12 +260,12 @@ const importOpen = ref(false)
 
       <ConfirmModal
         v-if="environment"
-        v-model:open="confirmingDelete"
-        :title="`Delete ${environment.name}?`"
-        :description="`Stops and deletes the container, its checkout volume and any Docker-in-Docker volume. ${agents.length === 1 ? 'The 1 coding agent session' : `All ${agents.length} coding agent sessions`} running inside it are retired — their transcripts stay readable — but they can never be revived, and work that has not been pushed or exported is lost.`"
-        confirm-label="Delete environment"
+        v-model:open="confirmingRetire"
+        :title="`Retire ${environment.name}?`"
+        :description="`Destroys the container, its copy of the checkout and any Docker-in-Docker volume. ${agents.length === 1 ? 'The 1 coding agent session' : `All ${agents.length} coding agent sessions`} inside it stay readable and can never be started again, and work that has not been pushed or exported is lost.`"
+        confirm-label="Retire environment"
         :loading="busy"
-        @confirm="remove"
+        @confirm="retireEnvironment"
       />
     </template>
   </UDashboardPanel>

@@ -58,7 +58,7 @@ const configSource = computed(() => {
 const busy = ref(false)
 const newEnvironmentOpen = ref(false)
 const renaming = ref(false)
-const confirmingDelete = ref(false)
+const confirmingRetire = ref(false)
 
 async function rename(name: string) {
   renaming.value = false
@@ -72,15 +72,15 @@ async function rename(name: string) {
   }
 }
 
-async function remove() {
-  confirmingDelete.value = false
+async function retire() {
+  confirmingRetire.value = false
   busy.value = true
   try {
     await $fetch(`/api/projects/${projectId.value}`, { method: 'DELETE' })
-    toast.add({ title: 'Project deleted', color: 'neutral' })
+    toast.add({ title: 'Project retired', description: 'Its records stay readable.', color: 'neutral' })
     await router.push('/')
   } catch (error: any) {
-    toast.add({ title: 'Could not delete the project', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+    toast.add({ title: 'Could not retire the project', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     busy.value = false
   }
@@ -91,9 +91,10 @@ const cascade = computed(() => {
   const environmentsText = count === 1 ? '1 development environment' : `${count} development environments`
   const agents = environmentAgentCount.value
   const agentsText = agents === 1 ? '1 coding agent session' : `${agents} coding agent sessions`
-  return `Deletes ${environmentsText}, including each container, its checkout volume and any Docker-in-Docker volume. `
-    + `${agentsText} inside them are retired rather than deleted, so their transcripts stay readable, but they can never be revived. `
-    + `The checkout at ${project.value?.repoPath} is left on disk; anything that only exists inside an environment is lost.`
+  return `Destroys ${environmentsText}: each container, its copy of the checkout and any Docker-in-Docker volume. `
+    + `The records are kept — this project, those environments and ${agentsText} inside them stay readable — `
+    + `but those agents can never be started again. The checkout at ${project.value?.repoPath} is left on disk; `
+    + 'anything that only exists inside an environment is lost.'
 })
 </script>
 
@@ -119,7 +120,7 @@ const cascade = computed(() => {
             :items="[[
               { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } }
             ], [
-              { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingDelete = true } }
+              { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire = true } }
             ]]"
           >
             <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Project actions" />
@@ -212,12 +213,12 @@ const cascade = computed(() => {
 
       <ConfirmModal
         v-if="project"
-        v-model:open="confirmingDelete"
-        :title="`Delete ${project.name}?`"
+        v-model:open="confirmingRetire"
+        :title="`Retire ${project.name}?`"
         :description="cascade"
-        confirm-label="Delete project"
+        confirm-label="Retire project"
         :loading="busy"
-        @confirm="remove"
+        @confirm="retire"
       />
     </template>
   </UDashboardPanel>

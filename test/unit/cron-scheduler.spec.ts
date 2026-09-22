@@ -11,9 +11,13 @@ const repo = vi.hoisted(() => ({
   finishCronRun: vi.fn(async () => {}),
   failCronJobSchedule: vi.fn(async () => true),
   appendAgentEvent: vi.fn(async () => {}),
-  // A job due against a retired session is dropped rather than fired, so every
-  // firing starts by reading the session. The default here is a live one.
-  getAgentSession: vi.fn(async () => ({ id: 'ag_1', title: 'Agent', retiredAt: null })),
+  // A job due against a session that cannot start is dropped rather than fired,
+  // so every firing begins by reading the session and the environment it names.
+  // The default here is a host session, which is always startable.
+  getAgentSessionWithEnvironment: vi.fn(async () => ({
+    session: { id: 'ag_1', title: 'Agent', cwd: '/srv/api', devEnvironmentId: null },
+    environment: null
+  })),
   disableCronJobsForAgent: vi.fn(async () => 0)
 }))
 

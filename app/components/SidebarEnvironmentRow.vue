@@ -22,9 +22,10 @@ const busy = ref(false)
 const exporting = ref(false)
 const importing = ref(false)
 const renaming = ref(false)
-const confirmingDelete = ref(false)
+const confirmingRetire = ref(false)
 
 const { href: vscodeHref } = useVsCodeHref(() => props.environment)
+const retired = computed(() => !!props.environment.retiredAt)
 const running = computed(() => props.environment.status === 'running')
 
 function report(error: any, failure: string) {
@@ -54,38 +55,42 @@ async function rename(name: string) {
   }
 }
 
-async function remove() {
-  confirmingDelete.value = false
+async function retire() {
+  confirmingRetire.value = false
   busy.value = true
   try {
     await $fetch(`/api/dev-environments/${props.environment.id}`, { method: 'DELETE' })
   } catch (error: any) {
-    report(error, 'Could not delete the environment')
+    report(error, 'Could not retire the environment')
   } finally {
     busy.value = false
   }
 }
 
-const items = computed(() => [
-  [
-    { label: 'New agent here', icon: 'i-lucide-plus', onSelect: () => emit('newAgent') }
-  ],
-  [
-    running.value
-      ? { label: 'Stop', icon: 'i-lucide-square', onSelect: () => lifecycle('stop') }
-      : { label: 'Start', icon: 'i-lucide-play', onSelect: () => lifecycle('start') },
-    // A link, not a button: the menu item carries the `vscode://` URL itself.
-    { label: 'Open in VS Code', icon: 'i-lucide-code-xml', to: vscodeHref.value, target: '_self', disabled: !vscodeHref.value },
-    { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running.value, onSelect: () => { exporting.value = true } },
-    // Labelled by direction, beside its opposite: "out of" and "into" are the
-    // only thing that tells these two apart at a glance.
-    { label: 'Import branch', icon: 'i-lucide-git-branch-plus', disabled: !running.value, onSelect: () => { importing.value = true } },
-    { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }
-  ],
-  [
-    { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingDelete.value = true } }
-  ]
-])
+// A retired environment has no container behind it, so it offers nothing but
+// its name: every other entry here would be a call into something that is gone.
+const items = computed(() => retired.value
+  ? [[{ label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }]]
+  : [
+      [
+        { label: 'New agent here', icon: 'i-lucide-plus', onSelect: () => emit('newAgent') }
+      ],
+      [
+        running.value
+          ? { label: 'Stop', icon: 'i-lucide-square', onSelect: () => lifecycle('stop') }
+          : { label: 'Start', icon: 'i-lucide-play', onSelect: () => lifecycle('start') },
+        // A link, not a button: the menu item carries the `vscode://` URL itself.
+        { label: 'Open in VS Code', icon: 'i-lucide-code-xml', to: vscodeHref.value, target: '_self', disabled: !vscodeHref.value },
+        { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running.value, onSelect: () => { exporting.value = true } },
+        // Labelled by direction, beside its opposite: "out of" and "into" are the
+        // only thing that tells these two apart at a glance.
+        { label: 'Import branch', icon: 'i-lucide-git-branch-plus', disabled: !running.value, onSelect: () => { importing.value = true } },
+        { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }
+      ],
+      [
+        { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire.value = true } }
+      ]
+    ])
 </script>
 
 <template>
@@ -155,12 +160,12 @@ const items = computed(() => [
     />
 
     <ConfirmModal
-      v-model:open="confirmingDelete"
-      :title="`Delete ${environment.name}?`"
-      description="Stops and deletes the container, its checkout volume and any Docker-in-Docker volume. The coding agent sessions running inside it are retired rather than deleted — their transcripts stay readable — but they can never be revived, and work that has not been pushed or exported is lost."
-      confirm-label="Delete environment"
+      v-model:open="confirmingRetire"
+      :title="`Retire ${environment.name}?`"
+      description="Destroys the container, its copy of the checkout and any Docker-in-Docker volume. The records are kept — this environment and the full transcript of every coding agent that ran in it stay readable — but those agents can never be started again, and work that has not been pushed or exported is lost."
+      confirm-label="Retire environment"
       :loading="busy"
-      @confirm="remove"
+      @confirm="retire"
     />
   </div>
 </template>

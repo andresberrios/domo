@@ -52,11 +52,12 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   verbatim, so a reconnect, a tool change or a server restart picks the thread
   up mid-thought instead of starting over. See
   [Long conversations](#long-conversations).
-- **Transcripts that outlive their sessions** — deleting an agent session, or
-  the environment it ran in, retires it instead of destroying it: the whole
-  transcript stays readable under **Archive**, read-only, and can be brought
-  back into service while the environment still exists. See
-  [Archived and retired sessions](#archived-and-retired-sessions).
+- **Transcripts that outlive their containers** — retiring a development
+  environment destroys its container and its copy of the checkout, and keeps
+  every record: the environment, and the full transcript of each agent that ran
+  in it. Those agents can no longer be started, which Domo works out from the
+  environment rather than storing on them. See
+  [Retiring, archiving and deleting](#retiring-archiving-and-deleting).
 - **Custom MCP servers** — add stdio / HTTP / SSE servers in Settings and scope
   them to the voice agent, the coding agents, or both.
 - **Usage and plan limits** — every coding session and every conversation shows
@@ -134,35 +135,29 @@ finishes a turn, stops for a permission, or fails, Domo queues it a short note
 with that agent's latest output. `spawn_agent` subscribes by default. Because
 notes are queued, they never interrupt work of the agent's own.
 
-### Archived and retired sessions
+### Retiring, archiving and deleting
 
 An agent session is a record of work — what was tried, what was decided, what
 broke — and it stays worth reading long after the container it ran in is gone.
-So nothing throws one away. **Archive** in the sidebar holds both ways a session
-leaves the list:
+So Domo has one destructive action and two harmless ones, and they are easy to
+tell apart:
 
-| | what it is | the way back |
+| | what it does | what is left |
 | --- | --- | --- |
-| **Archived** | Shelved. Still a session: the adapter is stopped, but nothing else changed. | Unarchive, then Start. |
-| **Retired** | Finished. Read-only for good: no prompt, no schedule, no peer and no subscription can wake it. | Revive, while the environment it ran in still exists. |
+| **Retire** an environment or project | Destroys the container, its copy of the checkout and any Docker-in-Docker volume. | Every record. The environment, and the full transcript of each agent that ran in it. |
+| **Archive** a session | Stops its adapter and takes it off the lists. | Everything; it is one switch away and can be started again. |
+| **Delete permanently** a session | Destroys the session and every event in its transcript. | Nothing. Only offered on an archived session. |
 
-Retiring is what **Delete** on a session now does, and it is also what happens
-to every session inside a development environment or project you delete. Either
-way the row and its full `agent_events` log survive; what goes is the
-forward-looking state — its schedules are disabled, its subscriptions dropped,
-and any permission it was blocked on is recorded as never answered.
+**Whether a session can be started is never stored.** It is a question about the
+place it ran: an agent in a retired environment cannot run, because the
+container and the checkout are gone; an agent in a directory you deleted cannot
+run either. Domo works that out from the environment and the filesystem each
+time, so nothing can go stale, and the session's own page says which it is.
 
-Reviving restores the session to service, stopped; pressing Start brings the
-adapter up. What it cannot promise is that the coding agent still *remembers*
-the session: Domo stores a handle into the harness's own storage, and if the
-harness can no longer load it the agent starts fresh in the same directory.
-Domo's transcript is intact either way. A session retired because its
-environment was deleted can never be revived — the container, the checkout and
-the harness's session storage went with it — and the UI says so rather than
-offering a button that would fail.
-
-**Delete permanently**, on a retired session only, is the one action that
-destroys a transcript.
+**Archiving and retiring are independent.** Retiring an environment archives
+nothing — a session can be perfectly visible and simply not runnable, and
+hiding it would answer the wrong question. The sidebar has a switch for each:
+*Show archived sessions* and *Show retired environments*.
 
 ### Scheduled tasks
 
@@ -276,14 +271,14 @@ Domo at it instead of duplicating anything:
   Docker daemon, so agents can use `docker compose` without sharing stacks with
   the host or other environments. Without it the container is unprivileged.
 - The checkout and any nested containers persist across stop/start, and the
-  container, both volumes and the image are removed when the environment is
-  deleted. **The checkout exists only in the volume**, so before deleting one,
+  container, both volumes and the image are destroyed when the environment is
+  retired. **The checkout exists only in the volume**, so before retiring one,
   push what you want to keep — or bring the branch back with
   [Export branch](#getting-a-branch-out-of-an-environment).
-- The agent sessions that ran in it are **retired, not deleted**: their
-  transcripts stay readable for good under **Archive**. They are read-only from
-  then on, and because the container and its checkout are gone, a session
-  retired this way cannot be brought back into service.
+- The agent sessions that ran in it are **kept, not deleted**: their transcripts
+  stay readable for good. They can no longer be started, because the container
+  and its copy of the checkout are gone — see
+  [Retiring, archiving and deleting](#retiring-archiving-and-deleting).
 
 ### Git, SSH and CLI logins inside environments
 
