@@ -100,6 +100,15 @@ const localAgents = computed(() =>
               class="justify-start"
             />
             <UButton
+              to="/schedules"
+              label="Schedules"
+              icon="i-lucide-clock-3"
+              color="neutral"
+              variant="ghost"
+              block
+              class="justify-start"
+            />
+            <UButton
               label="New coding agent"
               icon="i-lucide-plus"
               color="neutral"
@@ -284,6 +293,7 @@ const localAgents = computed(() =>
           <UButton icon="i-lucide-mic" :loading="creating" @click="startConversation" />
           <UButton icon="i-lucide-plus" color="neutral" variant="ghost" @click="newAgentOpen = true" />
           <UButton to="/projects" icon="i-lucide-box" color="neutral" variant="ghost" />
+          <UButton to="/schedules" icon="i-lucide-clock-3" color="neutral" variant="ghost" />
         </div>
       </template>
 

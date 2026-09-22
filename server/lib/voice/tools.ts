@@ -7,12 +7,17 @@ import { listAdapterCatalog } from '../acp/models'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
+import { normalizeCronJobInput } from '../cron/input'
 import {
+  createCronJob,
   createVoiceSession,
+  deleteCronJob,
   getAgentSession,
+  getCronJob,
   getVoiceSession,
   listAgentEvents,
   listAgentSessions,
+  listCronJobs,
   listDevEnvironments,
   listPermissions,
   listProjects,
@@ -253,6 +258,81 @@ export const voiceTools: Record<string, VoiceTool> = {
             : { contextUsedPercent: contextUsedPercent(session.usage) }
         }))
       }
+    }
+  },
+
+  schedule_agent_task: {
+    declaration: {
+      name: 'schedule_agent_task',
+      description: 'Schedule a recurring prompt or one-time wakeup for a coding agent.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          agentId: { type: Type.STRING, description: 'Agent session id or title. Omit for the most recently active agent.' },
+          name: { type: Type.STRING, description: 'Short label for the task.' },
+          prompt: { type: Type.STRING, description: 'Instruction the agent receives when the task fires.' },
+          cronExpression: { type: Type.STRING, description: 'Five-field cron expression for a recurring task.' },
+          runAt: { type: Type.STRING, description: 'ISO 8601 time for a one-time task.' },
+          timezone: { type: Type.STRING, description: 'IANA time zone for cronExpression. Defaults to UTC.' },
+          delivery: { type: Type.STRING, enum: ['queue', 'steer', 'interrupt'], description: 'Behavior if the agent is busy. Defaults to queue.' }
+        },
+        required: ['name', 'prompt']
+      }
+    },
+    handler: async (args) => {
+      const agent = await resolveAgent(args.agentId)
+      const input = normalizeCronJobInput({
+        agentSessionId: agent.id,
+        name: args.name,
+        prompt: args.prompt,
+        cronExpression: args.cronExpression,
+        runAt: args.runAt,
+        timezone: args.timezone,
+        delivery: args.delivery,
+        createdBy: 'voice'
+      })
+      return createCronJob(input)
+    }
+  },
+
+  list_scheduled_tasks: {
+    declaration: {
+      name: 'list_scheduled_tasks',
+      description: 'List the tasks scheduled to wake a coding agent.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          agentId: { type: Type.STRING, description: 'Agent session id or title. Omit for the most recently active agent.' }
+        }
+      }
+    },
+    handler: async (args) => {
+      const agent = await resolveAgent(args.agentId)
+      return { agentId: agent.id, title: agent.title, jobs: await listCronJobs(agent.id) }
+    }
+  },
+
+  delete_scheduled_task: {
+    declaration: {
+      name: 'delete_scheduled_task',
+      description: 'Delete one scheduled task from a coding agent.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          agentId: { type: Type.STRING, description: 'Agent session id or title. Omit for the most recently active agent.' },
+          jobId: { type: Type.STRING, description: 'Scheduled task id from list_scheduled_tasks.' }
+        },
+        required: ['jobId']
+      }
+    },
+    handler: async (args) => {
+      const agent = await resolveAgent(args.agentId)
+      const job = await getCronJob(args.jobId)
+      if (!job || job.agentSessionId !== agent.id) {
+        throw new Error(`No scheduled task ${args.jobId} belongs to agent "${agent.title}".`)
+      }
+      await deleteCronJob(job.id)
+      return { id: job.id, deleted: true }
     }
   },
 

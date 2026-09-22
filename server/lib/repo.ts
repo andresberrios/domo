@@ -1,4 +1,4 @@
-import { newId, nowIso, query, queryOne } from './db'
+import { getDb, newId, nowIso, query, queryOne } from './db'
 import { bus } from './bus'
 import { getSettings } from './settings'
 import type {
@@ -10,6 +10,8 @@ import type {
   AgentSessionStatus,
   AgentSubscription,
   AgentUsage,
+  CronJob,
+  CronRun,
   DevEnvironment,
   DevEnvironmentPort,
   McpServer,
@@ -215,6 +217,42 @@ function mapMcp(r: any): McpServer {
     scope: r.scope,
     createdAt: r.created_at,
     updatedAt: r.updated_at
+  }
+}
+
+function mapCronJob(r: any): CronJob {
+  return {
+    id: r.id,
+    agentSessionId: r.agent_session_id,
+    name: r.name,
+    prompt: r.prompt,
+    scheduleType: r.schedule_type,
+    cronExpression: r.cron_expression ?? null,
+    timezone: r.timezone,
+    runAt: r.run_at ?? null,
+    enabled: !!r.enabled,
+    delivery: r.delivery,
+    nextRunAt: r.next_run_at ?? null,
+    lastRunAt: r.last_run_at ?? null,
+    lastStatus: r.last_status ?? null,
+    lastError: r.last_error ?? null,
+    runCount: Number(r.run_count),
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }
+}
+
+function mapCronRun(r: any): CronRun {
+  return {
+    id: r.id,
+    cronJobId: r.cron_job_id,
+    scheduledFor: r.scheduled_for,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at ?? null,
+    status: r.status,
+    outcome: r.outcome ?? null,
+    error: r.error ?? null
   }
 }
 
@@ -919,6 +957,163 @@ export async function setUsageProviderState(
     [provider, state, message, nowIso()]
   )
   bus.publish({ type: 'usage-limits-changed', provider })
+}
+
+/* ------------------------------------------------------------------ */
+/* scheduled agent prompts                                            */
+/* ------------------------------------------------------------------ */
+
+type StoredCronInput = Pick<CronJob,
+  'agentSessionId' | 'name' | 'prompt' | 'scheduleType' | 'cronExpression'
+  | 'timezone' | 'runAt' | 'enabled' | 'delivery' | 'nextRunAt' | 'createdBy'>
+
+export async function listCronJobs(agentSessionId?: string): Promise<CronJob[]> {
+  const rows = await query(
+    `select * from cron_jobs ${agentSessionId ? 'where agent_session_id = $1' : ''}
+     order by coalesce(next_run_at, '9999') asc, created_at desc`,
+    agentSessionId ? [agentSessionId] : []
+  )
+  return rows.map(mapCronJob)
+}
+
+export async function getCronJob(id: string): Promise<CronJob | null> {
+  const row = await queryOne('select * from cron_jobs where id = $1', [id])
+  return row ? mapCronJob(row) : null
+}
+
+export async function createCronJob(input: StoredCronInput): Promise<CronJob> {
+  const now = nowIso()
+  const row = await queryOne(
+    `insert into cron_jobs
+       (id, agent_session_id, name, prompt, schedule_type, cron_expression, timezone,
+        run_at, enabled, delivery, next_run_at, created_by, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+     returning *`,
+    [newId('cron'), input.agentSessionId, input.name, input.prompt, input.scheduleType,
+      input.cronExpression, input.timezone, input.runAt, input.enabled, input.delivery,
+      input.nextRunAt, input.createdBy, now]
+  )
+  const job = mapCronJob(row)
+  bus.publish({ type: 'cron-job-changed', cronJobId: job.id })
+  return job
+}
+
+export async function replaceCronJob(id: string, input: StoredCronInput): Promise<CronJob | null> {
+  const row = await queryOne(
+    `update cron_jobs set
+       agent_session_id = $2, name = $3, prompt = $4, schedule_type = $5,
+       cron_expression = $6, timezone = $7, run_at = $8, enabled = $9,
+       delivery = $10, next_run_at = $11, updated_at = $12
+     where id = $1 returning *`,
+    [id, input.agentSessionId, input.name, input.prompt, input.scheduleType,
+      input.cronExpression, input.timezone, input.runAt, input.enabled,
+      input.delivery, input.nextRunAt, nowIso()]
+  )
+  if (!row) return null
+  const job = mapCronJob(row)
+  bus.publish({ type: 'cron-job-changed', cronJobId: id })
+  return job
+}
+
+export async function deleteCronJob(id: string): Promise<void> {
+  await query('delete from cron_jobs where id = $1', [id])
+  bus.publish({ type: 'cron-job-changed', cronJobId: id })
+}
+
+export async function listDueCronJobs(now = nowIso(), limit = 25): Promise<CronJob[]> {
+  const rows = await query(
+    `select * from cron_jobs
+      where enabled = true and next_run_at is not null and next_run_at <= $1
+      order by next_run_at asc limit $2`,
+    [now, limit]
+  )
+  return rows.map(mapCronJob)
+}
+
+/** Atomically claim one scheduled instant and move the job's due pointer. */
+export async function claimCronJob(
+  id: string,
+  scheduledFor: string,
+  nextRunAt: string | null
+): Promise<CronRun | null> {
+  const db = await getDb()
+  const client = await db.connect()
+  try {
+    await client.query('begin')
+    const now = nowIso()
+    const updated = await client.query(
+      `update cron_jobs set
+         next_run_at = $3,
+         enabled = case when schedule_type = 'once' then false else enabled end,
+         last_run_at = $2, last_status = 'running', last_error = null,
+         run_count = run_count + 1, updated_at = $4
+       where id = $1 and enabled = true and next_run_at = $2
+       returning *`,
+      [id, scheduledFor, nextRunAt, now]
+    )
+    if (!updated.rowCount) {
+      await client.query('rollback')
+      return null
+    }
+    const runResult = await client.query(
+      `insert into cron_runs (id, cron_job_id, scheduled_for, started_at, status)
+       values ($1, $2, $3, $4, 'running') returning *`,
+      [newId('crun'), id, scheduledFor, now]
+    )
+    await client.query('commit')
+    bus.publish({ type: 'cron-job-changed', cronJobId: id })
+    return mapCronRun(runResult.rows[0])
+  } catch (error) {
+    await client.query('rollback').catch(() => {})
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/** Disable a due job whose schedule cannot produce another occurrence. */
+export async function failCronJobSchedule(
+  id: string,
+  scheduledFor: string,
+  error: string
+): Promise<boolean> {
+  const row = await queryOne(
+    `update cron_jobs set enabled = false, next_run_at = null,
+       last_status = 'failed', last_error = $3, updated_at = $4
+     where id = $1 and enabled = true and next_run_at = $2
+     returning id`,
+    [id, scheduledFor, error, nowIso()]
+  )
+  if (!row) return false
+  bus.publish({ type: 'cron-job-changed', cronJobId: id })
+  return true
+}
+
+export async function finishCronRun(
+  runId: string,
+  status: 'delivered' | 'failed',
+  detail: string
+): Promise<void> {
+  const row = await queryOne<{ cron_job_id: string }>(
+    `update cron_runs set finished_at = $2, status = $3,
+       outcome = case when $3 = 'delivered' then $4 else null end,
+       error = case when $3 = 'failed' then $4 else null end
+     where id = $1 returning cron_job_id`,
+    [runId, nowIso(), status, detail]
+  )
+  if (!row) return
+  await query(
+    `update cron_jobs set last_status = $2, last_error = $3, updated_at = $4 where id = $1`,
+    [row.cron_job_id, status, status === 'failed' ? detail : null, nowIso()]
+  )
+  bus.publish({ type: 'cron-job-changed', cronJobId: row.cron_job_id })
+}
+
+export async function listCronRuns(cronJobId: string, limit = 50): Promise<CronRun[]> {
+  return (await query(
+    'select * from cron_runs where cron_job_id = $1 order by started_at desc limit $2',
+    [cronJobId, limit]
+  )).map(mapCronRun)
 }
 
 /* ------------------------------------------------------------------ */

@@ -4,15 +4,22 @@ import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
+import { normalizeCronJobInput } from '../cron/input'
 import {
   addAgentSubscription,
   appendAgentEvent,
+  createCronJob,
+  deleteCronJob,
   getAgentSession,
+  getCronJob,
   getDevEnvironment,
   listAgentSessions,
+  listAgentEvents,
   listAgentSubscriptions,
   listDevEnvironments,
   listProjects,
+  listCronJobs,
+  replaceCronJob,
   removeAgentSubscription,
   updateDevEnvironment,
   updateProject
@@ -78,6 +85,20 @@ export const MESH_TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
+    name: 'read_agent_transcript',
+    description:
+      'Read the recent user and assistant messages from an agent session. Use this when its one-line summary is not enough to review its work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent session id from list_agents.' },
+        limit: { type: 'number', description: 'Number of messages to return. Defaults to 20; maximum 100.' }
+      },
+      required: ['agentId'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'message_agent',
     description:
       'Send a message to another coding agent session. By default it waits for that agent to finish what it is doing and is delivered as its next turn; nothing is lost if it is busy.',
@@ -115,6 +136,10 @@ export const MESH_TOOLS = [
         model: {
           type: 'string',
           description: 'Optional model id; ids come from list_models. Omit for the default.'
+        },
+        devEnvironmentId: {
+          type: 'string',
+          description: 'Optional development environment id from list_projects. It must already be running.'
         },
         notifyWhenDone: {
           type: 'boolean',
@@ -256,6 +281,61 @@ export const MESH_TOOLS = [
     }
   },
   {
+    name: 'schedule_task',
+    description:
+      'Schedule a prompt for this agent to receive later. Use cronExpression for a recurring task or runAt for a one-time wakeup. The schedule is durable across Domo and agent restarts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Short label for the scheduled task.' },
+        prompt: { type: 'string', description: 'The full instruction to execute when the task fires.' },
+        cronExpression: { type: 'string', description: 'Standard five-field cron expression, such as "0 9 * * 1-5".' },
+        runAt: { type: 'string', description: 'ISO 8601 date/time for a one-time task.' },
+        timezone: { type: 'string', description: 'IANA zone for a cron expression. Defaults to UTC.' },
+        delivery: {
+          type: 'string', enum: ['queue', 'steer', 'interrupt'],
+          description: 'Behavior if this agent is busy. Defaults to queue so scheduled work does not disrupt a turn.'
+        }
+      },
+      required: ['name', 'prompt'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_scheduled_tasks',
+    description: 'List the durable tasks scheduled to wake this agent, including their next and last runs.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'update_scheduled_task',
+    description: 'Edit, pause, or resume one of this agent’s scheduled tasks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'Scheduled task id from list_scheduled_tasks.' },
+        name: { type: 'string' },
+        prompt: { type: 'string' },
+        cronExpression: { type: 'string', description: 'Switch to or replace a recurring five-field schedule.' },
+        runAt: { type: 'string', description: 'Switch to or replace a one-time ISO 8601 wakeup.' },
+        timezone: { type: 'string' },
+        delivery: { type: 'string', enum: ['queue', 'steer', 'interrupt'] },
+        enabled: { type: 'boolean', description: 'False pauses the task; true resumes it.' }
+      },
+      required: ['jobId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'delete_scheduled_task',
+    description: 'Permanently delete one of this agent’s scheduled tasks.',
+    inputSchema: {
+      type: 'object',
+      properties: { jobId: { type: 'string', description: 'Scheduled task id from list_scheduled_tasks.' } },
+      required: ['jobId'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'notify_supervisor',
     description:
       'Say something to the human’s voice supervisor agent. Use it to report a milestone, flag a blocker, or ask a question that needs a human decision. The supervisor may speak it out loud.',
@@ -301,6 +381,32 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       }
     }
 
+    case 'read_agent_transcript': {
+      const target = await getAgentSession(args.agentId)
+      if (!target) throw new Error(`No agent ${args.agentId}`)
+      const requested = Number(args.limit ?? 20)
+      const limit = Number.isFinite(requested) ? Math.max(1, Math.min(100, Math.floor(requested))) : 20
+      const events = await listAgentEvents(target.id, 0, 10_000)
+      const trim = (text: string) => {
+        const clean = text.trim()
+        return clean.length > 4000 ? `${clean.slice(0, 3999)}…` : clean
+      }
+      const messages = events.flatMap((event) => {
+        if (event.type === 'agent_message') {
+          return [{ role: 'assistant', text: trim(String(event.payload?.text ?? '')), at: event.createdAt }]
+        }
+        if (event.type === 'user_message') {
+          const text = (event.payload?.content ?? [])
+            .filter((block: any) => block?.type === 'text')
+            .map((block: any) => block.text)
+            .join('\n')
+          return [{ role: 'user', text: trim(text), at: event.createdAt }]
+        }
+        return []
+      }).filter(message => message.text).slice(-limit)
+      return { agentId: target.id, title: target.title, messages }
+    }
+
     case 'message_agent': {
       const target = await getAgentSession(args.agentId)
       if (!target) throw new Error(`No agent ${args.agentId}`)
@@ -329,11 +435,19 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'spawn_agent': {
+      const devEnvironmentId = args.devEnvironmentId ?? caller.devEnvironmentId ?? null
+      if (devEnvironmentId) {
+        const environment = await getDevEnvironment(devEnvironmentId)
+        if (!environment) throw new Error(`No development environment ${devEnvironmentId}`)
+        if (environment.status !== 'running') {
+          throw new Error(`Development environment "${environment.name}" is ${environment.status}; start it before spawning an agent there.`)
+        }
+      }
       const session = await acpManager.create({
         adapter: caller.adapter,
         title: args.title,
-        cwd: caller.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller.cwd),
-        devEnvironmentId: caller.devEnvironmentId ?? null,
+        cwd: devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller.cwd),
+        devEnvironmentId,
         voiceSessionId: caller.voiceSessionId ?? null,
         model: args.model ?? null,
         initialPrompt: args.prompt
@@ -440,6 +554,54 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         throw new Error('That environment has no branch checked out; name the branch to export.')
       }
       return exportBranch({ environmentId, branch, into: resolveIntoBranch(branch, args.into) })
+    }
+
+    case 'schedule_task': {
+      const normalized = normalizeCronJobInput({
+        agentSessionId: caller.id,
+        name: args.name,
+        prompt: args.prompt,
+        cronExpression: args.cronExpression,
+        runAt: args.runAt,
+        timezone: args.timezone,
+        delivery: args.delivery,
+        createdBy: `agent:${caller.id}`
+      })
+      return createCronJob(normalized)
+    }
+
+    case 'list_scheduled_tasks':
+      return { jobs: await listCronJobs(caller.id) }
+
+    case 'update_scheduled_task': {
+      const existing = await getCronJob(args.jobId)
+      if (!existing || existing.agentSessionId !== caller.id) {
+        throw new Error(`No scheduled task ${args.jobId} belongs to this agent.`)
+      }
+      const switchesToCron = args.cronExpression !== undefined
+      const switchesToOnce = args.runAt !== undefined
+      if (switchesToCron && switchesToOnce) throw new Error('Provide only one of cronExpression or runAt.')
+      const normalized = normalizeCronJobInput({
+        agentSessionId: caller.id,
+        name: args.name ?? existing.name,
+        prompt: args.prompt ?? existing.prompt,
+        cronExpression: switchesToOnce ? null : (args.cronExpression ?? existing.cronExpression),
+        runAt: switchesToCron ? null : (args.runAt ?? existing.runAt),
+        timezone: args.timezone ?? existing.timezone,
+        delivery: args.delivery ?? existing.delivery,
+        enabled: args.enabled ?? existing.enabled,
+        createdBy: existing.createdBy
+      })
+      return replaceCronJob(existing.id, normalized)
+    }
+
+    case 'delete_scheduled_task': {
+      const existing = await getCronJob(args.jobId)
+      if (!existing || existing.agentSessionId !== caller.id) {
+        throw new Error(`No scheduled task ${args.jobId} belongs to this agent.`)
+      }
+      await deleteCronJob(existing.id)
+      return { id: existing.id, deleted: true }
     }
 
     case 'notify_supervisor': {

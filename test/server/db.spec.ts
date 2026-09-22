@@ -22,6 +22,8 @@ const TABLES = [
   'agent_permissions',
   'agent_inbox',
   'agent_subscriptions',
+  'cron_jobs',
+  'cron_runs',
   'mcp_servers',
   'usage_limits',
   'usage_providers'
@@ -33,7 +35,7 @@ const TABLES = [
  * `agent_subscriptions` has no single-column key for a shape to be keyed on.
  */
 const SYNCED_TABLES = TABLES.filter(
-  table => table !== 'dev_environment_ports' && table !== 'agent_subscriptions'
+  table => !['dev_environment_ports', 'agent_subscriptions', 'cron_runs'].includes(table)
 )
 
 describe('schema bootstrap', () => {

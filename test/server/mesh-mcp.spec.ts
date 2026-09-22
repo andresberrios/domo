@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { query } from '../../server/lib/db'
 import {
+  appendAgentEvent,
   createAgentSession,
   createDevEnvironmentRow,
   createProject,
   deleteAgentSession,
   listAgentEvents,
-  listAgentSubscriptions
+  listAgentSubscriptions,
+  listCronJobs
 } from '../../server/lib/repo'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
 import { mintMeshToken } from '../../server/lib/mesh/token'
@@ -113,6 +115,18 @@ async function session(title: string, patch: Record<string, unknown> = {}) {
   return createAgentSession({ adapter: 'claude-code', title, cwd: '/tmp/domo-mesh', ...patch })
 }
 
+async function runningEnvironment(name: string) {
+  const project = await createProject({ name: `${name}-project`, repoPath: '/tmp/domo-mesh' })
+  const environment = await createDevEnvironmentRow({
+    projectId: project.id,
+    name,
+    containerName: `domo-${name}`,
+    workspacePath: `/workspaces/${name}`
+  })
+  await query(`update dev_environments set status = 'running' where id = $1`, [environment.id])
+  return { ...environment, status: 'running' as const }
+}
+
 beforeEach(async () => {
   await query('truncate agent_sessions, projects cascade')
   acp.promptInBackground.mockClear()
@@ -170,6 +184,7 @@ describe('the agent-mesh MCP endpoint', () => {
     expect(listed.body.result.tools.map((tool: any) => tool.name)).toEqual([
       'list_models',
       'list_agents',
+      'read_agent_transcript',
       'message_agent',
       'spawn_agent',
       'subscribe_to_agent',
@@ -182,6 +197,10 @@ describe('the agent-mesh MCP endpoint', () => {
       'update_dev_environment',
       'delete_dev_environment',
       'export_branch',
+      'schedule_task',
+      'list_scheduled_tasks',
+      'update_scheduled_task',
+      'delete_scheduled_task',
       'notify_supervisor'
     ])
   })
@@ -194,6 +213,28 @@ describe('the agent-mesh MCP endpoint', () => {
 
     expect(body.agents.map((agent: any) => agent.id)).toEqual([peer.id])
     expect(body.agents[0]).toMatchObject({ title: 'peer', adapter: 'claude-code' })
+  })
+
+  it('reads the useful tail of another agent transcript', async () => {
+    const caller = await session('caller')
+    const peer = await session('peer')
+    await appendAgentEvent(peer.id, 'tool_call', { title: 'ignored' })
+    await appendAgentEvent(peer.id, 'user_message', {
+      content: [{ type: 'text', text: 'Please review the migration.' }]
+    })
+    await appendAgentEvent(peer.id, 'agent_message', { text: 'The migration is safe.' })
+    await appendAgentEvent(peer.id, 'user_message', { content: [{ type: 'text', text: 'Anything else?' }] })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'read_agent_transcript', {
+      agentId: peer.id,
+      limit: 2
+    })).body)
+
+    expect(body).toMatchObject({ agentId: peer.id, title: 'peer' })
+    expect(body.messages).toEqual([
+      { role: 'assistant', text: 'The migration is safe.', at: expect.any(String) },
+      { role: 'user', text: 'Anything else?', at: expect.any(String) }
+    ])
   })
 
   it('returns an unknown tool as an error result, not a transport error', async () => {
@@ -254,13 +295,7 @@ describe('the agent-mesh MCP endpoint', () => {
   })
 
   it('spawns a peer into the caller\'s own environment and adapter', async () => {
-    const project = await createProject({ name: 'domo', repoPath: '/tmp/domo-mesh' })
-    const environment = await createDevEnvironmentRow({
-      projectId: project.id,
-      name: 'env',
-      containerName: 'domo-env',
-      workspacePath: '/workspace'
-    })
+    const environment = await runningEnvironment('own')
     const caller = await session('caller', { adapter: 'codex', devEnvironmentId: environment.id })
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
@@ -283,6 +318,36 @@ describe('the agent-mesh MCP endpoint', () => {
     ])
   })
 
+  it('lets a host agent spawn a peer into a running development environment', async () => {
+    const environment = await runningEnvironment('target')
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      title: 'worker',
+      prompt: 'work there',
+      devEnvironmentId: environment.id
+    })
+
+    expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: undefined,
+      devEnvironmentId: environment.id
+    }))
+  })
+
+  it('refuses to spawn into an environment that is not running', async () => {
+    const environment = await runningEnvironment('sleeping')
+    await query(`update dev_environments set status = 'stopped' where id = $1`, [environment.id])
+    const caller = await session('caller')
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      title: 'worker', prompt: 'work there', devEnvironmentId: environment.id
+    })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toContain('start it before spawning')
+    expect(acp.create).not.toHaveBeenCalled()
+  })
+
   it('passes a requested model through to the new session', async () => {
     const caller = await session('caller')
 
@@ -301,6 +366,55 @@ describe('the agent-mesh MCP endpoint', () => {
     await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'docs', prompt: 'go' })
 
     expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ model: null }))
+  })
+})
+
+describe('self-scheduled tasks', () => {
+  it('lets an agent create, inspect, pause, and delete its own wakeup', async () => {
+    const caller = await session('caller')
+    const token = mintMeshToken(caller.id)
+    const created = resultOf((await callTool(token, 'schedule_task', {
+      name: 'Morning check',
+      prompt: 'Inspect CI and fix regressions.',
+      cronExpression: '0 9 * * 1-5',
+      timezone: 'UTC'
+    })).body)
+
+    expect(created).toMatchObject({
+      agentSessionId: caller.id,
+      name: 'Morning check',
+      delivery: 'queue',
+      createdBy: `agent:${caller.id}`,
+      enabled: true
+    })
+    const listed = resultOf((await callTool(token, 'list_scheduled_tasks')).body)
+    expect(listed.jobs.map((job: any) => job.id)).toEqual([created.id])
+
+    const paused = resultOf((await callTool(token, 'update_scheduled_task', {
+      jobId: created.id,
+      enabled: false,
+      prompt: 'Inspect CI, fix regressions, and report the result.'
+    })).body)
+    expect(paused).toMatchObject({ enabled: false, nextRunAt: null })
+
+    const deleted = resultOf((await callTool(token, 'delete_scheduled_task', { jobId: created.id })).body)
+    expect(deleted).toEqual({ id: created.id, deleted: true })
+    await expect(listCronJobs(caller.id)).resolves.toEqual([])
+  })
+
+  it('cannot modify a schedule owned by another agent', async () => {
+    const owner = await session('owner')
+    const intruder = await session('intruder')
+    const created = resultOf((await callTool(mintMeshToken(owner.id), 'schedule_task', {
+      name: 'Private', prompt: 'Do owner work', runAt: '2099-01-01T00:00:00Z'
+    })).body)
+
+    for (const name of ['update_scheduled_task', 'delete_scheduled_task']) {
+      const { body } = await callTool(mintMeshToken(intruder.id), name, { jobId: created.id, enabled: false })
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toContain('belongs to this agent')
+    }
+    await expect(listCronJobs(owner.id)).resolves.toHaveLength(1)
   })
 })
 

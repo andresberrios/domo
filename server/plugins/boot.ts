@@ -3,6 +3,7 @@ import { acpManager } from '../lib/acp/manager'
 import { startSubscriptionNotifier } from '../lib/acp/subscriptions'
 import { voiceManager } from '../lib/voice/runtime'
 import { usagePoller } from '../lib/usage/poller'
+import { cronScheduler } from '../lib/cron/scheduler'
 import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
@@ -31,6 +32,7 @@ export default defineNitroPlugin(async (nitro) => {
   await startSubscriptionNotifier().catch(error => console.error('[domo] subscriptions', error))
 
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
+  cronScheduler.start()
 
   // Plan limits are account-wide, so they have to be current on a dashboard
   // nobody has run an agent on today. What a working agent reports is the other
@@ -39,6 +41,7 @@ export default defineNitroPlugin(async (nitro) => {
 
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()
+    cronScheduler.stop()
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()

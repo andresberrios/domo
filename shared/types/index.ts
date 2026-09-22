@@ -301,7 +301,7 @@ export interface PendingPermission {
 export type MessageDelivery = 'steer' | 'queue' | 'interrupt'
 
 /** Who sent a message to an agent; a peer names itself. */
-export type MessageOrigin = 'user' | 'voice' | 'system' | `agent:${string}`
+export type MessageOrigin = 'user' | 'voice' | 'system' | `agent:${string}` | `cron:${string}`
 
 /**
  * A message waiting for an agent whose turn is still running.
@@ -330,6 +330,45 @@ export interface AgentSubscription {
   subscriberId: string
   targetId: string
   createdAt: string
+}
+
+export type CronScheduleType = 'cron' | 'once'
+export type CronRunStatus = 'running' | 'delivered' | 'failed'
+
+/** A durable prompt that wakes an existing coding-agent session on a schedule. */
+export interface CronJob {
+  id: string
+  agentSessionId: string
+  name: string
+  prompt: string
+  scheduleType: CronScheduleType
+  /** Standard five-field cron expression. Set only for recurring jobs. */
+  cronExpression: string | null
+  /** IANA time zone used to interpret cronExpression. */
+  timezone: string
+  /** Original requested instant for a one-time job. */
+  runAt: string | null
+  enabled: boolean
+  delivery: MessageDelivery
+  nextRunAt: string | null
+  lastRunAt: string | null
+  lastStatus: CronRunStatus | null
+  lastError: string | null
+  runCount: number
+  createdBy: 'user' | 'voice' | `agent:${string}`
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CronRun {
+  id: string
+  cronJobId: string
+  scheduledFor: string
+  startedAt: string
+  finishedAt: string | null
+  status: CronRunStatus
+  outcome: string | null
+  error: string | null
 }
 
 export type McpTransport = 'stdio' | 'http' | 'sse'
@@ -398,6 +437,7 @@ export type StreamEvent =
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
   | { type: 'agent-inbox-changed', agentSessionId: string, message: AgentInboxMessage }
   | { type: 'usage-limits-changed', provider: UsageProviderId }
+  | { type: 'cron-job-changed', cronJobId: string }
   | { type: 'settings-changed' }
   | { type: 'mcp-changed' }
   | { type: 'project-changed' }

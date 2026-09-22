@@ -11,11 +11,15 @@ import type { VoiceToolContext } from '../../server/lib/voice/tools'
  */
 
 const repo = {
+  createCronJob: vi.fn(),
   createVoiceSession: vi.fn(),
+  deleteCronJob: vi.fn(),
   getAgentSession: vi.fn(),
   getVoiceSession: vi.fn(),
+  getCronJob: vi.fn(),
   listAgentEvents: vi.fn(),
   listAgentSessions: vi.fn(),
+  listCronJobs: vi.fn(),
   listDevEnvironments: vi.fn(),
   listPermissions: vi.fn(),
   listProjects: vi.fn(),
@@ -125,6 +129,7 @@ beforeEach(() => {
   repo.listPermissions.mockResolvedValue([])
   repo.listProjects.mockResolvedValue([])
   repo.listDevEnvironments.mockResolvedValue([])
+  repo.listCronJobs.mockResolvedValue([])
 })
 
 describe('cleanTitle', () => {
@@ -488,6 +493,54 @@ describe('get_usage_limits', () => {
 
     expect(repo.listUsageLimits).toHaveBeenCalledWith('codex')
     expect(result.providers.map((item: any) => item.provider)).toEqual(['codex'])
+  })
+})
+
+describe('scheduled agent tasks', () => {
+  it('schedules a prompt for an agent resolved by title', async () => {
+    repo.listAgentSessions.mockResolvedValue([agent()])
+    repo.createCronJob.mockImplementation(async (input: any) => ({ id: 'cron_1', ...input }))
+
+    const result = await voiceTools.schedule_agent_task!.handler({
+      agentId: 'Auth',
+      name: 'Morning check',
+      prompt: 'Inspect CI.',
+      cronExpression: '0 9 * * 1-5',
+      timezone: 'UTC'
+    }, ctx)
+
+    expect(repo.createCronJob).toHaveBeenCalledWith(expect.objectContaining({
+      agentSessionId: 'ag_1',
+      name: 'Morning check',
+      prompt: 'Inspect CI.',
+      createdBy: 'voice',
+      delivery: 'queue'
+    }))
+    expect(result).toMatchObject({ id: 'cron_1', agentSessionId: 'ag_1' })
+  })
+
+  it('lists one agent’s scheduled tasks', async () => {
+    repo.listAgentSessions.mockResolvedValue([agent()])
+    repo.listCronJobs.mockResolvedValue([{ id: 'cron_1', name: 'Morning check' }])
+
+    await expect(voiceTools.list_scheduled_tasks!.handler({ agentId: 'ag_1' }, ctx)).resolves.toEqual({
+      agentId: 'ag_1',
+      title: 'Auth refactor',
+      jobs: [{ id: 'cron_1', name: 'Morning check' }]
+    })
+  })
+
+  it('deletes only a task belonging to the resolved agent', async () => {
+    repo.listAgentSessions.mockResolvedValue([agent()])
+    repo.getCronJob.mockResolvedValue({ id: 'cron_1', agentSessionId: 'ag_1' })
+
+    await expect(voiceTools.delete_scheduled_task!.handler({ agentId: 'Auth', jobId: 'cron_1' }, ctx))
+      .resolves.toEqual({ id: 'cron_1', deleted: true })
+    expect(repo.deleteCronJob).toHaveBeenCalledWith('cron_1')
+
+    repo.getCronJob.mockResolvedValue({ id: 'cron_other', agentSessionId: 'ag_2' })
+    await expect(voiceTools.delete_scheduled_task!.handler({ agentId: 'Auth', jobId: 'cron_other' }, ctx))
+      .rejects.toThrow('belongs to agent "Auth refactor"')
   })
 })
 

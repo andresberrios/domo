@@ -10,6 +10,7 @@ const ALLOWED_TABLES = new Set([
   'agent_events',
   'agent_permissions',
   'agent_inbox',
+  'cron_jobs',
   'mcp_servers',
   'projects',
   'dev_environments',

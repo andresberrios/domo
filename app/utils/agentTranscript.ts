@@ -34,7 +34,8 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,
   mesh_outbound: payload => `Sent to agent "${payload?.toTitle ?? payload?.to}": ${payload?.message}`,
   mesh_spawned: payload => `Spawned agent "${payload?.title}"`,
-  mesh_message: payload => `Told the voice supervisor: ${payload?.message}`
+  mesh_message: payload => `Told the voice supervisor: ${payload?.message}`,
+  cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`
 }
 
 function textFromContent(content: any): string {
