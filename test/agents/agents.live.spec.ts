@@ -8,6 +8,7 @@ import {
   eventsOfType,
   fixtureRepo,
   PREFIX,
+  PROBE_MARKER,
   startMeshServer,
   type MeshHarness
 } from './helpers'
@@ -238,6 +239,39 @@ describe.each<AgentAdapter>(['codex', 'claude-code'])('%s in a dev environment',
     expect(result.stopReason).toBe('end_turn')
     await expect(readFile(`${hostCwd}/host.txt`, 'utf8')).resolves.toContain(expected)
     expect(await assistantText(session.id)).toContain(expected)
+  }, HOUR / 4)
+
+  it('drives the headless browser from inside the container', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const session = await start(adapter)
+    const before = mesh.pageHits.length
+    // Same process, reached the same way the mesh is.
+    const url = `http://host.docker.internal:${mesh.port}/probe`
+
+    const answered = answerPermissions(session.id)
+    const result = await acpManager.prompt(session.id, [{
+      type: 'text',
+      text: `Use the \`browser_navigate\` tool from the browser MCP server to open ${url}, `
+        + 'then call `browser_snapshot`, and reply with the heading text you find on the page.'
+    }])
+    await answered.stop()
+
+    expect(result.stopReason).toBe('end_turn')
+
+    // The strongest signal there is: a real Chromium in the container actually
+    // fetched the page. Nothing else in this process can produce this hit.
+    expect(
+      mesh.pageHits.slice(before).length,
+      'nothing fetched the probe page, so no browser ran in the container'
+    ).toBeGreaterThan(0)
+
+    // And the adapter was offered the server and routed a call to it. Asserted
+    // on the tool names rather than on the reply, which is a model's wording.
+    const toolNames = (await eventsOfType(session.id, 'tool_call'))
+      .map(event => JSON.stringify(event.payload))
+      .join(' ')
+    expect(toolNames, 'no browser tool call was recorded').toMatch(/browser_/)
+    expect(await assistantText(session.id)).toContain(PROBE_MARKER)
   }, HOUR / 4)
 
   it('reaches Domo\'s mesh from inside the container, authenticated as itself', async () => {

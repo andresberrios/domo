@@ -26,7 +26,10 @@ const state = vi.hoisted(() => ({
   rows: new Map<string, any>(),
   ports: [] as any[],
   project: null as any,
-  homeMounts: [] as string[]
+  homeMounts: [] as string[],
+  // Off for the layer: the browser volume is several hundred megabytes and
+  // only the two tests below have anything to say about it.
+  browserTools: false
 }))
 
 vi.mock('../../server/lib/repo', () => ({
@@ -60,7 +63,9 @@ vi.mock('../../server/lib/repo', () => ({
 }))
 // Settings live in Postgres, which this project does not have. The home
 // overlay is the only thing under test that reads them.
-vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
+vi.mock('../../server/lib/settings', () => ({
+  getSettings: async () => ({ homeMounts: state.homeMounts, browserTools: state.browserTools })
+}))
 vi.mock('../../server/lib/dev-environment-ports', () => ({
   refreshEnvironmentPorts: async () => [],
   stopEnvironmentForwarders: () => {}
@@ -83,6 +88,7 @@ const {
 } = await import('../../server/lib/dev-environments')
 const { exportBranch, importBranch, listEnvironmentBranches }
   = await import('../../server/lib/dev-env/git-sync')
+const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
 
 const HOUR = 60 * 60 * 1000
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
@@ -426,6 +432,68 @@ describe('an environment for a bare glibc image with no Node of its own', () => 
     await removeEnvironment(environment.id)
     expect(await inspectContainer(environment.containerId!)).toBeNull()
   }, HOUR / 4)
+})
+
+describe('an environment with the headless browser', () => {
+  // Every other test in this file runs without one, and a stray `true` here
+  // would make each of them build and mount several hundred megabytes.
+  afterEach(() => { state.browserTools = false })
+
+  it('mounts it, and the preflight proves the image can actually run it', async () => {
+    const repo = await checkout()
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    state.browserTools = true
+
+    const environment = await create('Live Test Browser')
+
+    expect(environment.status).toBe('running')
+    // Read-only, beside the runtime volume and not inside it.
+    const mounts = await run('docker', [
+      'inspect', '--format', '{{range .Mounts}}{{.Destination}}:{{.RW}} {{end}}', environment.containerId!
+    ])
+    expect(mounts.stdout).toContain(`${BROWSER_ROOT}:false`)
+
+    // The same probe the preflight just ran, from the outside: if this works,
+    // an agent's browser will start.
+    const version = await run('docker', [
+      'exec', '--user', environment.remoteUser!,
+      '--env', `LD_LIBRARY_PATH=${BROWSER_ROOT}/lib`,
+      environment.containerId!, `${BROWSER_ROOT}/bin/chrome-headless-shell`, '--version'
+    ])
+    expect(version.stdout).toMatch(/Chrome/)
+  }, HOUR / 2)
+
+  it('refuses an image whose glibc is too old, rather than leaving it to fail later', async () => {
+    // Ubuntu 22.04 is glibc 2.35, and the browser's libraries come from the
+    // builder image (Debian 12, 2.36). The bundled Node runs here quite
+    // happily, so without this check creation would succeed and the failure
+    // would land on the first agent to open a page. With git, so the preflight
+    // gets past the check before it.
+    const repo = await checkout({
+      'Dockerfile.old': 'FROM ubuntu:22.04\nRUN apt-get update '
+        + '&& apt-get install -y --no-install-recommends git ca-certificates '
+        + '&& rm -rf /var/lib/apt/lists/*\n',
+      '.domo.json': JSON.stringify({
+        devEnvironment: { build: { dockerfile: 'Dockerfile.old' }, docker: false }
+      })
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    state.browserTools = true
+
+    let id = ''
+    await expect(
+      createEnvironment({ projectId: 'prj_live', name: 'Live Test Old glibc' })
+        .catch((error) => {
+          id = [...state.rows.keys()].at(-1)!
+          throw error
+        })
+    ).rejects.toThrow(/headless browser/)
+
+    created.push(id)
+    expect(state.rows.get(id)).toMatchObject({ status: 'error' })
+    const containers = await run('docker', ['ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`])
+    expect(containers.stdout, 'a container outlived a failed creation').toBe('')
+  }, HOUR / 2)
 })
 
 describe('an environment whose image cannot run Domo\'s runtime', () => {

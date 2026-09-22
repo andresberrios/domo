@@ -165,6 +165,13 @@ so this exposes no new socket, only a new name.
 
 ## How the agent drives it
 
+**Verified against real adapters.** `pnpm test:agents` drives this end to end:
+both Claude Code and Codex are handed the server, call `browser_navigate` and
+`browser_snapshot` on it, and report back the heading of a page the test serves
+itself. The assertion that matters is a recorded HTTP hit on that page —
+nothing else in the test process can produce one, so it means a real Chromium
+inside the container really fetched something.
+
 `@playwright/mcp` 0.0.82, 25 tools. It has exactly the flags this design needs:
 `--executable-path`, `--ignore-https-errors`, `--no-sandbox`, `--headless`,
 `--isolated`, `--output-dir`.
@@ -261,11 +268,9 @@ Anything built here should extend that idea rather than invent a second one.
    observed on a host.
  - **amd64.** Everything here is arm64. The volume name hashes the architecture,
    so an amd64 machine builds its own, but no amd64 build has been run.
- - **A real agent using it.** Every MCP call here came from a hand-written
-   JSON-RPC client, not from Claude Code, Codex or OpenCode driving the tools
-   through a real turn. The `mcpServersForSession` wiring is covered by
-   typecheck and unit tests only — **no adapter has ever been handed this server**.
-   That is the largest untested seam in the change and the first thing to try.
+ - **OpenCode.** The live suite's `describe.each` runs `codex` and `claude-code`
+   only, so the third adapter is exercised by nothing — which predates this
+   change and is not specific to the browser.
  - **Whether it actually closes the verification gap.** I got correct screenshots
    and a rich accessibility tree out. I did not evaluate whether an agent reading
    them can judge the things AGENTS.md keeps deferring — whether a green reads as

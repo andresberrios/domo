@@ -21,8 +21,22 @@ export interface MeshHarness {
   server: Server
   port: number
   calls: MeshCall[]
+  /** Paths fetched by something that is not the MCP transport — i.e. a browser. */
+  pageHits: string[]
   close: () => Promise<void>
 }
+
+/**
+ * The page the browser test opens.
+ *
+ * Served by the same process for the same reason the mesh is: it needs to be
+ * reachable from inside the container at a URL the test knows, and a fetch of
+ * it is the proof that a real Chromium in there really loaded something. The
+ * marker is the test's own, so there is no page content here that can churn.
+ */
+export const PROBE_MARKER = 'domo-browser-probe-ok'
+const PROBE_PAGE = `<!doctype html><html><head><title>${PROBE_MARKER}</title></head>`
+  + `<body><h1>${PROBE_MARKER}</h1></body></html>`
 
 /**
  * Domo's own mesh endpoint, on a real socket, in this process.
@@ -31,14 +45,26 @@ export interface MeshHarness {
  * scope in `mesh/token.ts` and is never persisted, so a token minted here only
  * verifies here.
  *
- * Bound to `127.0.0.1`, as `pnpm dev` binds Nuxt: Docker Desktop forwards
- * `host.docker.internal` to the host's IPv4 loopback, so this is the path a real
- * agent takes. (`[::1]` alone is refused; that was measured, and it is why the
- * dev script passes `--host 127.0.0.1`.)
+ * Bound to every interface, which is what makes this work in both topologies
+ * a container can reach it from. On a Docker Desktop host,
+ * `host.docker.internal` forwards to the host's IPv4 loopback — so `127.0.0.1`
+ * is enough there, and binding `[::1]` alone is refused (measured). But when
+ * the suite itself runs inside a dev environment, the agent's container is a
+ * sibling under that environment's nested daemon and `host.docker.internal` is
+ * the *bridge* gateway, not loopback: a server on `127.0.0.1` is then
+ * unreachable and every test that needs the mesh fails with nothing to say why.
+ * The wildcard covers both. It is an ephemeral port, for the length of one
+ * run, and every request still needs a bearer minted in this process.
  */
 export async function startMeshServer(): Promise<MeshHarness> {
   const calls: MeshCall[] = []
+  const pageHits: string[] = []
   const server = createServer(async (request, response) => {
+    if (request.url?.startsWith('/probe')) {
+      pageHits.push(request.url)
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(PROBE_PAGE)
+      return
+    }
     if (!request.url?.startsWith('/api/internal/mcp')) {
       response.writeHead(404).end()
       return
@@ -67,12 +93,13 @@ export async function startMeshServer(): Promise<MeshHarness> {
   })
 
   const port: number = await new Promise((resolvePort) => {
-    server.listen(0, '127.0.0.1', () => resolvePort((server.address() as any).port))
+    server.listen(0, () => resolvePort((server.address() as any).port))
   })
   return {
     server,
     port,
     calls,
+    pageHits,
     close: () => new Promise<void>(done => server.close(() => done()))
   }
 }
