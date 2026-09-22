@@ -10,7 +10,9 @@ import type { AgentAdapter } from '../../../shared/types'
 export function pinnedModel(adapter: AgentAdapter): string | null {
   const raw = adapter === 'claude-code'
     ? process.env.NUXT_CLAUDE_MODEL
-    : process.env.NUXT_CODEX_MODEL
+    : adapter === 'codex'
+      ? process.env.NUXT_CODEX_MODEL
+      : process.env.NUXT_OPENCODE_MODEL
   const trimmed = (raw ?? '').trim()
   return trimmed || null
 }

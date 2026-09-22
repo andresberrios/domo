@@ -2,7 +2,7 @@
 
 **A voice-first control room for coding agents.**
 
-Talk to a Gemini Live agent. It spawns Claude Code and Codex sessions over
+Talk to a Gemini Live agent. It spawns Claude Code, Codex and OpenCode sessions over
 [ACP](https://agentclientprotocol.com), watches them work, answers their
 permission prompts when you tell it to, and reports back — out loud — while your
 hands stay free. Every session is persisted, and the UI updates in real time
@@ -23,11 +23,13 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   number of isolated containers from it, described by one `.domo.json` in the
   project. Each environment has a copied checkout, can host several parallel
   agents, and can have a private Docker-in-Docker daemon for Compose stacks.
-- **Coding agents** — choose Claude Code or Codex for each session. Claude Code
+- **Coding agents** — choose Claude Code, Codex or OpenCode for each session. Claude Code
   runs through Zed's official ACP adapter
   ([`@agentclientprotocol/claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp),
   formerly `@zed-industries/claude-code-acp`); Codex runs through
-  [`@agentclientprotocol/codex-acp`](https://www.npmjs.com/package/@agentclientprotocol/codex-acp).
+  [`@agentclientprotocol/codex-acp`](https://www.npmjs.com/package/@agentclientprotocol/codex-acp),
+  while OpenCode runs its native [`opencode acp`](https://opencode.ai/v2/docs/cli/acp/)
+  server.
   Streaming messages, tool calls, diffs, plans, permission prompts and modes
   are all first class.
 - **Agent inbox** — every message to an agent picks how it arrives: *steer* it
@@ -55,7 +57,7 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
 - **Usage and plan limits** — every coding session and every conversation shows
   how full its context window is (and what the session has cost); the home page
   and the sidebar show how much of your Claude and Codex plan limits are left,
-  kept current in the background. Ask by voice, too. See
+  plus OpenCode Go limits when configured, kept current in the background. Ask by voice, too. See
   [Usage and plan limits](#usage-and-plan-limits).
 - **Real-time UI** — Postgres is the source of truth, ElectricSQL streams
   changes, and TanStack DB keeps the browser in sync. No polling.
@@ -68,7 +70,7 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
 - Access to at least one coding agent: a `claude setup-token` token (see
   [Claude authentication](#claude-authentication)), a local Claude Code login,
   or `NUXT_ANTHROPIC_API_KEY`; and/or a local Codex login, `NUXT_CODEX_API_KEY`,
-  or `NUXT_OPENAI_API_KEY`
+  or `NUXT_OPENAI_API_KEY`; and/or an OpenCode login (`opencode auth login`)
 
 ## Quick start
 
@@ -198,7 +200,7 @@ The built-in definition, used when there is no `.domo.json`, is:
 ```
 
 **The image must be glibc-based and have `git`.** Domo mounts its own Node and
-both ACP adapters into every environment from a shared, read-only volume, so the
+all ACP adapters into every environment from a shared, read-only volume, so the
 image does not need a Node of its own — but that Node is glibc-linked, so Alpine
 and other musl images are not supported. Creation fails with exactly that
 message rather than with something obscure later on.
@@ -365,9 +367,10 @@ Requirements:
 
 ## Configuration
 
-Everything secret lives in `.env`; everything else is editable in **Settings**
-— including **Poll plan usage limits**, which decides whether Domo checks your
-Claude and Codex plan limits in the background (see
+Everything secret lives in `.env`; everything else is editable in **Settings**.
+The settings sidebar gives General, Coding agents, Development environments and
+MCP their own pages, with one nested page per ACP adapter. Plan limits for
+configured providers are kept current automatically (see
 [Usage and plan limits](#usage-and-plan-limits)).
 
 | Variable | Purpose |
@@ -377,6 +380,9 @@ Claude and Codex plan limits in the background (see
 | `NUXT_ANTHROPIC_API_KEY` | Optional fallback; **bills the API, not your subscription**, and is passed only when there is no other credential |
 | `NUXT_CODEX_API_KEY` | Optional; forwarded as `CODEX_API_KEY` to the Codex adapter |
 | `NUXT_OPENAI_API_KEY` | Optional; forwarded as `OPENAI_API_KEY` to the Codex adapter |
+| `NUXT_OPENCODE_AUTH_CONTENT` | Optional OpenCode `auth.json` content for a headless install; otherwise Domo reads the local store written by `opencode auth login` |
+| `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration, forwarded to host and environment sessions |
+| `NUXT_OPENCODE_GO_API_KEY` | Optional OpenCode Go key used by the plan-limit poller; otherwise the local OpenCode auth store is used |
 | `DATABASE_URL` | Postgres, defaults to the compose service |
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
@@ -392,7 +398,7 @@ Claude and Codex plan limits in the background (see
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
 | `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts are read from (defaults to `$HOME`) |
 | `NUXT_GH_TOKEN` | GitHub token given to environment sessions; falls back to `gh auth token` on this machine |
-| `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` | Default model for new sessions of that adapter, when the session names none |
+| `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` / `NUXT_OPENCODE_MODEL` | Default model for new sessions of that adapter, when the session names none |
 | `NUXT_ANTHROPIC_API_BASE` | Where plan-limit requests go (default `https://api.anthropic.com`); set it to point the usage poller somewhere else |
 | `NUXT_CODEX_ENTRY` | Path to the Codex CLI the usage poller runs as `codex app-server` (defaults to the bundled `@openai/codex`) |
 
@@ -409,8 +415,8 @@ once the window fills.
 
 **Plan limits** are account-wide — they are yours, not any session's — so they
 are on the home page, in the sidebar footer, and inside each session's popover.
-They are refreshed in the background (Settings → **Poll plan usage limits**,
-on by default), soon after a turn ends, and on demand from the refresh button.
+They are refreshed automatically in the background, soon after a turn ends,
+and on demand from the refresh button.
 Every row says how old it is, because the polls are minutes apart at best.
 
 For **Claude** this needs `NUXT_CLAUDE_CODE_OAUTH_TOKEN` — the same
@@ -431,6 +437,12 @@ For **Codex** it needs a local `codex login`. Domo asks the bundled Codex CLI
 directly (`codex app-server`, `account/rateLimits/read`) — the same call the ACP
 adapter makes for its `/status` output — and shuts the process down again as
 soon as it has answered.
+
+For **OpenCode Go**, Domo reads the key from `NUXT_OPENCODE_GO_API_KEY`, or
+from the `opencode-go` entry written by `opencode auth login`, and polls the
+rolling, weekly and monthly windows automatically. Without that credential it
+is simply reported as unconfigured. The Go usage
+endpoint is currently undocumented and may change.
 
 Gemini publishes no plan-limit API, so a conversation shows its context window
 and nothing else.
@@ -474,21 +486,22 @@ The same reasoning is why `.claude` and `.claude.json` are refused as
 [home directory mounts](#git-ssh-and-cli-logins-inside-environments), whatever
 you put in the setting.
 
-### Permission modes
+### Agent modes
 
-A coding agent's **permission mode** decides how much it may do before it stops
-to ask. The modes are the agent's own, and the two agents share none of them:
+A Claude Code or Codex **permission mode** decides how much it may do before it
+stops to ask. OpenCode uses the same place in Domo for a different ACP concept:
+selecting which visible OpenCode agent handles the session.
 
-| Claude Code | Codex |
-| --- | --- |
-| `default` — Manual, always ask | `read-only` — Ask for approval |
-| `acceptEdits` — accept file edits | `agent` — Approve for me *(its default)* |
-| `plan` — plan before changing anything | `agent-full-access` — unrestricted |
-| `auto` — Claude decides | |
-| `bypassPermissions` — accept everything | |
+| Claude Code permission | Codex permission | OpenCode agent |
+| --- | --- | --- |
+| `default` — Manual, always ask | `read-only` — Ask for approval | `build` — all tools *(its default)* |
+| `acceptEdits` — accept file edits | `agent` — Approve for me *(its default)* | `plan` — restricted planning |
+| `plan` — plan before changing anything | `agent-full-access` — unrestricted | Any other visible agent OpenCode reports |
+| `auto` — Claude decides | | |
+| `bypassPermissions` — accept everything | | |
 
-So **Settings → Coding agents → Default permission mode** has one picker per
-agent, and each list is fetched from the agent itself the same way the model
+Each page under **Settings → Adapters** has its own default picker, and each
+list is fetched from the adapter itself the same way the model
 list is — by starting a throwaway session and reading what it answers with
 (cached for an hour). If an agent cannot be asked — not logged in, not
 installed — the picker says so and you can type an id by hand. A brand-new mode
@@ -501,7 +514,7 @@ different modes at once — and it is re-applied every time Domo reattaches to a
 session, because the agent comes back in whatever mode *it* defaults to.
 
 Domo upgrades an install that predates the split: whatever single mode you had
-chosen becomes the Claude Code default, and Codex starts on its own.
+chosen becomes the Claude Code default, and the other adapters start on theirs.
 
 ### Long conversations
 

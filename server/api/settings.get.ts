@@ -1,8 +1,10 @@
 import { geminiApiKey } from '../lib/gemini'
 import { getSettings } from '../lib/settings'
+import { opencodeAuthContent } from '../lib/acp/adapter-process'
 
 export default defineEventHandler(async () => {
   const settings = await getSettings()
+  const openCodeAuth = await opencodeAuthContent()
   return {
     ...settings,
     hasGeminiKey: !!geminiApiKey(),
@@ -12,6 +14,7 @@ export default defineEventHandler(async () => {
       || process.env.CODEX_API_KEY
       || process.env.NUXT_OPENAI_API_KEY
       || process.env.OPENAI_API_KEY
-    )
+    ),
+    hasOpenCodeAuth: !!openCodeAuth
   }
 })

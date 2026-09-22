@@ -1,8 +1,8 @@
 import { bus } from '../bus'
 import { listUsageLimits, setUsageProviderState, writeUsageLimits } from '../repo'
-import { getSettings } from '../settings'
 import { fetchClaudeUsage, probeClaudeHeaders, type ClaudeUsageResult } from './claude'
 import { fetchCodexUsage, type CodexUsageResult } from './codex'
+import { fetchOpenCodeUsage, type OpenCodeUsageResult } from './opencode'
 import type { UsageLimitValue } from './normalize'
 import type { UsageProviderId, UsageProviderState } from '../../../shared/types'
 
@@ -37,6 +37,7 @@ import type { UsageProviderId, UsageProviderState } from '../../../shared/types'
 const CLAUDE_ENDPOINT_MS = 60 * 60_000
 const CLAUDE_PROBE_MS = 15 * 60_000
 const CODEX_MS = 5 * 60_000
+const OPENCODE_MS = 5 * 60_000
 
 /** Never more than one attempt per provider per minute, whoever asks. */
 const FLOOR_MS = 60_000
@@ -47,13 +48,14 @@ const BACKOFF_CAP_MS = 30 * 60_000
 /** A turn ending is a good moment to look, but several ending at once is not. */
 const TURN_DEBOUNCE_MS = 5_000
 
-const PROVIDERS: UsageProviderId[] = ['claude', 'codex']
+const PROVIDERS: UsageProviderId[] = ['claude', 'codex', 'opencode']
 
 /** The network-facing half, injected so the tests never reach a real account. */
 export interface UsageClients {
   claudeEndpoint: () => Promise<ClaudeUsageResult>
   claudeHeaders: () => Promise<ClaudeUsageResult>
   codex: () => Promise<CodexUsageResult>
+  opencode: () => Promise<OpenCodeUsageResult>
 }
 
 /** The database-facing half, injected for the same reason. */
@@ -70,14 +72,13 @@ export interface UsageSink {
 export interface PollerOptions {
   clients?: Partial<UsageClients>
   sink?: Partial<UsageSink>
-  /** Whether polling is on at all; read fresh every tick so Settings apply live. */
-  enabled?: () => Promise<boolean>
 }
 
 const defaultClients: UsageClients = {
   claudeEndpoint: () => fetchClaudeUsage(),
   claudeHeaders: () => probeClaudeHeaders(),
-  codex: () => fetchCodexUsage()
+  codex: () => fetchCodexUsage(),
+  opencode: () => fetchOpenCodeUsage()
 }
 
 const defaultSink: UsageSink = {
@@ -123,7 +124,6 @@ function newProviderState(): ProviderState {
 export class UsagePoller {
   private readonly clients: UsageClients
   private readonly sink: UsageSink
-  private readonly enabled: () => Promise<boolean>
   private readonly state = new Map<UsageProviderId, ProviderState>()
   private stopped = true
   private unsubscribe: (() => void) | null = null
@@ -132,7 +132,6 @@ export class UsagePoller {
   constructor(options: PollerOptions = {}) {
     this.clients = { ...defaultClients, ...options.clients }
     this.sink = { ...defaultSink, ...options.sink }
-    this.enabled = options.enabled ?? (async () => (await getSettings()).pollUsageLimits)
     for (const provider of PROVIDERS) this.state.set(provider, newProviderState())
   }
 
@@ -182,12 +181,6 @@ export class UsagePoller {
     const now = Date.now()
     if (now < state.blockedUntil) return
     if (now - state.lastAttemptAt < FLOOR_MS && state.lastAttemptAt !== 0) return
-    if (!options.force && !(await this.enabled())) {
-      // Still schedule: the switch may go back on without a restart.
-      this.schedule(provider, CODEX_MS)
-      return
-    }
-
     state.lastAttemptAt = now
     const run = this.poll(provider, state).finally(() => { state.running = null })
     state.running = run
@@ -214,6 +207,7 @@ export class UsagePoller {
   private async poll(provider: UsageProviderId, state: ProviderState): Promise<void> {
     try {
       if (provider === 'codex') await this.pollCodex(state)
+      else if (provider === 'opencode') await this.pollOpenCode(state)
       else await this.pollClaude(state)
     } catch (error) {
       // Nothing may throw out of a poll: the timer that scheduled it is the
@@ -222,7 +216,8 @@ export class UsagePoller {
       const message = error instanceof Error ? (error.message || error.name) : String(error)
       console.error(`[usage] ${provider} poll failed: ${message}`)
       await this.sink.setState(provider, 'error', message).catch(() => {})
-      this.schedule(provider, this.backoff(state, provider === 'codex' ? CODEX_MS : CLAUDE_ENDPOINT_MS))
+      const interval = provider === 'claude' ? CLAUDE_ENDPOINT_MS : provider === 'codex' ? CODEX_MS : OPENCODE_MS
+      this.schedule(provider, this.backoff(state, interval))
     }
   }
 
@@ -328,6 +323,20 @@ export class UsagePoller {
     state.failures++
     await this.sink.setState('codex', 'error', result.message)
     this.schedule('codex', this.backoff(state, CODEX_MS))
+  }
+
+  private async pollOpenCode(state: ProviderState): Promise<void> {
+    const result = await this.clients.opencode()
+    if (result.outcome === 'ok') {
+      state.failures = 0
+      await this.sink.writeLimits('opencode', result.limits, { replace: true })
+      await this.sink.setState('opencode', 'ok', null)
+      this.schedule('opencode', OPENCODE_MS)
+      return
+    }
+    state.failures += result.outcome === 'error' ? 1 : 0
+    await this.sink.setState('opencode', result.outcome === 'unconfigured' ? 'unconfigured' : 'error', result.message)
+    this.schedule('opencode', result.outcome === 'error' ? this.backoff(state, OPENCODE_MS) : OPENCODE_MS)
   }
 }
 

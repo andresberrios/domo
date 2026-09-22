@@ -10,7 +10,8 @@ import type { UsageProviderId } from '~~/shared/types'
  */
 const PROVIDERS: Array<{ id: UsageProviderId, name: string, icon: string }> = [
   { id: 'claude', name: 'Claude', icon: 'i-lucide-sparkles' },
-  { id: 'codex', name: 'Codex', icon: 'i-lucide-terminal' }
+  { id: 'codex', name: 'Codex', icon: 'i-lucide-terminal' },
+  { id: 'opencode', name: 'OpenCode Go', icon: 'i-lucide-code-xml' }
 ]
 
 const { forProvider, providerState } = useUsageLimits()
@@ -49,7 +50,7 @@ async function refresh() {
       </div>
     </template>
 
-    <div class="grid gap-6 sm:grid-cols-2">
+    <div class="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
       <section v-for="entry in PROVIDERS" :key="entry.id" class="space-y-2">
         <p class="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-dimmed">
           <UIcon :name="entry.icon" class="size-3.5" />

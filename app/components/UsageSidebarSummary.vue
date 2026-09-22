@@ -15,7 +15,8 @@ import type { UsageProviderId } from '~~/shared/types'
  */
 const PROVIDERS: Array<{ id: UsageProviderId, name: string }> = [
   { id: 'claude', name: 'Claude' },
-  { id: 'codex', name: 'Codex' }
+  { id: 'codex', name: 'Codex' },
+  { id: 'opencode', name: 'OpenCode' }
 ]
 
 const { forProvider, providerState } = useUsageLimits()

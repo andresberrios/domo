@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AgentAdapter, SessionModeInfo } from '~~/shared/types'
+import { AGENT_ADAPTERS, agentAdapterInfo } from '~~/shared/agent-adapters'
 
 const open = defineModel<boolean>('open', { default: false })
 
@@ -21,17 +22,15 @@ const cwd = ref('')
 const task = ref('')
 const submitting = ref(false)
 const adapter = ref<AgentAdapter>('claude-code')
-const adapterItems = [
-  { label: 'Claude Code', value: 'claude-code' },
-  { label: 'Codex', value: 'codex' }
-]
+const adapterItems = AGENT_ADAPTERS.map(entry => ({ label: entry.label, value: entry.id }))
+const selectedAdapter = computed(() => agentAdapterInfo(adapter.value))
 
 // Reka's select items may not have an empty-string value, so "let the adapter
 // decide" is a named sentinel rather than ''.
 const ADAPTER_DEFAULT = 'adapter-default'
 const model = ref(ADAPTER_DEFAULT)
 
-// The adapter only reports its models *and its permission modes* in a
+// The adapter only reports its models and session modes in a
 // `session/new` response, so both lists come from the server probing it — one
 // request, one spawn. Keyed on the adapter, and lazy: nothing is spawned until
 // the modal is actually opened.
@@ -67,7 +66,7 @@ const modelItems = computed(() => [
 
 const { data: settings } = await useFetch('/api/settings', { lazy: true })
 
-// The permission mode this session starts in, preselected to the install's
+// The mode this session starts in, preselected to the install's
 // default for the chosen adapter. Never a sentinel: an empty v-model would show
 // a blank menu, so the selected id is always one of the items — probed, typed,
 // or the default itself while the probe is still out.
@@ -194,7 +193,7 @@ async function create() {
           />
           <template #help>
             <span v-if="modelError" class="text-xs text-error">
-              Could not ask {{ adapter === 'codex' ? 'Codex' : 'Claude Code' }} which models it offers:
+              Could not ask {{ selectedAdapter.label }} which models it offers:
               {{ modelError.statusMessage ?? modelError.message }}
             </span>
             <span v-else class="text-xs text-muted">
@@ -203,7 +202,7 @@ async function create() {
           </template>
         </UFormField>
 
-        <UFormField label="Permission mode">
+        <UFormField :label="selectedAdapter.modeLabel">
           <USelectMenu
             v-model="mode"
             :items="modeItems"
@@ -216,8 +215,8 @@ async function create() {
           />
           <template #help>
             <span class="text-xs text-muted">
-              How much this agent may do before it asks. Defaults to your setting for
-              {{ adapter === 'codex' ? 'Codex' : 'Claude Code' }}.
+              {{ selectedAdapter.modeDescription }} Defaults to your setting for
+              {{ selectedAdapter.label }}.
             </span>
           </template>
         </UFormField>
