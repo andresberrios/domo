@@ -75,7 +75,11 @@ export const DEFAULTS: AppSettings = {
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
-  homeMounts: [...DEFAULT_HOME_MOUNTS]
+  homeMounts: [...DEFAULT_HOME_MOUNTS],
+  // On, because the gap it closes is one nobody can close from in here: an
+  // agent that cannot open a page can only say a change "should" render. The
+  // cost is one several-hundred-megabyte volume per machine, built once.
+  browserTools: true
 }
 
 export async function getSettings(): Promise<AppSettings> {

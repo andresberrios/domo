@@ -456,6 +456,12 @@ export interface AppSettings {
    * environment's home: SSH keys, the git identity, CLI logins.
    */
   homeMounts: string[]
+  /**
+   * Mount a shared headless Chromium into new environments, so an agent can
+   * open a dev server and look at it. Like every other mount, it is fixed when
+   * the container is created.
+   */
+  browserTools: boolean
 }
 
 /** Server -> browser events on the /api/stream SSE channel. */

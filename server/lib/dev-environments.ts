@@ -16,6 +16,7 @@ import {
 import { inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './dev-env/docker'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
+import { collectBrowserVolumes, ensureBrowserVolume } from './dev-env/browser-volume'
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { dataDir } from './paths'
 import { getSettings } from './settings'
@@ -175,7 +176,17 @@ export async function createEnvironment(input: {
     // so its directory is still mounted. Claude's is *copied* — see seedClaudeHome().
     const codexConfigDir = await toolConfigDir('NUXT_CODEX_CONFIG_DIR', '.codex')
 
+    const settings = await getSettings()
     const runtimeVolume = await ensureRuntimeVolume()
+    // A browser is worth having and is not worth failing an environment over:
+    // it is several hundred megabytes fetched from two networks, and an
+    // environment with no browser still runs agents perfectly well.
+    const browserVolume = settings.browserTools
+      ? await ensureBrowserVolume().catch((error) => {
+        console.warn(`[dev-env] no headless browser for ${id}: ${error}`)
+        return null
+      })
+      : null
     const workspaceVolume = await copyRepository(project.repoPath, id)
     const imageName = await buildEnvironmentImage({
       config: resolved.config,
@@ -191,7 +202,7 @@ export async function createEnvironment(input: {
     const overlay = await resolveHomeOverlay({
       containerHome: home,
       workspacePath,
-      paths: (await getSettings()).homeMounts
+      paths: settings.homeMounts
     })
     const { stdout: containerId } = await run('docker', containerRunArgs({
       environmentId: id,
@@ -204,6 +215,7 @@ export async function createEnvironment(input: {
       workspacePath,
       workspaceVolume,
       runtimeVolume,
+      browserVolume,
       ports: declaredPorts,
       codexConfigDir,
       homeOverlay: overlay
@@ -338,6 +350,7 @@ export async function removeEnvironment(id: string): Promise<void> {
   await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
   await removeImage(environmentImageName(id))
   await collectRuntimeVolumes().catch(() => {})
+  await collectBrowserVolumes().catch(() => {})
   await deleteDevEnvironmentRow(id)
 }
 

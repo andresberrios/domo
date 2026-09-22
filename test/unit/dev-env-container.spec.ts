@@ -46,6 +46,7 @@ function runArgs(input: {
   ports?: Array<{ innerPort: number, protocol: 'tcp' | 'udp' }>
   codexConfigDir?: string | null
   homeOverlay?: HomeOverlay
+  browserVolume?: string | null
 } = {}): string[] {
   return containerRunArgs({
     environmentId: 'env_1',
@@ -58,6 +59,7 @@ function runArgs(input: {
     workspacePath: '/workspaces/api',
     workspaceVolume: 'domo-dev-env_1-workspace',
     runtimeVolume: 'domo-dev-runtime-abc123',
+    browserVolume: input.browserVolume ?? null,
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
     codexConfigDir: input.codexConfigDir ?? null,
     homeOverlay: input.homeOverlay
@@ -186,6 +188,17 @@ describe('containerRunArgs', () => {
       'type=volume,source=domo-dev-env_1-workspace,target=/workspaces/api',
       'type=volume,source=domo-dev-runtime-abc123,target=/opt/domo,readonly'
     ])
+  })
+
+  it('mounts the shared browser read-only when the install has one', () => {
+    const args = runArgs({ browserVolume: 'domo-dev-browser-abc123' })
+
+    expect(values(args, '--mount')).toContain(
+      'type=volume,source=domo-dev-browser-abc123,target=/opt/domo-browser,readonly'
+    )
+    // The libraries in it must not shadow the image's own for everything else
+    // in the container; only the browser's own process is told where they are.
+    expect(values(args, '--env').join(' ')).not.toContain('LD_LIBRARY_PATH')
   })
 
   it('carries the resolved port attributes on a label, so the port scanner needs no config', () => {
