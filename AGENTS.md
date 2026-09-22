@@ -3,7 +3,15 @@
 > `CLAUDE.md` is a symlink to this file: one document, whichever name a tool
 > looks for.
 
-> Keep this file current in the *same* change that makes it stale.
+> **What belongs here, and it is a high bar.** Only what an agent has to know
+> *before* it acts, because not knowing it costs a wrong turn — a decision that
+> is load-bearing and invisible from the code, a constraint that fails silently,
+> a result somebody measured so nobody has to measure it again. If reading the
+> code answers the question, the code is the better answer and it cannot go
+> stale. This is not an inventory of what exists, a changelog, or a second
+> description of the thing you just built: most changes, including good ones,
+> should add nothing here at all. When a change does make something here wrong,
+> fix it in the *same* change — and prefer deleting a line to qualifying it.
 
 ## What this repo is
 
@@ -1054,6 +1062,10 @@ things that are easy to get wrong.
   (`matchMedia('(pointer: coarse)')`, evaluated in `onMounted` because Domo is
   SPA-only). Desktop is unchanged: Enter sends, Shift+Enter breaks. The voice
   page's typed input is a single-line `UInput` and needs none of this.
+  That rule is also why the composer carries its own send button while the
+  agent is working: `UChatPromptSubmit` at `status: 'streaming'` is a stop
+  button and nothing else, so removing it as redundant leaves a phone with no
+  way to send mid-turn at all.
 - **A clipboard with a file on it did not necessarily mean "attach a file".**
   A spreadsheet range, a rich-text selection and several editors put an
   `image/png` rendering *beside* the text, so `clipboardData.files` is not

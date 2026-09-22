@@ -214,6 +214,37 @@ describe('AgentComposer on a touch screen', () => {
       delivery: 'steer'
     }))
   })
+
+  /**
+   * While the agent works the submit control is a stop button, so without a
+   * send button of its own a touch user has no way to steer a running turn:
+   * Enter types a line break by design and there is nothing else to press.
+   */
+  it('offers a send button beside stop while the agent is working', async () => {
+    restorePointer = pointer('coarse')
+    const component = await mountSuspended(Harness, { props: { session: session('thinking') } })
+
+    const send = component.find('button[aria-label="Send"]')
+    expect(send.exists()).toBe(true)
+    expect(send.attributes('disabled')).toBeDefined()
+
+    await type(component, 'actually, use the other endpoint')
+    expect(sent).not.toHaveBeenCalled()
+
+    await component.find('button[aria-label="Send"]').trigger('click')
+
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledWith({
+      content: [{ type: 'text', text: 'actually, use the other endpoint' }],
+      delivery: 'steer'
+    }))
+  })
+
+  it('has no send button while the agent is idle, where submit already is one', async () => {
+    restorePointer = pointer('coarse')
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    expect(component.find('button[aria-label="Send"]').exists()).toBe(false)
+  })
 })
 
 describe('AgentComposer pasting', () => {
