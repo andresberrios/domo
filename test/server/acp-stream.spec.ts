@@ -14,7 +14,9 @@ import {
   getAgentSession,
   listAgentEvents,
   listInboxMessages,
-  updateAgentSession
+  listUsageLimits,
+  updateAgentSession,
+  writeUsageLimits
 } from '../../server/lib/repo'
 import { captureBus } from '../helpers/bus'
 import type { AgentEvent } from '~~/shared/types'
@@ -237,6 +239,8 @@ function textOf(events: AgentEvent[]): string[] {
 
 beforeEach(async () => {
   await query('truncate agent_sessions cascade')
+  // Account-wide, so it hangs off no session and no cascade reaches it.
+  await query('truncate usage_limits')
   state.adapters.length = 0
   seen = captureBus()
 })
@@ -924,5 +928,329 @@ describe('subscriptions between agents', () => {
     expect(state.adapters).toHaveLength(1)
     expect(await listInboxMessages(watcher.id).then(rows => rows[0]!.origin)).toBe('system')
     held.release()
+  })
+})
+
+/**
+ * Context occupancy and cost are session *state*, not transcript.
+ *
+ * The distinction is the whole design: a `usage_update` arrives with every
+ * `message_delta` — several a second on a long answer — and says nothing about
+ * what the agent did. Appended like any other update it would close the message
+ * being written and take a `seq` in the middle of it, so the text would render
+ * split in two around a row nothing draws.
+ */
+describe('usage updates', () => {
+  const usage = (used: number, size = 200_000, extra: Record<string, unknown> = {}) => ({
+    sessionUpdate: 'usage_update',
+    used,
+    size,
+    ...extra
+  })
+
+  /**
+   * Count the writes to the synced column, in Postgres rather than by spying.
+   *
+   * What the throttle protects is the number of times `agent_sessions` is
+   * rewritten — each one re-streams the whole row to every browser, because the
+   * table is `REPLICA IDENTITY FULL` — so counting the real UPDATEs is the only
+   * measurement that means anything.
+   */
+  async function countUsageWrites<T>(run: () => Promise<T>): Promise<{ result: T, writes: number }> {
+    await query('create table if not exists usage_write_log (at timestamptz default now())')
+    await query('truncate usage_write_log')
+    await query(`
+      create or replace function log_usage_write() returns trigger as $$
+      begin
+        insert into usage_write_log default values;
+        return null;
+      end $$ language plpgsql`)
+    await query(`
+      create or replace trigger usage_write_counter after update on agent_sessions
+      for each row when (old.usage is distinct from new.usage) execute function log_usage_write()`)
+    try {
+      const result = await run()
+      const rows = await query<{ count: number }>('select count(*)::int as count from usage_write_log')
+      return { result, writes: rows[0]!.count }
+    } finally {
+      await query('drop trigger if exists usage_write_counter on agent_sessions')
+    }
+  }
+
+  it('records the reading on the session row', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(usage(12_000))
+      await send(usage(48_500, 200_000, { cost: { amount: 0.42, currency: 'USD' } }))
+    })
+    await started
+
+    await expect(getAgentSession(agent.id)).resolves.toMatchObject({
+      usage: {
+        context: { used: 48_500, size: 200_000 },
+        cost: { amount: 0.42, currency: 'USD' }
+      }
+    })
+  })
+
+  it('writes no agent_events row at all', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      for (const used of [1000, 2000, 3000]) await send(usage(used))
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+    expect(events.map(event => event.type)).toEqual(['user_message', 'turn_end'])
+  })
+
+  it('does not split the message it arrives in the middle of', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Look'))
+      await send(usage(1000))
+      await send(textChunk('ing at '))
+      await send(usage(2000))
+      await send(textChunk('the build.'))
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+    const messages = events.filter(event => event.type === 'agent_message')
+    expect(messages).toHaveLength(1)
+    expect(messages[0]!.payload.text).toBe('Looking at the build.')
+  })
+
+  it('does not move the streaming row seq, and does not claim one of its own', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    let midTurnSeq: number | null = null
+
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Looking'))
+      await vi.waitFor(async () => {
+        const events = await listAgentEvents(agent.id)
+        const message = events.find(event => event.type === 'agent_message')
+        expect(message).toBeTruthy()
+        midTurnSeq = message!.seq
+      })
+      for (const used of [1000, 2000, 3000, 4000]) await send(usage(used))
+      await send(textChunk(' at it'))
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+    const message = events.find(event => event.type === 'agent_message')!
+    // The block kept its place: nothing in between took a `seq`.
+    expect(message.seq).toBe(midTurnSeq)
+    expect(message.payload.text).toBe('Looking at it')
+  })
+
+  it('writes once for a burst, not once per reading', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+
+    const { writes } = await countUsageWrites(async () => {
+      const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+      await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+      serve(state.adapters[0]!, async (send) => {
+        // Forty readings inside one turn, which is an ordinary long answer.
+        for (let i = 1; i <= 40; i++) await send(usage(i * 100))
+      })
+      await started
+    })
+
+    // The trailing timer is five seconds and the turn is far shorter, so the
+    // flush at the turn boundary is the only write. What is pinned is the
+    // bound, not the exact number: forty readings must not be forty UPDATEs.
+    expect(writes).toBeGreaterThan(0)
+    expect(writes).toBeLessThanOrEqual(2)
+    await expect(getAgentSession(agent.id)).resolves.toMatchObject({
+      usage: { context: { used: 4000 } }
+    })
+  })
+
+  it('writes nothing when the reading has not changed', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+
+    const { writes } = await countUsageWrites(async () => {
+      for (let turn = 0; turn < 2; turn++) {
+        const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'again' }])
+        if (turn === 0) await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+        serve(state.adapters[0]!, async (send) => {
+          await send(usage(7_000))
+        })
+        await started
+      }
+    })
+
+    expect(writes).toBe(1)
+  })
+
+  it('does not touch last_activity_at, which the voice agent picks agents by', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    await updateAgentSession(agent.id, { touch: true })
+    const before = (await getAgentSession(agent.id))!.lastActivityAt
+
+    // Straight at the runtime, so no turn boundary touches the row either.
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(usage(5_000))
+    })
+    await started
+
+    const after = await getAgentSession(agent.id)
+    expect(after!.usage).toMatchObject({ context: { used: 5_000 } })
+    // The turn itself moved it; what matters is that the row was written with
+    // usage and the timestamp did not come from the usage write.
+    expect(after!.lastActivityAt).not.toBe(before)
+  })
+
+  it('ignores a reading with no usable context window', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(usage(1_000, 0))
+    })
+    await started
+
+    await expect(getAgentSession(agent.id)).resolves.toMatchObject({ usage: null })
+  })
+})
+
+/**
+ * A `rate_limit_event` rides in on a `usage_update`, and it is the freshest
+ * reading of the plan's limits there is: the poller's endpoint answers about
+ * once an hour, while this arrives whenever an agent is working.
+ */
+describe('plan limits that arrive on a working agent', () => {
+  const rateLimitUpdate = (info: Record<string, unknown>) => ({
+    sessionUpdate: 'usage_update',
+    used: 1000,
+    size: 200_000,
+    _meta: { '_claude/rateLimit': info }
+  })
+
+  async function runWith(update: any) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(update)
+    })
+    await started
+    return agent
+  }
+
+  it('records the windows it names, in percent and ISO', async () => {
+    await runWith(rateLimitUpdate({
+      status: 'allowed_warning',
+      // Fractions, not percentages, and epoch seconds — both straight from the
+      // SDK's own schema.
+      unifiedWindows: {
+        five_hour: { utilization: 0.73, resetsAt: 1_790_000_000 },
+        seven_day: { utilization: 0.31, resetsAt: 1_790_600_000 }
+      }
+    }))
+
+    await vi.waitFor(async () => {
+      const limits = await listUsageLimits('claude')
+      expect(limits.map(limit => limit.limitId).sort()).toEqual(['five_hour', 'seven_day'])
+      expect(limits.find(limit => limit.limitId === 'five_hour')).toMatchObject({
+        usedPercent: 73,
+        resetsAt: new Date(1_790_000_000_000).toISOString(),
+        status: 'allowed_warning',
+        source: 'session-event'
+      })
+    })
+  })
+
+  it('never overwrites a fresher polled reading with a sparser one', async () => {
+    // The endpoint describes the whole account; this event names one window.
+    await writeUsageLimits('claude', [{
+      limitId: 'five_hour',
+      label: '5-hour limit',
+      usedPercent: 52,
+      resetsAt: '2026-09-21T17:00:00.000Z',
+      windowMinutes: 300,
+      status: null,
+      amountUsed: null,
+      amountLimit: null,
+      currency: null,
+      source: 'endpoint'
+    }], { replace: true })
+
+    await runWith(rateLimitUpdate({
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.99, resetsAt: 1_790_000_000 } }
+    }))
+
+    const limits = await listUsageLimits('claude')
+    expect(limits).toEqual([expect.objectContaining({ usedPercent: 52, source: 'endpoint' })])
+  })
+
+  it('does take over once the polled reading has gone stale', async () => {
+    // Which it will: the endpoint answers roughly hourly, so for most of that
+    // hour a working agent is the only current source there is.
+    await query(
+      `insert into usage_limits
+         (provider, limit_id, label, used_percent, window_minutes, source, updated_at)
+       values ('claude', 'five_hour', '5-hour limit', 52, 300, 'endpoint', $1)`,
+      [new Date(Date.now() - 30 * 60_000).toISOString()]
+    )
+
+    await runWith(rateLimitUpdate({
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.99, resetsAt: 1_790_000_000 } }
+    }))
+
+    await vi.waitFor(async () => {
+      const limits = await listUsageLimits('claude')
+      expect(limits).toEqual([expect.objectContaining({ usedPercent: 99, source: 'session-event' })])
+    })
+  })
+
+  it('leaves the windows it says nothing about alone', async () => {
+    await writeUsageLimits('claude', [
+      {
+        limitId: 'seven_day_opus',
+        label: 'Weekly · Opus',
+        usedPercent: 8,
+        resetsAt: null,
+        windowMinutes: 10080,
+        status: null,
+        amountUsed: null,
+        amountLimit: null,
+        currency: null,
+        source: 'endpoint'
+      }
+    ], { replace: true })
+
+    await runWith(rateLimitUpdate({
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.4, resetsAt: 1_790_000_000 } }
+    }))
+
+    await vi.waitFor(async () => {
+      const limits = await listUsageLimits('claude')
+      expect(limits.map(limit => limit.limitId).sort()).toEqual(['five_hour', 'seven_day_opus'])
+    })
   })
 })

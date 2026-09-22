@@ -18,6 +18,8 @@ export interface VoiceSession {
   updatedAt: string
   lastActivityAt: string | null
   archived: boolean
+  /** How much of the Live model's context this conversation is using. */
+  usage: VoiceUsage | null
 }
 
 export type VoiceMessageRole = 'user' | 'assistant' | 'system' | 'tool'
@@ -64,6 +66,101 @@ export interface AgentSession {
   archived: boolean
   /** Rolling summary of the agent's most recent output, for the voice agent. */
   summary: string | null
+  /** Context-window occupancy and session cost, as the adapter last reported them. */
+  usage: AgentUsage | null
+}
+
+/* ------------------------------------------------------------------ */
+/* usage                                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How full a session's context window is, and what the session has cost.
+ *
+ * This is session *state*, not transcript: it is a column on the session row
+ * rewritten in place, never an `agent_events` entry. The ACP `usage_update`
+ * that carries it arrives many times a turn and says nothing about what the
+ * agent did — a row per reading would be noise with a `seq` in the middle of
+ * the text it interrupted.
+ */
+export interface AgentUsage {
+  context: { used: number, size: number }
+  /** The session's cumulative cost, when the adapter reports one (Claude only). */
+  cost?: { amount: number, currency: string }
+  updatedAt: string
+}
+
+/**
+ * How full a voice conversation's context window is.
+ *
+ * `size` is null for a Live model Domo has no window size for — the API never
+ * reports one — and `used` may *decrease*: sliding-window compression drops old
+ * turns, and a fresh session after a fingerprint mismatch starts again at zero.
+ */
+export interface VoiceUsage {
+  context: { used: number, size: number | null }
+  updatedAt: string
+}
+
+/** Which account a limit belongs to. */
+export type UsageProviderId = 'claude' | 'codex'
+
+/**
+ * Where a limit reading came from, best first.
+ *
+ * `endpoint` is Claude's own `/api/oauth/usage`, `headers` the unified
+ * rate-limit headers on a probe response, `app-server` Codex's
+ * `account/rateLimits/read`, and `session-event` a reading that rode in on a
+ * coding agent's `usage_update` while it worked. The first three are polls and
+ * describe every window; a session event is current but sparse, so it refreshes
+ * the windows it names and never removes the ones it does not.
+ */
+export type UsageLimitSource = 'endpoint' | 'headers' | 'session-event' | 'app-server'
+
+/** Whether the window still lets a request through. */
+export type UsageLimitStatus = 'allowed' | 'allowed_warning' | 'rejected'
+
+/**
+ * One rate-limit window of one provider's plan.
+ *
+ * Account-wide rather than per session: the limits are the developer's, not any
+ * one agent's, and they have to be readable when nothing is running at all.
+ */
+export interface UsageLimit {
+  provider: UsageProviderId
+  /** `five_hour`, `seven_day`, `extra_usage`, or for Codex `<limitId>:primary`. */
+  limitId: string
+  label: string
+  /** 0-100, whatever scale the source reported in. */
+  usedPercent: number | null
+  /** ISO 8601, whatever the source reported in. */
+  resetsAt: string | null
+  windowMinutes: number | null
+  status: UsageLimitStatus | null
+  /** Credits spent and the cap on them, for a row that is money rather than a percentage. */
+  amountUsed: number | null
+  amountLimit: number | null
+  currency: string | null
+  source: UsageLimitSource
+  updatedAt: string
+}
+
+/** Whether a provider's poll is working, so the UI can tell three states apart. */
+export type UsageProviderState = 'ok' | 'unconfigured' | 'error'
+
+/**
+ * The health of one provider's poll.
+ *
+ * Separate from the limits themselves so a failing poll leaves the last good
+ * readings in place — they carry their own `updatedAt`, so the UI can say "as
+ * of 12 minutes ago" rather than showing nothing or, worse, a fabricated 0%.
+ */
+export interface UsageProvider {
+  provider: UsageProviderId
+  state: UsageProviderState
+  /** Why, in a sentence a person can act on. Never carries a token. */
+  message: string | null
+  checkedAt: string
 }
 
 export interface Project {
@@ -255,6 +352,14 @@ export interface AppSettings {
   /** Auto-answer coding-agent permission prompts with the first "allow once" option. */
   autoApprovePermissions: boolean
   /**
+   * Poll Claude's and Codex's accounts for plan rate limits in the background.
+   *
+   * Off means the `usage_limits` table is fed only by what rides in on a
+   * running agent's `usage_update` — accurate, free, but only while something
+   * is working and only for the windows that event happens to name.
+   */
+  pollUsageLimits: boolean
+  /**
    * The permission mode a new session of each adapter starts in. Per adapter,
    * because the two share no mode ids at all: Claude Code offers `default` /
    * `acceptEdits` / `plan` / `auto` / `bypassPermissions`, Codex `read-only` /
@@ -284,6 +389,7 @@ export type StreamEvent =
   | { type: 'voice-list-changed' }
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
   | { type: 'agent-inbox-changed', agentSessionId: string, message: AgentInboxMessage }
+  | { type: 'usage-limits-changed', provider: UsageProviderId }
   | { type: 'settings-changed' }
   | { type: 'mcp-changed' }
   | { type: 'project-changed' }

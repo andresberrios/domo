@@ -325,6 +325,33 @@ describe('buildTranscript', () => {
       expect(items[0]).toMatchObject({ kind: 'assistant', text: 'Hello' })
     })
 
+    it('renders nothing at all for a usage_update row', () => {
+      // Context occupancy is session state on `agent_sessions.usage`; nothing
+      // writes these any more and the schema deletes the ones an older install
+      // left behind, but a database the app has not booted on yet still has them.
+      const items = buildTranscript([
+        userMessage('fix the build'),
+        agentEvent('usage_update', { used: 12_000, size: 200_000 }),
+        agentEvent('turn_end', { stopReason: 'end_turn' })
+      ])
+
+      expect(kinds(items)).toEqual(['user'])
+    })
+
+    it('does not split a message a legacy usage_update landed in the middle of', () => {
+      // These arrived with every `message_delta`, so on an old install they sit
+      // *inside* a run of chunks. Closing the run around one would break the
+      // message in two on screen.
+      const items = buildTranscript([
+        textChunk('Look'),
+        agentEvent('usage_update', { used: 10, size: 100 }),
+        textChunk('ing at it')
+      ])
+
+      expect(items).toHaveLength(1)
+      expect(items[0]).toMatchObject({ kind: 'assistant', text: 'Looking at it' })
+    })
+
     it('does not glue a legacy run onto a coalesced block, in either direction', () => {
       const items = buildTranscript([
         textChunk('old '),

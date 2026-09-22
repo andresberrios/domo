@@ -9,6 +9,7 @@ import type {
   AgentSession,
   AgentSessionStatus,
   AgentSubscription,
+  AgentUsage,
   DevEnvironment,
   DevEnvironmentPort,
   McpServer,
@@ -16,8 +17,14 @@ import type {
   MessageOrigin,
   PendingPermission,
   Project,
+  UsageLimit,
+  UsageLimitSource,
+  UsageProvider,
+  UsageProviderId,
+  UsageProviderState,
   VoiceMessage,
-  VoiceSession
+  VoiceSession,
+  VoiceUsage
 } from '../../shared/types'
 
 /* ------------------------------------------------------------------ */
@@ -35,7 +42,8 @@ function mapVoiceSession(r: any): VoiceSession {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     lastActivityAt: r.last_activity_at,
-    archived: r.archived
+    archived: r.archived,
+    usage: r.usage ?? null
   }
 }
 
@@ -70,7 +78,34 @@ function mapAgentSession(r: any): AgentSession {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     lastActivityAt: r.last_activity_at,
-    archived: r.archived
+    archived: r.archived,
+    usage: r.usage ?? null
+  }
+}
+
+function mapUsageLimit(r: any): UsageLimit {
+  return {
+    provider: r.provider,
+    limitId: r.limit_id,
+    label: r.label,
+    usedPercent: r.used_percent === null ? null : Number(r.used_percent),
+    resetsAt: r.resets_at ?? null,
+    windowMinutes: r.window_minutes === null ? null : Number(r.window_minutes),
+    status: r.status ?? null,
+    amountUsed: r.amount_used === null ? null : Number(r.amount_used),
+    amountLimit: r.amount_limit === null ? null : Number(r.amount_limit),
+    currency: r.currency ?? null,
+    source: r.source,
+    updatedAt: r.updated_at
+  }
+}
+
+function mapUsageProvider(r: any): UsageProvider {
+  return {
+    provider: r.provider,
+    state: r.state,
+    message: r.message ?? null,
+    checkedAt: r.checked_at
   }
 }
 
@@ -654,6 +689,170 @@ export async function latestAgentMessage(agentSessionId: string): Promise<string
     [agentSessionId]
   )
   return row?.text ?? ''
+}
+
+/* ------------------------------------------------------------------ */
+/* usage: session context, and account-wide plan limits                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Record how full a coding session's context window is.
+ *
+ * Deliberately narrow: it writes `usage` and nothing else. `last_activity_at`
+ * is a correctness signal the voice agent picks agents by, and a reading is not
+ * activity — an idle adapter still reports one. `updated_at` is left alone for
+ * the same reason, and no `agent-changed` goes on the bus: the browser already
+ * has the row through Electric, and the voice runtime treats that event as
+ * "something happened worth mentioning".
+ */
+export async function setAgentUsage(id: string, usage: AgentUsage): Promise<void> {
+  await query('update agent_sessions set usage = $2::jsonb where id = $1', [id, JSON.stringify(usage)])
+}
+
+/** The same, for a voice conversation. Ordering in the sidebar is untouched. */
+export async function setVoiceUsage(id: string, usage: VoiceUsage): Promise<void> {
+  await query('update voice_sessions set usage = $2::jsonb where id = $1', [id, JSON.stringify(usage)])
+}
+
+export async function listUsageLimits(provider?: UsageProviderId): Promise<UsageLimit[]> {
+  const rows = provider
+    ? await query('select * from usage_limits where provider = $1 order by provider, limit_id', [provider])
+    : await query('select * from usage_limits order by provider, limit_id')
+  return rows.map(mapUsageLimit)
+}
+
+export async function listUsageProviders(): Promise<UsageProvider[]> {
+  return (await query('select * from usage_providers order by provider')).map(mapUsageProvider)
+}
+
+/** Everything about a limit except who said so and when. */
+type UsageLimitValue = Omit<UsageLimit, 'provider' | 'updatedAt'>
+
+function sameLimit(row: UsageLimit, next: UsageLimitValue): boolean {
+  return row.label === next.label
+    && row.usedPercent === next.usedPercent
+    && row.resetsAt === next.resetsAt
+    && row.windowMinutes === next.windowMinutes
+    && row.status === next.status
+    && row.amountUsed === next.amountUsed
+    && row.amountLimit === next.amountLimit
+    && row.currency === next.currency
+    && row.source === next.source
+}
+
+/**
+ * How good each source's answer is, so a live-but-sparse reading cannot
+ * clobber a complete one that is still fresh. See `SOURCE_PREFERENCE_MS`.
+ */
+const SOURCE_RANK: Record<UsageLimitSource, number> = {
+  endpoint: 3,
+  'app-server': 3,
+  headers: 2,
+  'session-event': 1
+}
+
+/**
+ * How long a better source's reading is protected from a worse one.
+ *
+ * Claude's usage endpoint answers about once an hour (measured: a second call
+ * inside the window is a 429 with `retry-after: 3591`), so for most of that
+ * hour the freshest thing available is what rode in on a working agent. It
+ * should take over — but not in the minutes right after a poll, when the
+ * complete answer is still current and the event only names one window.
+ */
+const SOURCE_PREFERENCE_MS = 15 * 60_000
+
+/**
+ * Write a provider's limits, touching only the rows that actually changed.
+ *
+ * `replace` is the difference between a poll and a session event. A poll
+ * describes the whole account, so a window it no longer reports is gone and its
+ * row goes with it. A session event names one or two windows and knows nothing
+ * about the rest, so it must never remove anything.
+ *
+ * Every row here is streamed to the browser with `REPLICA IDENTITY FULL`, so an
+ * unchanged row that is rewritten anyway costs a full round trip for nothing —
+ * hence the comparison before the update rather than a blind upsert.
+ */
+export async function writeUsageLimits(
+  provider: UsageProviderId,
+  limits: UsageLimitValue[],
+  options: { replace: boolean } = { replace: true }
+): Promise<void> {
+  const now = nowIso()
+  const existing = new Map((await listUsageLimits(provider)).map(row => [row.limitId, row]))
+  let changed = false
+
+  for (const limit of limits) {
+    const current = existing.get(limit.limitId)
+    if (current) {
+      if (sameLimit(current, limit)) continue
+      // A sparser source only wins once the better one has gone stale.
+      if (SOURCE_RANK[limit.source] < SOURCE_RANK[current.source]
+        && Date.now() - Date.parse(current.updatedAt) < SOURCE_PREFERENCE_MS) continue
+    }
+    changed = true
+    await query(
+      `insert into usage_limits
+         (provider, limit_id, label, used_percent, resets_at, window_minutes, status,
+          amount_used, amount_limit, currency, source, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       on conflict (provider, limit_id) do update set
+         label = excluded.label,
+         used_percent = excluded.used_percent,
+         resets_at = excluded.resets_at,
+         window_minutes = excluded.window_minutes,
+         status = excluded.status,
+         amount_used = excluded.amount_used,
+         amount_limit = excluded.amount_limit,
+         currency = excluded.currency,
+         source = excluded.source,
+         updated_at = excluded.updated_at`,
+      [
+        provider, limit.limitId, limit.label, limit.usedPercent, limit.resetsAt,
+        limit.windowMinutes, limit.status, limit.amountUsed, limit.amountLimit,
+        limit.currency, limit.source, now
+      ]
+    )
+  }
+
+  if (options.replace) {
+    const keep = limits.map(limit => limit.limitId)
+    const removed = await query(
+      `delete from usage_limits where provider = $1 and not (limit_id = any($2::text[])) returning limit_id`,
+      [provider, keep]
+    )
+    if (removed.length) changed = true
+  }
+
+  if (changed) bus.publish({ type: 'usage-limits-changed', provider })
+}
+
+/**
+ * Record whether a provider's poll worked.
+ *
+ * Written on every attempt so "as of" is honest, but only when something about
+ * it changed — the same `ok` reported every hour is not news, and this row is
+ * synced like all the others.
+ */
+export async function setUsageProviderState(
+  provider: UsageProviderId,
+  state: UsageProviderState,
+  message: string | null = null
+): Promise<void> {
+  const current = await queryOne<{ state: string, message: string | null }>(
+    'select state, message from usage_providers where provider = $1',
+    [provider]
+  )
+  if (current && current.state === state && (current.message ?? null) === message) return
+  await query(
+    `insert into usage_providers (provider, state, message, checked_at)
+     values ($1, $2, $3, $4)
+     on conflict (provider) do update set
+       state = excluded.state, message = excluded.message, checked_at = excluded.checked_at`,
+    [provider, state, message, nowIso()]
+  )
+  bus.publish({ type: 'usage-limits-changed', provider })
 }
 
 /* ------------------------------------------------------------------ */

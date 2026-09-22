@@ -6,6 +6,19 @@ import { join } from 'node:path'
 /** The Keychain item Claude Code keeps its login in on macOS. */
 const KEYCHAIN_SERVICE = 'Claude Code-credentials'
 
+/**
+ * The long-lived OAuth token from `claude setup-token`, if the operator set one.
+ *
+ * The one place this is read, so the ACP adapter and the usage poller cannot
+ * drift apart about which variable wins. It is deliberately *not* a fallback to
+ * the host's own login: reading that prompts on macOS, and refreshing it would
+ * race the developer's own CLI over a refresh token Anthropic rotates on every
+ * use — the same hazard `home-overlay.ts` refuses to mount `~/.claude` for.
+ */
+export function claudeOauthToken(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.NUXT_CLAUDE_CODE_OAUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN || null
+}
+
 /** The file Claude Code itself reads on a non-macOS host. */
 export function homeCredentialsPath(env: NodeJS.ProcessEnv = process.env): string | null {
   const home = env.NUXT_CLAUDE_CONFIG_DIR || (env.HOME ? join(env.HOME, '.claude') : null)
