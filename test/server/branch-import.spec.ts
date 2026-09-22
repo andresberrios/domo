@@ -27,7 +27,7 @@ const acp = vi.hoisted(() => ({
 vi.mock('../../server/lib/acp/manager', () => ({ acpManager: acp }))
 
 const { run } = await import('../../server/lib/dev-env/docker')
-const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
+const { importBranchIntoEnvironment, previewImport } = await import('../../server/lib/branch-import')
 const { createAgentSession, createDevEnvironmentRow, createProject, listInboxMessages }
   = await import('../../server/lib/repo')
 
@@ -75,6 +75,9 @@ const inContainer = async (...args: string[]) => (await git(container, ...args))
 
 const importIt = (branch = 'main', from?: string) =>
   importBranchIntoEnvironment({ environmentId: environment.id, branch, from, transport, environmentGit })
+
+const previewIt = (branch = 'main', from?: string) =>
+  previewImport({ environmentId: environment.id, branch, from, transport, environmentGit })
 
 beforeEach(async () => {
   vi.clearAllMocks()
@@ -245,5 +248,73 @@ describe('importing into any other branch', () => {
     expect(result).toMatchObject({ branch: 'release', result: 'created', wip: null })
     await expect(inContainer('rev-parse', 'refs/heads/release')).resolves.toBe(sha)
     await expect(readFile(join(container, 'agent.txt'), 'utf8')).resolves.toBe('untouched\n')
+  })
+})
+
+/**
+ * That the preview and the act agree is structural — both call the one pure
+ * `planImport()` — but "structural" is a claim, and this is the test that makes
+ * it an observation. A modal that can promise something the server will not do
+ * is worse than no preview at all, so the two are run against the *same*
+ * environment and compared.
+ */
+describe('the plan and the act agree', () => {
+  it('on a clean merge into the checked-out branch', async () => {
+    await commit(host, 'landed.txt', 'landed on the host')
+
+    const plan = await previewIt('main')
+    const done = await importIt('main')
+
+    expect(plan).toMatchObject({ requested: 'main', from: 'main', branch: 'domo-import/main', merge: true })
+    expect(plan.commitFirst).toBeNull()
+    expect(done).toMatchObject({ requested: plan.requested, branch: plan.branch, from: plan.from })
+    // The plan said it would not have to commit anything, and it did not.
+    expect(done.wip).toBeNull()
+    // Nothing was left over, so nobody was asked — the plan only ever named who
+    // *would* be asked if anything were.
+    expect(done.resolver).toBeNull()
+  })
+
+  it('on a dirty checkout, down to the number of files it said it would commit', async () => {
+    await writeFile(join(container, 'one.txt'), 'a\n', 'utf8')
+    await writeFile(join(container, 'two.txt'), 'b\n', 'utf8')
+    await commit(host, 'landed.txt', 'landed on the host')
+
+    const plan = await previewIt('main')
+    const done = await importIt('main')
+
+    expect(plan.commitFirst).toMatchObject({ total: 2 })
+    expect(plan.commitFirst!.paths.sort()).toEqual(['one.txt', 'two.txt'])
+    expect(done.wip).toMatch(/^[0-9a-f]{40}$/)
+    // And exactly those files are in the commit the plan promised.
+    const committed = await inContainer('show', '--name-only', '--format=', done.wip!)
+    expect(committed.split('\n').filter(Boolean).sort()).toEqual(['one.txt', 'two.txt'])
+  })
+
+  it('on a branch left aside because an agent is mid-turn, including who is asked', async () => {
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'the worker',
+      cwd: environment.workspacePath,
+      devEnvironmentId: environment.id
+    })
+    acp.isBusy.mockImplementation((id: string) => id === agent.id)
+    await commit(host, 'landed.txt', 'landed on the host')
+
+    const plan = await previewIt('main')
+    const done = await importIt('main')
+
+    expect(plan).toMatchObject({
+      branch: 'domo-import/main',
+      toSideBranch: true,
+      sideBranchReason: 'agent-mid-turn',
+      merge: false
+    })
+    expect(plan.resolver).toMatchObject({ agentSessionId: agent.id, title: 'the worker' })
+    expect(plan.notify.map(entry => entry.agentSessionId)).toEqual([agent.id])
+
+    expect(done.branch).toBe(plan.branch)
+    expect(done.resolver).toMatchObject({ agentSessionId: agent.id })
+    expect(done.notified.map(entry => entry.agentSessionId)).toEqual(plan.notify.map(entry => entry.agentSessionId))
   })
 })
