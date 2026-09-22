@@ -208,6 +208,47 @@ create table if not exists agent_subscriptions (
 );
 create index if not exists agent_subscriptions_target on agent_subscriptions(target_id);
 
+-- Prompts that wake an existing agent on a recurring cron schedule or at one
+-- specific instant. next_run_at is materialised so the scheduler only needs an
+-- indexed due-time query; the expression is parsed when the row is written.
+create table if not exists cron_jobs (
+  id text primary key,
+  agent_session_id text not null references agent_sessions(id) on delete cascade,
+  name text not null,
+  prompt text not null,
+  schedule_type text not null,
+  cron_expression text,
+  timezone text not null default 'UTC',
+  run_at text,
+  enabled boolean not null default true,
+  delivery text not null default 'queue',
+  next_run_at text,
+  last_run_at text,
+  last_status text,
+  last_error text,
+  run_count integer not null default 0,
+  created_by text not null default 'user',
+  created_at text not null,
+  updated_at text not null
+);
+create index if not exists cron_jobs_due on cron_jobs(next_run_at) where enabled = true;
+create index if not exists cron_jobs_agent on cron_jobs(agent_session_id);
+
+-- One row per attempted firing makes failures inspectable and gives each
+-- scheduled instant a unique durable claim across overlapping timer ticks.
+create table if not exists cron_runs (
+  id text primary key,
+  cron_job_id text not null references cron_jobs(id) on delete cascade,
+  scheduled_for text not null,
+  started_at text not null,
+  finished_at text,
+  status text not null default 'running',
+  outcome text,
+  error text,
+  unique (cron_job_id, scheduled_for)
+);
+create index if not exists cron_runs_job on cron_runs(cron_job_id, started_at desc);
+
 create table if not exists agent_permissions (
   id text primary key,
   agent_session_id text not null references agent_sessions(id) on delete cascade,
@@ -245,6 +286,7 @@ alter table agent_sessions replica identity full;
 alter table agent_events replica identity full;
 alter table agent_permissions replica identity full;
 alter table agent_inbox replica identity full;
+alter table cron_jobs replica identity full;
 alter table mcp_servers replica identity full;
 alter table settings replica identity full;
 alter table projects replica identity full;

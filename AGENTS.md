@@ -114,6 +114,18 @@ things that are easy to get wrong.
   so **a queued message survives a restart**. That is the point of Domo owning
   the queue rather than the adapter (see the gotcha below), and it is why the
   agent page can show what is waiting and take it back.
+- **Cron wakes agents through that same delivery path.** `cron_jobs` stores a
+  materialised `next_run_at` for either a five-field cron expression (with an
+  IANA time zone) or a one-time instant; `cron_runs` is the durable claim and
+  history for each firing. `server/lib/cron/scheduler.ts` atomically advances
+  the due pointer before calling `AgentRuntime.deliver`, using Queue by default,
+  so a busy agent exposes the prompt in its normal inbox and a stopped agent is
+  attached normally. The HTTP API, voice tools, and mesh tools share the repo
+  lifecycle and `normalizeCronJobInput`; mesh schedule tools are self-scoped by
+  the bearer token, so an agent can create/list/update/delete only jobs targeting
+  itself. If the server missed several recurring instants while it was down,
+  the job runs once on recovery and advances past the missed times; it never
+  replays them in a burst.
 - **Subscriptions are how one agent hears about another.** An agent cannot wait
   for a peer — its own turn ends long before the peer's does — so
   `agent_subscriptions(subscriber_id, target_id)` records who wants to be told,

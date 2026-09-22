@@ -49,6 +49,7 @@ export const voiceSessionsCollection = () => collection('voice_sessions', { tabl
 export const agentSessionsCollection = () => collection('agent_sessions', { table: 'agent_sessions' })
 export const mcpServersCollection = () => collection('mcp_servers', { table: 'mcp_servers' })
 export const permissionsCollection = () => collection('agent_permissions', { table: 'agent_permissions' })
+export const cronJobsCollection = () => collection('cron_jobs', { table: 'cron_jobs' })
 export const projectsCollection = () => collection('projects', { table: 'projects' })
 export const devEnvironmentsCollection = () => collection('dev_environments', { table: 'dev_environments' })
 

@@ -25,6 +25,7 @@ function preview(message: AgentInboxMessage): string {
 /** `agent:<id>` names the peer that sent it; the rest are plain words. */
 function sender(origin: string): string {
   if (origin.startsWith('agent:')) return 'From another agent'
+  if (origin.startsWith('cron:')) return 'From a schedule'
   if (origin === 'voice') return 'From Domo'
   if (origin === 'system') return 'From Domo'
   return 'From you'

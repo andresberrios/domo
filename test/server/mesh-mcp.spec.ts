@@ -10,7 +10,8 @@ import {
   createProject,
   deleteAgentSession,
   listAgentEvents,
-  listAgentSubscriptions
+  listAgentSubscriptions,
+  listCronJobs
 } from '../../server/lib/repo'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
 import { mintMeshToken } from '../../server/lib/mesh/token'
@@ -182,6 +183,10 @@ describe('the agent-mesh MCP endpoint', () => {
       'update_dev_environment',
       'delete_dev_environment',
       'export_branch',
+      'schedule_task',
+      'list_scheduled_tasks',
+      'update_scheduled_task',
+      'delete_scheduled_task',
       'notify_supervisor'
     ])
   })
@@ -301,6 +306,55 @@ describe('the agent-mesh MCP endpoint', () => {
     await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'docs', prompt: 'go' })
 
     expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ model: null }))
+  })
+})
+
+describe('self-scheduled tasks', () => {
+  it('lets an agent create, inspect, pause, and delete its own wakeup', async () => {
+    const caller = await session('caller')
+    const token = mintMeshToken(caller.id)
+    const created = resultOf((await callTool(token, 'schedule_task', {
+      name: 'Morning check',
+      prompt: 'Inspect CI and fix regressions.',
+      cronExpression: '0 9 * * 1-5',
+      timezone: 'UTC'
+    })).body)
+
+    expect(created).toMatchObject({
+      agentSessionId: caller.id,
+      name: 'Morning check',
+      delivery: 'queue',
+      createdBy: `agent:${caller.id}`,
+      enabled: true
+    })
+    const listed = resultOf((await callTool(token, 'list_scheduled_tasks')).body)
+    expect(listed.jobs.map((job: any) => job.id)).toEqual([created.id])
+
+    const paused = resultOf((await callTool(token, 'update_scheduled_task', {
+      jobId: created.id,
+      enabled: false,
+      prompt: 'Inspect CI, fix regressions, and report the result.'
+    })).body)
+    expect(paused).toMatchObject({ enabled: false, nextRunAt: null })
+
+    const deleted = resultOf((await callTool(token, 'delete_scheduled_task', { jobId: created.id })).body)
+    expect(deleted).toEqual({ id: created.id, deleted: true })
+    await expect(listCronJobs(caller.id)).resolves.toEqual([])
+  })
+
+  it('cannot modify a schedule owned by another agent', async () => {
+    const owner = await session('owner')
+    const intruder = await session('intruder')
+    const created = resultOf((await callTool(mintMeshToken(owner.id), 'schedule_task', {
+      name: 'Private', prompt: 'Do owner work', runAt: '2099-01-01T00:00:00Z'
+    })).body)
+
+    for (const name of ['update_scheduled_task', 'delete_scheduled_task']) {
+      const { body } = await callTool(mintMeshToken(intruder.id), name, { jobId: created.id, enabled: false })
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toContain('belongs to this agent')
+    }
+    await expect(listCronJobs(owner.id)).resolves.toHaveLength(1)
   })
 })
 

@@ -35,6 +35,10 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   the turn first. Nothing is ever silently swallowed by a busy agent, and a
   queued message survives a restart. See
   [Talking to a busy agent](#talking-to-a-busy-agent).
+- **Scheduled agent tasks** — wake an existing agent with a prompt at one exact
+  time or on a standard five-field cron schedule in any IANA time zone. Jobs,
+  next-run pointers, and run history live in Postgres. Agents can manage their
+  own schedules through the built-in mesh tools.
 - **Agent mesh** — every coding agent gets a built-in `domo` MCP server, served
   over HTTP by Domo itself, so agents can list each other, hand work over, spawn
   new peers, subscribe to each other's progress, and page the voice supervisor.
@@ -111,6 +115,22 @@ before the peer's does. So it can **subscribe**: when the agent it follows
 finishes a turn, stops for a permission, or fails, Domo queues it a short note
 with that agent's latest output. `spawn_agent` subscribes by default. Because
 notes are queued, they never interrupt work of the agent's own.
+
+### Scheduled tasks
+
+Open **Schedules** to target an existing coding agent with a prompt. A task can
+run once at an ISO date/time or recur with a five-field cron expression such as
+`0 9 * * 1-5`; recurring expressions are interpreted in the selected IANA time
+zone. Delivery defaults to **Queue**, so a timer firing does not cut across work
+already in progress. An idle or stopped agent is started automatically when its
+development environment is running; if that environment is stopped, the run
+fails and records the reason in the job's `last_error`.
+
+Coding agents have four authenticated mesh tools for the same lifecycle:
+`schedule_task`, `list_scheduled_tasks`, `update_scheduled_task`, and
+`delete_scheduled_task`. A mesh caller can only see or modify jobs targeting
+its own session. The voice supervisor can schedule, list, and delete jobs for a
+named agent too. Schedules and their next due time survive server restarts.
 
 ### `.domo.json`
 

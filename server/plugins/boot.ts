@@ -2,6 +2,7 @@ import { getDb, query } from '../lib/db'
 import { acpManager } from '../lib/acp/manager'
 import { startSubscriptionNotifier } from '../lib/acp/subscriptions'
 import { voiceManager } from '../lib/voice/runtime'
+import { cronScheduler } from '../lib/cron/scheduler'
 import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
@@ -30,8 +31,10 @@ export default defineNitroPlugin(async (nitro) => {
   await startSubscriptionNotifier().catch(error => console.error('[domo] subscriptions', error))
 
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
+  cronScheduler.start()
 
   nitro.hooks.hook('close', async () => {
+    cronScheduler.stop()
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()

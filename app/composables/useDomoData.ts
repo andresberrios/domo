@@ -3,6 +3,7 @@ import {
   agentEventsCollection,
   agentInboxCollection,
   agentSessionsCollection,
+  cronJobsCollection,
   devEnvironmentsCollection,
   mcpServersCollection,
   permissionsCollection,
@@ -14,6 +15,7 @@ import type {
   AgentEvent,
   AgentInboxMessage,
   AgentSession,
+  CronJob,
   DevEnvironment,
   McpServer,
   PendingPermission,
@@ -122,6 +124,33 @@ export function useDevEnvironments() {
     })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   )
   return { environments, isReady }
+}
+
+export function useCronJobs() {
+  const { data, isReady } = useLiveQuery(q => q.from({ job: cronJobsCollection() }))
+  const jobs = computed<CronJob[]>(() =>
+    (data.value ?? []).map((row: any) => ({
+      id: row.id,
+      agentSessionId: row.agent_session_id,
+      name: row.name,
+      prompt: row.prompt,
+      scheduleType: row.schedule_type,
+      cronExpression: row.cron_expression ?? null,
+      timezone: row.timezone,
+      runAt: row.run_at ?? null,
+      enabled: !!row.enabled,
+      delivery: row.delivery,
+      nextRunAt: row.next_run_at ?? null,
+      lastRunAt: row.last_run_at ?? null,
+      lastStatus: row.last_status ?? null,
+      lastError: row.last_error ?? null,
+      runCount: Number(row.run_count ?? 0),
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    })).sort((a, b) => (a.nextRunAt ?? '9999').localeCompare(b.nextRunAt ?? '9999'))
+  )
+  return { jobs, isReady }
 }
 
 export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
