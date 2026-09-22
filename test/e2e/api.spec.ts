@@ -304,6 +304,25 @@ describe('a coding agent as the UI sees it', () => {
     expect(['error', 'stopped']).toContain(session!.status)
   })
 
+  it('changes a stopped session\'s settings in one call, without starting an adapter', async () => {
+    // The route hands the whole patch to `applyAgentSessionPatch`, the same
+    // function the voice and mesh tools call, and none of it starts a process.
+    // The stub adapter is what makes that a real assertion rather than a
+    // hopeful one: it exits as soon as it is spawned, so a boot anywhere in
+    // this call would leave `status: error` and a `lastError` behind it.
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Before', cwd: checkout })
+
+    const patched = await $fetch<{ title: string, modeId: string, model: string }>(`/api/agents/${session.id}`, {
+      method: 'PATCH',
+      body: { title: 'After', modeId: 'plan', model: 'opus' }
+    })
+
+    expect(patched).toMatchObject({ title: 'After', modeId: 'plan', model: 'opus' })
+    const row = await getAgentSession(session.id)
+    expect(row!.status).toBe('starting')
+    expect(row!.lastError).toBeNull()
+  })
+
   it('leaves the model null when none is asked for', async () => {
     const created = await $fetch<{ id: string }>('/api/agents', {
       method: 'POST',
