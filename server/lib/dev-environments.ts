@@ -16,7 +16,12 @@ import {
 import { inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './dev-env/docker'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
-import { collectBrowserVolumes, ensureBrowserVolume } from './dev-env/browser-volume'
+import {
+  browserEnv,
+  CHROME_EXECUTABLE,
+  collectBrowserVolumes,
+  ensureBrowserVolume
+} from './dev-env/browser-volume'
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { dataDir } from './paths'
 import { getSettings } from './settings'
@@ -95,11 +100,15 @@ function execArgs(input: {
 }
 
 /**
- * The three things an environment image has to provide before an agent can work in it.
+ * The things an environment image has to provide before an agent can work in it.
  * Each failure has a readable cause, because the alternative is a stack trace from
  * something several layers away complaining that a file is missing.
  */
-async function preflight(containerId: string, wantsDocker: boolean): Promise<void> {
+async function preflight(
+  containerId: string,
+  wantsDocker: boolean,
+  browserVolume: string | null
+): Promise<void> {
   await run('docker', [...execArgs({ containerId }), 'git', '--version']).catch(() => {
     throw new Error('The environment image does not have `git` installed, and Domo needs it in the workspace.')
   })
@@ -109,6 +118,25 @@ async function preflight(containerId: string, wantsDocker: boolean): Promise<voi
       + '(Debian, Ubuntu, Fedora, …); Alpine and other musl images are not supported.'
     )
   })
+  // The browser has a *higher* glibc floor than the bundled Node — its
+  // libraries come from the builder image, and Node is built for an older one —
+  // so an image can pass the check above and still have no working browser.
+  // Measured on `ubuntu:22.04` (glibc 2.35): Node reports its version happily
+  // and the browser dies with `GLIBC_2.36' not found`. Caught here rather than
+  // left for the first agent that tries to look at a page, because then the
+  // failure lands on whoever is using the feature instead of on whoever chose
+  // the image.
+  if (browserVolume) {
+    await run('docker', [
+      ...execArgs({ containerId, env: browserEnv() }), CHROME_EXECUTABLE, '--version'
+    ]).catch(() => {
+      throw new Error(
+        'The environment image cannot run Domo\'s bundled headless browser, which needs a newer '
+        + 'glibc than the rest of Domo does (Debian 12 / Ubuntu 24.04 or later; Ubuntu 22.04 is too old). '
+        + 'Use a newer base image, or turn the headless browser off in Settings → Development environments.'
+      )
+    })
+  }
   if (!wantsDocker) return
   const timeout = dockerReadyTimeout()
   const deadline = Date.now() + timeout
@@ -233,7 +261,7 @@ export async function createEnvironment(input: {
 
     // Before anything assumes the image can host an agent. `git config` below is itself
     // one of the things a preflight failure would otherwise report as a bare `exit 127`.
-    await preflight(inspection.id, resolved.config.docker)
+    await preflight(inspection.id, resolved.config.docker, browserVolume)
 
     // The tar stream left the checkout owned by root; hand it to the user everything
     // else runs as, before anything else touches it.
