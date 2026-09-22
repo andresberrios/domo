@@ -12,12 +12,88 @@ accurate the story is.
 
 ## The test that decides what goes in
 
-For every candidate line, ask: **does the reader do something differently
-having read this?** Act on it, worry about it, remember it for later, or
-approve it. If nothing changes, cut it — including things you are proud of.
+**The default is to say nothing.** A point has to earn its way in, and the
+only thing that earns it is the reader having to act: decide something, worry
+about something, or remember something for later. If nothing changes for
+them, cut it — including things you are proud of, and especially things that
+went well.
 
-Verification (tests, builds, checks) is a special case. Report it as one line
-of evidence, not as a section: it changes what they do only if it *failed*.
+Over-reporting is not a venial sin here. A reader who has to wade through six
+points to find the one that needed them is a reader who falls behind, and
+being behind is worse than missing a detail. Protect their attention and their
+working memory the way you would protect a production database.
+
+## Never report these
+
+Each of these feels informative and is not. They are the failure mode, and
+they are seductive because they are all true things you did.
+
+- **A decision you made, are confident in, and that is cheap to reverse.** It
+  is yours. Only surface a call you would want overruled, or one that is
+  expensive to undo later.
+- **That you are on top of something, tracking it, or will check it later.**
+  That is your job, not news. Report the thing when it turns into a decision
+  or a risk, and not before.
+- **Verification that passed.** One line of evidence at the end, or nothing.
+  Report it only when it *failed*.
+- **Work in progress, or what an agent is currently doing.** Report on work
+  when it lands.
+- **How you did something.** The mechanism, the sequence, the obstacle you got
+  around, the clever bit. Nobody is grading the method.
+- **A problem you hit and fully solved**, unless it will recur.
+
+## The rule for risks: mitigate, or ask. Never narrate.
+
+A risk is not news. Work through it in this order and only the last branch
+reaches the reader:
+
+1. **Already handled, and it will not recur?** Say nothing. It is not a risk,
+   it is a thing that happened.
+2. **Can you do something about it?** Do that, and say nothing. Telling them
+   about a hazard you are capable of managing just moves your job into their
+   head.
+3. **Only they can act?** Then tell them — and write it as *what needs doing*,
+   not as a description of the danger. "The env pins are gone with no
+   migration; say if you want one" beats a paragraph on what could go wrong.
+
+The instinct this kills is the one that wants credit for noticing something.
+A risk you spotted, handled, and reported is a risk you reported for yourself.
+
+## Define the vocabulary before you use it
+
+When the work invents a term — or, worse, introduces a second term next to one
+that already exists — the reader does not yet have the distinction you spent
+an hour building. A decision phrased in vocabulary they have not been taught
+is not a decision they can make; it is a research task you handed them.
+
+So lead with the meanings, in one compact line each, and *then* ask the
+question. This is the one place where a few extra words are not padding: they
+are what makes the rest of the report answerable at all.
+
+> Archived: hidden from the sidebar, still fully live. Retired: kept forever,
+> read-only, cannot be started. Deleted: actually gone from the database.
+>
+> Retiring also archives, which is what kept retired sessions off every live
+> surface without touching any caller. Reversing that later means re-auditing
+> every one of them.
+
+Note the ordering: three definitions, then the consequence, then the decision.
+The version that opens with "retiring a session sets `archived = true` and
+that is load-bearing" is unanswerable, because the reader does not yet know
+what either word means here.
+
+## Answering a direct question
+
+When the reader asked you something, the report *is* the answer. Give it,
+say where the work went if it went somewhere, and stop. Two sentences is
+normal. Do not attach your reasoning, the alternatives, or a summary of what
+you did about it — if they want the reasoning they will ask, and the marker
+below is how they know they can.
+
+> Yes, it's worth capturing — it proved its value this session already. I've
+> added it to the "clean-workspace-populate" agent.
+
+That is a complete report. Anything more is for you, not for them.
 
 ## Structure
 
@@ -26,8 +102,8 @@ Then, in this order, only the sections that have content:
 
 1. **Decisions needed** — where you need them to choose, or where you made a
    call they might want to reverse.
-2. **Risks** — what could bite them, including things you already handled
-   that will recur.
+2. **Risks** — only where *they* have to act. See below; this section is
+   empty far more often than it feels like it should be.
 3. **Follow-ups** — what to track, what is deferred, what is blocked.
 4. **Verification** — one line. What ran clean, and how to confirm it.
 
@@ -90,7 +166,12 @@ instruction.
 
 ## Length
 
-A report on a day of work should be readable in under a minute. If it runs
-long, the compression failed — look for points that are really one point, and
-for lines that survived because they were interesting rather than because they
-were actionable.
+Most reports are one to three points. A report on a full day of parallel work
+should still be readable in well under a minute.
+
+If it runs long, the compression failed. Check for the two usual causes:
+points that are really one point, and lines that survived because they were
+*interesting* rather than because they were *actionable*. Interesting is not
+the bar. Then check the harder one — whether you wrote a point to show that
+the work was done well, which is the instinct this whole format exists to
+suppress.
