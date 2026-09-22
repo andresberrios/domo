@@ -122,6 +122,10 @@ export const MESH_TOOLS = [
           type: 'string',
           description: 'Optional model id; ids come from list_models. Omit for the default.'
         },
+        devEnvironmentId: {
+          type: 'string',
+          description: 'Optional development environment id from list_projects. It must already be running.'
+        },
         notifyWhenDone: {
           type: 'boolean',
           description:
@@ -390,11 +394,19 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'spawn_agent': {
+      const devEnvironmentId = args.devEnvironmentId ?? caller.devEnvironmentId ?? null
+      if (devEnvironmentId) {
+        const environment = await getDevEnvironment(devEnvironmentId)
+        if (!environment) throw new Error(`No development environment ${devEnvironmentId}`)
+        if (environment.status !== 'running') {
+          throw new Error(`Development environment "${environment.name}" is ${environment.status}; start it before spawning an agent there.`)
+        }
+      }
       const session = await acpManager.create({
         adapter: caller.adapter,
         title: args.title,
-        cwd: caller.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller.cwd),
-        devEnvironmentId: caller.devEnvironmentId ?? null,
+        cwd: devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller.cwd),
+        devEnvironmentId,
         voiceSessionId: caller.voiceSessionId ?? null,
         model: args.model ?? null,
         initialPrompt: args.prompt

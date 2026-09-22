@@ -114,6 +114,18 @@ async function session(title: string, patch: Record<string, unknown> = {}) {
   return createAgentSession({ adapter: 'claude-code', title, cwd: '/tmp/domo-mesh', ...patch })
 }
 
+async function runningEnvironment(name: string) {
+  const project = await createProject({ name: `${name}-project`, repoPath: '/tmp/domo-mesh' })
+  const environment = await createDevEnvironmentRow({
+    projectId: project.id,
+    name,
+    containerName: `domo-${name}`,
+    workspacePath: `/workspaces/${name}`
+  })
+  await query(`update dev_environments set status = 'running' where id = $1`, [environment.id])
+  return { ...environment, status: 'running' as const }
+}
+
 beforeEach(async () => {
   await query('truncate agent_sessions, projects cascade')
   acp.promptInBackground.mockClear()
@@ -259,13 +271,7 @@ describe('the agent-mesh MCP endpoint', () => {
   })
 
   it('spawns a peer into the caller\'s own environment and adapter', async () => {
-    const project = await createProject({ name: 'domo', repoPath: '/tmp/domo-mesh' })
-    const environment = await createDevEnvironmentRow({
-      projectId: project.id,
-      name: 'env',
-      containerName: 'domo-env',
-      workspacePath: '/workspace'
-    })
+    const environment = await runningEnvironment('own')
     const caller = await session('caller', { adapter: 'codex', devEnvironmentId: environment.id })
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
@@ -286,6 +292,36 @@ describe('the agent-mesh MCP endpoint', () => {
     await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
       { type: 'mesh_spawned', payload: { agentId: body.id, title: 'docs' } }
     ])
+  })
+
+  it('lets a host agent spawn a peer into a running development environment', async () => {
+    const environment = await runningEnvironment('target')
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      title: 'worker',
+      prompt: 'work there',
+      devEnvironmentId: environment.id
+    })
+
+    expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: undefined,
+      devEnvironmentId: environment.id
+    }))
+  })
+
+  it('refuses to spawn into an environment that is not running', async () => {
+    const environment = await runningEnvironment('sleeping')
+    await query(`update dev_environments set status = 'stopped' where id = $1`, [environment.id])
+    const caller = await session('caller')
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      title: 'worker', prompt: 'work there', devEnvironmentId: environment.id
+    })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toContain('start it before spawning')
+    expect(acp.create).not.toHaveBeenCalled()
   })
 
   it('passes a requested model through to the new session', async () => {
