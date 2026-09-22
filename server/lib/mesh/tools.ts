@@ -1,6 +1,6 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
-import { assertSessionLive } from '../acp/retirement'
+import { assertSessionStartable } from '../acp/startable'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
@@ -8,7 +8,7 @@ import { importBranchIntoEnvironment } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
-import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
+import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import {
   addAgentSubscription,
@@ -16,6 +16,7 @@ import {
   createCronJob,
   deleteCronJob,
   getAgentSession,
+  getAgentSessionWithEnvironment,
   getCronJob,
   getDevEnvironment,
   listAgentSessions,
@@ -29,7 +30,8 @@ import {
   updateProject
 } from '../repo'
 import { voiceManager } from '../voice/runtime'
-import type { MessageDelivery } from '../../../shared/types'
+import { sessionStartability } from '../../../shared/retention'
+import type { AgentSession, DevEnvironment, MessageDelivery } from '../../../shared/types'
 import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
@@ -86,7 +88,9 @@ export const MESH_TOOLS = [
   {
     name: 'list_agents',
     description:
-      'List the other coding agent sessions running in Domo, with their id, title, working directory, status and a short summary of their latest output.',
+      'List the other coding agent sessions in Domo, with their id, title, working directory, status and a short '
+      + 'summary of their latest output. An agent whose development environment has been retired is still listed '
+      + 'and still readable, but is marked startable:false and cannot be messaged or handed work.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -254,11 +258,12 @@ export const MESH_TOOLS = [
     }
   },
   {
-    name: 'delete_project',
+    name: 'retire_project',
     description:
-      'Delete a project along with every one of its development environments: their containers and checkouts. '
-      + 'The coding agent sessions that ran in them are retired rather than deleted, so their transcripts stay '
-      + 'readable, but nothing inside a container can be brought back.',
+      'Retire a project and every one of its development environments: their containers and their copies of the '
+      + 'checkout are destroyed. The records are kept — the project, the environments and the full transcript of '
+      + 'every coding agent that ran in them stay readable — but those agents can never be started again, and '
+      + 'nothing inside a container can be brought back.',
     inputSchema: {
       type: 'object',
       properties: { projectId: { type: 'string', description: 'Project id, from list_projects.' } },
@@ -303,11 +308,11 @@ export const MESH_TOOLS = [
     }
   },
   {
-    name: 'delete_dev_environment',
+    name: 'retire_dev_environment',
     description:
-      'Delete a development environment: its container and its checkout. The coding agent sessions running in it '
-      + 'are retired rather than deleted, so their transcripts stay readable, but they can never be revived and '
-      + 'nothing inside the container can be brought back.',
+      'Retire a development environment: its container and its copy of the checkout are destroyed. The records '
+      + 'are kept — the environment and the full transcript of every coding agent that ran in it stay readable — '
+      + 'but those agents can never be started again, and nothing inside the container can be brought back.',
     inputSchema: {
       type: 'object',
       properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
@@ -434,10 +439,11 @@ export const MESH_TOOLS = [
 export async function callMeshTool(callerSessionId: string, tool: string, input: unknown): Promise<unknown> {
   const caller = await getAgentSession(callerSessionId)
   if (!caller) throw new Error(`No agent ${callerSessionId}`)
-  // A retired session's bearer token cannot be minted again, but one already in
-  // an adapter's hands outlives the retirement by however long that process
-  // takes to die. Nothing it asks for may act as a live agent.
-  assertSessionLive(caller, 'acting as it on the mesh')
+  // A token belonging to a session that can no longer run is still a valid
+  // token for as long as the dying adapter holds it. Nothing it asks for may
+  // act as a working agent.
+  const callerEnvironment = caller.devEnvironmentId ? await getDevEnvironment(caller.devEnvironmentId) : null
+  assertSessionStartable(caller, callerEnvironment, null, 'acting as it on the mesh')
   const args = (input ?? {}) as any
 
   switch (tool) {
@@ -447,16 +453,29 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
 
     case 'list_agents': {
       const sessions = await listAgentSessions()
+      // A peer whose environment has been retired is still listed — its
+      // transcript is worth reading — but nothing can be handed to it, so the
+      // list has to say which those are rather than let a caller find out by
+      // being refused.
+      const environments = await listDevEnvironments(undefined, true)
+      const startability = (session: AgentSession) => sessionStartability(
+        session,
+        environments.find((environment: DevEnvironment) => environment.id === session.devEnvironmentId) ?? null
+      )
       return {
         agents: sessions
           .filter(session => session.id !== caller.id)
-          .map(session => ({
+          .map((session) => {
+            const state = startability(session)
+            return {
             id: session.id,
             title: session.title,
             adapter: session.adapter,
             cwd: session.cwd,
             status: session.status,
             model: session.model,
+            startable: state.startable,
+            ...state.startable ? {} : { cannotStart: state.reason },
             settings: (session.configOptions ?? []).map(option => ({
               setting: option.name,
               id: option.id,
@@ -464,7 +483,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
               options: option.options.map(entry => entry.value)
             })),
             summary: (session.summary ?? '').replace(/\s+/g, ' ').slice(0, 400)
-          }))
+            }
+          })
       }
     }
 
@@ -477,9 +497,10 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'message_agent': {
-      const target = await getAgentSession(args.agentId)
+      const messaged = await getAgentSessionWithEnvironment(args.agentId)
+      const target = messaged.session
       if (!target) throw new Error(`No agent ${args.agentId}`)
-      assertSessionLive(target, 'messaging it')
+      assertSessionStartable(target, messaged.environment, null, 'messaging it')
       const from = caller.title
       // An agent writing to a peer has no idea what that peer is in the middle
       // of, so the default waits rather than cutting across it.
@@ -548,7 +569,10 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (args.archived && target.id === caller.id) {
         throw new Error('Refusing to archive the session this agent is running in. Ask the user or another agent to do it.')
       }
-      assertSessionLive(target, 'changing its settings')
+      const managedEnvironment = target.devEnvironmentId
+        ? await getDevEnvironment(target.devEnvironmentId)
+        : null
+      assertSessionStartable(target, managedEnvironment, null, 'changing its settings')
       return applyAgentSessionPatch(target, {
         ...args,
         config: args.setting && args.settingValue ? { [args.setting]: args.settingValue } : undefined
@@ -556,11 +580,12 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'subscribe_to_agent': {
-      const target = await getAgentSession(args.agentId)
+      const followed = await getAgentSessionWithEnvironment(args.agentId)
+      const target = followed.session
       if (!target) throw new Error(`No agent ${args.agentId}`)
-      // A retired agent has no turn left to finish, so a subscription to it
-      // would be a row that can never fire.
-      assertSessionLive(target, 'subscribing to it')
+      // An agent that can no longer start has no turn left to finish, so a
+      // subscription to it would be a row that can never fire.
+      assertSessionStartable(target, followed.environment, null, 'subscribing to it')
       await subscribe(caller.id, target.id)
       return { subscribed: true, agentId: target.id, title: target.title }
     }
@@ -602,13 +627,13 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       return { id: updated.id, name: updated.name }
     }
 
-    case 'delete_project': {
+    case 'retire_project': {
       const environments = await listDevEnvironments(args.projectId)
       if (caller.devEnvironmentId && environments.some(environment => environment.id === caller.devEnvironmentId)) {
-        throw new Error('Refusing to delete the project this agent session is running in. Ask the user or another agent to do it.')
+        throw new Error('Refusing to retire the project this agent session is running in. Ask the user or another agent to do it.')
       }
-      await removeProjectCascade(args.projectId)
-      return { id: args.projectId, deleted: true }
+      await retireProjectCascade(args.projectId)
+      return { id: args.projectId, retired: true }
     }
 
     case 'create_dev_environment': {
@@ -636,12 +661,18 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       return { id: current.id, name: current.name, status: current.status }
     }
 
-    case 'delete_dev_environment': {
+    case 'retire_dev_environment': {
       if (caller.devEnvironmentId === args.environmentId) {
-        throw new Error('Refusing to delete the environment this agent session is running in. Ask the user or another agent to do it.')
+        throw new Error('Refusing to retire the environment this agent session is running in. Ask the user or another agent to do it.')
       }
-      await removeProjectEnvironment(args.environmentId)
-      return { id: args.environmentId, deleted: true }
+      const retirement = await retireProjectEnvironment(args.environmentId)
+      return {
+        id: args.environmentId,
+        retired: true,
+        // Named rather than counted: the caller may well have been talking to
+        // one of them a moment ago, and it is still readable.
+        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title }))
+      }
     }
 
     case 'export_branch': {

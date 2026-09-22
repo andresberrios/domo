@@ -19,7 +19,7 @@ const project: Project = {
   repoPath: '/work/domo',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
-  deletedAt: null,
+  retiredAt: null,
 }
 
 const environment: DevEnvironment = {
@@ -36,7 +36,7 @@ const environment: DevEnvironment = {
   lastError: null,
   createdAt: '2026-01-02T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
-  deletedAt: null,
+  retiredAt: null,
 }
 
 const agent: AgentSession = {
@@ -60,8 +60,6 @@ const agent: AgentSession = {
   lastActivityAt: null,
   usage: null,
   archived: false,
-  retiredAt: null,
-  retiredReason: null,
 }
 
 const conversation: VoiceSession = {
@@ -263,17 +261,17 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('deletes an environment only after the confirmation names the cascade', async () => {
+  it('retires an environment only after the confirmation names the cascade', async () => {
     const wrapper = await mountTree()
 
-    await choose('Actions for feature-auth', 'Delete')
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Delete feature-auth?'))
-    // Nothing has gone out yet: the menu item opens a dialog, it does not delete.
+    await choose('Actions for feature-auth', 'Retire')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Retire feature-auth?'))
+    // Nothing has gone out yet: the menu item opens a dialog, it does not act.
     expect(calls).toHaveLength(0)
     expect(document.body.textContent).toContain('Docker-in-Docker volume')
 
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
-      .find(element => element.textContent?.includes('Delete environment'))
+      .find(element => element.textContent?.includes('Retire environment'))
     confirm!.click()
 
     await vi.waitFor(() => expect(calls).toContainEqual(
@@ -336,16 +334,16 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('deletes a project only after a confirmation that counts what goes with it', async () => {
+  it('retires a project only after a confirmation that counts what goes with it', async () => {
     const wrapper = await mountTree()
 
-    await choose('Actions for Domo', 'Delete')
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Delete Domo?'))
+    await choose('Actions for Domo', 'Retire')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Retire Domo?'))
     expect(document.body.textContent).toContain('1 development environment')
     expect(document.body.textContent).toContain('1 coding agent session')
 
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
-      .find(element => element.textContent?.includes('Delete project'))
+      .find(element => element.textContent?.includes('Retire project'))
     confirm!.click()
 
     await vi.waitFor(() => expect(calls).toContainEqual(

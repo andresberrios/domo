@@ -1,34 +1,26 @@
-import { purgeAgentSession, retireAgentSession } from '../../../lib/session-retention'
+import { purgeAgentSession, setAgentSessionArchived } from '../../../lib/agent-sessions'
+import { getAgentSession } from '../../../lib/repo'
 
 /**
- * Retire an agent session — stop it, stand down everything pointed at it, and
- * keep the row and its whole transcript.
+ * Archive an agent session, or — with `?purge=true` — really destroy it.
  *
- * Deleting used to mean deleting, and the transcript went with it. An agent
- * session is a record of work, so the default is now a tombstone; `?purge=true`
- * is the one way to really destroy one, and it is refused until the session has
- * been retired first, so nothing skips the tombstone by accident.
+ * Archiving is the only thing DELETE does by default, and it keeps the row and
+ * the whole transcript. A purge is refused until the session has been archived
+ * first, so a record can never be destroyed straight off the live list.
  */
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
-  const purge = getQuery(event).purge === 'true'
 
-  if (purge) {
+  if (getQuery(event).purge === 'true') {
     if (!await purgeAgentSession(id)) {
       throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
     }
     return { ok: true, id, purged: true }
   }
 
-  const outcome = await retireAgentSession(id, 'user')
-  if (!outcome) throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
-  return {
-    ok: true,
-    id,
-    retired: true,
-    session: outcome.session,
-    cronJobsDisabled: outcome.cronJobsDisabled,
-    subscriptionsRemoved: outcome.subscriptionsRemoved,
-    permissionsCancelled: outcome.permissionsCancelled
+  if (!await getAgentSession(id)) {
+    throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
   }
+  const session = await setAgentSessionArchived(id, true)
+  return { ok: true, id, archived: true, session }
 })

@@ -212,8 +212,8 @@ things that are easy to get wrong.
   human-facing surface with no caller identity, while the mesh handler
   defaults `agentId` to the caller's own session (like `export_branch`
   defaults its environment) and refuses `archived: true` against that same
-  session — the same self-targeting hazard `delete_project` /
-  `delete_dev_environment` already refuse, since stopping the adapter process
+  session — the same self-targeting hazard `retire_project` /
+  `retire_dev_environment` already refuse, since stopping the adapter process
   handling this very tool call would leave its own response undelivered. A
   bearer-token-scoped caller identity has no equivalent on the voice side, so
   folding that resolution logic into the shared function would only replace
@@ -372,35 +372,39 @@ things that are easy to get wrong.
   `list_agents`' one-line summary and shares `transcriptDigest()` with the
   voice agent's `get_agent_transcript` tool.
 - **Project and environment lifecycle has one cascade, not three.** The voice
-  agent, the agent mesh and the HTTP API can all create, rename and delete
-  projects and dev environments, and deleting either one has to stand down the
-  coding-agent sessions running inside it before the container goes away —
-  *retiring* them, never deleting them, so the transcript outlives the
-  container. That orchestration lives in `server/lib/projects.ts`, one layer
-  above `dev-environments.ts` (pure Docker mechanics, no ACP import — importing
-  `acpManager` there would cycle back through it) and `acp/manager.ts` (which
-  already imports `dev-environments.ts`). All three callers share
-  `removeProjectEnvironment` / `removeProjectCascade` / `createProjectFromPath`
-  instead of repeating the sequence. The
-  mesh's `delete_project` / `delete_dev_environment` refuse a target that
-  contains the calling agent's own session — killing your own adapter process
-  mid-tool-call leaves the response undelivered.
-- **A retired session must never be startable, and the guard cannot live in one
-  place.** Retiring a session (`server/lib/session-retention.ts`) keeps the row
-  and every `agent_events` entry for ever and makes it read-only. Enforcing that
-  means refusing on *every* path that can bring an adapter up, and there are
-  more of them than there look: the prompt endpoint and `AgentRuntime.deliver`,
-  `runTurn`, `start`, `setMode` / `setModel` / `setConfigOption`, the cron
-  scheduler, the mesh tools (a bearer token outlives the retirement by however
-  long the adapter takes to die, so the *caller* is checked too), and
-  `repo.enqueueInboxMessage` — which is the one that gets missed, because the
-  subscription notifier writes that row **directly** rather than calling
-  `deliver`, for the reason the bullet above it explains. The check that cannot
-  be routed around is in `AgentRuntime.boot()`, immediately after
-  `getAgentSession` and *before* `setStatus('starting')` and any `spawn`; the
-  rest only buy a better error. `test/server/session-retention.spec.ts` stubs
-  `spawn` to throw, so a guard that is moved or dropped fails loudly instead of
-  quietly starting a process.
+  agent, the agent mesh and the HTTP API can all create, rename and *retire*
+  projects and dev environments, and retiring either one destroys the containers
+  and keeps every row — the environment's, and the whole transcript of each
+  agent that ran in it. That orchestration lives in `server/lib/projects.ts`,
+  one layer above `dev-environments.ts` (pure Docker mechanics, no ACP import —
+  importing `acpManager` there would cycle back through it) and `acp/manager.ts`
+  (which already imports `dev-environments.ts`). All three callers share
+  `retireProjectEnvironment` / `retireProjectCascade` / `createProjectFromPath`
+  instead of repeating the sequence. The mesh's `retire_project` /
+  `retire_dev_environment` refuse a target that contains the calling agent's own
+  session — killing your own adapter process mid-tool-call leaves the response
+  undelivered.
+- **Whether a session can start is derived, and the guard cannot live in one
+  place.** A session has one stored visibility state, `archived`; whether it can
+  *run* is a question about the place it ran — is its environment retired, is
+  its working directory still on disk — answered by `sessionStartability` in
+  `shared/retention.ts` and never written down. The two are independent on
+  purpose: retiring an environment archives nothing, so a session can be
+  perfectly visible and simply not runnable. Enforcing "not runnable" means
+  refusing on *every* path that can bring an adapter up, and there are more of
+  them than there look: `AgentRuntime.deliver`, `runTurn`, `start`, `setMode` /
+  `setModel` / `setConfigOption` (these three no longer boot an adapter, so the
+  boot guard does not cover them), the cron scheduler, the mesh tools — a bearer
+  token outlives the retirement for as long as the dying adapter holds it, so
+  the *caller* is checked too — and `repo.enqueueInboxMessage`, which is the one
+  that gets missed, because the subscription notifier writes that row
+  **directly** rather than calling `deliver`, for the reason the bullet above it
+  explains. The check that cannot be routed around is in `AgentRuntime.boot()`,
+  immediately after the session is read and *before* `setStatus('starting')` and
+  any `spawn`; the rest only buy a better error.
+  `test/server/environment-retirement.spec.ts` stubs `spawn` to throw, so a
+  guard that is moved or dropped fails loudly instead of quietly starting a
+  process.
 - **A branch leaves an environment by `git fetch`, not by a copy.**
   `server/lib/dev-env/git-sync.ts` builds an `ext::docker exec … git-upload-pack
   <workspace>` URL and the *host* repository fetches through it: a real fetch

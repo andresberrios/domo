@@ -71,11 +71,18 @@ create table if not exists projects (
   created_at text not null,
   updated_at text not null
 );
--- Tombstone, not a delete. A project is deleted for its containers' sake, but
--- the retired agent sessions that ran inside it still name it, so the row has
--- to stay readable. Nothing here is ever restorable: the containers, volumes
--- and images really are gone. See server/lib/session-retention.ts.
-alter table projects add column if not exists deleted_at text;
+-- Retiring a project takes its environments' containers and checkouts away and
+-- keeps every row: the agent sessions that ran inside still name the
+-- environment, and the environment names this. Nothing retired is restorable —
+-- the containers, volumes and images really are gone. See server/lib/projects.ts.
+alter table projects add column if not exists retired_at text;
+do $$ begin
+  if exists (select 1 from information_schema.columns
+              where table_name = 'projects' and column_name = 'deleted_at') then
+    update projects set retired_at = coalesce(retired_at, deleted_at);
+    alter table projects drop column deleted_at;
+  end if;
+end $$;
 
 create table if not exists dev_environments (
   id text primary key,
@@ -96,9 +103,17 @@ alter table dev_environments add column if not exists config_path text;
 alter table dev_environments add column if not exists remote_user text;
 update dev_environments set remote_user = 'node'
 where remote_user is null and container_id is null and workspace_path = '/workspace/repo';
--- The same tombstone as projects, and for the same reason: a retired session
--- that ran here still has to be able to say where it ran.
-alter table dev_environments add column if not exists deleted_at text;
+-- Retired: the container, the workspace volume and the image are gone and the
+-- row is not. It is what makes every session that ran here unstartable, and it
+-- is also the only record left of where those sessions ran.
+alter table dev_environments add column if not exists retired_at text;
+do $$ begin
+  if exists (select 1 from information_schema.columns
+              where table_name = 'dev_environments' and column_name = 'deleted_at') then
+    update dev_environments set retired_at = coalesce(retired_at, deleted_at);
+    alter table dev_environments drop column deleted_at;
+  end if;
+end $$;
 
 create table if not exists dev_environment_ports (
   id text primary key,
@@ -155,22 +170,17 @@ alter table agent_sessions add column if not exists usage jsonb;
 -- is only ever a record of its answer.
 alter table agent_sessions add column if not exists config jsonb;
 alter table agent_sessions add column if not exists config_options jsonb;
--- Retirement: the session is over, and what is left is the record of it.
+-- A session has one visibility state and it is archived. Whether it can be
+-- started is never stored: it is a question about the place it ran — is its
+-- environment still there, is its working directory still on disk — and a
+-- column would only be a copy of that answer, wrong the moment the environment
+-- is retired. See shared/retention.ts.
 --
--- archived is a shelf and retired_at a tombstone, and the two are not
--- independent: retiring sets archived too, so every query that already asks
--- for the live list (where archived = false) excludes a retired session
--- without being changed. What retirement adds on top is that it cannot be
--- undone by unarchiving — only by an explicit revival, which is refused
--- outright when the environment the session ran in has been deleted.
---
--- agent_events is the transcript and is never touched by any of this: it
--- cascades from agent_sessions, and the whole point of the tombstone is that
--- the row it cascades from does not go away.
-alter table agent_sessions add column if not exists retired_at text;
-alter table agent_sessions add column if not exists retired_reason text;
-create index if not exists agent_sessions_retired on agent_sessions(retired_at)
-  where retired_at is not null;
+-- An install that ran the two-state version keeps its archived flag, which is
+-- where those sessions belong under one state; the columns go.
+drop index if exists agent_sessions_retired;
+alter table agent_sessions drop column if exists retired_at;
+alter table agent_sessions drop column if exists retired_reason;
 
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.

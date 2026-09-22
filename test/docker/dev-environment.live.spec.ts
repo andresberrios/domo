@@ -9,7 +9,7 @@ import type { DevEnvironment, WorkingTreeMode } from '~~/shared/types'
 
 /**
  * Creating a development environment for real: the real Dev Container CLI building a
- * real image, a real `docker run`, the real `createEnvironment` / `removeEnvironment`.
+ * real image, a real `docker run`, the real `createEnvironment` / `retireEnvironment`.
  * Only what is backed by Postgres (`repo`) is replaced, by an in-memory map that behaves
  * like the tables, and the port scanner, which reads them.
  *
@@ -57,8 +57,8 @@ vi.mock('../../server/lib/repo', () => ({
     return row
   },
   getDevEnvironment: async (id: string) => state.rows.get(id) ?? null,
-  softDeleteDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
-  pruneEmptyTombstones: async () => ({ environments: 0, projects: 0 }),
+  retireDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
+  pruneRetiredRecords: async () => ({ environments: 0, projects: 0 }),
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
   // The import tells every agent session in the environment where the changes
   // are; this project has no Postgres, and no session ever runs in these.
@@ -87,7 +87,7 @@ const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/li
 const {
   createEnvironment,
   readEnvironmentFile,
-  removeEnvironment,
+  retireEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
 const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
@@ -353,7 +353,7 @@ describe('an environment for a project with no .domo.json', () => {
     await expect(run('git', ['-C', repo, 'status', '--porcelain'])).resolves.toMatchObject({ stdout: '' })
 
     const kept = all.filter(mount => mount.Type === 'volume' && mount.Name).map(mount => mount.Name!)
-    await removeEnvironment(environment.id)
+    await retireEnvironment(environment.id)
 
     expect(await inspectContainer(environment.containerId!)).toBeNull()
     for (const name of kept) {
@@ -433,7 +433,7 @@ describe('an environment for a bare glibc image with no Node of its own', () => 
       result: { agentInfo: { name: '@agentclientprotocol/claude-agent-acp' } }
     })
 
-    await removeEnvironment(environment.id)
+    await retireEnvironment(environment.id)
     expect(await inspectContainer(environment.containerId!)).toBeNull()
   }, HOUR / 4)
 })
@@ -622,7 +622,7 @@ describe('exporting a branch out of an environment', () => {
     // repository did not gain a transport that runs arbitrary commands.
     await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()
 
-    await removeEnvironment(environment.id)
+    await retireEnvironment(environment.id)
   }, HOUR / 4)
 })
 
@@ -688,7 +688,7 @@ describe('an environment created while the host checkout is dirty', () => {
     const diff = await run('git', ['-C', repo, 'diff', '--name-only', 'HEAD', result.ref])
     expect(diff.stdout.split('\n').filter(Boolean)).toEqual(['shipped.txt'])
 
-    await removeEnvironment(environment.id)
+    await retireEnvironment(environment.id)
   }, HOUR / 4)
 
   it('commits what it carries, so the work arrives labelled instead of disguised', async () => {
@@ -713,7 +713,7 @@ describe('an environment created while the host checkout is dirty', () => {
     // Ignored files stayed out of the commit and stayed on disk.
     await expect(exec('cat', '.env')).resolves.toMatchObject({ stdout: 'NUXT_SECRET=hunter2' })
 
-    await removeEnvironment(environment.id)
+    await retireEnvironment(environment.id)
   }, HOUR / 4)
 })
 
@@ -765,7 +765,7 @@ describe('importing a branch into an environment', () => {
     // `protocol.ext.allow` was passed per invocation on the push too, not written.
     await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()
 
-    await removeEnvironment(environment.id)
+    await retireEnvironment(environment.id)
   }, HOUR / 4)
 })
 

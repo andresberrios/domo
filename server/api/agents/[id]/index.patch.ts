@@ -1,4 +1,3 @@
-import { assertSessionLive } from '../../../lib/acp/retirement'
 import { applyAgentSessionPatch, type AgentSessionPatch } from '../../../lib/acp/session-settings'
 import { getAgentSession } from '../../../lib/repo'
 
@@ -19,11 +18,6 @@ import { getAgentSession } from '../../../lib/repo'
  * browser that already knows exactly which session it is looking at — where
  * voice resolves a fuzzy title and the mesh defaults to the calling agent and
  * refuses to archive it.
- *
- * On a *retired* session only `title` is allowed. The three adapter requests
- * cannot reach a process that no longer exists, and `archived: false` would
- * quietly put a retired session back on the live list without reviving it —
- * unarchiving is not revival, and `POST /revive` is the only door back.
  */
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
@@ -31,12 +25,6 @@ export default defineEventHandler(async (event) => {
 
   const session = await getAgentSession(id)
   if (!session) throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
-  if (
-    session.retiredAt
-    && (body?.modeId || body?.model || body?.config || body?.archived !== undefined)
-  ) {
-    assertSessionLive(session, 'changing anything but its title')
-  }
 
   await applyAgentSessionPatch(session, body ?? {})
   // The row as it now stands, not the patch's own summary: the browser renders

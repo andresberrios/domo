@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { dirname } from 'node:path'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { access, readFile, writeFile, mkdir } from 'node:fs/promises'
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
@@ -18,7 +18,7 @@ import { mintMeshToken } from '../mesh/token'
 import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEnv, adapterLaunch } from './adapter-process'
-import { assertSessionLive } from './retirement'
+import { assertSessionStartable } from './startable'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
 import {
@@ -37,6 +37,7 @@ import {
   createPermission,
   enqueueInboxMessage,
   getAgentSession,
+  getAgentSessionWithEnvironment,
   listAgentSessions,
   listMcpServers,
   openAgentStream,
@@ -556,6 +557,19 @@ class AgentRuntime {
     return !!this.proc && !this.proc.killed
   }
 
+  /**
+   * The startability question, asked against the current rows.
+   *
+   * Every guard outside `boot()` comes through here, and none of them stat the
+   * filesystem: the environment is the part that changes under a session's
+   * feet, and the working directory is only worth a syscall on the path that is
+   * about to use it.
+   */
+  private async assertStartable(what: string): Promise<void> {
+    const { session, environment } = await getAgentSessionWithEnvironment(this.agentSessionId)
+    assertSessionStartable(session, environment, null, what)
+  }
+
   async ensureStarted(): Promise<void> {
     if (this.connection && this.acpSessionId && this.alive) return
     if (!this.booting) {
@@ -608,14 +622,21 @@ class AgentRuntime {
   }
 
   private async boot(): Promise<void> {
-    const session = await getAgentSession(this.agentSessionId)
+    const { session, environment: named } = await getAgentSessionWithEnvironment(this.agentSessionId)
     if (!session) throw new Error(`Agent session ${this.agentSessionId} not found`)
     // Before anything is spawned, and before the row is touched. Every path
-    // that can bring an adapter up — a prompt, a delivery, `start`, a mode or
-    // model change, the mesh, cron — arrives at `ensureStarted` and therefore
-    // here, so this is the one check that cannot be routed around. The nearer
-    // guards below exist to give a better message, not to close a hole.
-    assertSessionLive(session, 'starting its adapter')
+    // that can bring an adapter up arrives at `ensureStarted` and therefore
+    // here, so this is the one check that cannot be routed around; the nearer
+    // guards elsewhere exist to give a better message, not to close a hole.
+    //
+    // This is also the only caller that stats the working directory. A host
+    // session whose directory has been deleted used to have it silently
+    // recreated, empty, and the agent would work in it — creating the directory
+    // belongs to `create()`, where somebody actually asked for it.
+    const cwdPresent = session.devEnvironmentId
+      ? null
+      : await access(session.cwd).then(() => true, () => false)
+    assertSessionStartable(session, named, cwdPresent, 'starting its adapter')
 
     // Pick the row's reading back up, so a reattach neither rewrites the same
     // numbers nor loses the context window it already learned: mid-stream
@@ -642,7 +663,6 @@ class AgentRuntime {
         'sh', '-c', 'echo $$ > "$1"; exec "$2"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter)
       ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
     } else {
-      await mkdir(session.cwd, { recursive: true }).catch(() => {})
       const launch = adapterLaunch(session.adapter)
       proc = spawn(launch.command, launch.args, {
         cwd: session.cwd,
@@ -1218,7 +1238,7 @@ class AgentRuntime {
     turn: Turn,
     controller: AbortController
   ): Promise<{ stopReason: string }> {
-    assertSessionLive(await getAgentSession(this.agentSessionId), 'sending it a message')
+    await this.assertStartable('sending it a message')
     await this.ensureStarted()
     if (!this.connection || !this.acpSessionId) throw new Error('agent not started')
 
@@ -1287,10 +1307,11 @@ class AgentRuntime {
   }): Promise<DeliveryResult> {
     return this.serialDeliver(async () => {
       // Ahead of `ensureStarted` so the caller is told *why* rather than being
-      // handed a boot failure, and ahead of every branch below so a retired
-      // session cannot even be queued for — see `enqueueInboxMessage`, which
-      // guards the one write that does not come through here.
-      assertSessionLive(await getAgentSession(this.agentSessionId), 'sending it a message')
+      // handed a boot failure, and ahead of every branch below so an
+      // unstartable session cannot even be queued for — see
+      // `enqueueInboxMessage`, which guards the one write that does not come
+      // through here.
+      await this.assertStartable('sending it a message')
       await this.ensureStarted()
 
       if (!this.turn) {
@@ -1432,10 +1453,11 @@ class AgentRuntime {
     const connection = await this.liveConnection()
     const session = await getAgentSession(this.agentSessionId)
     // The boot path used to be the only way in here, and it is where the
-    // retirement guard sits. These three no longer start an adapter — that is
-    // the point of `liveConnection()` — so a retired session would otherwise
-    // take the offline branch and quietly write the row.
-    assertSessionLive(session, 'changing its settings')
+    // startability guard sits. These three no longer start an adapter — that is
+    // the point of `liveConnection()` — so a session that can never run again
+    // would otherwise take the offline branch and quietly write a row
+    // describing how it would run.
+    await this.assertStartable('changing its settings')
 
     let effective = modeId
     if (connection) {
@@ -1517,10 +1539,11 @@ class AgentRuntime {
     const connection = await this.liveConnection()
     const session = await getAgentSession(this.agentSessionId)
     // The boot path used to be the only way in here, and it is where the
-    // retirement guard sits. These three no longer start an adapter — that is
-    // the point of `liveConnection()` — so a retired session would otherwise
-    // take the offline branch and quietly write the row.
-    assertSessionLive(session, 'changing its settings')
+    // startability guard sits. These three no longer start an adapter — that is
+    // the point of `liveConnection()` — so a session that can never run again
+    // would otherwise take the offline branch and quietly write a row
+    // describing how it would run.
+    await this.assertStartable('changing its settings')
 
     if (!connection) {
       const requested = model.trim()
@@ -1600,10 +1623,11 @@ class AgentRuntime {
     const connection = await this.liveConnection()
     const session = await getAgentSession(this.agentSessionId)
     // The boot path used to be the only way in here, and it is where the
-    // retirement guard sits. These three no longer start an adapter — that is
-    // the point of `liveConnection()` — so a retired session would otherwise
-    // take the offline branch and quietly write the row.
-    assertSessionLive(session, 'changing its settings')
+    // startability guard sits. These three no longer start an adapter — that is
+    // the point of `liveConnection()` — so a session that can never run again
+    // would otherwise take the offline branch and quietly write a row
+    // describing how it would run.
+    await this.assertStartable('changing its settings')
 
     // The adapter's own word while it is up; the row's copy of its last word
     // when it is not. Never the row while a connection exists — a session that
@@ -1730,6 +1754,11 @@ class AcpManager {
       ? await ensureEnvironmentRunning(input.devEnvironmentId)
       : null
     const cwd = environment?.workspacePath ?? normalizeCwd(input.cwd || settings.defaultCwd)
+    // Asking for an agent in a directory that does not exist yet is a real and
+    // supported thing to do ("start an agent in ~/code/new-thing"). Creating it
+    // here rather than in `boot()` is what lets the start path treat a missing
+    // directory as a reason to refuse instead of silently making an empty one.
+    if (!environment) await mkdir(cwd, { recursive: true }).catch(() => {})
     const title = (input.title || input.initialPrompt || 'Coding session').trim().split('\n')[0]!.slice(0, 80)
     const session = await createAgentSession({
       adapter: input.adapter ?? 'claude-code',

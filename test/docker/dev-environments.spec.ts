@@ -31,10 +31,10 @@ const collectRuntimeVolumes = vi.fn(async () => undefined)
 const repo = {
   createDevEnvironmentRow: vi.fn(),
   // Removal tombstones the row rather than deleting it: the retired sessions
-  // that ran here still name it. `pruneEmptyTombstones` is what eventually
+  // that ran here still name it. `pruneRetiredRecords` is what eventually
   // drops it, once nothing does.
-  softDeleteDevEnvironmentRow: vi.fn(),
-  pruneEmptyTombstones: vi.fn(async () => ({ environments: 0, projects: 0 })),
+  retireDevEnvironmentRow: vi.fn(),
+  pruneRetiredRecords: vi.fn(async () => ({ environments: 0, projects: 0 })),
   getDevEnvironment: vi.fn(),
   getProject: vi.fn(),
   updateDevEnvironment: vi.fn(),
@@ -77,7 +77,7 @@ const {
   containerExecArgs,
   createEnvironment,
   readEnvironmentFile,
-  removeEnvironment,
+  retireEnvironment,
   startEnvironment,
   stopEnvironment,
   writeEnvironmentFile
@@ -110,7 +110,7 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     lastError: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
-    deletedAt: null,
+    retiredAt: null,
     ...overrides
   }
 }
@@ -248,7 +248,7 @@ describe('start, stop and remove', () => {
       publishedPorts: []
     })
 
-    await removeEnvironment('env_1')
+    await retireEnvironment('env_1')
 
     expect(run).toHaveBeenCalledWith(
       'docker',
@@ -260,7 +260,7 @@ describe('start, stop and remove', () => {
     expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
     expect(dockerCalls()).toContainEqual(['image', 'rm', 'domo-dev-env_1'])
     expect(collectRuntimeVolumes).toHaveBeenCalled()
-    expect(repo.softDeleteDevEnvironmentRow).toHaveBeenCalledWith('env_1')
+    expect(repo.retireDevEnvironmentRow).toHaveBeenCalledWith('env_1')
   })
 
   it('leaves a named volume the project mounted itself alone, and reads the mounts first', async () => {
@@ -272,7 +272,7 @@ describe('start, stop and remove', () => {
       publishedPorts: []
     })
 
-    await removeEnvironment('env_1')
+    await retireEnvironment('env_1')
 
     expect(dockerCalls()).not.toContainEqual(expect.arrayContaining(['shared-build-cache']))
     // Once the container is gone there is nothing left to ask which volumes it had.
@@ -283,10 +283,10 @@ describe('start, stop and remove', () => {
   it('is a no-op for an environment that is not there', async () => {
     repo.getDevEnvironment.mockResolvedValue(null)
 
-    await removeEnvironment('env_gone')
+    await retireEnvironment('env_gone')
 
     expect(run).not.toHaveBeenCalled()
-    expect(repo.softDeleteDevEnvironmentRow).not.toHaveBeenCalled()
+    expect(repo.retireDevEnvironmentRow).not.toHaveBeenCalled()
   })
 })
 

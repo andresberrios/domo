@@ -14,7 +14,7 @@ import {
   createVoiceSession,
   deleteAgentSession,
   deleteInboxMessage,
-  pruneEmptyTombstones,
+  pruneRetiredRecords,
   deleteVoiceSession,
   getAgentSession,
   enqueueInboxMessage,
@@ -40,7 +40,7 @@ import {
   updateDevEnvironment,
   updateDevEnvironmentPort,
   updateMcpServer,
-  softDeleteProject,
+  retireProjectRow,
   updateVoiceSession,
   upsertDevEnvironmentPort,
   writeAgentStream
@@ -90,7 +90,7 @@ describe('projects', () => {
     await expect(listProjects().then(items => items.map(item => item.name))).resolves.toEqual(['api', 'web'])
   })
 
-  it('is tombstoned rather than deleted, and leaves its environments alone', async () => {
+  it('is retired rather than deleted, and leaves its environments alone', async () => {
     const created = await project()
     await createDevEnvironmentRow({
       projectId: created.id,
@@ -99,18 +99,18 @@ describe('projects', () => {
       workspacePath: '/workspaces/api'
     })
 
-    // Tombstoning takes the project off the live list and, unlike the hard
-    // delete it replaced, does *not* cascade to its environments — nothing is
-    // removed, so the `on delete cascade` never fires. Standing each
-    // environment down is `removeProjectCascade`'s own job, and forgetting it
-    // would leave a live environment under a deleted project.
-    await softDeleteProject(created.id)
+    // Retiring takes the project off the live list and, unlike the hard delete
+    // it replaced, does *not* cascade to its environments — nothing is removed,
+    // so the `on delete cascade` never fires. Retiring each environment is
+    // `retireProjectCascade`'s own job, and forgetting it would leave a live
+    // environment under a retired project.
+    await retireProjectRow(created.id)
 
     await expect(listProjects()).resolves.toEqual([])
     await expect(listDevEnvironments()).resolves.toEqual([
       expect.objectContaining({ name: 'api' })
     ])
-    await expect(pruneEmptyTombstones()).resolves.toEqual({ environments: 0, projects: 0 })
+    await expect(pruneRetiredRecords()).resolves.toEqual({ environments: 0, projects: 0 })
   })
 })
 

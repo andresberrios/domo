@@ -18,7 +18,7 @@ const project = ref<Project>({
   repoPath: '/work/domo',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
-  deletedAt: null,
+  retiredAt: null,
 })
 
 const environment: DevEnvironment = {
@@ -35,7 +35,7 @@ const environment: DevEnvironment = {
   lastError: null,
   createdAt: '2026-01-02T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
-  deletedAt: null,
+  retiredAt: null,
 }
 
 /** One agent inside the environment, one directly in the host checkout. */
@@ -61,8 +61,6 @@ const agents: AgentSession[] = [
     lastActivityAt: null,
     usage: null,
     archived: false,
-    retiredAt: null,
-    retiredReason: null,
   },
   {
     id: 'ag_local',
@@ -85,8 +83,6 @@ const agents: AgentSession[] = [
     lastActivityAt: null,
     usage: null,
     archived: false,
-    retiredAt: null,
-    retiredReason: null,
   }
 ]
 
@@ -240,22 +236,25 @@ describe('project details page', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('spells out the cascade before it deletes anything', async () => {
+  it('spells out the cascade before it retires anything', async () => {
     const wrapper = await mountPage()
 
     const menu = await openActions()
     const entry = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-      .find(element => element.textContent?.includes('Delete'))!
+      .find(element => element.textContent?.includes('Retire'))!
     entry.click()
 
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Delete Domo?'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Retire Domo?'))
     const text = document.body.textContent ?? ''
     expect(text).toContain('1 development environment')
     expect(text).toContain('1 coding agent session')
     expect(text).toContain('/work/domo')
+    // What goes and what stays, both named: the containers are destroyed and
+    // the transcripts are not.
+    expect(text).toContain('records are kept')
     expect(calls).toHaveLength(0)
 
-    buttonWithText('Delete project')!.click()
+    buttonWithText('Retire project')!.click()
     await vi.waitFor(() => expect(calls).toContainEqual(
       expect.objectContaining({ method: 'DELETE', path: '/api/projects/p1' })
     ))

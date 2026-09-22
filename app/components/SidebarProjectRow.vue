@@ -17,7 +17,7 @@ const emit = defineEmits<{ toggle: [], newEnvironment: [] }>()
 const toast = useToast()
 const busy = ref(false)
 const renaming = ref(false)
-const confirmingDelete = ref(false)
+const confirmingRetire = ref(false)
 
 async function rename(name: string) {
   renaming.value = false
@@ -31,8 +31,8 @@ async function rename(name: string) {
   }
 }
 
-async function remove() {
-  confirmingDelete.value = false
+async function retire() {
+  confirmingRetire.value = false
   busy.value = true
   try {
     await $fetch(`/api/projects/${props.project.id}`, { method: 'DELETE' })
@@ -47,7 +47,10 @@ async function remove() {
 const cascade = computed(() => {
   const environments = props.environmentCount === 1 ? '1 development environment' : `${props.environmentCount} development environments`
   const agents = props.agentCount === 1 ? '1 coding agent session' : `${props.agentCount} coding agent sessions`
-  return `Deletes ${environments} and ${agents}, including each container, its checkout volume and any Docker-in-Docker volume. The checkout at ${props.project.repoPath} is left alone, but anything only inside an environment is lost.`
+  return `Destroys ${environments}: each container, its copy of the checkout and any Docker-in-Docker volume. `
+    + `The records are kept — this project, those environments and ${agents} inside them stay readable — but those `
+    + `agents can never be started again. The checkout at ${props.project.repoPath} is left alone; anything only `
+    + 'inside an environment is lost.'
 })
 
 const items = computed(() => [
@@ -56,7 +59,7 @@ const items = computed(() => [
     { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }
   ],
   [
-    { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingDelete.value = true } }
+    { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire.value = true } }
   ]
 ])
 </script>
@@ -124,12 +127,12 @@ const items = computed(() => [
     />
 
     <ConfirmModal
-      v-model:open="confirmingDelete"
-      :title="`Delete ${project.name}?`"
+      v-model:open="confirmingRetire"
+      :title="`Retire ${project.name}?`"
       :description="cascade"
-      confirm-label="Delete project"
+      confirm-label="Retire project"
       :loading="busy"
-      @confirm="remove"
+      @confirm="retire"
     />
   </div>
 </template>

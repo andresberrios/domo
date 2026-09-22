@@ -24,13 +24,16 @@ const { data: fetched, refresh } = await useFetch<AgentSession>(
 const session = computed<AgentSession | null>(() => synced.value ?? fetched.value ?? null)
 
 /**
- * The environment *including* a deleted one. A retired session's whole point is
- * that it still says where it ran, and the banner needs the tombstone to
- * explain why it cannot be revived.
+ * The environment *including* a retired one, whatever the sidebar switch says.
+ * A session's whole point is that it still says where it ran, and the banner
+ * needs the retired row to explain why it cannot be started.
  */
 const environment = computed(() =>
   allEnvironments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
 )
+const startability = useSessionStartability(session)
+/** Set only when the session cannot run; the sentence to show for it. */
+const blocked = computed(() => startability.value.startable ? null : startability.value.reason)
 const adapter = computed(() => session.value ? agentAdapterInfo(session.value.adapter) : null)
 const usageProvider = computed(() => session.value?.adapter === 'claude-code'
   ? 'claude' as const
@@ -40,13 +43,10 @@ const usageProvider = computed(() => session.value?.adapter === 'claude-code'
       ? 'opencode' as const
       : undefined)
 
-/** A retired session is a record: no composer, no inbox actions, no start. */
-const retired = computed(() => !!session.value?.retiredAt)
 
 const renaming = ref(false)
 const titleDraft = ref('')
 const starting = ref(false)
-const confirmingRetire = ref(false)
 const confirmingPurge = ref(false)
 
 async function start() {
@@ -74,7 +74,11 @@ async function saveTitle() {
 
 async function archive() {
   await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { archived: true } })
-  toast.add({ title: 'Agent archived', description: 'Find it again in the archive.', color: 'neutral' })
+  toast.add({
+    title: 'Agent archived',
+    description: 'Turn on "Show archived" in the sidebar to find it again.',
+    color: 'neutral'
+  })
   await router.push('/')
 }
 
@@ -84,50 +88,29 @@ async function unarchive() {
   await refresh()
 }
 
-/** Deleting keeps the transcript now; the row becomes a record of the session. */
-async function retire() {
-  confirmingRetire.value = false
-  try {
-    await $fetch(`/api/agents/${agentId.value}`, { method: 'DELETE' })
-    toast.add({
-      title: 'Agent retired',
-      description: 'Its transcript is kept and stays readable in the archive.',
-      color: 'neutral'
-    })
-    await refresh()
-  } catch (error: any) {
-    toast.add({ title: 'Could not retire the agent', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
-  }
-}
-
 async function purge() {
   confirmingPurge.value = false
   try {
     await $fetch(`/api/agents/${agentId.value}?purge=true`, { method: 'DELETE' })
     toast.add({ title: 'Agent deleted', description: 'Its transcript is gone.', color: 'neutral' })
-    await router.push('/archive')
+    await router.push('/')
   } catch (error: any) {
     toast.add({ title: 'Could not delete the agent', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
   }
 }
 
-const menuItems = computed(() => {
-  const rename = { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } }
-  if (retired.value) {
-    return [
-      rename,
-      { label: 'Delete permanently', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingPurge.value = true } }
-    ]
-  }
-  return [
-    rename,
-    { label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start },
-    session.value?.archived
-      ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: unarchive }
-      : { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
-    { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire.value = true } }
-  ]
-})
+const menuItems = computed(() => [
+  { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
+  // A session that cannot start has nothing to restart.
+  ...blocked.value ? [] : [{ label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start }],
+  session.value?.archived
+    ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: unarchive }
+    : { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
+  // Only from the archive: a transcript is never destroyed off the live list.
+  ...session.value?.archived
+    ? [{ label: 'Delete permanently', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingPurge.value = true } }]
+    : []
+])
 </script>
 
 <template>
@@ -139,8 +122,8 @@ const menuItems = computed(() => {
         </template>
 
         <template #trailing>
-          <UBadge v-if="retired" color="neutral" variant="subtle" size="sm" label="Retired" />
-          <StatusDot v-else-if="session" :status="session.status" />
+          <UBadge v-if="session?.archived" color="neutral" variant="subtle" size="sm" label="Archived" />
+          <StatusDot v-if="session" :status="session.status" />
         </template>
 
         <template #right>
@@ -149,7 +132,7 @@ const menuItems = computed(() => {
             :provider="usageProvider"
           />
           <UButton
-            v-if="session && !retired && (session.status === 'stopped' || session.status === 'error')"
+            v-if="session && !blocked && (session.status === 'stopped' || session.status === 'error')"
             :label="'Start'"
             icon="i-lucide-play"
             size="sm"
@@ -177,10 +160,10 @@ const menuItems = computed(() => {
           />
           <UBadge
             v-if="environment"
-            :color="environment.deletedAt ? 'neutral' : 'primary'"
+            :color="environment.retiredAt ? 'neutral' : 'primary'"
             variant="subtle"
             size="sm"
-            :label="environment.deletedAt ? `${environment.name} (deleted)` : environment.name"
+            :label="environment.retiredAt ? `${environment.name} (retired)` : environment.name"
           >
             <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
           </UBadge>
@@ -195,12 +178,7 @@ const menuItems = computed(() => {
     <template #body>
       <div class="flex h-full min-h-0 flex-col">
         <ServiceBanner />
-        <AgentRetiredBanner
-          v-if="session && retired"
-          :session="session"
-          :environment="environment"
-          @revived="refresh"
-        />
+        <AgentUnstartableBanner v-if="session && blocked" :session="session" :reason="blocked" />
         <AgentErrorBanner v-else-if="session" :session="session" @retried="refresh" />
 
         <div v-if="!events.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
@@ -210,8 +188,8 @@ const menuItems = computed(() => {
               Nothing here yet
             </p>
             <p class="mt-1 text-sm text-muted">
-              {{ retired
-                ? 'This session was retired before it did anything worth keeping.'
+              {{ blocked
+                ? 'It never did anything, and it can no longer be started.'
                 : 'Send this agent a task below, or tell Domo out loud what you want it to do.' }}
             </p>
           </div>
@@ -235,7 +213,7 @@ const menuItems = computed(() => {
           </div>
         </div>
 
-        <div v-if="pending.length && !retired" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
+        <div v-if="pending.length && !blocked" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
           <PermissionCard
             v-for="permission in pending"
             :key="permission.id"
@@ -244,15 +222,16 @@ const menuItems = computed(() => {
         </div>
 
         <!--
-          Still rendered for a retired session: what was waiting when it ended is
-          part of the record. `readonly` drops the take-back button, which would
-          be the one thing on this page that still wrote to a closed session.
+          Still rendered when the session cannot run: what was waiting when its
+          environment went away is part of the record. `readonly` drops the
+          take-back button, which would be the one thing left on this page that
+          still wrote to a session nothing can reach.
         -->
         <div v-if="queued.length" class="shrink-0 pt-2">
-          <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="retired" />
+          <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" />
         </div>
 
-        <div v-if="!retired" class="shrink-0 pt-2">
+        <div v-if="!blocked" class="shrink-0 pt-2">
           <AgentComposer v-if="session" :session="session" />
         </div>
       </div>
@@ -269,17 +248,9 @@ const menuItems = computed(() => {
         </UModal>
 
         <ConfirmModal
-          v-model:open="confirmingRetire"
-          :title="`Retire ${session?.title}?`"
-          description="Stops the adapter, cancels its schedules and subscriptions, and takes it off the session list for good. Its transcript is kept and stays readable in the archive, and it can be revived while the environment it ran in still exists."
-          confirm-label="Retire session"
-          @confirm="retire"
-        />
-
-        <ConfirmModal
           v-model:open="confirmingPurge"
           :title="`Delete ${session?.title} permanently?`"
-          description="Destroys the session row and every event in its transcript. This is the one action here that loses the record, and it cannot be undone."
+          description="Destroys the session and every event in its transcript. This is the one action in Domo that loses a record, and it cannot be undone."
           confirm-label="Delete permanently"
           @confirm="purge"
         />

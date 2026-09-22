@@ -19,7 +19,7 @@ const project: Project = {
   repoPath: '/work/domo',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
-  deletedAt: null,
+  retiredAt: null,
 }
 
 const environment = ref<DevEnvironment>({
@@ -36,7 +36,7 @@ const environment = ref<DevEnvironment>({
   lastError: null,
   createdAt: '2026-01-02T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
-  deletedAt: null,
+  retiredAt: null,
 })
 
 const agent: AgentSession = {
@@ -60,8 +60,6 @@ const agent: AgentSession = {
   lastActivityAt: null,
   usage: null,
   archived: false,
-  retiredAt: null,
-  retiredReason: null,
 }
 
 mockNuxtImport('useRoute', () => () => ({ params: { id: 'env_1' } }))
@@ -74,7 +72,7 @@ mockNuxtImport('useProjects', () => () => ({
   isReady: ref(true)
 }))
 mockNuxtImport('useDevEnvironments', () => () => ({
-  environments: computed(() => [environment.value].filter(item => !item.deletedAt)),
+  environments: computed(() => [environment.value].filter(item => !item.retiredAt)),
   all: computed(() => [environment.value]),
   isReady: ref(true)
 }))
@@ -188,7 +186,7 @@ describe('environment details page', { timeout: 30_000 }, () => {
     stopped.unmount()
   })
 
-  it('deletes only after a confirmation that names what goes with it', async () => {
+  it('retires only after a confirmation that names what goes and what stays', async () => {
     const wrapper = await mountPage()
 
     const menu = document.body.querySelector<HTMLButtonElement>('button[aria-label="Environment actions"]')!
@@ -197,20 +195,20 @@ describe('environment details page', { timeout: 30_000 }, () => {
 
     const entry = await vi.waitFor(() => {
       const found = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-        .find(element => element.textContent?.includes('Delete'))
+        .find(element => element.textContent?.includes('Retire'))
       expect(found).toBeTruthy()
       return found!
     })
     entry.click()
 
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Delete feature-auth?'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Retire feature-auth?'))
     // The cascade is named, and named honestly: the container goes, the
-    // session does not — it is retired, and its transcript stays readable.
+    // session does not — it stays readable and simply cannot be started again.
     expect(document.body.textContent).toContain('The 1 coding agent session')
-    expect(document.body.textContent).toContain('retired')
+    expect(document.body.textContent).toContain('never be started again')
     expect(calls).toHaveLength(0)
 
-    buttonWithText('Delete environment')!.click()
+    buttonWithText('Retire environment')!.click()
     await vi.waitFor(() => expect(calls).toContainEqual(
       expect.objectContaining({ method: 'DELETE', path: '/api/dev-environments/env_1' })
     ))
@@ -218,22 +216,22 @@ describe('environment details page', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('renders a deleted environment as a tombstone rather than as missing', async () => {
-    // The row outlives the container so a retired session can still say where
-    // it ran, and this page is where its badge links. It must not offer to
-    // start, stop or open anything that no longer exists.
-    environment.value = { ...environment.value, deletedAt: '2026-01-09T00:00:00.000Z' }
+  it('renders a retired environment as a record rather than as missing', async () => {
+    // The row outlives the container so every session that ran here can still
+    // say where it ran, and this page is where their badge links. It must not
+    // offer to start, stop or open anything that no longer exists.
+    environment.value = { ...environment.value, retiredAt: '2026-01-09T00:00:00.000Z' }
     const wrapper = await mountSuspended(defineComponent({
       setup: () => () => h(UApp, null, { default: () => h(EnvironmentPage) })
     }), { attachTo: document.body })
 
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Deleted'))
-    expect(document.body.textContent).toContain('the sessions that ran here are retired')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Retired'))
+    expect(document.body.textContent).toContain('can no longer be started')
     expect(document.body.textContent).not.toContain('This environment no longer exists.')
     expect(buttonWithText('Stop')).toBeFalsy()
     expect(buttonWithText('New agent')).toBeFalsy()
 
-    environment.value = { ...environment.value, deletedAt: null }
+    environment.value = { ...environment.value, retiredAt: null }
     wrapper.unmount()
   })
 

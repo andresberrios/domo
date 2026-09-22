@@ -122,32 +122,29 @@ describe('booting on top of a pre-title_source database', () => {
     ])
   })
 
-  it('adds the retention columns, so an old install keeps its transcripts', async () => {
-    // `agent_events` cascades from `agent_sessions`, so retention only works
-    // if the session row can be tombstoned rather than deleted — which means
-    // these three columns have to reach a database that predates them.
+  it('adds the retirement columns and leaves the sessions alone', async () => {
+    // A session has one visibility state, and whether it can be started is
+    // derived from these two rows rather than stored beside them.
+    const retired = await query<{ table_name: string }>(
+      `select table_name from information_schema.columns
+        where table_name in ('projects', 'dev_environments') and column_name = 'retired_at'
+        order by table_name`
+    )
+    expect(retired.map(row => row.table_name)).toEqual(['dev_environments', 'projects'])
+
     const sessions = await query<{ column_name: string }>(
       `select column_name from information_schema.columns
         where table_name = 'agent_sessions'
-          and column_name in ('retired_at', 'retired_reason')
-        order by column_name`
+          and column_name in ('retired_at', 'retired_reason', 'archived')`
     )
-    expect(sessions.map(row => row.column_name)).toEqual(['retired_at', 'retired_reason'])
-
-    const tombstones = await query<{ table_name: string }>(
-      `select table_name from information_schema.columns
-        where table_name in ('projects', 'dev_environments') and column_name = 'deleted_at'
-        order by table_name`
-    )
-    expect(tombstones.map(row => row.table_name)).toEqual(['dev_environments', 'projects'])
+    expect(sessions.map(row => row.column_name)).toEqual(['archived'])
   })
 
   it('leaves every pre-existing row live rather than retired', async () => {
-    // A nullable column with no default: booting must not retire an install's
-    // whole history, and must not tombstone the projects it still works in.
-    await expect(query('select 1 from agent_sessions where retired_at is not null')).resolves.toEqual([])
-    await expect(query('select 1 from projects where deleted_at is not null')).resolves.toEqual([])
-    await expect(query('select 1 from dev_environments where deleted_at is not null')).resolves.toEqual([])
+    // A nullable column with no default: booting must not retire the projects
+    // and environments an install still works in.
+    await expect(query('select 1 from projects where retired_at is not null')).resolves.toEqual([])
+    await expect(query('select 1 from dev_environments where retired_at is not null')).resolves.toEqual([])
   })
 
   it('creates the tables that did not exist yet', async () => {
