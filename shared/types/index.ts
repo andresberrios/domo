@@ -291,11 +291,15 @@ export interface EnvironmentBranches {
 }
 
 /**
- * How a branch sync ended, whichever way it moved. Both directions are
- * fast-forward only, so `not-merged` — with a reason — is what a divergence
- * comes back as rather than anything being rewritten.
+ * How a branch sync ended, whichever way it moved. An export is fast-forward
+ * only in every direction, so `not-merged` — with a reason — is what a
+ * divergence comes back as rather than anything being rewritten. Only an
+ * import reaches `merged`: once it has committed what an agent left
+ * uncommitted, the branch has genuinely diverged and a merge is the honest
+ * tool. A conflict is `not-merged` with the side branch named, never a
+ * half-merged tree left behind.
  */
-export type BranchSyncResult = 'fast-forwarded' | 'created' | 'up-to-date' | 'not-merged'
+export type BranchSyncResult = 'fast-forwarded' | 'created' | 'up-to-date' | 'merged' | 'not-merged'
 
 export interface SyncedCommit {
   sha: string
@@ -319,10 +323,12 @@ export interface BranchExport {
 
 /** What an import did, and what it told the agents working in the environment. */
 export interface EnvironmentBranchImport extends BranchImport {
-  /** The branch the caller asked for. Differs from `branch` when the import was diverted. */
+  /** The branch the caller asked for. Differs from `branch` when the import went to a side ref. */
   requested: string
-  /** Why it was diverted, when it was. */
+  /** Why it was left on a side branch, when it was. */
   diverted?: string
+  /** The commit an agent's uncommitted work was parked in before the merge, if there was any. */
+  wip?: string | null
   /** The sessions told where the changes are, and how each one was reached. */
   notified: Array<{ agentSessionId: string, title: string, via: 'steer' | 'queue' | 'inbox' }>
 }

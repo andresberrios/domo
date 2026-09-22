@@ -576,7 +576,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'import_branch',
       description:
-        'Copy a branch the other way: from the project’s checkout on this machine *into* a development environment. Use it to bring an environment up to date with work that has landed here, or to give it a branch to carry on from. Fast-forward only. It updates the branch the agent is on when that is safe, puts it on a side branch if the agent is mid-turn, refuses if there is uncommitted work there, and tells the agents either way.',
+        'Copy a branch the other way: from the project’s checkout on this machine *into* a development environment. Use it to bring an environment up to date with work that has landed here, or to give it a branch to carry on from. Anything the agent left uncommitted is committed first, so nothing is lost, and then the branch is merged into the one it is on. A conflict is left on a side branch for the agent to resolve, as is anything imported while it is mid-turn. The agents there are always told.',
       parameters: {
         type: Type.OBJECT,
         properties: {

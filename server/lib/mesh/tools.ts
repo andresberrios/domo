@@ -338,7 +338,7 @@ export const MESH_TOOLS = [
   {
     name: 'import_branch',
     description:
-      'Copy a branch the other way: from the project\'s own checkout on the host *into* a development environment, by pushing it straight to the container. Use it to bring an environment up to date with work that has landed on the host, or to seed one with a branch to continue. Fast-forward only. It writes the branch the environment has checked out when that is safe, diverts to a side branch when an agent is mid-turn, refuses outright if the working tree there is dirty, and tells the agents in the environment where the changes are either way.',
+      'Copy a branch the other way: from the project\'s own checkout on the host *into* a development environment, by pushing it straight to the container. Use it to bring an environment up to date with work that has landed on the host, or to seed one with a branch to continue. Anything uncommitted in the environment is committed first, so nothing is ever stashed or discarded, and then the branch is merged in. A conflicting merge is aborted and the commits are left on a side branch; if an agent there is mid-turn they go straight to that side branch. Either way every agent session in the environment is told where the changes are.',
     inputSchema: {
       type: 'object',
       properties: {

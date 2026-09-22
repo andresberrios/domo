@@ -59,7 +59,11 @@ vi.mock('../../server/lib/repo', () => ({
   getDevEnvironment: async (id: string) => state.rows.get(id) ?? null,
   softDeleteDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
   pruneEmptyTombstones: async () => ({ environments: 0, projects: 0 }),
-  upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) }
+  upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
+  // The import tells every agent session in the environment where the changes
+  // are; this project has no Postgres, and no session ever runs in these.
+  listAgentSessions: async () => [],
+  enqueueInboxMessage: async () => ({})
 }))
 // Settings live in Postgres, which this project does not have. The home
 // overlay is the only thing under test that reads them.
@@ -86,8 +90,8 @@ const {
   removeEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
-const { exportBranch, importBranch, listEnvironmentBranches }
-  = await import('../../server/lib/dev-env/git-sync')
+const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
+const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
 
 const HOUR = 60 * 60 * 1000
@@ -715,13 +719,12 @@ describe('an environment created while the host checkout is dirty', () => {
 
 /**
  * The push half of the `ext::` transport, against a real container. The fetch
- * half proves `upload-pack` is reachable inside the image; nothing but this
- * says `receive-pack` is — nor that `receive.denyCurrentBranch=updateInstead`,
- * which is the only way an import can reach the branch an agent is actually
- * on, really moves a working tree inside a container.
+ * half proves `git-upload-pack` is reachable inside the image; nothing but this
+ * says `git-receive-pack` is — nor that the commit-then-merge sequence really
+ * runs through `docker exec` against a checkout owned by another user.
  */
 describe('importing a branch into an environment', () => {
-  it('pushes a host branch into the container, tree and all, and refuses a dirty one', async () => {
+  it('commits the container\'s uncommitted work, then merges the host branch in', async () => {
     const repo = await checkout()
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
     state.ports.length = 0
@@ -741,30 +744,23 @@ describe('importing a branch into an environment', () => {
     const sha = (await host('rev-parse', 'HEAD')).stdout
 
     // The environment is sitting on `main`, which is the whole point: an import
-    // into a branch the agent is not on would never be noticed.
+    // into a branch the agent is not on would never be noticed. And it has
+    // uncommitted work, which is the normal state of an agent mid-task.
     await expect(exec('git', 'symbolic-ref', '--short', 'HEAD')).resolves.toMatchObject({ stdout: 'main' })
+    await exec('sh', '-c', 'echo half-finished > agent.txt')
 
-    const result = await importBranch({ environmentId: environment.id, branch: 'main' })
+    const result = await importBranchIntoEnvironment({ environmentId: environment.id, branch: 'main' })
 
-    expect(result).toMatchObject({ branch: 'main', from: 'main', sha, result: 'fast-forwarded' })
-    expect(result.commits.map(commit => commit.subject)).toEqual(['landed on the host'])
-    await expect(exec('git', 'rev-parse', 'HEAD')).resolves.toMatchObject({ stdout: sha })
-    // Not just the ref: `updateInstead` moved the real working tree with it.
+    expect(result).toMatchObject({ requested: 'main', result: 'merged' })
+    expect(result.wip).toMatch(/^[0-9a-f]{40}$/)
+    // The host's commit arrived, the agent's file is still there, and git is
+    // not confused about any of it.
     await expect(exec('cat', 'landed.txt')).resolves.toMatchObject({ stdout: 'merged on the host' })
+    await expect(exec('cat', 'agent.txt')).resolves.toMatchObject({ stdout: 'half-finished' })
     await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
-
-    // Now with uncommitted work in there: refused, and the work survives.
-    await exec('sh', '-c', 'echo half-finished > landed.txt')
-    await writeIn(repo, { 'second.txt': 'more from the host\n' })
-    await host('add', '--all')
-    await host('commit', '--quiet', '-m', 'second from the host')
-
-    const refused = await importBranch({ environmentId: environment.id, branch: 'main' })
-
-    expect(refused.result).toBe('not-merged')
-    expect(refused.reason).toMatch(/working tree has local changes/)
-    await expect(exec('git', 'rev-parse', 'HEAD')).resolves.toMatchObject({ stdout: sha })
-    await expect(exec('cat', 'landed.txt')).resolves.toMatchObject({ stdout: 'half-finished' })
+    await expect(exec('git', 'merge-base', '--is-ancestor', sha, 'HEAD')).resolves.toMatchObject({ stdout: '' })
+    // The agent's work is a real commit it can reset to, not a stash.
+    await expect(exec('git', 'show', `${result.wip}:agent.txt`)).resolves.toMatchObject({ stdout: 'half-finished' })
 
     // `protocol.ext.allow` was passed per invocation on the push too, not written.
     await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()

@@ -39,15 +39,7 @@ export interface EnvironmentTransportInput {
   /** That user's home directory, which git needs set to find its own config. */
   home: string | null
   workspacePath: string
-  /** `-c` settings for the git that serves the request inside the container. */
-  config?: string[]
 }
-
-/**
- * What lets a push write the branch the container has checked out: git moves
- * the working tree with the ref, and refuses outright if that tree is dirty.
- */
-const UPDATE_CHECKED_OUT = 'receive.denyCurrentBranch=updateInstead'
 
 /** How many commits are listed back; a first export of a long branch is not a changelog. */
 const MAX_LISTED_COMMITS = 50
@@ -72,34 +64,30 @@ function word(value: string, what: string): string {
  * The URL a host `git fetch` or `git push` uses to reach the environment's
  * repository. One URL for both, because git substitutes the service it wants
  * into the command — and the two substitutions are not interchangeable.
- * **`%s` is the short name (`upload-pack` / `receive-pack`), which is what
- * `git` takes as a subcommand; `%S` is the long one (`git-upload-pack` /
- * `git-receive-pack`), which is what the executables are called.** Either
- * works as long as it matches how the command invokes it; mixing them is the
- * trap, and it does not fail where you are looking — `docker exec` reports no
- * such executable and what reaches the user is a bare
+ * **`%S` is the long name (`git-upload-pack` / `git-receive-pack`), which is
+ * what the executables are called; `%s` is the short one, which is what `git`
+ * takes as a subcommand.** Either works as long as it matches how the command
+ * invokes it — this execs the binary, so it is `%S` — and mixing them is the
+ * trap: it does not fail where you are looking. `docker exec` reports no such
+ * executable and what reaches the user is a bare
  * `fatal: protocol error: bad line length character: OCI`.
- *
- * This runs `git <service>` rather than the binary, because that is the only
- * place a `-c` setting for the *receiving* end can go: the `ext::` transport
- * ignores `--receive-pack` entirely (measured), so an import that has to write
- * the container's checked-out branch has no other way to ask for
- * `receive.denyCurrentBranch=updateInstead`.
  *
  * `-u`/`HOME` are not decoration: git refuses a checkout owned by another uid
  * with "dubious ownership", and the `safe.directory` that answers that is in
  * the remote user's generated `~/.gitconfig`.
  *
- * `%s` is the only `%` the command may contain, which is why `word()` still
- * refuses one in any value substituted into it — the `-c` settings included.
+ * `%S` is the only `%` the command may contain, which is why `word()` still
+ * refuses one in any value substituted into it.
  */
 export function environmentTransport(input: EnvironmentTransportInput): string {
   const command = ['docker', 'exec', '-i']
   if (input.remoteUser) command.push('-u', word(input.remoteUser, 'user'))
   if (input.home) command.push('-e', `HOME=${word(input.home, 'home directory')}`)
-  command.push(word(input.containerId, 'container id'), 'git')
-  for (const setting of input.config ?? []) command.push('-c', word(setting, 'git setting'))
-  command.push('%s', word(input.workspacePath, 'workspace path'))
+  command.push(
+    word(input.containerId, 'container id'),
+    '%S',
+    word(input.workspacePath, 'workspace path')
+  )
   return `ext::${command.join(' ')}`
 }
 
@@ -135,31 +123,38 @@ function containerReference(environment: DevEnvironment): string {
   return reference
 }
 
-function defaultTransport(environment: DevEnvironment, config?: string[]): string {
+function defaultTransport(environment: DevEnvironment): string {
   return environmentTransport({
     containerId: containerReference(environment),
     remoteUser: environment.remoteUser,
     home: environment.remoteUser ? homeDirectory(environment.remoteUser) : null,
-    workspacePath: environment.workspacePath,
-    config
+    workspacePath: environment.workspacePath
   })
 }
 
 /**
- * What `git status --porcelain` says inside the environment.
+ * Run git inside the environment, in its checkout, as its own user.
  *
- * Asked over `docker exec` and not over the transport, because dirtiness is
- * simply not on the wire: the pack protocol describes refs and objects, and an
- * agent's uncommitted work is neither. Injected for the same reason the
- * transport is, so the import is testable against a plain directory.
+ * Over `docker exec` and not over the transport, because the things this is
+ * for are simply not on the wire: the pack protocol describes refs and
+ * objects, and an agent's uncommitted work, its index and a merge are none of
+ * those. Exported and injectable for the same reason the transport is — the
+ * whole import is testable against a plain directory with no Docker.
  */
-async function defaultWorkingTree(environment: DevEnvironment): Promise<string> {
+export async function runEnvironmentGit(
+  environment: DevEnvironment,
+  args: string[],
+  options: { allowFailure?: boolean } = {}
+): Promise<{ stdout: string, stderr: string }> {
   const exec = ['exec']
-  if (environment.remoteUser) exec.push('--user', environment.remoteUser)
+  if (environment.remoteUser) {
+    exec.push('--user', environment.remoteUser, '--env', `HOME=${homeDirectory(environment.remoteUser)}`)
+  }
   exec.push('--workdir', environment.workspacePath, containerReference(environment))
-  const status = await run('docker', [...exec, 'git', 'status', '--porcelain'])
-  return status.stdout
+  return run('docker', [...exec, 'git', ...args], options)
 }
+
+export type EnvironmentGit = typeof runEnvironmentGit
 
 /** The branches in an environment's checkout, and the one it has checked out. */
 export async function listEnvironmentBranches(environmentId: string): Promise<EnvironmentBranches> {
@@ -341,9 +336,7 @@ export interface ImportBranchInput {
   /** The ref in the project's checkout to send. Defaults to the branch's own name. */
   from?: string | null
   /** How the host reaches the environment's repository. Injected by the tests. */
-  transport?: (environment: DevEnvironment, config?: string[]) => string
-  /** `git status --porcelain` inside the environment. Injected by the tests. */
-  workingTree?: (environment: DevEnvironment) => Promise<string>
+  transport?: (environment: DevEnvironment) => string
 }
 
 /**
@@ -356,17 +349,13 @@ export interface ImportBranchInput {
  * `git-receive-pack` to reject, so the answer is a sentence instead of a push
  * error.
  *
- * Writing the branch the container has **checked out** is the normal case, not
- * a forbidden one — an import into a branch the agent is not on is inert,
- * because nothing in the container ever tells it that branch moved. So the
- * push carries `receive.denyCurrentBranch=updateInstead`, which moves the ref
- * *and* the working tree with it, exactly as a fast-forward pull would.
- *
- * The thing that is refused is a **dirty** working tree, and it is checked here
- * as well as being git's own rule for `updateInstead`, so the answer is the
- * same sentence `exportBranch` gives for the mirror-image case rather than a
- * push error. Uncommitted work in a container is work nobody can recover:
- * there is no second copy of it anywhere.
+ * This puts a **ref** in the environment and nothing more. Getting changes into
+ * the branch an agent is actually working on is a different job — it needs that
+ * agent's uncommitted work committed first and then a real merge, neither of
+ * which happens over the pack protocol — and it lives in `branch-import.ts`.
+ * So a branch the container has checked out is refused here: git would refuse
+ * the push anyway, and the caller that knows what to do about it is one layer
+ * up.
  */
 export async function importBranch(input: ImportBranchInput): Promise<BranchImport> {
   const branch = safeRefComponent(input.branch.trim(), 'branch')
@@ -403,18 +392,11 @@ export async function importBranch(input: ImportBranchInput): Promise<BranchImpo
     ({ branch, from, sha: result === 'not-merged' ? remoteSha ?? sha : sha, commits, result, ...(reason ? { reason } : {}) })
 
   if (remoteSha === sha) return done('up-to-date', [])
-  // Only when the working tree is the one being written. A branch nobody has
-  // checked out is just a ref, and what the agent is doing to its own files is
-  // none of this import's business.
+  // A ref with a working tree attached is not something a push can move; the
+  // caller that knows how to commit and merge is `importBranchIntoEnvironment`.
   if (checkedOut) {
-    const status = await (input.workingTree ?? defaultWorkingTree)(environment).catch((error) => {
-      throw new Error(`Could not read ${environment.name}'s working tree: ${commandMessage(error)}`)
-    })
-    if (status.trim()) {
-      return done('not-merged', [], `"${branch}" is checked out in ${environment.name} and its working tree has `
-        + 'local changes; nothing was sent. That work is not committed anywhere else, and writing the branch '
-        + 'under it would strand it. Commit or stash it there, or import into a different branch.')
-    }
+    return done('not-merged', [], `"${branch}" is checked out in ${environment.name}, so a push cannot move it. `
+      + 'Import through the environment, which commits what is uncommitted there and merges.')
   }
   if (remoteSha) {
     // No `allowFailure`: the exit code *is* the answer, so the rejection is read.
@@ -452,19 +434,13 @@ export async function importBranch(input: ImportBranchInput): Promise<BranchImpo
   // refuses the push outright if the tree moved in between.
   const refused = await git([
     '-c', 'protocol.ext.allow=always',
-    'push', '--quiet',
-    // Only where it is needed. Writing a ref nobody has checked out needs no
-    // permission, and asking for one there would widen what a push may do for
-    // no reason at all.
-    transport(environment, checkedOut ? [UPDATE_CHECKED_OUT] : undefined),
-    `${sha}:refs/heads/${branch}`
+    'push', '--quiet', transport(environment), `${sha}:refs/heads/${branch}`
   ]).then(() => null, (error) => {
     const message = commandMessage(error)
-    // git's own second opinion on the dirty check above, which is worth having:
-    // an agent can write a file in the moment between the two.
-    if (/unstaged changes|uncommitted changes|working directory|working tree/i.test(message)) {
-      return done('not-merged', [], `"${branch}" is checked out in ${environment.name} and its working tree `
-        + 'changed while the import was running; nothing was sent. Try again once it has settled.')
+    // The branch got checked out between the listing and the push.
+    if (/currently checked out|denyCurrentBranch/i.test(message)) {
+      return done('not-merged', [], `"${branch}" was checked out in ${environment.name} while the import `
+        + 'was running, so a push could not move it.')
     }
     throw new Error(`Could not send "${from}" to ${environment.name}: ${message}`)
   })

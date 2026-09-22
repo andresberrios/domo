@@ -790,20 +790,26 @@ things that are easy to get wrong.
   must never grow an `-x` — it is what keeps `node_modules` and a gitignored
   `.env` in place.
 - **An import into a branch the agent is not on is inert, which is why
-  `importBranch` writes the checked-out one and `branch-import.ts` exists.**
-  Nothing in a container tells an agent that some other branch moved, so it
-  never merges what it never hears about — the obvious safe-looking design
-  (refuse the checked-out branch) produces an import that does nothing. So the
-  push carries `receive.denyCurrentBranch=updateInstead`, which moves the
-  working tree with the ref, and what decides whether that is safe is **what
-  the session is doing, not which branch it is on**: idle and clean goes
-  straight in, a **dirty** tree is refused outright (by Domo and by git — that
-  work has no second copy), and an agent **mid-turn** gets the branch beside it
-  on `domo-import/<branch>` plus a message telling it to merge. Every path ends
-  with the agent either holding the changes or holding a note saying where they
-  are. `server/lib/branch-import.ts` owns that decision and sits *above*
-  `dev-env/` for the reason `projects.ts` does: it needs `acpManager`, which is
-  the layer that imports `dev-env/`.
+  `branch-import.ts` exists.** Nothing in a container tells an agent that some
+  other branch moved, so it never merges what it never hears about — and the
+  two safe-looking designs (refuse the checked-out branch; refuse a dirty tree)
+  each produce an import that does nothing in exactly the case it is most
+  wanted, because an agent in the middle of something *has* uncommitted files.
+  So the order is the safety, and it is the same principle as the workspace
+  reconcile above: **the only work that can be lost is work git cannot see.**
+  Commit whatever is uncommitted as a Domo-authored WIP commit *first* —
+  nothing stashed, nothing discarded, so everything after it is recoverable —
+  then **merge for real**, because once there is a commit the branch has
+  genuinely diverged and `--ff-only` is the wrong tool. A conflict is
+  **aborted**, never left half-merged: a running agent reads conflict markers
+  as its own work. The imported commits always land on `domo-import/<branch>`
+  first, because a branch with a working tree attached is not something a push
+  can move, and that ref is what a conflict leaves behind to merge by hand. An
+  agent **mid-turn** skips all of it and keeps the side branch, since
+  committing under a turn that is about to write more files is its own way of
+  losing work. `branch-import.ts` sits *above* `dev-env/` for the reason
+  `projects.ts` does: it needs `acpManager`, which is the layer that imports
+  `dev-env/`.
 - **A working agent is told with `steer` only if its adapter advertises
   steering, and `queue` otherwise — never `interrupt`.** `steer` falls back to
   `interrupt`, and cancelling a running turn to hand over a branch is far
@@ -828,16 +834,13 @@ things that are easy to get wrong.
   the failure mode is a command that quietly means something else. The one `%`
   the command is *meant* to contain is the service substitution, which is how a
   single URL serves both a fetch and a push — and the two forms are not
-  interchangeable. **`%s` is the short name (`upload-pack` / `receive-pack`),
-  which is what `git` takes as a subcommand; `%S` is the long one
-  (`git-upload-pack` / `git-receive-pack`), which is what the executables are
-  called.** Mismatch them and `docker exec` finds no such executable, and what
-  surfaces is `fatal: protocol error: bad line length character: OCI` — an hour
-  of looking in the wrong place. The command runs `git %s` rather than the
-  binary because that is the only place a `-c` for the *receiving* end can go:
-  measured, the `ext::` transport ignores `--receive-pack` entirely, and
-  without `receive.denyCurrentBranch=updateInstead` an import cannot touch the
-  branch an agent is actually on.
+  interchangeable. **`%S` is the long name (`git-upload-pack` /
+  `git-receive-pack`), which is what the executables are called; `%s` is the
+  short one, which is what `git` takes as a subcommand.** This execs the
+  binary, so it is `%S`. Mismatch them and `docker exec` finds no such
+  executable, and what surfaces is `fatal: protocol error: bad line length
+  character: OCI` — an hour of looking in the wrong place. `--receive-pack` is
+  not a way round it either: measured, the `ext::` transport ignores it.
 - **The exec has to run as the environment's remote user, with `HOME` set.**
   Without `-u` git finds the checkout owned by another uid and refuses it as
   "dubious ownership"; without `HOME` it never reads the `~/.gitconfig` Domo
@@ -1446,17 +1449,17 @@ and permissions are end to end because a permission is a row.
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no
   Node of its own, and an Alpine image failing the preflight and cleaning up.
-- **The branch import was verified against a real container**: `receive-pack`
-  is reachable inside the image, and `updateInstead` really does move a
-  container's working tree — a host commit fast-forwarded the environment's
-  checked-out `main` and the file appeared on disk with `git status` clean,
-  while a second import against a dirty tree was refused and the uncommitted
-  work survived. The rules either side of that are covered against real git on
-  both ends with no Docker (`test/server/git-sync.spec.ts`, including a round
-  trip that would fail on the push half if the transport served only
-  upload-pack), and the decisions above it — divert, steer, queue, inbox — in
-  `test/unit/branch-import.spec.ts`. **Not** verified: a real agent mid-turn
-  receiving a steered branch notice and acting on it.
+- **The branch import was verified against a real container**: `git-receive-pack`
+  is reachable inside the image, and the whole commit-then-merge sequence runs
+  through `docker exec` against a checkout owned by another user — an
+  environment holding an uncommitted file had it committed, the host's branch
+  merged in, and ended with `git status` clean and both files present. The
+  sequence itself, including **an aborted conflicting merge leaving the working
+  tree byte-identical**, is covered against real git with no Docker in
+  `test/server/branch-import.spec.ts`; the decisions above it — side branch,
+  steer, queue, inbox — in `test/unit/branch-import.spec.ts`. **Not** verified:
+  a real agent mid-turn receiving a steered branch notice and acting on it, and
+  what an agent makes of finding a WIP commit it did not write.
 - **The dirty-checkout fix was verified against a real daemon**, `pnpm
   test:docker` green (5 files, 67 tests, 851 s cold). Both directions were
   asserted end to end from a dirty fixture: a `discard` environment whose

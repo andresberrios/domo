@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -17,8 +17,9 @@ import { createDevEnvironmentRow, createProject } from '../../server/lib/repo'
  * against a second checkout. `%S` is doing the same job in both — it is what
  * lets one URL serve `git-upload-pack` for the fetch and `git-receive-pack`
  * for the push. Everything else — the negotiation, the tracking ref, the
- * fast-forward rules, the checked-out-branch refusal and the
- * environment/project lookup in Postgres — is the real thing.
+ * fast-forward rules and the environment/project lookup in Postgres — is the
+ * real thing. What an import does *around* the push, when it has to reach the
+ * branch an agent is on, is `branch-import.spec.ts`.
  */
 
 const scratch: string[] = []
@@ -27,16 +28,8 @@ let host: string
 let container: string
 let environment: DevEnvironment
 
-/**
- * The same transport, without a container: `git <service>` against a directory,
- * carrying whatever `-c` settings the caller asked for. `%s` (short) because
- * the command invokes git as a subcommand, exactly as the real one does.
- */
-const transport = (_environment?: unknown, config: string[] = []) =>
-  `ext::git ${config.flatMap(setting => ['-c', setting]).join(' ')} %s ${container}`.replace(/\s+/g, ' ')
-
-/** The environment's working tree, read the way the real probe does. */
-const workingTree = async () => (await git(container, 'status', '--porcelain')).stdout
+/** The service git asks for, straight against a directory: the same transport, without a container. */
+const transport = () => `ext::%S ${container}`
 
 async function git(repo: string, ...args: string[]) {
   return run('git', [
@@ -235,7 +228,7 @@ describe('exporting a branch from an environment', () => {
  * common case; the tests below name it only where they mean something else.
  */
 const importIt = (branch: string, from?: string) =>
-  importBranch({ environmentId: environment.id, branch, from, transport, workingTree })
+  importBranch({ environmentId: environment.id, branch, from, transport })
 
 describe('importing a branch into an environment', () => {
   it('creates a branch the environment does not have yet, and lists what crossed', async () => {
@@ -282,45 +275,20 @@ describe('importing a branch into an environment', () => {
   })
 
   /**
-   * The case the whole feature is for. Importing into a branch the agent is
-   * *not* on is inert — nothing in the container ever tells it that branch
-   * moved — so writing the checked-out one is the normal path, and git moves
-   * the working tree with the ref.
+   * A ref with a working tree attached is not something a push can move, so
+   * this says so and stops. Getting changes into the branch an agent is on is
+   * `branch-import.ts`'s job: it commits what is uncommitted and merges.
    */
-  it('writes the checked-out branch and takes its working tree with it', async () => {
-    await git(container, 'checkout', '--quiet', 'main')
-    const sha = await commit(host, 'landed.txt', 'landed on the host')
-
-    const result = await importIt('main')
-
-    expect(result).toMatchObject({ result: 'fast-forwarded', sha })
-    await expect(revision(container, 'refs/heads/main')).resolves.toBe(sha)
-    // Not just the ref: the file is really on disk and git is not confused.
-    await expect(run('git', ['-C', container, 'status', '--porcelain'])).resolves.toMatchObject({ stdout: '' })
-    await expect(run('git', ['-C', container, 'show', 'HEAD:landed.txt']))
-      .resolves.toMatchObject({ stdout: 'landed on the host' })
-  })
-
-  /**
-   * The one that destroys work rather than merely annoying someone: that
-   * working tree may hold an agent's uncommitted changes, which exist nowhere
-   * else. Checked here *and* enforced by git's own `updateInstead`.
-   */
-  it('refuses a dirty working tree on the checked-out branch, and sends nothing', async () => {
+  it('will not push a branch the environment has checked out', async () => {
     await git(container, 'checkout', '--quiet', 'main')
     const before = await revision(container, 'refs/heads/main')
-    await writeFile(join(container, 'README.md'), 'an agent was in the middle of something\n', 'utf8')
     await commit(host, 'landed.txt', 'landed on the host')
 
     const result = await importIt('main')
 
     expect(result.result).toBe('not-merged')
-    expect(result.reason).toMatch(/working tree has local changes/)
-    expect(result.commits).toEqual([])
+    expect(result.reason).toMatch(/checked out in Feature Auth, so a push cannot move it/)
     await expect(revision(container, 'refs/heads/main')).resolves.toBe(before)
-    // The uncommitted work is untouched, which is the entire point.
-    await expect(readFile(join(container, 'README.md'), 'utf8'))
-      .resolves.toBe('an agent was in the middle of something\n')
   })
 
   // A branch nobody has checked out is just a ref; what the agent is doing to
