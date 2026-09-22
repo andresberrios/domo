@@ -192,6 +192,27 @@ class AgentRuntime {
   private turn: Turn | null = null
   /** Whether the adapter advertised `_session/steering`; per connection. */
   private steering = false
+  /**
+   * Whether this connection is still restoring a session it was handed, in
+   * which case nothing it says is news.
+   *
+   * `session/load` restores the *adapter's* transcript, and the way an adapter
+   * does that is by replaying its history as ordinary `session/update`
+   * notifications: claude-agent-acp's `replaySessionHistory` and codex-acp's
+   * `streamThreadHistory` both run to completion inside the load request, so
+   * every update in that window is a second copy of something `agent_events`
+   * already holds. Appended, they became a duplicate conversation on screen —
+   * and under `pnpm dev`, where every edit to `server/` reattaches every
+   * session, a fresh copy several times an hour.
+   *
+   * The window deliberately runs to the *end of `boot()`* rather than to the
+   * load response. Nothing live can happen in the difference — the adapter has
+   * no turn, Domo has not prompted, and `ensureStarted` is what a prompt waits
+   * on — while ending it on the response would rest on the order in which the
+   * SDK drains a notification it has already read against the response line
+   * behind it, which is not something this file should have an opinion about.
+   */
+  private restoring = false
   private containerName: string | null = null
   private containerPidFile: string | null = null
   /** Everything the agent said this turn, which becomes the session summary. */
@@ -648,6 +669,10 @@ class AgentRuntime {
     const mcpServers = await this.mcpServersForSession(environment, httpMcp)
     const settings = await getSettings()
 
+    // Everything the adapter says from here until the end of this boot is
+    // history, not news. See `restoring`.
+    this.restoring = !!session.acpSessionId
+
     let sessionResponse: any = null
     if (session.acpSessionId) {
       try {
@@ -662,26 +687,34 @@ class AgentRuntime {
       }
     }
 
-    let fresh = false
-    const patch: { acpSessionId?: string, modes?: any, modeId?: string } = {}
-    if (!this.acpSessionId) {
-      const created = (await connection.agent.request(acp.methods.agent.session.new, {
-        cwd: session.cwd,
-        mcpServers
-      } as any)) as any
-      sessionResponse = created
-      fresh = true
-      this.acpSessionId = created.sessionId
-      patch.acpSessionId = created.sessionId
+    try {
+      let fresh = false
+      const patch: { acpSessionId?: string, modes?: any, modeId?: string } = {}
+      if (!this.acpSessionId) {
+        const created = (await connection.agent.request(acp.methods.agent.session.new, {
+          cwd: session.cwd,
+          mcpServers
+        } as any)) as any
+        sessionResponse = created
+        fresh = true
+        this.acpSessionId = created.sessionId
+        patch.acpSessionId = created.sessionId
+      }
+
+      Object.assign(patch, await this.applySessionMode({ session, response: sessionResponse, settings, fresh }))
+      // One write, not one per thing learned: `agent_sessions` is synced, so each
+      // one re-streams the whole row to every browser.
+      if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
+
+      const described = await this.applyRequestedModel(session, sessionResponse)
+      await this.applyAdapterConfig(session, described, settings)
+    } finally {
+      // Before `setStatus('idle')` and before the drain below, so the first
+      // turn this attach runs is recorded in full — and in a `finally`, because
+      // a boot that throws past here (an unknown model, say) must not leave a
+      // reattached session deaf for as long as the process lives.
+      this.restoring = false
     }
-
-    Object.assign(patch, await this.applySessionMode({ session, response: sessionResponse, settings, fresh }))
-    // One write, not one per thing learned: `agent_sessions` is synced, so each
-    // one re-streams the whole row to every browser.
-    if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
-
-    const described = await this.applyRequestedModel(session, sessionResponse)
-    await this.applyAdapterConfig(session, described, settings)
     await this.setStatus('idle', { touch: true })
 
     // Queued messages outlive the process that queued them — that is the whole
@@ -941,6 +974,12 @@ class AgentRuntime {
     const update = params?.update
     if (!update) return
     const kind: string = update.sessionUpdate
+
+    // The adapter is reading its own transcript back to us; see `restoring`.
+    // Everything is dropped, the readings included: a `usage_update` from
+    // before the restart describes a context window this connection does not
+    // have, and `boot()` has already picked the row's own reading back up.
+    if (this.restoring) return
 
     // Before `takeStream()` and before anything claims a `seq`: this is state,
     // it is not part of the transcript, and it arrives in the middle of the

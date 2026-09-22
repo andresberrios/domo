@@ -92,6 +92,13 @@ interface ServeOptions {
   onSetConfigOption?: (params: any) => void
   /** The mode state `session/new` and `session/load` report, if any. */
   modes?: { current: string, ids: string[] } | null
+  /**
+   * The transcript this adapter reads back to the client while it is answering
+   * `session/load`, the way both real ones do: claude-agent-acp's
+   * `replaySessionHistory` and codex-acp's `streamThreadHistory` each run to
+   * completion inside the load request, before its response goes out.
+   */
+  replay?: any[]
   /** Every `session/set_mode` the adapter is asked for. */
   onSetMode?: (params: any) => void
   /** Whether `_meta.steering.supported` is advertised. Both real adapters do. */
@@ -182,15 +189,23 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
         ...(options.modes ? { modes: modeState(options.modes) } : {})
       }
     })
-    .onRequest(acp.methods.agent.session.load, () => ({
-      // `session/load` restores the adapter's *own* defaults, which is the
-      // whole reason Domo re-applies its choices on every attach: the effort
-      // comes back at whatever this adapter starts on, not what was picked.
-      ...(configOptions().length ? { configOptions: configOptions() } : {}),
-      // `null` is the real shape of "loaded, and saying nothing about modes":
-      // the SDK lets `session/load` answer with nothing at all.
-      ...(options.modes ? { modes: modeState(options.modes) } : {})
-    }))
+    .onRequest(acp.methods.agent.session.load, async (ctx: any) => {
+      // The history, before the response — which is the whole shape of the
+      // problem: these are ordinary `session/update` notifications and nothing
+      // on the wire says they are not live.
+      for (const update of options.replay ?? []) {
+        await ctx.client.notify(acp.methods.client.session.update, { sessionId: ctx.params.sessionId, update })
+      }
+      return {
+        // `session/load` restores the adapter's *own* defaults, which is the
+        // whole reason Domo re-applies its choices on every attach: the effort
+        // comes back at whatever this adapter starts on, not what was picked.
+        ...(configOptions().length ? { configOptions: configOptions() } : {}),
+        // `null` is the real shape of "loaded, and saying nothing about modes":
+        // the SDK lets `session/load` answer with nothing at all.
+        ...(options.modes ? { modes: modeState(options.modes) } : {})
+      }
+    })
     .onRequest(acp.methods.agent.session.setMode, (ctx: any) => {
       options.onSetMode?.(ctx.params)
       return {}
@@ -974,6 +989,122 @@ describe('the mode a session runs in', () => {
       { id: 'build', name: 'BUILD', description: null },
       { id: 'plan', name: 'PLAN', description: null }
     ])
+  })
+})
+
+/**
+ * `session/load` restores the *adapter's* transcript, and the way an adapter
+ * does that is by replaying its history as ordinary `session/update`
+ * notifications. Nothing on the wire distinguishes them from live ones, so
+ * Domo used to append the lot and the conversation grew a second copy of
+ * itself — several times an hour under `pnpm dev`, where every edit to
+ * `server/` reattaches every session.
+ */
+describe('a reattach that restores the adapter’s transcript', () => {
+  /** What claude-agent-acp reads back for the one finished turn below. */
+  const HISTORY = [
+    { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'fix the build' } },
+    { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Looking at the build.' } },
+    { sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Read', kind: 'read', status: 'pending' },
+    { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' },
+    { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'that was it' } },
+    { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Found it.' } }
+  ]
+
+  /** One real turn, so there is a transcript for the adapter to read back. */
+  async function firstTurn() {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session('Reattached')
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Looking at the build.'))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Read', kind: 'read', status: 'pending' })
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
+      await send({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'that was it' } })
+      await send(textChunk('Found it.'))
+    })
+    await started
+    return { acpManager, agent }
+  }
+
+  /**
+   * Restart the adapter the way Nitro's reload does — stop it, attach again —
+   * and let the new one replay `HISTORY` while it answers `session/load`.
+   * Deliberately `start`, not `prompt`: an attach on its own is the path that
+   * was writing fiction, and a turn of its own would bury it.
+   */
+  async function reattach(agentId: string, turn: Turn = async () => {}) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const index = state.adapters.length
+    acpManager.stop(agentId)
+    const loaded = acpManager.start(agentId)
+    await vi.waitFor(() => expect(state.adapters.length).toBeGreaterThan(index))
+    serve(state.adapters[index]!, turn, { replay: HISTORY })
+    await loaded
+  }
+
+  it('writes none of the replayed history to the log', async () => {
+    const { agent } = await firstTurn()
+    const before = await listAgentEvents(agent.id)
+
+    await reattach(agent.id)
+
+    const after = await listAgentEvents(agent.id)
+    // The only thing the restart added is the old process going away.
+    expect(after.map(event => event.type)).toEqual([...before.map(event => event.type), 'adapter-exit'])
+    expect(textOf(after)).toEqual(['Looking at the build.', 'Found it.'])
+  })
+
+  it('stays flat across repeated restarts, which is what makes this urgent', async () => {
+    const { agent } = await firstTurn()
+    const transcript = (events: AgentEvent[]) =>
+      events.filter(event => event.type !== 'adapter-exit')
+        .map(event => ({ type: event.type, payload: event.payload }))
+    const before = transcript(await listAgentEvents(agent.id))
+
+    for (let restart = 0; restart < 3; restart++) await reattach(agent.id)
+
+    expect(transcript(await listAgentEvents(agent.id))).toEqual(before)
+  })
+
+  it('still records what the adapter says in the turn that follows', async () => {
+    const { acpManager, agent } = await firstTurn()
+    await reattach(agent.id, async (send) => {
+      await send(textChunk('On it.'))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'c2', title: 'Bash', kind: 'execute', status: 'completed' })
+    })
+    const before = await listAgentEvents(agent.id)
+
+    await acpManager.prompt(agent.id, [{ type: 'text', text: 'now the tests' }])
+
+    const after = await listAgentEvents(agent.id)
+    expect(after.slice(before.length).map(event => event.type))
+      .toEqual(['user_message', 'agent_message', 'tool_call', 'turn_end'])
+  })
+
+  it('records a queued message that drains the moment the adapter attaches', async () => {
+    // The hazard the guard has to clear: an idle attach drains the inbox, so
+    // the window in which the adapter is not believed must be shut by then.
+    const { agent } = await firstTurn()
+    await enqueueInboxMessage({
+      agentSessionId: agent.id,
+      content: [{ type: 'text', text: 'and ship it' }],
+      delivery: 'queue',
+      origin: 'agent:ag_peer'
+    })
+    const before = await listAgentEvents(agent.id)
+
+    await reattach(agent.id, async (send) => { await send(textChunk('Shipped.')) })
+
+    await vi.waitFor(async () => {
+      const added = (await listAgentEvents(agent.id))
+        .slice(before.length)
+        .filter(event => event.type !== 'adapter-exit')
+      expect(added.map(event => event.type))
+        .toEqual(['user_message', 'agent_message', 'turn_end'])
+      expect(added[0]!.payload.content[0].text).toContain('and ship it')
+    })
   })
 })
 
