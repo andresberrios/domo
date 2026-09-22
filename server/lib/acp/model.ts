@@ -1,3 +1,4 @@
+import { flattenOptions } from './config-options'
 import type { AgentAdapter } from '../../../shared/types'
 
 /**
@@ -18,16 +19,6 @@ export interface ModelChoice {
   configId: string
   value: string
   name: string
-}
-
-interface SelectOption { value?: string, name?: string }
-
-/** A select's options are either a flat list or a list of named groups. */
-function flattenOptions(options: any): SelectOption[] {
-  if (!Array.isArray(options)) return []
-  return options.flatMap((entry: any) =>
-    Array.isArray(entry?.options) ? entry.options : [entry]
-  ).filter((entry: any) => entry && typeof entry.value === 'string')
 }
 
 /**

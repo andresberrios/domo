@@ -19,6 +19,13 @@ import { getSettings } from '../settings'
 import { adapterEntry, adapterEnv } from './adapter-process'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
+import {
+  adapterConfigOptions,
+  configValueIds,
+  findConfigOption,
+  resolveConfigValue,
+  sameConfigOptions
+} from './config-options'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
 import {
   appendAgentEvent,
@@ -47,7 +54,8 @@ import type {
   DevEnvironment,
   MessageDelivery,
   MessageOrigin,
-  PendingPermission
+  PendingPermission,
+  SessionConfigOptionInfo
 } from '../../../shared/types'
 
 interface PendingPermissionWaiter {
@@ -187,6 +195,20 @@ class AgentRuntime {
   private writtenUsage: AgentUsage | null = null
   /** The trailing timer that will write `usage`; see `USAGE_WRITE_MS`. */
   private usageTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * The `configOptions` entry the adapter last answered about its model,
+   * cached from `session/new` / `session/load` and refreshed by `setModel`.
+   * A live switch needs it to resolve a preference the way `applyRequestedModel`
+   * does, without a second probe.
+   */
+  private modelOption: any = null
+  /**
+   * The adapter's own settings as it last reported them, so a live change can
+   * resolve a value without asking again. Kept beside the row's copy rather
+   * than read back from it: the row is what the UI renders, this is what the
+   * next `session/set_config_option` is checked against.
+   */
+  private configOptions: SessionConfigOptionInfo[] | null = null
   /**
    * The ACP SDK dispatches notifications without awaiting the previous handler,
    * so concurrent inserts would take `seq` values out of arrival order and
@@ -577,7 +599,8 @@ class AgentRuntime {
     // one re-streams the whole row to every browser.
     if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
 
-    await this.applyRequestedModel(session, sessionResponse)
+    const described = await this.applyRequestedModel(session, sessionResponse)
+    await this.applyAdapterConfig(session, described, settings)
     await this.setStatus('idle', { touch: true })
 
     // Queued messages outlive the process that queued them — that is the whole
@@ -665,9 +688,15 @@ class AgentRuntime {
    * What the adapter says it landed on is written back, so the row is a record
    * of the truth rather than of the request.
    */
-  private async applyRequestedModel(session: AgentSession, sessionResponse: any): Promise<void> {
+  private async applyRequestedModel(session: AgentSession, sessionResponse: any): Promise<any> {
     const option = modelConfigOption(sessionResponse)
-    if (!option) return
+    this.modelOption = option
+    // The response that last described this session, which a model change
+    // replaces: the adapter's other options are model-dependent (Claude Code
+    // publishes no effort option at all on a model without effort levels), so
+    // the config step has to read the newer answer, not this one.
+    let latest = sessionResponse
+    if (!option) return latest
 
     const preference = session.model || pinnedModel(session.adapter)
     let chosen = currentModel(option)
@@ -688,7 +717,9 @@ class AgentRuntime {
         } as any)) as any
         // The adapter answers with the full set of options; believe it about
         // what actually took, rather than what was asked for.
-        chosen = currentModel(modelConfigOption(response)) ?? wanted
+        this.modelOption = modelConfigOption(response) ?? this.modelOption
+        chosen = currentModel(this.modelOption) ?? wanted
+        latest = response
       } else {
         chosen = wanted
       }
@@ -704,6 +735,81 @@ class AgentRuntime {
         requested: preference ?? null
       })
     }
+    return latest
+  }
+
+  /**
+   * Put the session on the adapter-specific settings it asked for, and record
+   * what the adapter says it offers.
+   *
+   * This is the same shape as the mode and the model and for the same reason —
+   * `session/load` restores the *adapter's* defaults, so a restart would
+   * silently drop a reasoning effort the user chose an hour ago — but nothing
+   * here knows what the settings *are*. Claude Code calls effort `effort` and
+   * codex-acp calls it `reasoning_effort`; codex has a `collaboration_mode`
+   * Claude does not; both hide options the current model cannot do. So the row
+   * holds "what was asked for, by id" and this applies whichever of those the
+   * adapter turns out to offer this time.
+   *
+   * An option that is *not* offered is skipped rather than failing the start:
+   * an effort saved against Opus must not break a session the user has since
+   * moved to a model with no effort levels. A value that is offered but wrong
+   * is a different thing and does throw, because that one is a typo the user
+   * can fix.
+   */
+  private async applyAdapterConfig(
+    session: AgentSession,
+    sessionResponse: any,
+    settings: AppSettings
+  ): Promise<void> {
+    let reported = adapterConfigOptions(sessionResponse)
+    this.configOptions = reported
+
+    // The row wins over the install-wide default: one is this session's own
+    // choice, the other is only what a session with no choice should start on.
+    const desired: Record<string, string> = {
+      ...(settings.defaultAgentConfig?.[session.adapter] ?? {}),
+      ...(session.config ?? {})
+    }
+
+    const applied: Record<string, string> = {}
+    for (const [key, value] of Object.entries(desired)) {
+      const option = findConfigOption(reported, key)
+      if (!option) continue
+      const resolved = resolveConfigValue(option, value)
+      if (!resolved) {
+        console.warn(
+          `[acp:${this.agentSessionId}] ${session.adapter} offers no "${option.name}" value matching `
+          + `"${value}" (it offers: ${configValueIds(option).join(', ')}); leaving it alone.`
+        )
+        continue
+      }
+      applied[option.id] = resolved
+      if (resolved === option.currentValue) continue
+      try {
+        const response = (await this.connection!.agent.request(acp.methods.agent.session.setConfigOption, {
+          sessionId: this.acpSessionId,
+          configId: option.id,
+          value: resolved
+        } as any)) as any
+        // Every set answers with the whole list again, so one option's change
+        // is also how the rest are refreshed.
+        reported = adapterConfigOptions(response)
+        this.configOptions = reported
+      } catch (error) {
+        // A setting that will not take is not a reason to fail the start: the
+        // session still works, it just runs on the adapter's own default.
+        console.error(`[acp:${this.agentSessionId}] could not set ${option.id}=${resolved}`, error)
+      }
+    }
+
+    // One write, and only when something actually differs: `agent_sessions` is
+    // synced, so an unchanged rewrite re-streams the row to every browser.
+    const config = { ...(session.config ?? {}), ...applied }
+    const patch: { config?: Record<string, string>, configOptions?: SessionConfigOptionInfo[] } = {}
+    if (JSON.stringify(config) !== JSON.stringify(session.config ?? {})) patch.config = config
+    if (!sameConfigOptions(reported, session.configOptions)) patch.configOptions = reported
+    if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
   }
 
   private async mcpServersForSession(environment: DevEnvironment | null, httpMcp: boolean) {
@@ -1085,6 +1191,97 @@ class AgentRuntime {
     await appendAgentEvent(this.agentSessionId, 'mode_changed', { modeId })
   }
 
+  /**
+   * Put a running session on a different model.
+   *
+   * The same "ask the adapter, believe what it answers" shape as `setMode`,
+   * through `session/set_config_option` because that is how a model choice
+   * rides in ACP — there is no dedicated method for it. `resolveModel` against
+   * the cached `modelOption` is what lets a caller write "opus" or "haiku"
+   * rather than the adapter's own id, exactly as a freshly-booted session does
+   * in `applyRequestedModel`.
+   */
+  async setModel(model: string): Promise<void> {
+    await this.ensureStarted()
+    if (!this.connection || !this.acpSessionId) return
+    const wanted = resolveModel(this.modelOption, model)
+    if (!wanted) {
+      throw new Error(
+        `This session's adapter does not offer a model matching "${model}". `
+        + `It offers: ${availableModelIds(this.modelOption).join(', ') || '(none)'}.`
+      )
+    }
+    const response = (await this.connection.agent.request(acp.methods.agent.session.setConfigOption, {
+      sessionId: this.acpSessionId,
+      configId: wanted.configId,
+      value: wanted.value
+    } as any)) as any
+    this.modelOption = modelConfigOption(response) ?? this.modelOption
+    const chosen = currentModel(this.modelOption) ?? wanted
+    // A model change rewrites the rest of the adapter's settings: Claude Code
+    // offers no effort at all on a model without effort levels, and the levels
+    // themselves differ between models. The picker has to follow, so the fresh
+    // list goes back on the row with the model that caused it.
+    this.configOptions = adapterConfigOptions(response)
+    await updateAgentSession(this.agentSessionId, {
+      model: chosen.value,
+      configOptions: this.configOptions
+    })
+    await appendAgentEvent(this.agentSessionId, 'model_changed', {
+      modelId: chosen.value,
+      name: chosen.name,
+      requested: model
+    })
+  }
+
+  /**
+   * Change one of the adapter's own settings on a running session.
+   *
+   * `configId` is matched loosely (`findConfigOption`) so "reasoning effort"
+   * reaches `effort` on Claude Code and `reasoning_effort` on Codex — the two
+   * adapters do not share the id, and a caller should not have to care which
+   * one it is talking to. What the adapter answers with is what gets recorded,
+   * and the request is remembered in `config` so the next attach re-applies it.
+   */
+  async setConfigOption(configId: string, value: string): Promise<void> {
+    await this.ensureStarted()
+    if (!this.connection || !this.acpSessionId) return
+
+    const option = findConfigOption(this.configOptions, configId)
+    if (!option) {
+      const known = (this.configOptions ?? []).map(entry => entry.id).join(', ')
+      throw new Error(
+        `This session has no setting matching "${configId}". It offers: ${known || '(none)'}.`
+      )
+    }
+    const resolved = resolveConfigValue(option, value)
+    if (!resolved) {
+      throw new Error(
+        `"${option.name}" does not offer a value matching "${value}". `
+        + `It offers: ${configValueIds(option).join(', ')}.`
+      )
+    }
+
+    const response = (await this.connection.agent.request(acp.methods.agent.session.setConfigOption, {
+      sessionId: this.acpSessionId,
+      configId: option.id,
+      value: resolved
+    } as any)) as any
+    this.configOptions = adapterConfigOptions(response)
+
+    const session = await getAgentSession(this.agentSessionId)
+    await updateAgentSession(this.agentSessionId, {
+      config: { ...(session?.config ?? {}), [option.id]: resolved },
+      configOptions: this.configOptions
+    })
+    await appendAgentEvent(this.agentSessionId, 'config_changed', {
+      configId: option.id,
+      name: option.name,
+      value: resolved,
+      requested: value
+    })
+  }
+
   stop(): void {
     // A block left open would render as text that streams forever, and a
     // reading left in the trailing timer would be lost with the process.
@@ -1238,6 +1435,14 @@ class AcpManager {
 
   async setMode(agentSessionId: string, modeId: string) {
     await this.runtime(agentSessionId).setMode(modeId)
+  }
+
+  async setModel(agentSessionId: string, model: string) {
+    await this.runtime(agentSessionId).setModel(model)
+  }
+
+  async setConfigOption(agentSessionId: string, configId: string, value: string) {
+    await this.runtime(agentSessionId).setConfigOption(configId, value)
   }
 
   async answerPermission(

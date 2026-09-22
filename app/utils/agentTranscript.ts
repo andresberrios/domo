@@ -29,6 +29,9 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   cancelled: () => 'Turn cancelled',
   mode_changed: payload => `Mode set to ${payload?.modeId}`,
   model_changed: payload => `Model: ${payload?.name || payload?.modelId}`,
+  // The adapter's own settings, whose names are the adapter's too:
+  // "Effort: High" on Claude Code, "Reasoning effort: High" on Codex.
+  config_changed: payload => `${payload?.name || payload?.configId}: ${payload?.value}`,
   'adapter-exit': payload =>
     `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
   mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,

@@ -166,7 +166,10 @@ describe('listAdapterModels', () => {
       models: [{ id: 'sonnet', name: 'SONNET' }, { id: 'haiku', name: 'HAIKU' }],
       current: 'sonnet',
       modes: [],
-      currentMode: null
+      currentMode: null,
+      // The adapter's own settings ride in on the same probe; this fake
+      // publishes none beyond the model.
+      configOptions: []
     })
   })
 
@@ -234,7 +237,13 @@ describe('listAdapterModels', () => {
     const probing = listAdapterModels('claude-code')
     await answerWith(null)
 
-    await expect(probing).resolves.toEqual({ models: [], current: null, modes: [], currentMode: null })
+    await expect(probing).resolves.toEqual({
+      models: [],
+      current: null,
+      modes: [],
+      currentMode: null,
+      configOptions: []
+    })
   })
 
   it('gives up rather than hanging when the adapter never answers', async () => {
@@ -290,7 +299,8 @@ describe('listAdapterCatalog', () => {
           models: [{ id: 'sonnet', name: 'SONNET' }, { id: 'haiku', name: 'HAIKU' }],
           default: 'sonnet',
           modes: [],
-          defaultMode: null
+          defaultMode: null,
+          configOptions: []
         },
         {
           id: 'codex',
@@ -298,7 +308,8 @@ describe('listAdapterCatalog', () => {
           models: [{ id: 'gpt-5.6-terra', name: 'GPT-5.6-TERRA' }, { id: 'gpt-5.6-luna', name: 'GPT-5.6-LUNA' }],
           default: 'gpt-5.6-terra',
           modes: [],
-          defaultMode: null
+          defaultMode: null,
+          configOptions: []
         }
       ]
     })

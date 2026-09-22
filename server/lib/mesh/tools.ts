@@ -1,5 +1,6 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
@@ -154,6 +155,37 @@ export const MESH_TOOLS = [
         }
       },
       required: ['title', 'prompt'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'manage_agent_session',
+    description:
+      'Update a coding agent session: rename it, change its permission mode, switch its model, change a setting '
+      + 'the adapter itself offers (reasoning effort, for one), and/or archive it. Defaults to this agent\'s own '
+      + 'session; pass agentId to manage a peer instead. Pass only the fields you want to change.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent session id from list_agents. Defaults to this agent\'s own session.' },
+        title: { type: 'string', description: 'New title.' },
+        modeId: {
+          type: 'string',
+          description: 'Permission mode id to switch to, e.g. "default" (ask every time), "acceptEdits", "plan", or "bypassPermissions".'
+        },
+        model: { type: 'string', description: 'Model id or name to switch to; ids come from list_models.' },
+        setting: {
+          type: 'string',
+          description:
+            'One of the adapter\'s own settings to change, by name — "reasoning effort" works on either adapter. '
+            + 'list_agents reports which settings a session has and what values they take.'
+        },
+        settingValue: { type: 'string', description: 'The value for setting, e.g. "high".' },
+        archived: {
+          type: 'boolean',
+          description: 'Set true to shut the session down and hide it from the session list. Refused on this agent\'s own session.'
+        }
+      },
       additionalProperties: false
     }
   },
@@ -381,6 +413,13 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
             adapter: session.adapter,
             cwd: session.cwd,
             status: session.status,
+            model: session.model,
+            settings: (session.configOptions ?? []).map(option => ({
+              setting: option.name,
+              id: option.id,
+              value: session.config?.[option.id] ?? option.currentValue,
+              options: option.options.map(entry => entry.value)
+            })),
             summary: (session.summary ?? '').replace(/\s+/g, ' ').slice(0, 400)
           }))
       }
@@ -453,6 +492,22 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         model: session.model,
         notifyWhenDone: notify
       }
+    }
+
+    case 'manage_agent_session': {
+      const targetId = String(args.agentId ?? caller.id)
+      const target = await getAgentSession(targetId)
+      if (!target) throw new Error(`No agent ${targetId}`)
+      // Same hazard as `delete_project` / `delete_dev_environment`: stopping
+      // the adapter process handling this very tool call would leave its own
+      // response undelivered.
+      if (args.archived && target.id === caller.id) {
+        throw new Error('Refusing to archive the session this agent is running in. Ask the user or another agent to do it.')
+      }
+      return applyAgentSessionPatch(target, {
+        ...args,
+        config: args.setting && args.settingValue ? { [args.setting]: args.settingValue } : undefined
+      })
     }
 
     case 'subscribe_to_agent': {

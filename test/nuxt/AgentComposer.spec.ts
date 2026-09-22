@@ -21,6 +21,31 @@ registerEndpoint('/api/agents/ag_1/prompt', {
   }
 })
 
+/** Every picker in the composer goes through the one consolidated PATCH. */
+const patched = vi.fn()
+
+registerEndpoint('/api/agents/ag_1', {
+  method: 'PATCH',
+  handler: async (event) => {
+    patched(await readBody(event))
+    return { id: 'ag_1' }
+  }
+})
+
+/**
+ * The model list is the one thing not already on the session row, so the
+ * composer asks the server, which spawns a probe for it.
+ */
+const probed = vi.fn()
+
+registerEndpoint('/api/adapters/models', {
+  method: 'GET',
+  handler: () => {
+    probed()
+    return { models: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'opus', name: 'Opus' }], current: 'sonnet' }
+  }
+})
+
 const Harness = defineComponent({
   props: { session: { type: Object as () => AgentSession, required: true } },
   setup: props => () => h(UApp, null, {
@@ -28,7 +53,10 @@ const Harness = defineComponent({
   })
 })
 
-function session(status: AgentSession['status']): AgentSession {
+function session(
+  status: AgentSession['status'],
+  overrides: Partial<AgentSession> = {}
+): AgentSession {
   return {
     id: 'ag_1',
     voiceSessionId: null,
@@ -41,14 +69,47 @@ function session(status: AgentSession['status']): AgentSession {
     modeId: null,
     modes: null,
     model: null,
+    config: null,
+    configOptions: null,
     lastError: null,
     summary: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     lastActivityAt: null,
     archived: false,
-    usage: null
+    usage: null,
+    ...overrides
   }
+}
+
+/**
+ * Open one of the footer's pickers by the value it is showing.
+ *
+ * `USelectMenu` is a Reka *Combobox* and opens on `click` — unlike
+ * `UDropdownMenu`, which needs a raw `pointerdown` (see `ProjectTree.spec.ts`).
+ * Measured: a pointerdown on this trigger leaves zero `[role=option]` nodes in
+ * the document, a click leaves all of them.
+ */
+async function openMenu(component: any, label: string) {
+  const trigger = component.findAll('button').find((button: any) => button.text().includes(label))
+  if (!trigger) {
+    const seen = component.findAll('button').map((b: any) => b.text()).join(' | ')
+    throw new Error(`No picker showing "${label}". Buttons: ${seen}`)
+  }
+  await trigger.trigger('click')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  return trigger
+}
+
+/** The options of whichever menu is open; they are teleported out of the app. */
+function option(text: string): HTMLElement {
+  const found = Array.from(document.querySelectorAll('[role="option"]'))
+    .find(node => node.textContent?.includes(text))
+  if (!found) {
+    const seen = Array.from(document.querySelectorAll('[role="option"]')).map(n => n.textContent).join(' | ')
+    throw new Error(`No option "${text}" in the open menu. Options: ${seen}`)
+  }
+  return found as HTMLElement
 }
 
 async function type(component: any, text: string) {
@@ -74,7 +135,11 @@ function pointer(kind: 'coarse' | 'fine') {
 
 let restorePointer: (() => void) | null = null
 
-beforeEach(() => sent.mockClear())
+beforeEach(() => {
+  sent.mockClear()
+  patched.mockClear()
+  probed.mockClear()
+})
 afterEach(() => {
   restorePointer?.()
   restorePointer = null
@@ -124,5 +189,81 @@ describe('AgentComposer on a touch screen', () => {
       content: [{ type: 'text', text: 'ship it' }],
       delivery: 'steer'
     }))
+  })
+})
+
+/**
+ * The mode, the model and whatever the adapter itself offers are all decisions
+ * about the message being written, so they live beside the box it is written
+ * in rather than in the page header.
+ */
+describe('AgentComposer settings', () => {
+  const claude = {
+    modes: [
+      { id: 'default', name: 'Manual', description: null },
+      { id: 'plan', name: 'Plan', description: null }
+    ],
+    modeId: 'default',
+    model: 'sonnet',
+    // What claude-agent-acp really publishes: id `effort`, category
+    // `thought_level`. Codex calls the same thing `reasoning_effort`, which is
+    // why the composer renders the list instead of naming either.
+    configOptions: [{
+      id: 'effort',
+      name: 'Effort',
+      description: 'Available effort levels for this model',
+      category: 'thought_level',
+      currentValue: 'medium',
+      options: [
+        { value: 'low', name: 'Low', description: null },
+        { value: 'medium', name: 'Medium', description: null },
+        { value: 'high', name: 'High', description: null }
+      ]
+    }]
+  } satisfies Partial<AgentSession>
+
+  it('shows the mode, the model and the adapter’s own settings', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('idle', claude) } })
+
+    expect(component.text()).toContain('Manual')
+    expect(component.text()).toContain('sonnet')
+    expect(component.text()).toContain('Medium')
+  })
+
+  it('draws nothing for an adapter that offers no settings of its own', async () => {
+    // A Claude model without effort levels publishes no effort option at all.
+    const component = await mountSuspended(Harness, {
+      props: { session: session('idle', { ...claude, configOptions: [] }) }
+    })
+    expect(component.text()).not.toContain('Medium')
+  })
+
+  it('sends a reasoning-effort change by the adapter’s own id', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('idle', claude) } })
+
+    await openMenu(component, 'Medium')
+    option('High').click()
+
+    await vi.waitFor(() => expect(patched).toHaveBeenCalledWith({ config: { effort: 'high' } }))
+  })
+
+  it('sends a mode change through the same endpoint', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('idle', claude) } })
+
+    await openMenu(component, 'Manual')
+    option('Plan').click()
+
+    await vi.waitFor(() => expect(patched).toHaveBeenCalledWith({ modeId: 'plan' }))
+  })
+
+  it('does not spawn a model probe until the model menu is opened', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('idle', claude) } })
+
+    // Opening an agent page must not cost an adapter spawn.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(probed).not.toHaveBeenCalled()
+
+    await openMenu(component, 'sonnet')
+    await vi.waitFor(() => expect(probed).toHaveBeenCalled())
   })
 })

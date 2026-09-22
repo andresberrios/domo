@@ -121,6 +121,8 @@ create table if not exists agent_sessions (
   mode_id text,
   modes jsonb,
   model text,
+  config jsonb,
+  config_options jsonb,
   last_error text,
   summary text,
   created_at text not null,
@@ -137,6 +139,14 @@ alter table agent_sessions add column if not exists model text;
 -- column rather than an event: it arrives many times a turn, says nothing about
 -- what the agent did, and only the latest reading is ever of interest.
 alter table agent_sessions add column if not exists usage jsonb;
+-- The adapter's own settings, which differ per adapter and per model: Claude
+-- Code calls reasoning effort "effort" and codex-acp "reasoning_effort", and
+-- each offers options the other has never heard of. Two columns, because they
+-- answer different questions: config is what was asked for and is re-applied
+-- on every attach, config_options is what the adapter last said it offers and
+-- is only ever a record of its answer.
+alter table agent_sessions add column if not exists config jsonb;
+alter table agent_sessions add column if not exists config_options jsonb;
 
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.

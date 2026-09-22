@@ -80,6 +80,8 @@ function mapAgentSession(r: any): AgentSession {
     modeId: r.mode_id,
     modes: r.modes,
     model: r.model ?? null,
+    config: r.config ?? null,
+    configOptions: r.config_options ?? null,
     lastError: r.last_error,
     summary: r.summary,
     createdAt: r.created_at,
@@ -676,6 +678,8 @@ export async function updateAgentSession(
     modeId: string | null
     modes: any
     model: string | null
+    config: Record<string, string> | null
+    configOptions: any
     lastError: string | null
     summary: string | null
     archived: boolean
@@ -698,6 +702,14 @@ export async function updateAgentSession(
     sets.push(`modes = $${params.length}::jsonb`)
   }
   if (patch.model !== undefined) push('model', patch.model)
+  if (patch.config !== undefined) {
+    params.push(JSON.stringify(patch.config))
+    sets.push(`config = $${params.length}::jsonb`)
+  }
+  if (patch.configOptions !== undefined) {
+    params.push(JSON.stringify(patch.configOptions))
+    sets.push(`config_options = $${params.length}::jsonb`)
+  }
   if (patch.lastError !== undefined) push('last_error', patch.lastError)
   if (patch.summary !== undefined) push('summary', patch.summary)
   if (patch.archived !== undefined) push('archived', patch.archived)

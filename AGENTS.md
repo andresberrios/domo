@@ -115,6 +115,74 @@ things that are easy to get wrong.
   from `setMode` (the user or the voice agent) and from `current_mode_update`
   (the agent) only. The whole reconciliation returns a patch rather than
   writing one, so a start is still **one** `agent_sessions` update.
+- **A running session can change model, not just start on one.** `applyRequestedModel`
+  only ever ran at boot; `AgentRuntime.setModel` is the same `session/set_config_option`
+  call made live, against a `modelOption` cached off the last `session/new` /
+  `session/load` response (or the switch's own response) so a live call needs no
+  second probe. It resolves a preference the same fuzzy way boot does — an
+  adapter id, a display name, or a substring either way — and, like `setMode`,
+  believes what the adapter answers rather than what was asked for.
+- **Everything else an adapter can be configured with is a list, not a field.**
+  ACP lets an agent publish its own `configOptions`, and the two installed
+  adapters use it for things they do not agree on at all. Reasoning effort is
+  the one they share and they do not share its *id*: Claude Code publishes
+  `effort` ("Effort"), codex-acp `reasoning_effort` ("Reasoning effort"), both
+  tagged `category: "thought_level"`; codex alone adds a `collaboration_mode`,
+  and both add a fast-mode toggle only on models that support one. Worse, the
+  set is **per model** — `buildEffortConfigOption` returns nothing at all on a
+  model without effort levels — so it is not even a property of the adapter.
+  So Domo names none of it. `server/lib/acp/config-options.ts` turns whatever
+  arrives into `SessionConfigOptionInfo[]`, `agent_sessions.config` records
+  what was *asked for* by id (re-applied on every attach, for the
+  `session/load` reason above) and `agent_sessions.config_options` records what
+  the adapter last said it offers, so the composer renders pickers with no
+  probe. Every `session/set_config_option` answers with the whole list again,
+  which is how a model change refreshes the effort levels under it — and why
+  `setModel` writes `config_options` back in the same update. Only **selects**
+  are kept: an option is a `boolean` instead when the client advertises that
+  capability, Domo does not, and both adapters then fall back to a two-value
+  select. A saved value the adapter does not offer this time is **skipped, not
+  fatal** — an effort saved against Opus must not break a session since moved
+  to a model with no effort levels — while a value that *is* offered but wrong
+  throws, because that one is a typo somebody can fix. `findConfigOption`
+  matches id, name, then category, then containment in either direction but
+  only when exactly one option matches, so "reasoning effort" reaches both
+  adapters and an ambiguous word reaches neither.
+- **Renaming, mode, archiving and model are one endpoint and one tool on every
+  surface, on purpose.** `PATCH /api/agents/[id]`, the voice tool
+  `manage_agent_session` and the mesh tool of the same name all take any mix
+  of `title` / `archived` / `modeId` / `model` / `config` in one call (the
+  tools take one named `setting` and `settingValue` instead of a map, because
+  a spoken instruction is "set the reasoning effort to high"), replacing what used
+  to be a `PATCH` plus a dedicated `POST /mode` plus three separate voice tools
+  (`set_agent_mode`, `rename_agent_session`, `archive_agent_session`) — and,
+  on the mesh, nothing at all, since no mesh tool touched a session's own
+  settings before this. This is a deliberate exception to "one tool, one job"
+  elsewhere in the mesh and voice surfaces — every other mesh tool and every
+  other voice tool still does exactly one thing: these four are read and
+  written as a single settings panel in the UI, so a caller changing two of
+  them (renaming while switching model, say) gets one round trip and one
+  written-back session instead of two racing partial updates. `title`/
+  `archived` are plain column writes; `modeId`/`model` are live adapter
+  requests and can fail against a real process (unsupported mode, no matching
+  model) in a way a rename cannot — the handler runs the live calls first and
+  lets either throw before touching the row, so a rejected mode or model never
+  lands alongside a title/archived write it never asked to guarantee. That
+  four-field mutation — `applyAgentSessionPatch` in
+  `server/lib/acp/session-settings.ts` — is the one piece actually shared
+  between the voice and mesh handlers; each tool only does its own target
+  resolution and hands the result to the same function. They stay separate on
+  purpose: voice's `resolveAgent` takes an id or a fuzzy title match and
+  defaults to the most recently active session, for an unrestricted
+  human-facing surface with no caller identity, while the mesh handler
+  defaults `agentId` to the caller's own session (like `export_branch`
+  defaults its environment) and refuses `archived: true` against that same
+  session — the same self-targeting hazard `delete_project` /
+  `delete_dev_environment` already refuse, since stopping the adapter process
+  handling this very tool call would leave its own response undelivered. A
+  bearer-token-scoped caller identity has no equivalent on the voice side, so
+  folding that resolution logic into the shared function would only replace
+  two short, honest branches with one branch pretending to serve both.
 - **Messages to an agent go through an inbox that is rows.** The prompt
   endpoint, the voice tool, the mesh tool and a subscription note all end in
   `AgentRuntime.deliver` (`server/lib/acp/manager.ts`), which is the one place
@@ -308,6 +376,20 @@ things that are easy to get wrong.
   primitives rather than `UCollapsible` wrapping a button, because that shape
   makes a row *either* a link or a disclosure and leaves nowhere for the
   actions to sit.
+- **The mode, the model and the adapter's own settings live in the composer.**
+  They are decisions about the message being written — "plan this one", "switch
+  to Opus for this bit", "think harder about this" — so they sit under the box
+  it is written in rather than in the page header, which is where the mode
+  picker and a read-only model badge used to be. `AgentComposer.vue` renders
+  the mode from `session.modes`, the model from a probe, and then one picker
+  per entry in `session.configOptions`, all through the one
+  `PATCH /api/agents/[id]`. Nothing there holds the chosen value: every picker
+  reads the row, so a change the adapter refuses reverts on its own and one
+  made by the voice agent arrives through Electric like any other. The model is
+  the only one that costs a probe (an adapter reports its models in a
+  `session/new` response and nowhere else), so it is fetched on the picker's
+  first open rather than on mount — **opening an agent page must not spawn an
+  adapter**.
 - **A `NuxtLink` applies no active class unless you give it one.** There is no
   `router-link-active` fallback to hang a `has-[]` selector off, which is why
   each row's link carries `active-class="row-active"` — a bare marker with no
@@ -934,8 +1016,14 @@ things that are easy to get wrong.
   (`matchMedia('(pointer: coarse)')`, evaluated in `onMounted` because Domo is
   SPA-only). Desktop is unchanged: Enter sends, Shift+Enter breaks. The voice
   page's typed input is a single-line `UInput` and needs none of this.
-- **Reka's dropdown opens on `pointerdown`, not on `click`.** A component test
-  that only calls `.click()` on the trigger waits forever for `[role="menu"]`.
+- **Reka's dropdown opens on `pointerdown`, but its select menu opens on
+  `click`.** `UDropdownMenu` is a Menu and `USelectMenu` a Combobox, and they
+  do not take the same event: measured in happy-dom, a `pointerdown` on a
+  `USelectMenu` trigger leaves zero `[role="option"]` nodes in the document and
+  a `click` leaves all of them — the exact opposite of the dropdown. See
+  `openMenu()` in `AgentComposer.spec.ts` for the select and in
+  `ProjectTree.spec.ts` for the dropdown. A component test
+  that only calls `.click()` on a *dropdown* trigger waits forever for `[role="menu"]`.
   Dispatch `new MouseEvent('pointerdown', { bubbles: true, button: 0 })` first —
   see `openMenu()` in `test/nuxt/ProjectTree.spec.ts`. And scope the search for
   a dialog's submit button to the dialog: the menu that opened it is still in
@@ -946,25 +1034,29 @@ things that are easy to get wrong.
 - **`domo` is a forest green, `bark` is the neutral, and both are full 50–950
   scales in `app/assets/css/main.css`.** The palette name `domo` was kept so
   nothing else had to change; `ui.colors.neutral` is `bark` rather than `zinc`.
-  Mid-tones: primary **500 `#3d7d4e`** and **600 `#2f6b45`** (white text at
-  4.95:1 and 6.3:1), **400 `#5fa472`** for dark mode, where Nuxt UI puts dark
-  text on it (7.0:1). The old scale was emerald, which reads as a signal colour
-  rather than an organic one. `bark` leans warm olive at very low chroma —
-  every surface in the app is a neutral, so a blue-grey beside a green primary
-  is the one thing that makes the accent look artificial. Its derived tokens
-  were checked by hand: `text-muted` is 4.7:1 on white (500 `#6e7666`) and
-  6.0:1 on the dark background (400 `#99a191` on 900 `#1e221c`), and the 800
-  border sits 1.27:1 off the 900 background — the same separation zinc gave.
-- **The font is Figtree, self-hosted, and `@nuxt/fonts` is already there.**
-  Nuxt UI lists it as a `moduleDependency` and registers it with weights
-  400–700, so it must **not** be added to `modules` or to `package.json` — it is
-  active already, and Inter was being self-hosted the same way. Figtree over
-  Inter for a warmer, rounder skeleton that still holds up at the 11–13px this
-  dashboard is mostly made of. The module picks the family up straight out of
-  the Tailwind `@theme` block, which is worth knowing because it is not a
-  `font-family` declaration. Verified on a production build: 16 `.woff2` under
-  `.output/public/_fonts/`, 64 `/_fonts/` references in the entry CSS, both
-  Figtree and JetBrains Mono, and **no `fonts.gstatic.com` or
+  Mid-tones: primary **500 `#1c8049`** and **600 `#106439`** (white text at
+  4.96:1 and 7.23:1), **400 `#2fa860`** for dark mode, where Nuxt UI puts dark
+  text on it (6.89:1). This scale was pushed for chroma against an earlier,
+  greyer green (500 was `#3d7d4e`) that read as desaturated rather than alive
+  — same rough lightness at each stop, wider gap between the red channel and
+  the green/blue channels. `bark` was olive-grey and is now a wood-toned
+  brown (500 `#7d5f42`, hue ~30° instead of ~110°) — timber next to the forest
+  green rather than stone. Its derived tokens were checked by hand: `text-muted`
+  is 5.85:1 on white (500 `#7d5f42`) and 4.74:1 on the dark background (400
+  `#a3855f` on 900 `#261e18`), and the 800 border sits 1.17:1 off the 900
+  background — close to the subtle separation zinc gave.
+- **The font is Schibsted Grotesk, self-hosted, and `@nuxt/fonts` is already
+  there.** Nuxt UI lists it as a `moduleDependency` and registers it with
+  weights 400–700, so it must **not** be added to `modules` or to
+  `package.json` — it is active already, and Figtree (then Inter) were
+  self-hosted the same way before it. Schibsted Grotesk over Figtree for
+  wider apertures and more distinctive letterforms — Figtree's tight,
+  geometric skeleton read as condensed at the 11–13px this dashboard is
+  mostly made of. The module picks the family up straight out of the
+  Tailwind `@theme` block, which is worth knowing because it is not a
+  `font-family` declaration. Verified on a production build: 16 `.woff2`
+  under `.output/public/_fonts/`, 64 `/_fonts/` references in the entry CSS,
+  both Schibsted Grotesk and JetBrains Mono, and **no `fonts.gstatic.com` or
   `fonts.googleapis.com` anywhere in the output**. `font-src 'self'` in
   `server/lib/csp.ts` already covered it, so the CSP was not touched.
 
@@ -1075,6 +1167,30 @@ and permissions are end to end because a permission is a row.
   with the header enforced and with it stripped.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
+- **The composer's pickers were covered in happy-dom, not in a browser.**
+  `test/nuxt/AgentComposer.spec.ts` asserts that the mode, the model and the
+  adapter's own settings render, that a reasoning-effort change leaves as
+  `{ config: { effort: 'high' } }`, and that no model probe is spawned until
+  the picker is opened; `test/server/acp-stream.spec.ts` covers the server half
+  against a fake adapter that publishes an `effort` option (recorded on the
+  row, re-applied after a reattach, skipped when the adapter stops offering
+  it). What no test can say is whether **four** pickers — mode, model, effort
+  and, on Codex, a collaboration mode — still fit beside the attach button at
+  390px. They are set to wrap, which is a guess that has not been looked at.
+  **The host still has to open it**, desktop and mobile, over the Caddy HTTPS
+  address.
+- **The reasoning-effort payloads were read out of both adapters' shipped
+  bundles, not assumed.** `buildEffortConfigOption` in claude-agent-acp's
+  `session-effort.js` (id `effort`, and `undefined` when the model has no
+  levels) and `createReasoningEffortConfigOption` in codex-acp's `index.js`
+  (id `reasoning_effort`, pushed only when `supportedReasoningEfforts` is
+  non-empty); both `category: "thought_level"`. `SetSessionConfigOptionResponse`
+  in the SDK is documented as "the full set of configuration options and their
+  current values", which is what the refresh-on-every-set design rests on.
+  The fixtures in `test/unit/acp-config-options.spec.ts` are those payloads.
+  **Not** verified against a live account: whether an effort actually changes
+  how either model behaves, and the fast-mode and collaboration-mode options,
+  which no test has ever seen an adapter emit.
 - **The condensed transcript was covered in happy-dom, not in a browser.**
   `test/nuxt/ActivityGroup.spec.ts` and the `condensed` block of
   `test/nuxt/AgentTranscript.spec.ts` assert the label, the breakdown, the

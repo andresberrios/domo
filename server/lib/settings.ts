@@ -109,6 +109,10 @@ export const DEFAULTS: AppSettings = {
   // `agent` ("Approve for me"). The ids are not interchangeable — see
   // `AppSettings.defaultAgentModes`.
   defaultAgentModes: { 'claude-code': 'default', codex: 'agent' },
+  // Empty, because an adapter's own defaults are the only sensible starting
+  // point for settings Domo does not know the names of. See
+  // `AppSettings.defaultAgentConfig`.
+  defaultAgentConfig: { 'claude-code': {}, codex: {} },
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
@@ -123,8 +127,33 @@ export async function getSettings(): Promise<AppSettings> {
   return {
     ...DEFAULTS,
     ...stored,
-    defaultAgentModes: storedAgentModes(stored)
+    defaultAgentModes: storedAgentModes(stored),
+    defaultAgentConfig: storedAgentConfig(stored)
   } as AppSettings
+}
+
+/**
+ * The per-adapter defaults for the adapter's own settings.
+ *
+ * Read defensively rather than trusted: the keys are config option ids Domo
+ * never declares (`effort`, `reasoning_effort`, whatever an adapter ships
+ * next), so the shape is "an object of strings per adapter" and anything that
+ * is not a string is dropped instead of reaching a `session/set_config_option`
+ * call. An empty object means "leave the adapter on its own defaults", which
+ * is what a fresh install wants.
+ */
+function storedAgentConfig(stored: Record<string, any>): AppSettings['defaultAgentConfig'] {
+  const config: AppSettings['defaultAgentConfig'] = { 'claude-code': {}, codex: {} }
+  const current = stored.defaultAgentConfig
+  if (!current || typeof current !== 'object') return config
+  for (const adapter of Object.keys(config) as Array<keyof typeof config>) {
+    const entries = current[adapter]
+    if (!entries || typeof entries !== 'object') continue
+    for (const [id, value] of Object.entries(entries)) {
+      if (typeof value === 'string' && value) config[adapter][id] = value
+    }
+  }
+  return config
 }
 
 /**

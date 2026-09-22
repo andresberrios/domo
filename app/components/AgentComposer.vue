@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentSession, MessageDelivery } from '~~/shared/types'
+import type { AgentSession, MessageDelivery, SessionConfigOptionInfo } from '~~/shared/types'
 
 const props = defineProps<{ session: AgentSession }>()
 
@@ -13,6 +13,107 @@ const sending = ref(false)
  * and Shift+Enter to break, which is what `UChatPrompt` does by default.
  */
 const isTouch = useIsTouch()
+
+/* ---------------- what this session is running on ---------------- */
+
+/**
+ * The permission mode, the model and whatever else the adapter offers all live
+ * here rather than in the page header. They are decisions about the message
+ * being written — "plan this one", "switch to Opus for this bit", "think
+ * harder about this" — and the composer is where that decision is made and
+ * where the answer is about to be sent. All of them go through the one
+ * `PATCH /api/agents/[id]`, which reaches the running adapter.
+ *
+ * Nothing here holds the chosen value: every picker reads the session row, so
+ * a change that the adapter refuses reverts on its own, and a change made from
+ * the voice agent or another browser arrives through Electric like any other.
+ */
+const applying = ref<string | null>(null)
+
+async function apply(body: Record<string, unknown>, key: string, failure: string) {
+  applying.value = key
+  try {
+    await $fetch(`/api/agents/${props.session.id}`, { method: 'PATCH', body })
+  } catch (error: any) {
+    toast.add({ title: failure, description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  } finally {
+    applying.value = null
+  }
+}
+
+const modeItems = computed(() =>
+  (props.session.modes ?? []).map(mode => ({ label: mode.name, value: mode.id }))
+)
+
+const currentMode = computed({
+  get: () => props.session.modeId ?? '',
+  set: (value: string) => { void apply({ modeId: value }, 'mode', 'Could not change the mode') }
+})
+
+/**
+ * The model list is the one thing not already on the row: an adapter only
+ * reports it in a `session/new` response, so the server answers this by
+ * spawning a throwaway probe (cached an hour). Hence `immediate: false` and a
+ * fetch on first open — opening an agent page must not cost an adapter spawn.
+ */
+const { data: modelData, status: modelStatus, refresh: refreshModels } = await useFetch<{
+  models: Array<{ id: string, name: string }>
+}>('/api/adapters/models', {
+  query: computed(() => ({ adapter: props.session.adapter })),
+  immediate: false,
+  lazy: true,
+  watch: false
+})
+
+let probed = false
+function probeModels(open: boolean) {
+  if (!open || probed) return
+  probed = true
+  void refreshModels()
+}
+
+const modelItems = computed(() => {
+  const items = (modelData.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id }))
+  // Whatever the session is actually on goes in even before the probe answers:
+  // a menu whose selected value is not among its own items renders blank.
+  const current = props.session.model
+  if (current && !items.some(item => item.value === current)) items.unshift({ label: current, value: current })
+  return items
+})
+
+const currentModel = computed({
+  get: () => props.session.model ?? '',
+  set: (value: string) => { void apply({ model: value }, 'model', 'Could not change the model') }
+})
+
+/**
+ * The adapter's own settings: reasoning effort, and whatever else it ships.
+ *
+ * Read off the row and never hard-coded, because the two adapters do not agree
+ * on any of it — Claude Code calls effort `effort` and Codex
+ * `reasoning_effort`, Codex has a collaboration mode Claude has never heard
+ * of, and both publish these *per model*, so the list changes when the model
+ * above it does. The row is rewritten from the adapter's own answer on every
+ * change, so this follows along on its own.
+ */
+const configOptions = computed(() => props.session.configOptions ?? [])
+
+function configValue(option: SessionConfigOptionInfo): string {
+  return props.session.config?.[option.id] ?? option.currentValue ?? ''
+}
+
+function configItems(option: SessionConfigOptionInfo) {
+  return option.options.map(entry => ({ label: entry.name, value: entry.value }))
+}
+
+function setConfigValue(option: SessionConfigOptionInfo, value: string) {
+  void apply({ config: { [option.id]: value } }, option.id, `Could not change ${option.name.toLowerCase()}`)
+}
+
+/** ACP's own category is the only hint available, and only some of it is known. */
+function configIcon(option: SessionConfigOptionInfo): string {
+  return option.category === 'thought_level' ? 'i-lucide-brain' : 'i-lucide-sliders-horizontal'
+}
 
 /**
  * What happens to a message sent while the agent is mid-turn.
@@ -143,8 +244,14 @@ async function stop() {
       @submit="submit"
     >
       <template #footer>
-        <div class="flex w-full items-center justify-between gap-2">
-          <div class="flex items-center gap-1">
+        <!--
+          The pickers wrap rather than shrink: there may be four of them on a
+          Codex session (mode, model, reasoning effort, collaboration mode) and
+          a phone has no room for that in one row. The submit button stays
+          outside the wrapping group so it never moves.
+        -->
+        <div class="flex w-full items-start justify-between gap-2">
+          <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1">
             <UTooltip text="Attach files">
               <UButton
                 icon="i-lucide-paperclip"
@@ -162,7 +269,56 @@ async function stop() {
               class="hidden"
               @change="onFiles"
             >
-            <span v-if="!busy" class="hidden text-xs text-dimmed sm:inline">
+
+            <UTooltip v-if="modeItems.length" text="Permission mode">
+              <USelectMenu
+                v-model="currentMode"
+                :items="modeItems"
+                value-key="value"
+                size="xs"
+                variant="ghost"
+                icon="i-lucide-shield"
+                :loading="applying === 'mode'"
+                class="w-32"
+              />
+            </UTooltip>
+
+            <UTooltip text="Model">
+              <USelectMenu
+                v-model="currentModel"
+                :items="modelItems"
+                value-key="value"
+                size="xs"
+                variant="ghost"
+                icon="i-lucide-cpu"
+                placeholder="Model"
+                :loading="applying === 'model' || modelStatus === 'pending'"
+                class="w-32"
+                @update:open="probeModels"
+              />
+            </UTooltip>
+
+            <!-- Whatever this adapter offers on this model; see the script. -->
+            <UTooltip
+              v-for="option in configOptions"
+              :key="option.id"
+              :text="option.description || option.name"
+            >
+              <USelectMenu
+                :model-value="configValue(option)"
+                :items="configItems(option)"
+                value-key="value"
+                size="xs"
+                variant="ghost"
+                :icon="configIcon(option)"
+                :placeholder="option.name"
+                :loading="applying === option.id"
+                class="w-32"
+                @update:model-value="value => setConfigValue(option, value as string)"
+              />
+            </UTooltip>
+
+            <span v-if="!busy" class="hidden text-xs text-dimmed lg:inline">
               {{ shortPath(session.cwd, 3) }}
             </span>
             <USelectMenu

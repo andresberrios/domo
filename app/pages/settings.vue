@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentAdapter, AppSettings, McpServer, SessionModeInfo } from '~~/shared/types'
+import type { AgentAdapter, AppSettings, McpServer, SessionConfigOptionInfo, SessionModeInfo } from '~~/shared/types'
 
 const toast = useToast()
 const { servers } = useMcpServers()
@@ -27,6 +27,7 @@ const form = reactive<AppSettings>({
   autoApprovePermissions: false,
   pollUsageLimits: true,
   defaultAgentModes: { 'claude-code': 'default', codex: 'agent' },
+  defaultAgentConfig: { 'claude-code': {}, codex: {} },
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
@@ -44,6 +45,10 @@ watchEffect(() => {
     autoApprovePermissions: settings.value.autoApprovePermissions,
     pollUsageLimits: settings.value.pollUsageLimits,
     defaultAgentModes: { ...settings.value.defaultAgentModes },
+    defaultAgentConfig: {
+      'claude-code': { ...settings.value.defaultAgentConfig?.['claude-code'] },
+      codex: { ...settings.value.defaultAgentConfig?.codex }
+    },
     language: settings.value.language,
     autoTitle: settings.value.autoTitle,
     vscodeSshHost: settings.value.vscodeSshHost,
@@ -98,6 +103,7 @@ type AdapterProbe = {
   current: string | null
   modes: SessionModeInfo[]
   currentMode: string | null
+  configOptions: SessionConfigOptionInfo[]
 }
 
 const ADAPTERS: Array<{ id: AgentAdapter, label: string }> = [
@@ -134,6 +140,43 @@ function modeItems(adapter: AgentAdapter) {
 function addTypedMode(adapter: AgentAdapter, id: string) {
   typedModes[adapter].push(id)
   form.defaultAgentModes[adapter] = id
+}
+
+/**
+ * The adapter's own settings, offered as install-wide defaults.
+ *
+ * Nothing here names one: the list comes from the adapter, so reasoning effort
+ * is "Effort" on Claude Code and "Reasoning effort" on Codex, and an option
+ * either of them adds next appears without a change to this page. `Adapter
+ * default` is always the first choice, because leaving the adapter alone is
+ * the only sane default for a setting Domo knows nothing about.
+ *
+ * The caveat is real and is why the hint says so: the probe runs a session on
+ * the adapter's *default* model, and both adapters publish these per model. A
+ * session on a model without effort levels simply has no effort to set, and
+ * `applyAdapterConfig` skips it rather than failing the start.
+ */
+const ADAPTER_DEFAULT = 'adapter-default'
+
+function configItems(option: SessionConfigOptionInfo) {
+  return [
+    { label: 'Adapter default', value: ADAPTER_DEFAULT },
+    ...option.options.map(entry => ({ label: entry.name, value: entry.value }))
+  ]
+}
+
+function configValue(adapter: AgentAdapter, option: SessionConfigOptionInfo): string {
+  return form.defaultAgentConfig[adapter]?.[option.id] || ADAPTER_DEFAULT
+}
+
+function setConfigValue(adapter: AgentAdapter, option: SessionConfigOptionInfo, value: string) {
+  // The sentinel is not a value any adapter offers, so "leave it alone" is the
+  // absence of a key rather than a string that would be sent and rejected.
+  const entries = Object.fromEntries(
+    Object.entries(form.defaultAgentConfig[adapter] ?? {}).filter(([id]) => id !== option.id)
+  )
+  if (value !== ADAPTER_DEFAULT) entries[option.id] = value
+  form.defaultAgentConfig[adapter] = entries
 }
 
 function probeError(adapter: AgentAdapter): string | null {
@@ -296,6 +339,41 @@ async function deleteServer(server: McpServer) {
                   </span>
                 </template>
               </UFormField>
+            </div>
+          </div>
+
+          <!--
+            Whatever each adapter says it has. Nothing in this block names a
+            setting: Claude Code publishes "Effort" and Codex "Reasoning
+            effort", and an adapter that ships another one tomorrow appears
+            here on its own.
+          -->
+          <div v-if="ADAPTERS.some(entry => probes[entry.id].data.value?.configOptions?.length)" class="space-y-2">
+            <p class="text-sm font-medium">
+              Adapter settings
+            </p>
+            <p class="text-xs text-muted">
+              Each agent's own settings, applied to every new session. Both offer a reasoning effort
+              under their own name, and each offers things the other does not. These depend on the
+              model — a session on a model with no effort levels simply keeps the adapter's default.
+            </p>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <template v-for="entry in ADAPTERS" :key="entry.id">
+                <UFormField
+                  v-for="option in probes[entry.id].data.value?.configOptions ?? []"
+                  :key="`${entry.id}:${option.id}`"
+                  :label="`${entry.label} · ${option.name}`"
+                  :description="option.description ?? undefined"
+                >
+                  <USelectMenu
+                    :model-value="configValue(entry.id, option)"
+                    :items="configItems(option)"
+                    value-key="value"
+                    class="w-full"
+                    @update:model-value="value => setConfigValue(entry.id, option, value as string)"
+                  />
+                </UFormField>
+              </template>
             </div>
           </div>
 
