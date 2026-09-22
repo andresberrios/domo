@@ -12,7 +12,11 @@ const ALLOWED_TABLES = new Set([
   'agent_inbox',
   'mcp_servers',
   'projects',
-  'dev_environments'
+  'dev_environments',
+  // Account-wide, and deliberately free of anything secret: no token, no
+  // header and no raw response body is ever written to either of them.
+  'usage_limits',
+  'usage_providers'
 ])
 
 /**

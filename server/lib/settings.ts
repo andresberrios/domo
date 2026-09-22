@@ -100,6 +100,10 @@ export const DEFAULTS: AppSettings = {
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
   proactiveNotifications: true,
   autoApprovePermissions: false,
+  // On by default: the limits are only useful if they are current when nobody
+  // has run an agent today, and the polls are cheap (Claude's endpoint answers
+  // about once an hour, Codex's is a local process).
+  pollUsageLimits: true,
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
   // `agent` ("Approve for me"). The ids are not interchangeable — see
