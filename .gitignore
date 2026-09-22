@@ -27,3 +27,4 @@ dist
 
 # Agent worktrees, created by Claude Code.
 .claude/worktrees/
+.claude/settings.local.json
