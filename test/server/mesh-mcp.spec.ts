@@ -69,15 +69,23 @@ const gitSync = vi.hoisted(() => ({
     into: input.into,
     result: input.into ? 'fast-forwarded' : 'not-merged'
   })),
-  importBranch: vi.fn(async (input: any) => ({
-    branch: input.branch,
-    from: input.from,
-    sha: 'f00d',
-    commits: [],
-    result: 'fast-forwarded'
-  })),
   listEnvironmentBranches: vi.fn(async () => ({ current: 'work-in-here', branches: [] }))
 }))
+
+// The import's own decisions — which branch, and who gets told — are
+// `test/unit/branch-import.spec.ts`; here it is only what the mesh hands over.
+const branchImport = vi.hoisted(() => ({
+  importBranchIntoEnvironment: vi.fn(async (input: any) => ({
+    branch: input.branch,
+    requested: input.branch,
+    from: input.from ?? input.branch,
+    sha: 'f00d',
+    commits: [],
+    result: 'fast-forwarded',
+    notified: []
+  }))
+}))
+vi.mock('../../server/lib/branch-import', () => branchImport)
 
 vi.mock('../../server/lib/dev-env/git-sync', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../server/lib/dev-env/git-sync')>(),
@@ -154,7 +162,7 @@ beforeEach(async () => {
   devEnvironments.stopEnvironment.mockClear()
   devEnvironments.removeEnvironment.mockClear()
   gitSync.exportBranch.mockClear()
-  gitSync.importBranch.mockClear()
+  branchImport.importBranchIntoEnvironment.mockClear()
   gitSync.listEnvironmentBranches.mockClear()
 })
 
@@ -814,10 +822,10 @@ describe('export_branch', () => {
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'import_branch', { branch: 'main' })).body)
 
-    expect(gitSync.importBranch).toHaveBeenCalledWith({
+    expect(branchImport.importBranchIntoEnvironment).toHaveBeenCalledWith({
       environmentId: environment.id,
       branch: 'main',
-      from: 'main'
+      from: undefined
     })
     expect(body).toMatchObject({ branch: 'main', result: 'fast-forwarded' })
   })
@@ -832,7 +840,7 @@ describe('export_branch', () => {
       from: 'main'
     })
 
-    expect(gitSync.importBranch).toHaveBeenCalledWith({
+    expect(branchImport.importBranchIntoEnvironment).toHaveBeenCalledWith({
       environmentId: environment.id,
       branch: 'staging',
       from: 'main'
@@ -849,6 +857,6 @@ describe('export_branch', () => {
 
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toMatch(/Name the branch/)
-    expect(gitSync.importBranch).not.toHaveBeenCalled()
+    expect(branchImport.importBranchIntoEnvironment).not.toHaveBeenCalled()
   })
 })

@@ -2,13 +2,8 @@ import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
-import {
-  exportBranch,
-  importBranch,
-  listEnvironmentBranches,
-  resolveFromRef,
-  resolveIntoBranch
-} from '../dev-env/git-sync'
+import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
+import { importBranchIntoEnvironment } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
@@ -336,7 +331,7 @@ export const MESH_TOOLS = [
   {
     name: 'import_branch',
     description:
-      'Copy a branch the other way: from the project\'s own checkout on the host *into* a development environment, by pushing it straight to the container. Use it to bring an environment up to date with work that has landed on the host, or to seed one with a branch to continue. Fast-forward only, and it refuses the branch the environment currently has checked out.',
+      'Copy a branch the other way: from the project\'s own checkout on the host *into* a development environment, by pushing it straight to the container. Use it to bring an environment up to date with work that has landed on the host, or to seed one with a branch to continue. Fast-forward only. It writes the branch the environment has checked out when that is safe, diverts to a side branch when an agent is mid-turn, refuses outright if the working tree there is dirty, and tells the agents in the environment where the changes are either way.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -652,7 +647,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       }
       const branch = String(args.branch ?? '').trim()
       if (!branch) throw new Error('Name the branch to write in the environment.')
-      return importBranch({ environmentId, branch, from: resolveFromRef(branch, args.from) })
+      return importBranchIntoEnvironment({ environmentId, branch, from: args.from })
     }
 
     case 'schedule_task': {

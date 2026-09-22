@@ -6,13 +6,8 @@ import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
-import {
-  exportBranch,
-  importBranch,
-  listEnvironmentBranches,
-  resolveFromRef,
-  resolveIntoBranch
-} from '../dev-env/git-sync'
+import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
+import { importBranchIntoEnvironment } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
@@ -581,7 +576,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'import_branch',
       description:
-        'Copy a branch the other way: from the project’s checkout on this machine *into* a development environment. Use it to bring an environment up to date with work that has landed here, or to give it a branch to carry on from. Fast-forward only, and it refuses the branch the environment has checked out.',
+        'Copy a branch the other way: from the project’s checkout on this machine *into* a development environment. Use it to bring an environment up to date with work that has landed here, or to give it a branch to carry on from. Fast-forward only. It updates the branch the agent is on when that is safe, puts it on a side branch if the agent is mid-turn, refuses if there is uncommitted work there, and tells the agents either way.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -596,10 +591,10 @@ export const voiceTools: Record<string, VoiceTool> = {
       const environment = await resolveEnvironment(args.environment)
       const branch = String(args.branch ?? '').trim()
       if (!branch) throw new Error('Name the branch to write in the environment.')
-      const imported = await importBranch({
+      const imported = await importBranchIntoEnvironment({
         environmentId: environment.id,
         branch,
-        from: resolveFromRef(branch, args.from)
+        from: args.from
       })
       return { environment: environment.name, ...imported }
     }

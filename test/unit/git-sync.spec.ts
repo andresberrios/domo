@@ -32,21 +32,37 @@ describe('environmentTransport', () => {
     // Both are load-bearing: without them git calls the checkout "dubiously
     // owned", because the safe.directory is in that user's own ~/.gitconfig.
     expect(transport()).toBe(
-      'ext::docker exec -i -u vscode -e HOME=/home/vscode c0ffee00 %S /workspaces/feature-auth'
+      'ext::docker exec -i -u vscode -e HOME=/home/vscode c0ffee00 git %s /workspaces/feature-auth'
     )
   })
 
-  // `%S` is the *long* service name, which is what the executables are called.
-  // `%s` is the short one: `docker exec` then cannot find `upload-pack`, and
-  // the user is handed `fatal: protocol error: bad line length character: OCI`.
-  it('substitutes the service with %S and never %s', () => {
-    expect(transport()).toContain(' %S ')
-    expect(transport()).not.toContain('%s')
+  // `%s` is the *short* service name (`upload-pack` / `receive-pack`), which is
+  // what `git` takes as a subcommand. `%S` is the long one, for exec'ing the
+  // binary. Mixing them does not fail where you are looking: `docker exec`
+  // reports no such executable and the user is handed
+  // `fatal: protocol error: bad line length character: OCI`.
+  it('invokes git with the short service name, matching how it runs it', () => {
+    expect(transport()).toContain(' git %s ')
+    expect(transport()).not.toContain('%S')
+  })
+
+  // The `ext::` transport ignores `--receive-pack`, so this is the only place a
+  // setting for the *receiving* end can go — and it is what lets an import
+  // write the branch the container has checked out.
+  it('carries -c settings for the git inside the container', () => {
+    expect(transport({ config: ['receive.denyCurrentBranch=updateInstead'] })).toBe(
+      'ext::docker exec -i -u vscode -e HOME=/home/vscode c0ffee00 git '
+      + '-c receive.denyCurrentBranch=updateInstead %s /workspaces/feature-auth'
+    )
+  })
+
+  it('refuses a -c setting that is not a bare word either', () => {
+    expect(() => transport({ config: ['core.editor=code --wait'] })).toThrow(/git setting/)
   })
 
   it('leaves the user and HOME out for an environment that recorded neither', () => {
     expect(transport({ remoteUser: null, home: null })).toBe(
-      'ext::docker exec -i c0ffee00 %S /workspaces/feature-auth'
+      'ext::docker exec -i c0ffee00 git %s /workspaces/feature-auth'
     )
   })
 

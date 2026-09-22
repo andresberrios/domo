@@ -372,13 +372,24 @@ one environment to another.
 - The environment's branch is only ever **fast-forwarded**. If it has commits
   yours does not — an agent has been working — the import says so and sends
   nothing; export it and merge here instead.
-- **The branch the environment has checked out is refused.** That working tree
-  and index belong to an agent and may hold changes that are not committed
-  anywhere else, so Domo will not move the ref under it. Check out something
-  else in the environment, or import into a different name.
+- **The branch the environment has checked out is the normal target**, and its
+  working tree moves with it, so the agent simply finds the new files.
+  Importing into a branch the agent is *not* on does nothing useful on its own:
+  nothing in the container tells it that branch moved, so it would never merge
+  it.
+- **Uncommitted work in the environment stops the import.** That work exists
+  nowhere else, so Domo will not write over it — commit or stash it there
+  first. Git refuses it too, independently.
+- **If an agent is mid-turn, the branch lands beside it** on
+  `domo-import/<branch>` instead of under a live working tree, and the agent is
+  told to merge it when it reaches a sensible point.
+- **An import is never silent.** Whatever path it takes, every agent session in
+  the environment either ends up holding the changes or holding a message
+  saying where they are — delivered into a running turn, or waiting in its
+  inbox for when it next picks up.
 
 It is one `git push` over the same `ext::` transport — git asks the same command
-for `git-receive-pack` instead — and the voice agent and the agent mesh have it
+for `receive-pack` instead — and the voice agent and the agent mesh have it
 too, as `import_branch`.
 
 ### Open an environment in VS Code

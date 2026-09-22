@@ -50,9 +50,10 @@ const devEnvironments = {
 // matters here is which environment and which branch the spoken call picks.
 const gitSync = {
   exportBranch: vi.fn(),
-  importBranch: vi.fn(),
   listEnvironmentBranches: vi.fn()
 }
+// The import's own decisions live in `test/unit/branch-import.spec.ts`.
+const branchImport = { importBranchIntoEnvironment: vi.fn() }
 const projects = {
   createProjectFromPath: vi.fn(),
   removeProjectCascade: vi.fn(),
@@ -78,6 +79,7 @@ vi.mock('../../server/lib/dev-env/git-sync', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../server/lib/dev-env/git-sync')>(),
   ...gitSync
 }))
+vi.mock('../../server/lib/branch-import', () => branchImport)
 vi.mock('../../server/lib/projects', () => projects)
 vi.mock('../../server/lib/settings', () => ({
   getSettings: async () => ({ defaultCwd: '/workspace', autoTitle: true })
@@ -867,22 +869,24 @@ describe('export_branch', () => {
 
   describe('the other direction', () => {
     beforeEach(() => {
-      gitSync.importBranch.mockResolvedValue({
+      branchImport.importBranchIntoEnvironment.mockResolvedValue({
         branch: 'main',
+        requested: 'main',
         from: 'main',
         sha: 'f00dcafe',
         commits: [],
-        result: 'fast-forwarded'
+        result: 'fast-forwarded',
+        notified: [{ agentSessionId: 'ag_1', title: 'worker', via: 'inbox' }]
       })
     })
 
     it('sends a branch from this machine into the named environment', async () => {
       const result = await voiceTools.import_branch!.handler({ environment: 'auth', branch: 'main' }, ctx)
 
-      expect(gitSync.importBranch).toHaveBeenCalledWith({
+      expect(branchImport.importBranchIntoEnvironment).toHaveBeenCalledWith({
         environmentId: 'env_1',
         branch: 'main',
-        from: 'main'
+        from: undefined
       })
       expect(result).toMatchObject({ environment: 'feature-auth', branch: 'main', result: 'fast-forwarded' })
     })
@@ -893,7 +897,7 @@ describe('export_branch', () => {
         ctx
       )
 
-      expect(gitSync.importBranch).toHaveBeenCalledWith(expect.objectContaining({
+      expect(branchImport.importBranchIntoEnvironment).toHaveBeenCalledWith(expect.objectContaining({
         branch: 'staging',
         from: 'main'
       }))
@@ -904,7 +908,7 @@ describe('export_branch', () => {
     it('needs a branch named', async () => {
       await expect(voiceTools.import_branch!.handler({ environment: 'auth', branch: ' ' }, ctx))
         .rejects.toThrow(/Name the branch/)
-      expect(gitSync.importBranch).not.toHaveBeenCalled()
+      expect(branchImport.importBranchIntoEnvironment).not.toHaveBeenCalled()
     })
   })
 })
