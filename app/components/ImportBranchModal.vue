@@ -26,8 +26,9 @@ const running = computed(() => props.environment.status === 'running')
 /**
  * Not a warning — this is the branch an import most often *wants*. Importing
  * into one the agent is not on is inert: nothing in the container tells it that
- * some other branch moved. Said out loud only because what happens next depends
- * on whether an agent is working, which the server decides.
+ * some other branch moved. Said out loud only because what happens to that
+ * branch is a merge rather than a push, which is worth knowing before pressing
+ * the button.
  */
 const isCheckedOut = computed(() =>
   !!branch.value.trim() && branch.value.trim() === branches.value.current)
@@ -37,14 +38,16 @@ const outcome = computed(() => {
   const report = result.value
   if (!report) return null
   switch (report.result) {
+    case 'merged':
+      return { color: 'success' as const, title: `Merged into ${report.requested}` }
     case 'fast-forwarded':
       return { color: 'success' as const, title: `${report.branch} fast-forwarded to ${report.sha.slice(0, 8)}` }
     case 'created':
       return { color: 'success' as const, title: `${report.branch} created at ${report.sha.slice(0, 8)}` }
     case 'up-to-date':
-      return { color: 'neutral' as const, title: `${report.branch} was already up to date` }
+      return { color: 'neutral' as const, title: `${report.requested} was already up to date` }
     default:
-      return { color: 'warning' as const, title: 'Nothing was sent' }
+      return { color: 'warning' as const, title: report.wip ? 'Not merged' : 'Nothing was sent' }
   }
 })
 
@@ -113,7 +116,7 @@ async function submit() {
   <UModal
     v-model:open="open"
     title="Import branch"
-    :description="`Sends a branch from the project’s own checkout on this machine into ${environment.name}, and fast-forwards the branch there onto it. Fast-forward only — nothing in the environment is ever rewritten or merged, and uncommitted work there is never written over.`"
+    :description="`Sends a branch from the project’s own checkout on this machine into ${environment.name}. Nothing there is ever rewritten, force-updated or discarded: uncommitted work is committed before anything else happens, so it stays recoverable.`"
   >
     <template #body>
       <div class="space-y-4">
@@ -143,7 +146,7 @@ async function submit() {
           color="neutral"
           variant="subtle"
           :title="`${environment.name} is on “${branch}”`"
-          description="Its working tree will move with it, so the agent simply finds the new files. If an agent is mid-turn the branch lands beside it instead, and either way the agents there are told where the changes are. Uncommitted work in the environment stops the import rather than being written over."
+          description="Anything uncommitted there is committed first, so nothing is ever stashed or discarded, and then the import is merged in. If the merge conflicts it is aborted and the commits are left on a side branch; if an agent is mid-turn they go straight to that side branch. Either way the agents there are told where the changes are."
         />
 
         <UAlert v-if="failure" color="error" variant="subtle" :title="failure" />
@@ -158,6 +161,10 @@ async function submit() {
             <div class="space-y-2">
               <p v-if="result.reason" class="text-sm">{{ result.reason }}</p>
               <p v-if="result.diverted" class="text-sm">{{ result.diverted }}</p>
+              <p v-if="result.wip" class="text-sm">
+                Uncommitted work in the environment was committed first, as
+                <code>{{ result.wip.slice(0, 8) }}</code> — nothing was stashed or discarded.
+              </p>
               <p v-if="result.notified.length" class="text-xs text-muted">
                 Told:
                 <span v-for="(entry, index) in result.notified" :key="entry.agentSessionId">

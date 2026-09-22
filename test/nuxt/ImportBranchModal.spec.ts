@@ -57,7 +57,8 @@ const landed: EnvironmentBranchImport = {
   from: 'main',
   sha: 'a'.repeat(40),
   commits: [{ sha: 'a'.repeat(40), subject: 'docs: y' }],
-  result: 'fast-forwarded',
+  result: 'merged',
+  wip: null,
   notified: [{ agentSessionId: 'ag_1', title: 'the agent', via: 'inbox' }]
 }
 let answer: EnvironmentBranchImport = landed
@@ -161,6 +162,7 @@ describe('ImportBranchModal', () => {
       ...landed,
       branch: 'domo-import/main',
       requested: 'main',
+      result: 'fast-forwarded',
       diverted: 'An agent is mid-turn in this environment, so "main" was left on "domo-import/main".',
       notified: [{ agentSessionId: 'ag_1', title: 'the agent', via: 'steer' }]
     }
@@ -178,14 +180,35 @@ describe('ImportBranchModal', () => {
     wrapper.unmount()
   })
 
-  it('shows why nothing was sent when nothing was', async () => {
+  // The agent's own files being committed is the thing a person most needs to
+  // see, because a commit nobody made looks like something went wrong.
+  it('names the commit uncommitted work was parked in', async () => {
+    answer = { ...landed, wip: 'f'.repeat(40) }
+    const wrapper = await openModal()
+
+    button('Import')!.click()
+
+    await vi.waitFor(() => {
+      const text = document.body.querySelector('[role="dialog"]')?.textContent ?? ''
+      expect(text).toContain('Merged into main')
+      expect(text).toContain('committed first')
+      expect(text).toContain('ffffffff')
+      expect(text).toContain('nothing was stashed or discarded')
+    })
+    wrapper.unmount()
+  })
+
+  it('shows a conflict as not merged, pointing at the side branch', async () => {
     answer = {
       ...landed,
+      branch: 'domo-import/main',
       sha: 'c'.repeat(40),
       commits: [],
       result: 'not-merged',
+      wip: 'f'.repeat(40),
       notified: [],
-      reason: '"main" is checked out in feature-auth and its working tree has local changes; nothing was sent.'
+      reason: 'The imported commits are on "domo-import/main", but merging them into "main" conflicts. '
+        + 'The merge was aborted, so the environment\'s working tree is untouched.'
     }
     const wrapper = await openModal()
 
@@ -193,8 +216,9 @@ describe('ImportBranchModal', () => {
 
     await vi.waitFor(() => {
       const text = document.body.querySelector('[role="dialog"]')?.textContent ?? ''
-      expect(text).toContain('Nothing was sent')
-      expect(text).toContain('working tree has local changes')
+      expect(text).toContain('Not merged')
+      expect(text).toContain('conflicts')
+      expect(text).toContain('working tree is untouched')
       expect(text).toContain('No commits crossed.')
     })
     wrapper.unmount()

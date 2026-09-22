@@ -372,17 +372,22 @@ one environment to another.
 - The environment's branch is only ever **fast-forwarded**. If it has commits
   yours does not — an agent has been working — the import says so and sends
   nothing; export it and merge here instead.
-- **The branch the environment has checked out is the normal target**, and its
-  working tree moves with it, so the agent simply finds the new files.
+- **The branch the environment has checked out is the normal target.**
   Importing into a branch the agent is *not* on does nothing useful on its own:
   nothing in the container tells it that branch moved, so it would never merge
   it.
-- **Uncommitted work in the environment stops the import.** That work exists
-  nowhere else, so Domo will not write over it — commit or stash it there
-  first. Git refuses it too, independently.
-- **If an agent is mid-turn, the branch lands beside it** on
-  `domo-import/<branch>` instead of under a live working tree, and the agent is
-  told to merge it when it reaches a sensible point.
+- **Anything uncommitted in the environment is committed first**, as a WIP
+  commit Domo signs its name to, and only then is the import merged in. Nothing
+  is ever stashed or discarded — that commit is yours to amend, reset or
+  cherry-pick out of. An agent in the middle of something always has
+  uncommitted files, which is exactly when you most want to reach it.
+- **A conflict is aborted, not left in the working tree.** The imported commits
+  stay on `domo-import/<branch>` and the agents are told to merge it
+  themselves. A half-merged checkout handed to a running agent gets read as its
+  own work.
+- **If an agent is mid-turn, the branch lands on that side branch** without
+  touching the working tree at all, and the agent is told to merge it when it
+  reaches a sensible point.
 - **An import is never silent.** Whatever path it takes, every agent session in
   the environment either ends up holding the changes or holding a message
   saying where they are — delivered into a running turn, or waiting in its
