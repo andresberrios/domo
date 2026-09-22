@@ -3,7 +3,15 @@ import type { AgentAdapter, SessionModeInfo } from '~~/shared/types'
 
 const open = defineModel<boolean>('open', { default: false })
 
-const props = defineProps<{ voiceSessionId?: string | null }>()
+const props = defineProps<{
+  voiceSessionId?: string | null
+  /**
+   * Which environment to start in. The sidebar's per-environment plus button
+   * passes it so the agent lands where it was asked for; left unset, the modal
+   * falls back to any running environment, then to the local host.
+   */
+  environmentId?: string | null
+}>()
 
 const router = useRouter()
 const toast = useToast()
@@ -105,7 +113,9 @@ watch(open, async (value) => {
   model.value = ADAPTER_DEFAULT
   adapter.value = 'claude-code'
   cwd.value = settings.value?.defaultCwd ?? ''
-  devEnvironmentId.value = environments.value.find(environment => environment.status === 'running')?.id ?? LOCAL
+  devEnvironmentId.value = props.environmentId
+    ?? environments.value.find(environment => environment.status === 'running')?.id
+    ?? LOCAL
 })
 
 // Asking costs an adapter spawn, so it happens when the modal opens and again
@@ -221,8 +231,7 @@ async function create() {
           />
           <template #help>
             <span class="text-xs text-muted">
-              Environments can be shared by multiple agents.
-              <NuxtLink to="/projects" class="text-primary">Manage environments</NuxtLink>
+              Environments can be shared by multiple agents. Create and manage them from the sidebar.
             </span>
           </template>
         </UFormField>
