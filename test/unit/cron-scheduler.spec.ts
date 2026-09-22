@@ -10,7 +10,11 @@ const repo = vi.hoisted(() => ({
   claimCronJob: vi.fn(),
   finishCronRun: vi.fn(async () => {}),
   failCronJobSchedule: vi.fn(async () => true),
-  appendAgentEvent: vi.fn(async () => {})
+  appendAgentEvent: vi.fn(async () => {}),
+  // A job due against a retired session is dropped rather than fired, so every
+  // firing starts by reading the session. The default here is a live one.
+  getAgentSession: vi.fn(async () => ({ id: 'ag_1', title: 'Agent', retiredAt: null })),
+  disableCronJobsForAgent: vi.fn(async () => 0)
 }))
 
 vi.mock('../../server/lib/acp/manager', () => ({ acpManager: acp }))
