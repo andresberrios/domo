@@ -643,7 +643,37 @@ describe('the model a session runs on', () => {
     await expect(getAgentSession(agent.id).then(row => row!.model)).resolves.toBe('haiku')
   })
 
-  it('fails the session rather than silently running on the wrong model', async () => {
+  it('fails the session rather than silently running on the wrong install-wide pin', async () => {
+    // The operator's own `NUXT_CLAUDE_MODEL`: nothing in the app can correct
+    // it, and a session quietly running on something else is exactly what
+    // pinning a model asked us not to do.
+    process.env.NUXT_CLAUDE_MODEL = 'gemini-3-pro'
+    try {
+      const { acpManager } = await import('../../server/lib/acp/manager')
+      const agent = await createAgentSession({
+        adapter: 'claude-code',
+        title: 'Model',
+        cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+      })
+      const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+      await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+      serve(state.adapters[0]!, async () => {}, { models: { current: 'sonnet', ids: ['sonnet', 'haiku'] } })
+
+      await expect(started).rejects.toThrow(/does not offer a model matching "gemini-3-pro"/)
+      // The message names what was on offer, so the operator can fix it.
+      const row = await getAgentSession(agent.id)
+      expect(row!.status).toBe('error')
+      expect(row!.lastError).toContain('sonnet, haiku')
+    } finally {
+      delete process.env.NUXT_CLAUDE_MODEL
+    }
+  })
+
+  it('corrects a row the adapter will not honour, rather than leaving it saying so forever', async () => {
+    // A model can be recorded with no adapter to check it against, so a typo
+    // through the voice agent or the API must not leave a session that can
+    // never start again — and the row must not go on claiming a model the
+    // session is not running.
     const { acpManager } = await import('../../server/lib/acp/manager')
     const agent = await createAgentSession({
       adapter: 'claude-code',
@@ -654,12 +684,28 @@ describe('the model a session runs on', () => {
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
     await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
     serve(state.adapters[0]!, async () => {}, { models: { current: 'sonnet', ids: ['sonnet', 'haiku'] } })
+    await started
 
-    await expect(started).rejects.toThrow(/does not offer a model matching "gemini-3-pro"/)
-    // The message names what was on offer, so the operator can fix it.
     const row = await getAgentSession(agent.id)
-    expect(row!.status).toBe('error')
-    expect(row!.lastError).toContain('sonnet, haiku')
+    expect(row!.status).not.toBe('error')
+    expect(row!.model).toBe('sonnet')
+    // Said where the user is reading, not only in the server log.
+    const notice = (await listAgentEvents(agent.id)).find(event => event.type === 'error')
+    expect(notice?.payload.message).toMatch(/"gemini-3-pro".*sonnet, haiku.*running on sonnet/s)
+  })
+
+  it('asks for nothing when a live session is already on the model, or the row alone is behind', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { agent, asked } = await boot('sonnet', { current: 'sonnet', ids: ['sonnet', 'haiku'] })
+    expect(asked).toEqual([])
+
+    await acpManager.setModel(agent.id, 'sonnet')
+    expect(asked).toEqual([])
+
+    // The row drifting on its own is still the adapter's word that counts.
+    await updateAgentSession(agent.id, { model: 'haiku' })
+    await acpManager.setModel(agent.id, 'haiku')
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
   })
 })
 
@@ -896,19 +942,73 @@ describe('the mode a session runs in', () => {
       cwd: join(tmpdir(), 'domo-test', 'acp-stream')
     })
     const asked: any[] = []
-    const setting = acpManager.setMode(agent.id, 'plan')
+    // A running session, because that is the case this is about: the mode is
+    // asked for now rather than recorded for the next start.
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
     await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
     serve(state.adapters[0]!, async () => {}, {
       modes: { current: 'default', ids: MODES },
       onSetMode: params => asked.push(params)
     })
-    await setting
+    await started
+    await acpManager.setMode(agent.id, 'plan')
 
     // Starting a session is not a mode change; somebody choosing one is.
     expect(asked).toEqual([{ sessionId: 'acp_fake', modeId: 'plan' }])
     expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed'))
       .toEqual([expect.objectContaining({ payload: { modeId: 'plan' } })])
     await expect(getAgentSession(agent.id).then(row => row!.modeId)).resolves.toBe('plan')
+  })
+
+  it('asks for nothing when the adapter is already in the mode, and says nothing either', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Mode',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      modeId: 'plan'
+    })
+    const asked: any[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      modes: { current: 'plan', ids: MODES },
+      onSetMode: params => asked.push(params)
+    })
+    await started
+
+    await acpManager.setMode(agent.id, 'plan')
+
+    expect(asked).toEqual([])
+    expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed')).toEqual([])
+  })
+
+  it('asks anyway when the row agrees but the adapter does not', async () => {
+    // The whole reason the check is against what the adapter *reports*: a row
+    // that has drifted from the process agrees with itself, and a session that
+    // came back in the wrong mode would never be put right.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Mode',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      modeId: 'default'
+    })
+    const asked: any[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      modes: { current: 'default', ids: MODES },
+      onSetMode: params => asked.push(params)
+    })
+    await started
+    // The row alone moves on: what a `current_mode_update` lost, or a write
+    // made while the adapter was down, would look like.
+    await updateAgentSession(agent.id, { modeId: 'plan' })
+
+    await acpManager.setMode(agent.id, 'plan')
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', modeId: 'plan' }])
   })
 
   it('records the modes a new session offers, and starts it in the row\'s', async () => {
@@ -933,6 +1033,180 @@ describe('the mode a session runs in', () => {
     expect(row!.modeId).toBe('plan')
     // The list is what the picker offers; it comes from the adapter, once.
     expect(row!.modes).toEqual(MODES.map(id => ({ id, name: id, description: null })))
+  })
+})
+
+/**
+ * Changing a setting is recording a preference, and a preference costs no
+ * process.
+ *
+ * Every one of these is re-applied from the row on the next attach — that is
+ * what `session/load` restoring the *adapter's* defaults forces — so a stopped
+ * session told "use opus" comes up on opus the next time somebody prompts it.
+ * Before this, each of the three opened with `ensureStarted()`, and the
+ * composer's pickers are always visible: choosing a reasoning effort on a
+ * stopped session spawned an adapter, which for an environment-backed session
+ * means starting work inside a container, purely to write a column.
+ */
+describe('changing a setting on a session that is not running', () => {
+  /** What an attach leaves behind: the lists the adapter reported, on the row. */
+  const ROW_MODES = [
+    { id: 'default', name: 'default', description: null },
+    { id: 'plan', name: 'plan', description: null }
+  ]
+  const ROW_EFFORT = {
+    id: 'effort',
+    name: 'Effort',
+    description: null,
+    category: 'thought_level',
+    currentValue: 'medium',
+    options: [
+      { value: 'low', name: 'LOW', description: null },
+      { value: 'medium', name: 'MEDIUM', description: null },
+      { value: 'high', name: 'HIGH', description: null }
+    ]
+  }
+
+  /** A session that has run before and is not running now. */
+  async function stopped() {
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Stopped',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      modeId: 'default'
+    })
+    await updateAgentSession(agent.id, {
+      acpSessionId: 'acp_fake',
+      status: 'stopped',
+      modes: ROW_MODES,
+      configOptions: [ROW_EFFORT]
+    })
+    return agent
+  }
+
+  /**
+   * Run something and prove no adapter started.
+   *
+   * `state.adapters` is the spawn log — the mocked `spawn` pushes to it
+   * synchronously — so an empty one is the whole property. The wait is not
+   * decoration: a boot started and not awaited would be invisible to an
+   * assertion made in the same tick as the call, and that is exactly the shape
+   * a weak version of this test would keep passing through.
+   */
+  async function withoutSpawning<T>(fn: () => Promise<T>): Promise<T> {
+    const result = await fn()
+    await sleep(50)
+    expect(state.adapters).toEqual([])
+    return result
+  }
+
+  it('records a mode on the row and starts nothing', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await stopped()
+
+    await withoutSpawning(() => acpManager.setMode(agent.id, 'plan'))
+
+    const row = await getAgentSession(agent.id)
+    expect(row!.modeId).toBe('plan')
+    // A setting change leaves the session as stopped as it found it.
+    expect(row!.status).toBe('stopped')
+    expect(acpManager.isRunning(agent.id)).toBe(false)
+    // Somebody did change it, so the log says so — and says only what it can
+    // honestly claim, which is that no adapter has taken it yet.
+    expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed'))
+      .toEqual([expect.objectContaining({ payload: { modeId: 'plan', pending: true } })])
+  })
+
+  it('records a model on the row and starts nothing', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await stopped()
+
+    await withoutSpawning(() => acpManager.setModel(agent.id, 'opus'))
+
+    const row = await getAgentSession(agent.id)
+    // Verbatim: a model list exists only in a `session/new` answer, and probing
+    // for one is the spawn this is here to avoid. The attach resolves it.
+    expect(row!.model).toBe('opus')
+    expect((await listAgentEvents(agent.id)).find(event => event.type === 'model_changed')?.payload)
+      .toEqual({ modelId: 'opus', name: 'opus', requested: 'opus', pending: true })
+  })
+
+  it('records an adapter setting against the list the adapter last reported', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await stopped()
+
+    // Loosely, exactly as a live session takes it: "reasoning effort" is
+    // Codex's name for Claude Code's `effort`.
+    await withoutSpawning(() => acpManager.setConfigOption(agent.id, 'reasoning effort', 'High'))
+
+    const row = await getAgentSession(agent.id)
+    expect(row!.config).toEqual({ effort: 'high' })
+    // What is *not* written: `config_options` is the adapter's own report, and
+    // no adapter has confirmed anything. It still says what it last said.
+    expect(row!.configOptions).toEqual([ROW_EFFORT])
+    expect((await listAgentEvents(agent.id)).find(event => event.type === 'config_changed')?.payload)
+      .toMatchObject({ configId: 'effort', value: 'high', pending: true })
+  })
+
+  it('refuses what the row knows is not on offer, without starting anything to ask', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await stopped()
+
+    await withoutSpawning(async () => {
+      await expect(acpManager.setMode(agent.id, 'bypassPermissions'))
+        .rejects.toThrow(/does not offer the mode "bypassPermissions".*default, plan/s)
+      await expect(acpManager.setConfigOption(agent.id, 'effort', 'maximum'))
+        .rejects.toThrow(/does not offer a value matching "maximum".*low, medium, high/s)
+      await expect(acpManager.setConfigOption(agent.id, 'collaboration mode', 'pair'))
+        .rejects.toThrow(/no setting matching "collaboration mode"/)
+    })
+
+    const row = await getAgentSession(agent.id)
+    expect(row!.modeId).toBe('default')
+    expect(row!.config).toBeNull()
+  })
+
+  it('writes nothing at all when the row already says it', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await stopped()
+
+    await withoutSpawning(() => acpManager.setMode(agent.id, 'default'))
+
+    expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed')).toEqual([])
+  })
+
+  it('hands the lot to the adapter the next time the session runs', async () => {
+    // The point of recording rather than applying: nothing is lost, it is
+    // applied a moment later than it was chosen.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await stopped()
+    await acpManager.setMode(agent.id, 'plan')
+    await acpManager.setModel(agent.id, 'opus')
+    await acpManager.setConfigOption(agent.id, 'effort', 'high')
+
+    const modes: any[] = []
+    const config: any[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      capabilities: { loadSession: true },
+      modes: { current: 'default', ids: ['default', 'plan'] },
+      models: { current: 'sonnet', ids: ['sonnet', 'opus'] },
+      effort: { current: 'medium', ids: ['low', 'medium', 'high'] },
+      onSetMode: params => modes.push(params),
+      onSetConfigOption: params => config.push(params)
+    })
+    await started
+
+    expect(modes).toEqual([{ sessionId: 'acp_fake', modeId: 'plan' }])
+    expect(config).toEqual([
+      { sessionId: 'acp_fake', configId: 'model', value: 'opus' },
+      { sessionId: 'acp_fake', configId: 'effort', value: 'high' }
+    ])
+    const row = await getAgentSession(agent.id)
+    expect(row!.modeId).toBe('plan')
+    expect(row!.model).toBe('opus')
+    expect(row!.config).toEqual({ effort: 'high' })
   })
 })
 

@@ -174,6 +174,26 @@ const USAGE_WRITE_MS = 5_000
  */
 const PLAN_LIMIT_WRITE_MS = 5_000
 
+/**
+ * What a `mode_changed` / `model_changed` / `config_changed` event says about
+ * a setting that was recorded with no adapter running to take it.
+ *
+ * The event itself still belongs in the log: somebody *did* change the
+ * setting, and a transcript that shows the mode changing under it is the only
+ * account of why the next turn behaves differently. What it must not do is
+ * claim more than happened. A setting applied to a live adapter is a fact
+ * about the process; one written to a stopped session is a request the next
+ * attach will make — so the second kind is marked, and the transcript renders
+ * it as "when it next starts".
+ *
+ * Absent rather than `false` on the ordinary path: the payloads are what the
+ * UI reads and what a person reads in the database, and every event that is
+ * not marked is one that took.
+ */
+function pendingMark(live: boolean): { pending?: true } {
+  return live ? {} : { pending: true }
+}
+
 class AgentRuntime {
   readonly agentSessionId: string
   private proc: ChildProcessWithoutNullStreams | null = null
@@ -231,6 +251,17 @@ class AgentRuntime {
    * next `session/set_config_option` is checked against.
    */
   private configOptions: SessionConfigOptionInfo[] | null = null
+  /**
+   * The mode the adapter itself last reported being in — from `session/new` /
+   * `session/load`, from a `current_mode_update` it sent, or from a
+   * `session/set_mode` it accepted.
+   *
+   * Deliberately not read back off the row. The row says what was *asked for*,
+   * so a session that drifted — an agent that switched mode by itself, an
+   * adapter that came back on its own default — would agree with itself and
+   * never be corrected, which is the one thing re-applying a mode exists to do.
+   */
+  private reportedModeId: string | null = null
   /**
    * The ACP SDK dispatches notifications without awaiting the previous handler,
    * so concurrent inserts would take `seq` values out of arrival order and
@@ -511,6 +542,31 @@ class AgentRuntime {
   }
 
   /**
+   * The connection to ask, or `null` when there is none — and never a reason
+   * to start one.
+   *
+   * Changing a setting is recording a *preference*, and the row is the
+   * authority on what was asked for: `applySessionMode`, `applyRequestedModel`
+   * and `applyAdapterConfig` re-apply all three from the row on every attach,
+   * because `session/load` restores the adapter's defaults rather than Domo's
+   * choices. So a stopped session told "use opus" comes up on opus the next
+   * time somebody prompts it, and nothing has to run in the meantime. The
+   * composer's pickers are always visible, so before this a click on a stopped
+   * session spawned an adapter — inside a container, for an environment-backed
+   * one — purely to write a column.
+   *
+   * A boot already in flight is waited for rather than raced: it applies the
+   * row's settings partway through, so a write that landed after that read
+   * would be invisible until the next attach. A boot that fails leaves the
+   * caller on the offline path, which is exactly where a session that cannot
+   * start should be changed from.
+   */
+  private async liveConnection(): Promise<acp.ClientConnection | null> {
+    if (this.booting) await this.booting.catch(() => {})
+    return this.connection && this.acpSessionId && this.alive ? this.connection : null
+  }
+
+  /**
    * The row still says `error`, but the adapter is up and nothing is running.
    *
    * That is the shape a *failed turn* leaves behind, and `ensureStarted` is a
@@ -727,6 +783,9 @@ class AgentRuntime {
     // has modes, so the row's own list is the other half of the question.
     const hasModes = !!state || !!session.modes?.length
     let effective = reported ?? session.modeId ?? fallback
+    // What the adapter says it is in, which is what a later `setMode` decides
+    // against — never the row, or a drifted session could not be corrected.
+    this.reportedModeId = reported
 
     if (desired && hasModes && desired !== reported) {
       try {
@@ -735,6 +794,7 @@ class AgentRuntime {
           modeId: desired
         } as any)
         effective = desired
+        this.reportedModeId = desired
       } catch (error) {
         // A mode that will not take is not a reason to fail the start: the
         // session still works, it just asks more often than it was told to.
@@ -761,6 +821,16 @@ class AgentRuntime {
    *
    * What the adapter says it landed on is written back, so the row is a record
    * of the truth rather than of the request.
+   *
+   * A preference this adapter cannot honour means two different things
+   * depending on where it came from, and is treated as two different things.
+   * The env pin is operator config, install-wide, and nothing in the app can
+   * correct it, so it fails the start loudly, as it always has. The *row* is a
+   * request, and since a setting can now be recorded with no adapter to check
+   * it against (`setModel`), a typo through the voice agent or the API would
+   * otherwise leave a session that can never start again: it is reported in
+   * the transcript and the row is corrected to the model the adapter is really
+   * on, so the picker stops claiming a model the session is not running.
    */
   private async applyRequestedModel(session: AgentSession, sessionResponse: any): Promise<any> {
     const option = modelConfigOption(sessionResponse)
@@ -778,12 +848,18 @@ class AgentRuntime {
     if (preference) {
       const wanted = resolveModel(option, preference)
       if (!wanted) {
-        throw new Error(
-          `The ${session.adapter} adapter does not offer a model matching "${preference}". `
+        const message = `The ${session.adapter} adapter does not offer a model matching "${preference}". `
           + `It offers: ${availableModelIds(option).join(', ') || '(none)'}.`
-        )
-      }
-      if (wanted.value !== chosen?.value) {
+        // An install-wide pin: the operator has to fix it, and a session quietly
+        // running on something else is exactly what pinning asked us not to do.
+        if (!session.model) throw new Error(message)
+        // The row's own request: say so where the user is reading, and let
+        // `chosen` stay what the adapter reports so the row is corrected below.
+        console.error(`[acp:${this.agentSessionId}] ${message}`)
+        await appendAgentEvent(this.agentSessionId, 'error', {
+          message: `${message} This session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
+        })
+      } else if (wanted.value !== chosen?.value) {
         const response = (await this.connection!.agent.request(acp.methods.agent.session.setConfigOption, {
           sessionId: this.acpSessionId,
           configId: wanted.configId,
@@ -962,6 +1038,7 @@ class AgentRuntime {
       // The agent may switch its own mode mid-turn, and the row is what gets
       // re-applied on the next attach — so it has to follow, not just the log.
       if (kind === 'current_mode_update' && update.currentModeId) {
+        this.reportedModeId = update.currentModeId
         await updateAgentSession(this.agentSessionId, { modeId: update.currentModeId })
       }
       // A turn that is all tool calls and no text is still a working agent.
@@ -1254,19 +1331,57 @@ class AgentRuntime {
     })
   }
 
+  /**
+   * Put the session in a permission mode — in the adapter if one is running,
+   * on the row either way.
+   *
+   * Nothing is spawned: see `liveConnection`. With no adapter to ask, the id
+   * is still checked against the modes that adapter last reported, so a
+   * mistyped mode is refused at the moment somebody chooses it rather than at
+   * the next start, on a session that has run at least once. A session that
+   * never has knows no modes and takes what it is given; the next attach
+   * applies it and keeps whatever the adapter answers with.
+   *
+   * The request is skipped when the adapter already reports this mode — and
+   * `reportedModeId` is the adapter's own word for that, never the row's.
+   */
   async setMode(modeId: string): Promise<void> {
-    await this.ensureStarted()
-    if (!this.connection || !this.acpSessionId) return
-    await this.connection.agent.request(acp.methods.agent.session.setMode, {
-      sessionId: this.acpSessionId,
-      modeId
-    } as any)
+    const connection = await this.liveConnection()
+    const session = await getAgentSession(this.agentSessionId)
+
+    if (connection) {
+      if (this.reportedModeId !== modeId) {
+        await connection.agent.request(acp.methods.agent.session.setMode, {
+          sessionId: this.acpSessionId,
+          modeId
+        } as any)
+        this.reportedModeId = modeId
+      } else if (session?.modeId === modeId) {
+        // The adapter is in it and the row says so: nothing changed, and a
+        // "Mode set to …" line for a change nobody made is noise.
+        return
+      }
+    } else {
+      const known = session?.modes ?? []
+      if (known.length && !known.some(mode => mode.id === modeId)) {
+        throw new Error(
+          `This session's adapter does not offer the mode "${modeId}". `
+          + `It offers: ${known.map(mode => mode.id).join(', ')}.`
+        )
+      }
+      if (session?.modeId === modeId) return
+    }
+
     await updateAgentSession(this.agentSessionId, { modeId })
-    await appendAgentEvent(this.agentSessionId, 'mode_changed', { modeId })
+    await appendAgentEvent(this.agentSessionId, 'mode_changed', {
+      modeId,
+      ...pendingMark(!!connection)
+    })
   }
 
   /**
-   * Put a running session on a different model.
+   * Put the session on a different model — in the adapter if one is running,
+   * on the row either way.
    *
    * The same "ask the adapter, believe what it answers" shape as `setMode`,
    * through `session/set_config_option` because that is how a model choice
@@ -1274,10 +1389,34 @@ class AgentRuntime {
    * the cached `modelOption` is what lets a caller write "opus" or "haiku"
    * rather than the adapter's own id, exactly as a freshly-booted session does
    * in `applyRequestedModel`.
+   *
+   * With no adapter running there is nothing to resolve against — a model list
+   * exists only in a `session/new` answer, and probing for one is the spawn
+   * this is here to avoid — so the row keeps the preference *verbatim* and
+   * `applyRequestedModel` resolves it, fuzzily and against the real list, at
+   * the next attach. That is the one asymmetry of the offline path: the row
+   * then holds what was asked for rather than what the adapter landed on. It
+   * is corrected on that attach, including when the answer is that no such
+   * model exists.
    */
   async setModel(model: string): Promise<void> {
-    await this.ensureStarted()
-    if (!this.connection || !this.acpSessionId) return
+    const connection = await this.liveConnection()
+    const session = await getAgentSession(this.agentSessionId)
+
+    if (!connection) {
+      const requested = model.trim()
+      if (!requested) throw new Error('No model was given.')
+      if (session?.model === requested) return
+      await updateAgentSession(this.agentSessionId, { model: requested })
+      await appendAgentEvent(this.agentSessionId, 'model_changed', {
+        modelId: requested,
+        name: requested,
+        requested,
+        ...pendingMark(false)
+      })
+      return
+    }
+
     const wanted = resolveModel(this.modelOption, model)
     if (!wanted) {
       throw new Error(
@@ -1285,22 +1424,34 @@ class AgentRuntime {
         + `It offers: ${availableModelIds(this.modelOption).join(', ') || '(none)'}.`
       )
     }
-    const response = (await this.connection.agent.request(acp.methods.agent.session.setConfigOption, {
-      sessionId: this.acpSessionId,
-      configId: wanted.configId,
-      value: wanted.value
-    } as any)) as any
-    this.modelOption = modelConfigOption(response) ?? this.modelOption
-    const chosen = currentModel(this.modelOption) ?? wanted
-    // A model change rewrites the rest of the adapter's settings: Claude Code
-    // offers no effort at all on a model without effort levels, and the levels
-    // themselves differ between models. The picker has to follow, so the fresh
-    // list goes back on the row with the model that caused it.
-    this.configOptions = adapterConfigOptions(response)
-    await updateAgentSession(this.agentSessionId, {
-      model: chosen.value,
-      configOptions: this.configOptions
-    })
+
+    let chosen = wanted
+    if (currentModel(this.modelOption)?.value !== wanted.value) {
+      const response = (await connection.agent.request(acp.methods.agent.session.setConfigOption, {
+        sessionId: this.acpSessionId,
+        configId: wanted.configId,
+        value: wanted.value
+      } as any)) as any
+      this.modelOption = modelConfigOption(response) ?? this.modelOption
+      chosen = currentModel(this.modelOption) ?? wanted
+      // A model change rewrites the rest of the adapter's settings: Claude Code
+      // offers no effort at all on a model without effort levels, and the levels
+      // themselves differ between models. The picker has to follow, so the fresh
+      // list goes back on the row with the model that caused it.
+      this.configOptions = adapterConfigOptions(response)
+      await updateAgentSession(this.agentSessionId, {
+        model: chosen.value,
+        configOptions: this.configOptions
+      })
+    } else {
+      // Already on it, so nothing is asked and nothing is refreshed — the
+      // options under a model that did not change did not change either. The
+      // row may still be behind it (a drift the last attach corrected), and
+      // that much is worth writing.
+      if (session?.model === chosen.value) return
+      await updateAgentSession(this.agentSessionId, { model: chosen.value })
+    }
+
     await appendAgentEvent(this.agentSessionId, 'model_changed', {
       modelId: chosen.value,
       name: chosen.name,
@@ -1309,21 +1460,34 @@ class AgentRuntime {
   }
 
   /**
-   * Change one of the adapter's own settings on a running session.
+   * Change one of the adapter's own settings — in the adapter if one is
+   * running, on the row either way.
    *
    * `configId` is matched loosely (`findConfigOption`) so "reasoning effort"
    * reaches `effort` on Claude Code and `reasoning_effort` on Codex — the two
    * adapters do not share the id, and a caller should not have to care which
    * one it is talking to. What the adapter answers with is what gets recorded,
    * and the request is remembered in `config` so the next attach re-applies it.
+   *
+   * This is the one setting a stopped session can still check properly: the
+   * row carries the list the adapter last reported (`configOptions`), which is
+   * also the list the composer renders its pickers from, so both the id and
+   * the value are resolved against exactly what the user was offered. What is
+   * *not* written offline is `configOptions` itself — that column is the
+   * adapter's own report, and a value nobody has confirmed does not belong in
+   * it.
    */
   async setConfigOption(configId: string, value: string): Promise<void> {
-    await this.ensureStarted()
-    if (!this.connection || !this.acpSessionId) return
+    const connection = await this.liveConnection()
+    const session = await getAgentSession(this.agentSessionId)
 
-    const option = findConfigOption(this.configOptions, configId)
+    // The adapter's own word while it is up; the row's copy of its last word
+    // when it is not. Never the row while a connection exists — a session that
+    // drifted would agree with itself and never be corrected.
+    const offered = connection ? this.configOptions : (session?.configOptions ?? null)
+    const option = findConfigOption(offered, configId)
     if (!option) {
-      const known = (this.configOptions ?? []).map(entry => entry.id).join(', ')
+      const known = (offered ?? []).map(entry => entry.id).join(', ')
       throw new Error(
         `This session has no setting matching "${configId}". It offers: ${known || '(none)'}.`
       )
@@ -1336,23 +1500,34 @@ class AgentRuntime {
       )
     }
 
-    const response = (await this.connection.agent.request(acp.methods.agent.session.setConfigOption, {
-      sessionId: this.acpSessionId,
-      configId: option.id,
-      value: resolved
-    } as any)) as any
-    this.configOptions = adapterConfigOptions(response)
+    if (connection && option.currentValue !== resolved) {
+      const response = (await connection.agent.request(acp.methods.agent.session.setConfigOption, {
+        sessionId: this.acpSessionId,
+        configId: option.id,
+        value: resolved
+      } as any)) as any
+      this.configOptions = adapterConfigOptions(response)
+      await updateAgentSession(this.agentSessionId, {
+        config: { ...(session?.config ?? {}), [option.id]: resolved },
+        configOptions: this.configOptions
+      })
+    } else {
+      // Either there is no adapter, or it is already on this value. Both leave
+      // the row's `config` as the only thing to write — and it is still worth
+      // writing when the adapter is already there, because that column is what
+      // pins the choice through the next `session/load`.
+      if (session?.config?.[option.id] === resolved) return
+      await updateAgentSession(this.agentSessionId, {
+        config: { ...(session?.config ?? {}), [option.id]: resolved }
+      })
+    }
 
-    const session = await getAgentSession(this.agentSessionId)
-    await updateAgentSession(this.agentSessionId, {
-      config: { ...(session?.config ?? {}), [option.id]: resolved },
-      configOptions: this.configOptions
-    })
     await appendAgentEvent(this.agentSessionId, 'config_changed', {
       configId: option.id,
       name: option.name,
       value: resolved,
-      requested: value
+      requested: value,
+      ...pendingMark(!!connection)
     })
   }
 

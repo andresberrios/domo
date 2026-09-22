@@ -1,37 +1,34 @@
-import { acpManager } from '../../../lib/acp/manager'
-import { getAgentSession, updateAgentSession } from '../../../lib/repo'
+import { applyAgentSessionPatch, type AgentSessionPatch } from '../../../lib/acp/session-settings'
+import { getAgentSession } from '../../../lib/repo'
 
 /**
  * The one endpoint for changing anything about an agent session: title,
- * archived, permission mode, model, or any of the adapter's own settings.
- * `modeId`, `model` and `config` go through the live adapter connection
- * (`session/set_mode` / `session/set_config_option`) because those are
- * requests to the running process, not plain column writes; `title` and
- * `archived` are written straight to the row. All of them may arrive in the
- * same call, and `config` is applied after `model` because an adapter
- * publishes its settings per model.
+ * archived, permission mode, model, or any of the adapter's own settings. All
+ * of them may arrive in the same call.
+ *
+ * What each field means and in what order they are applied is
+ * `applyAgentSessionPatch`'s, not this route's — the voice tool and the mesh
+ * tool of the same name go through the same function, and the ordering it owns
+ * (the live requests before the column writes, `config` after `model` because
+ * an adapter publishes its settings per model) is the kind of thing that is
+ * wrong the moment it is written down twice.
+ *
+ * What stays here is the part that differs per surface: resolving the target.
+ * This one takes an id from the path and nothing else, because the caller is a
+ * browser that already knows exactly which session it is looking at — where
+ * voice resolves a fuzzy title and the mesh defaults to the calling agent and
+ * refuses to archive it.
  */
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
-  const body = await readBody<{
-    title?: string
-    archived?: boolean
-    modeId?: string
-    model?: string
-    /** The adapter's own settings, by config option id. */
-    config?: Record<string, string>
-  }>(event)
+  const body = await readBody<AgentSessionPatch>(event)
 
-  if (body?.modeId) await acpManager.setMode(id, body.modeId)
-  if (body?.model) await acpManager.setModel(id, body.model)
-  for (const [configId, value] of Object.entries(body?.config ?? {})) {
-    await acpManager.setConfigOption(id, configId, value)
-  }
-
-  const { modeId: _modeId, model: _model, config: _config, ...columns } = body ?? {}
-  const session = Object.keys(columns).length
-    ? await updateAgentSession(id, columns)
-    : await getAgentSession(id)
+  const session = await getAgentSession(id)
   if (!session) throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
-  return session
+
+  await applyAgentSessionPatch(session, body ?? {})
+  // The row as it now stands, not the patch's own summary: the browser renders
+  // the session, and a mode or model the adapter answered differently about is
+  // exactly what it needs back.
+  return (await getAgentSession(id))!
 })

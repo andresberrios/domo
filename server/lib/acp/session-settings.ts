@@ -4,9 +4,9 @@ import type { AgentSession } from '../../../shared/types'
 
 /**
  * Any mix of the four things a session's own settings panel changes. Shared
- * by the voice tool and the mesh tool of the same name (`manage_agent_session`)
- * so "what these four fields mean, and in what order to apply them" is
- * written once rather than twice.
+ * by `PATCH /api/agents/[id]`, the voice tool and the mesh tool of the same
+ * name (`manage_agent_session`) so "what these four fields mean, and in what
+ * order to apply them" is written once rather than three times.
  */
 export interface AgentSessionPatch {
   title?: string
@@ -18,6 +18,7 @@ export interface AgentSessionPatch {
    * the session's own `configOptions`, so nothing here has to know them.
    */
   config?: Record<string, string>
+  /** `true` stops the session and hides it; `false` brings it back into the list. */
   archived?: boolean
 }
 
@@ -38,6 +39,13 @@ export interface AgentSessionPatchResult {
  * (unsupported mode, no matching model) in a way a rename cannot, and a
  * caller changing two fields at once should not end up with a title or an
  * archived flag written next to a mode or model change that never took.
+ *
+ * "Live" is the case, not the requirement: none of the three starts an
+ * adapter. On a stopped session they are recorded on the row and applied at
+ * the next attach (see `AgentRuntime.liveConnection`), so a caller may set up
+ * a session — rename it, put it in plan mode, move it to Opus — without a
+ * process running anywhere, and `result.mode` / `result.model` / `result.config`
+ * then report what was asked for rather than what an adapter confirmed.
  *
  * Resolving *which* session this is and deciding *whether* the caller may
  * touch it (voice's fuzzy id-or-title lookup and default to the most
@@ -69,10 +77,17 @@ export async function applyAgentSessionPatch(target: AgentSession, patch: AgentS
     await updateAgentSession(target.id, { title: patch.title })
     result.title = patch.title
   }
-  if (patch.archived) {
-    acpManager.stop(target.id)
-    await updateAgentSession(target.id, { archived: true, status: 'stopped' })
-    result.archived = true
+  // `false` is a real instruction here and not an absent one — it is how a
+  // session comes back out of the archive — so this asks whether the field was
+  // sent, not whether it was truthy. Only archiving stops anything: bringing a
+  // session back leaves it stopped until somebody prompts it.
+  if (patch.archived !== undefined) {
+    if (patch.archived) acpManager.stop(target.id)
+    await updateAgentSession(target.id, {
+      archived: patch.archived,
+      ...(patch.archived ? { status: 'stopped' as const } : {})
+    })
+    result.archived = patch.archived
   }
   return result
 }
