@@ -1382,6 +1382,11 @@ class AgentRuntime {
   async setMode(modeId: string): Promise<void> {
     const connection = await this.liveConnection()
     const session = await getAgentSession(this.agentSessionId)
+    // The boot path used to be the only way in here, and it is where the
+    // retirement guard sits. These three no longer start an adapter — that is
+    // the point of `liveConnection()` — so a retired session would otherwise
+    // take the offline branch and quietly write the row.
+    assertSessionLive(session, 'changing its settings')
 
     let effective = modeId
     if (connection) {
@@ -1462,6 +1467,11 @@ class AgentRuntime {
   async setModel(model: string): Promise<void> {
     const connection = await this.liveConnection()
     const session = await getAgentSession(this.agentSessionId)
+    // The boot path used to be the only way in here, and it is where the
+    // retirement guard sits. These three no longer start an adapter — that is
+    // the point of `liveConnection()` — so a retired session would otherwise
+    // take the offline branch and quietly write the row.
+    assertSessionLive(session, 'changing its settings')
 
     if (!connection) {
       const requested = model.trim()
@@ -1540,6 +1550,11 @@ class AgentRuntime {
   async setConfigOption(configId: string, value: string): Promise<void> {
     const connection = await this.liveConnection()
     const session = await getAgentSession(this.agentSessionId)
+    // The boot path used to be the only way in here, and it is where the
+    // retirement guard sits. These three no longer start an adapter — that is
+    // the point of `liveConnection()` — so a retired session would otherwise
+    // take the offline branch and quietly write the row.
+    assertSessionLive(session, 'changing its settings')
 
     // The adapter's own word while it is up; the row's copy of its last word
     // when it is not. Never the row while a connection exists — a session that
