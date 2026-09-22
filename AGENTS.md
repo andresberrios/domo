@@ -889,6 +889,13 @@ things that are easy to get wrong.
   hard-code `/opt/domo/node/bin/node` — npm's own shims say `#!/usr/bin/env
   node`, which finds nothing in an image without node — and the project's own
   node version still wins in the agent's shell.
+- **The bundled browser needs a newer glibc than the bundled Node, so an image
+  can pass the preflight and still have no browser.** The libraries in
+  `/opt/domo-browser` are taken from `RUNTIME_IMAGE` (bookworm, glibc 2.36) and
+  will not load below it; Node is built for an older floor and runs on
+  `ubuntu:22.04` (glibc 2.35) quite happily. Measured: that image passes
+  `preflight()`, and the browser dies with `GLIBC_2.36' not found`. Debian is a
+  build-time detail only — `fedora:41` runs the same volume fine.
 - **The preflight is where an unusable image is caught.** `git` missing, the
   bundled node failing to exec (Alpine/musl: `exec … no such file or directory`),
   or `docker info` not answering within 30 s each fail creation with a sentence
@@ -977,7 +984,12 @@ things that are easy to get wrong.
   connection, no limit. That applies to a screenshot pass, a DevTools or
   Playwright session and any scripted browser alike — on plain HTTP the second
   page you open tells you nothing. Run `caddy trust` once if the certificate
-  is refused.
+  is refused. **From inside a dev environment the address is
+  `https://host.docker.internal:3666`** — the Caddyfile names it as a second
+  site address for exactly this reason. Before it did, a container could reach
+  only the plain-HTTP port, and the blank-tab failure above was measured in
+  there rather than assumed. Nothing in a container trusts Caddy's CA and
+  nothing needs to: tell the browser to ignore certificate errors.
 - **`scripts/dev.mjs` sets `PORT`, and that is load-bearing.**
   `internalBaseUrl()` (`server/lib/internal-url.ts`) reads it to build the URL
   of the agent-mesh MCP endpoint handed to every adapter. `nuxt dev --port`
@@ -1268,10 +1280,9 @@ and permissions are end to end because a permission is a row.
   the code is right or wrong. It was removed rather than left as a false
   negative; the mechanism (`active-class` → `has-[a.row-active]`) is Vue
   Router's own and has to be confirmed by looking at it.
-- **The theme was *not* checked in a rendered browser.** This change was made
-  in a dev environment with no browser in it, so the palette, the font and the
-  sidebar's hover/touch behaviour have been verified only by their contrast
-  arithmetic, by the built CSS and by component tests. The a11y tree will not
+- **The theme was *not* checked in a rendered browser.** The palette, the font
+  and the sidebar's hover/touch behaviour have been verified only by their
+  contrast arithmetic, by the built CSS and by component tests. The a11y tree will not
   tell you whether a forest green reads as organic or as swamp, and it will not
   tell you whether the row actions fit at 390px. **The host still has to look at
   it** — light and dark, desktop and mobile, over the Caddy HTTPS address.
@@ -1311,9 +1322,8 @@ and permissions are end to end because a permission is a row.
   failed count, that a click expands to the real `ToolCallCard`s and collapses
   again, and that a pending permission and the running call stay outside the
   group; `test/unit/condenseTranscript.spec.ts` pins the pass itself. No
-  screenshot: the environment this was written in has no browser, so how the
-  row *looks* beside the cards around it — and how it wraps at mobile widths —
-  is still worth a real rendered pass.
+  screenshot: how the row *looks* beside the cards around it, and how it wraps
+  at mobile widths, is still worth a real rendered pass.
 - **Steering was read out of both adapters' shipped bundles, not assumed.**
   `STEER_METHOD = "_session/steering"` and `_meta: { steering: { supported:
   true } }` in claude-agent-acp's `acp-agent.js`; `SESSION_STEERING_METHOD` and
