@@ -21,9 +21,10 @@ import { dataDir } from './paths'
 import { getSettings } from './settings'
 import {
   createDevEnvironmentRow,
-  deleteDevEnvironmentRow,
   getDevEnvironment,
   getProject,
+  pruneEmptyTombstones,
+  softDeleteDevEnvironmentRow,
   updateDevEnvironment,
   upsertDevEnvironmentPort
 } from './repo'
@@ -45,6 +46,18 @@ export function workspaceVolumeName(environmentId: string): string {
 
 function containerReference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
+}
+
+/**
+ * A deleted environment is a tombstone kept for the retired sessions that name
+ * it — there is no container, no volume and no image behind it. Every lifecycle
+ * call has to say so rather than fail somewhere inside `docker`.
+ */
+function assertNotDeleted(environment: DevEnvironment): void {
+  if (!environment.deletedAt) return
+  throw new Error(
+    `Development environment "${environment.name}" was deleted; its container and checkout no longer exist.`
+  )
 }
 
 async function copyRepository(source: string, environmentId: string): Promise<string> {
@@ -154,6 +167,7 @@ export async function createEnvironment(input: {
 }): Promise<DevEnvironment> {
   const project = await getProject(input.projectId)
   if (!project) throw new Error('Project not found')
+  if (project.deletedAt) throw new Error('That project has been deleted; its environments cannot be recreated.')
   await access(join(project.repoPath, '.git'))
 
   const id = newId('env')
@@ -300,6 +314,7 @@ async function toolConfigDir(variable: string, fallbackName: string): Promise<st
 export async function startEnvironment(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
+  assertNotDeleted(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (!inspection) throw new Error('The environment container no longer exists. Delete and recreate the environment.')
   if (!inspection.running) await run('docker', ['start', inspection.id])
@@ -311,6 +326,7 @@ export async function startEnvironment(id: string): Promise<DevEnvironment> {
 export async function stopEnvironment(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
+  assertNotDeleted(environment)
   const inspection = await inspectContainer(containerReference(environment))
   stopEnvironmentForwarders(id)
   if (inspection?.running) await run('docker', ['stop', inspection.id])
@@ -320,6 +336,7 @@ export async function stopEnvironment(id: string): Promise<DevEnvironment> {
 export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
+  assertNotDeleted(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (inspection?.running) {
     if (environment.status !== 'running') {
@@ -330,6 +347,17 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
   return startEnvironment(id)
 }
 
+/**
+ * Remove an environment's container, its workspace volume and its image, and
+ * tombstone the row.
+ *
+ * The row outlives all three deliberately: the agent sessions that ran here are
+ * retired rather than deleted, and a transcript that cannot say which
+ * environment it came from is worth less. Nothing about the environment is
+ * recoverable — the checkout only ever existed in the volume — so the tombstone
+ * is a label and never a thing to restart. It is dropped for real by
+ * `pruneEmptyTombstones` once the last session naming it has been purged.
+ */
 export async function removeEnvironment(id: string): Promise<void> {
   const environment = await getDevEnvironment(id)
   if (!environment) return
@@ -338,7 +366,8 @@ export async function removeEnvironment(id: string): Promise<void> {
   await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
   await removeImage(environmentImageName(id))
   await collectRuntimeVolumes().catch(() => {})
-  await deleteDevEnvironmentRow(id)
+  await softDeleteDevEnvironmentRow(id)
+  await pruneEmptyTombstones()
 }
 
 export function containerExecArgs(environment: DevEnvironment, env: NodeJS.ProcessEnv = {}): string[] {

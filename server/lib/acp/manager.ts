@@ -17,6 +17,7 @@ import { mintMeshToken } from '../mesh/token'
 import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEntry, adapterEnv } from './adapter-process'
+import { assertSessionLive } from './retirement'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
 import {
@@ -525,6 +526,12 @@ class AgentRuntime {
   private async boot(): Promise<void> {
     const session = await getAgentSession(this.agentSessionId)
     if (!session) throw new Error(`Agent session ${this.agentSessionId} not found`)
+    // Before anything is spawned, and before the row is touched. Every path
+    // that can bring an adapter up — a prompt, a delivery, `start`, a mode or
+    // model change, the mesh, cron — arrives at `ensureStarted` and therefore
+    // here, so this is the one check that cannot be routed around. The nearer
+    // guards below exist to give a better message, not to close a hole.
+    assertSessionLive(session, 'starting its adapter')
 
     // Pick the row's reading back up, so a reattach neither rewrites the same
     // numbers nor loses the context window it already learned: mid-stream
@@ -1064,6 +1071,7 @@ class AgentRuntime {
     turn: Turn,
     controller: AbortController
   ): Promise<{ stopReason: string }> {
+    assertSessionLive(await getAgentSession(this.agentSessionId), 'sending it a message')
     await this.ensureStarted()
     if (!this.connection || !this.acpSessionId) throw new Error('agent not started')
 
@@ -1131,6 +1139,11 @@ class AgentRuntime {
     origin: MessageOrigin
   }): Promise<DeliveryResult> {
     return this.serialDeliver(async () => {
+      // Ahead of `ensureStarted` so the caller is told *why* rather than being
+      // handed a boot failure, and ahead of every branch below so a retired
+      // session cannot even be queued for — see `enqueueInboxMessage`, which
+      // guards the one write that does not come through here.
+      assertSessionLive(await getAgentSession(this.agentSessionId), 'sending it a message')
       await this.ensureStarted()
 
       if (!this.turn) {

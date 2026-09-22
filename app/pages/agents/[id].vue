@@ -7,8 +7,8 @@ const toast = useToast()
 
 const agentId = computed(() => route.params.id as string)
 
-const { sessions } = useAgentSessions()
-const { environments } = useDevEnvironments()
+const { session: synced } = useAgentSession(agentId)
+const { all: allEnvironments } = useDevEnvironments()
 const { events } = useAgentEvents(agentId)
 const { permissions, pending } = usePermissions(agentId)
 const { queued } = useAgentInbox(agentId)
@@ -20,16 +20,25 @@ const { data: fetched, refresh } = await useFetch<AgentSession>(
 )
 
 /** Live-synced row wins; the fetch is only there for the first paint. */
-const session = computed<AgentSession | null>(
-  () => sessions.value.find(item => item.id === agentId.value) ?? fetched.value ?? null
-)
+const session = computed<AgentSession | null>(() => synced.value ?? fetched.value ?? null)
+
+/**
+ * The environment *including* a deleted one. A retired session's whole point is
+ * that it still says where it ran, and the banner needs the tombstone to
+ * explain why it cannot be revived.
+ */
 const environment = computed(() =>
-  environments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
+  allEnvironments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
 )
+
+/** A retired session is a record: no composer, no inbox actions, no start. */
+const retired = computed(() => !!session.value?.retiredAt)
 
 const renaming = ref(false)
 const titleDraft = ref('')
 const starting = ref(false)
+const confirmingRetire = ref(false)
+const confirmingPurge = ref(false)
 
 async function start() {
   starting.value = true
@@ -56,22 +65,60 @@ async function saveTitle() {
 
 async function archive() {
   await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { archived: true } })
-  toast.add({ title: 'Agent archived', color: 'neutral' })
+  toast.add({ title: 'Agent archived', description: 'Find it again in the archive.', color: 'neutral' })
   await router.push('/')
 }
 
-async function remove() {
-  await $fetch(`/api/agents/${agentId.value}`, { method: 'DELETE' })
-  toast.add({ title: 'Agent deleted', color: 'neutral' })
-  await router.push('/')
+async function unarchive() {
+  await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { archived: false } })
+  toast.add({ title: 'Agent unarchived', color: 'neutral' })
+  await refresh()
 }
 
-const menuItems = computed(() => [
-  { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
-  { label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start },
-  { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
-  { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: remove }
-])
+/** Deleting keeps the transcript now; the row becomes a record of the session. */
+async function retire() {
+  confirmingRetire.value = false
+  try {
+    await $fetch(`/api/agents/${agentId.value}`, { method: 'DELETE' })
+    toast.add({
+      title: 'Agent retired',
+      description: 'Its transcript is kept and stays readable in the archive.',
+      color: 'neutral'
+    })
+    await refresh()
+  } catch (error: any) {
+    toast.add({ title: 'Could not retire the agent', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  }
+}
+
+async function purge() {
+  confirmingPurge.value = false
+  try {
+    await $fetch(`/api/agents/${agentId.value}?purge=true`, { method: 'DELETE' })
+    toast.add({ title: 'Agent deleted', description: 'Its transcript is gone.', color: 'neutral' })
+    await router.push('/archive')
+  } catch (error: any) {
+    toast.add({ title: 'Could not delete the agent', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  }
+}
+
+const menuItems = computed(() => {
+  const rename = { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } }
+  if (retired.value) {
+    return [
+      rename,
+      { label: 'Delete permanently', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingPurge.value = true } }
+    ]
+  }
+  return [
+    rename,
+    { label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start },
+    session.value?.archived
+      ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: unarchive }
+      : { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
+    { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire.value = true } }
+  ]
+})
 </script>
 
 <template>
@@ -83,7 +130,8 @@ const menuItems = computed(() => [
         </template>
 
         <template #trailing>
-          <StatusDot v-if="session" :status="session.status" />
+          <UBadge v-if="retired" color="neutral" variant="subtle" size="sm" label="Retired" />
+          <StatusDot v-else-if="session" :status="session.status" />
         </template>
 
         <template #right>
@@ -92,7 +140,7 @@ const menuItems = computed(() => [
             :provider="session?.adapter === 'codex' ? 'codex' : 'claude'"
           />
           <UButton
-            v-if="session && (session.status === 'stopped' || session.status === 'error')"
+            v-if="session && !retired && (session.status === 'stopped' || session.status === 'error')"
             :label="'Start'"
             icon="i-lucide-play"
             size="sm"
@@ -120,10 +168,10 @@ const menuItems = computed(() => [
           />
           <UBadge
             v-if="environment"
-            color="primary"
+            :color="environment.deletedAt ? 'neutral' : 'primary'"
             variant="subtle"
             size="sm"
-            :label="environment.name"
+            :label="environment.deletedAt ? `${environment.name} (deleted)` : environment.name"
           >
             <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
           </UBadge>
@@ -138,7 +186,13 @@ const menuItems = computed(() => [
     <template #body>
       <div class="flex h-full min-h-0 flex-col">
         <ServiceBanner />
-        <AgentErrorBanner v-if="session" :session="session" @retried="refresh" />
+        <AgentRetiredBanner
+          v-if="session && retired"
+          :session="session"
+          :environment="environment"
+          @revived="refresh"
+        />
+        <AgentErrorBanner v-else-if="session" :session="session" @retried="refresh" />
 
         <div v-if="!events.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
           <div class="max-w-sm text-center">
@@ -147,7 +201,9 @@ const menuItems = computed(() => [
               Nothing here yet
             </p>
             <p class="mt-1 text-sm text-muted">
-              Send this agent a task below, or tell Domo out loud what you want it to do.
+              {{ retired
+                ? 'This session was retired before it did anything worth keeping.'
+                : 'Send this agent a task below, or tell Domo out loud what you want it to do.' }}
             </p>
           </div>
         </div>
@@ -170,7 +226,7 @@ const menuItems = computed(() => [
           </div>
         </div>
 
-        <div v-if="pending.length" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
+        <div v-if="pending.length && !retired" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
           <PermissionCard
             v-for="permission in pending"
             :key="permission.id"
@@ -178,11 +234,16 @@ const menuItems = computed(() => [
           />
         </div>
 
+        <!--
+          Still rendered for a retired session: what was waiting when it ended is
+          part of the record. `readonly` drops the take-back button, which would
+          be the one thing on this page that still wrote to a closed session.
+        -->
         <div v-if="queued.length" class="shrink-0 pt-2">
-          <AgentInbox :agent-session-id="agentId" :messages="queued" />
+          <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="retired" />
         </div>
 
-        <div class="shrink-0 pt-2">
+        <div v-if="!retired" class="shrink-0 pt-2">
           <AgentComposer v-if="session" :session="session" />
         </div>
       </div>
@@ -197,6 +258,22 @@ const menuItems = computed(() => [
             </div>
           </template>
         </UModal>
+
+        <ConfirmModal
+          v-model:open="confirmingRetire"
+          :title="`Retire ${session?.title}?`"
+          description="Stops the adapter, cancels its schedules and subscriptions, and takes it off the session list for good. Its transcript is kept and stays readable in the archive, and it can be revived while the environment it ran in still exists."
+          confirm-label="Retire session"
+          @confirm="retire"
+        />
+
+        <ConfirmModal
+          v-model:open="confirmingPurge"
+          :title="`Delete ${session?.title} permanently?`"
+          description="Destroys the session row and every event in its transcript. This is the one action here that loses the record, and it cannot be undone."
+          confirm-label="Delete permanently"
+          @confirm="purge"
+        />
     </template>
   </UDashboardPanel>
 </template>

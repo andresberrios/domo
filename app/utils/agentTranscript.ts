@@ -38,7 +38,15 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   mesh_outbound: payload => `Sent to agent "${payload?.toTitle ?? payload?.to}": ${payload?.message}`,
   mesh_spawned: payload => `Spawned agent "${payload?.title}"`,
   mesh_message: payload => `Told the voice supervisor: ${payload?.message}`,
-  cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`
+  cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
+  retired: (payload) => {
+    switch (payload?.reason) {
+      case 'environment-deleted': return 'Retired: its development environment was deleted'
+      case 'project-deleted': return 'Retired: its project was deleted'
+      default: return 'Retired — read-only from here'
+    }
+  },
+  revived: () => 'Revived'
 }
 
 function textFromContent(content: any): string {

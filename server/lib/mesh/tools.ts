@@ -1,5 +1,6 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { assertSessionLive } from '../acp/retirement'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
@@ -183,7 +184,9 @@ export const MESH_TOOLS = [
         settingValue: { type: 'string', description: 'The value for setting, e.g. "high".' },
         archived: {
           type: 'boolean',
-          description: 'Set true to shut the session down and hide it from the session list. Refused on this agent\'s own session.'
+          description:
+            'Set true to shut the session down and hide it from the session list; it can be brought back later. '
+            + 'Refused on this agent\'s own session.'
         }
       },
       additionalProperties: false
@@ -250,7 +253,9 @@ export const MESH_TOOLS = [
   {
     name: 'delete_project',
     description:
-      'Delete a project along with every one of its development environments: their containers, checkouts, and coding agent sessions. Cannot be undone.',
+      'Delete a project along with every one of its development environments: their containers and checkouts. '
+      + 'The coding agent sessions that ran in them are retired rather than deleted, so their transcripts stay '
+      + 'readable, but nothing inside a container can be brought back.',
     inputSchema: {
       type: 'object',
       properties: { projectId: { type: 'string', description: 'Project id, from list_projects.' } },
@@ -289,7 +294,9 @@ export const MESH_TOOLS = [
   {
     name: 'delete_dev_environment',
     description:
-      'Delete a development environment: its container, checkout, and any coding agent sessions running in it. Cannot be undone.',
+      'Delete a development environment: its container and its checkout. The coding agent sessions running in it '
+      + 'are retired rather than deleted, so their transcripts stay readable, but they can never be revived and '
+      + 'nothing inside the container can be brought back.',
     inputSchema: {
       type: 'object',
       properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
@@ -395,6 +402,10 @@ export const MESH_TOOLS = [
 export async function callMeshTool(callerSessionId: string, tool: string, input: unknown): Promise<unknown> {
   const caller = await getAgentSession(callerSessionId)
   if (!caller) throw new Error(`No agent ${callerSessionId}`)
+  // A retired session's bearer token cannot be minted again, but one already in
+  // an adapter's hands outlives the retirement by however long that process
+  // takes to die. Nothing it asks for may act as a live agent.
+  assertSessionLive(caller, 'acting as it on the mesh')
   const args = (input ?? {}) as any
 
   switch (tool) {
@@ -436,6 +447,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'message_agent': {
       const target = await getAgentSession(args.agentId)
       if (!target) throw new Error(`No agent ${args.agentId}`)
+      assertSessionLive(target, 'messaging it')
       const from = caller.title
       // An agent writing to a peer has no idea what that peer is in the middle
       // of, so the default waits rather than cutting across it.
@@ -504,6 +516,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (args.archived && target.id === caller.id) {
         throw new Error('Refusing to archive the session this agent is running in. Ask the user or another agent to do it.')
       }
+      assertSessionLive(target, 'changing its settings')
       return applyAgentSessionPatch(target, {
         ...args,
         config: args.setting && args.settingValue ? { [args.setting]: args.settingValue } : undefined
@@ -513,6 +526,9 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'subscribe_to_agent': {
       const target = await getAgentSession(args.agentId)
       if (!target) throw new Error(`No agent ${args.agentId}`)
+      // A retired agent has no turn left to finish, so a subscription to it
+      // would be a row that can never fire.
+      assertSessionLive(target, 'subscribing to it')
       await subscribe(caller.id, target.id)
       return { subscribed: true, agentId: target.id, title: target.title }
     }

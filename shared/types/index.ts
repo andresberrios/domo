@@ -54,6 +54,17 @@ export type AgentSessionStatus =
 
 export type AgentAdapter = 'claude-code' | 'codex'
 
+/**
+ * Why a session was retired — why its transcript is all that is left of it.
+ *
+ * `user` is somebody pressing Retire. The other two are a cascade: deleting a
+ * dev environment (or the project above it) destroys the container, the
+ * checkout volume and the adapter's own session storage inside it, so every
+ * session that ran there is retired rather than deleted. Only `user` is ever
+ * revivable, and then only while the environment is still around.
+ */
+export type AgentRetirementReason = 'user' | 'environment-deleted' | 'project-deleted'
+
 export interface AgentSession {
   id: string
   voiceSessionId: string | null
@@ -79,7 +90,24 @@ export interface AgentSession {
   createdAt: string
   updatedAt: string
   lastActivityAt: string | null
+  /**
+   * Off the live list, but still a session: it can be unarchived and resumed.
+   *
+   * Retiring implies it, so `archived && !retiredAt` is "shelved" and
+   * `retiredAt` is "finished". Nothing may unarchive a retired session — see
+   * `retiredAt`.
+   */
   archived: boolean
+  /**
+   * When this session stopped being a session and became a record.
+   *
+   * A retired session is read-only for ever: no path may boot its adapter, and
+   * every surface that can — the prompt endpoint, the inbox, cron, the mesh,
+   * the voice tools, subscription notes — refuses it. Its `agent_events` are
+   * kept, which is the entire point. Null for a live session.
+   */
+  retiredAt: string | null
+  retiredReason: AgentRetirementReason | null
   /** Rolling summary of the agent's most recent output, for the voice agent. */
   summary: string | null
   /** Context-window occupancy and session cost, as the adapter last reported them. */
@@ -185,6 +213,11 @@ export interface Project {
   repoPath: string
   createdAt: string
   updatedAt: string
+  /**
+   * When it was deleted. The row survives its own deletion so a retired agent
+   * session can still say where it ran; nothing about it is restorable.
+   */
+  deletedAt: string | null
 }
 
 export type DevEnvironmentStatus = 'creating' | 'running' | 'stopped' | 'error'
@@ -204,6 +237,13 @@ export interface DevEnvironment {
   lastError: string | null
   createdAt: string
   updatedAt: string
+  /**
+   * When the container, its workspace volume and its image were destroyed.
+   *
+   * The row outlives them as a label for the sessions that ran here. It is
+   * never restorable, which is also what makes those sessions unrevivable.
+   */
+  deletedAt: string | null
 }
 
 export interface DevEnvironmentPort {
@@ -314,7 +354,8 @@ export interface PendingPermission {
   createdAt: string
   resolvedAt: string | null
   resolvedOptionId: string | null
-  resolvedBy: 'user' | 'voice-agent' | 'auto' | null
+  /** `retired` is a request that was never answered because the session ended under it. */
+  resolvedBy: 'user' | 'voice-agent' | 'auto' | 'retired' | null
 }
 
 /**

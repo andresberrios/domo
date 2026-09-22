@@ -1,4 +1,5 @@
 import { acpManager } from '../../../lib/acp/manager'
+import { assertSessionLive } from '../../../lib/acp/retirement'
 import { getAgentSession, updateAgentSession } from '../../../lib/repo'
 
 /**
@@ -10,6 +11,11 @@ import { getAgentSession, updateAgentSession } from '../../../lib/repo'
  * `archived` are written straight to the row. All of them may arrive in the
  * same call, and `config` is applied after `model` because an adapter
  * publishes its settings per model.
+ *
+ * On a *retired* session only `title` is allowed. The three adapter requests
+ * cannot reach a process that no longer exists, and `archived: false` would
+ * quietly put a retired session back on the live list without reviving it —
+ * unarchiving is not revival, and `POST /revive` is the only door back.
  */
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
@@ -21,6 +27,15 @@ export default defineEventHandler(async (event) => {
     /** The adapter's own settings, by config option id. */
     config?: Record<string, string>
   }>(event)
+
+  const existing = await getAgentSession(id)
+  if (!existing) throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
+  if (
+    existing.retiredAt
+    && (body?.modeId || body?.model || body?.config || body?.archived !== undefined)
+  ) {
+    assertSessionLive(existing, 'changing anything but its title')
+  }
 
   if (body?.modeId) await acpManager.setMode(id, body.modeId)
   if (body?.model) await acpManager.setModel(id, body.model)
