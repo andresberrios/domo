@@ -2410,6 +2410,29 @@ describe('a turn the agent starts for itself', () => {
     })
   })
 
+  /**
+   * Rows written before the watchdog existed are sitting at `thinking` right
+   * now, on processes that will not restart just for them. A restart's own
+   * sweep in `server/plugins/boot.ts` catches them; this is the lever a person
+   * has in the meantime, and it is the retry button they would already press.
+   */
+  it('recovers a session left stuck by a version that had no watchdog', async () => {
+    const { acpManager, agent } = await attached('Stuck')
+    const { updateAgentSession } = await import('../../server/lib/repo')
+
+    // The exact shape the bug left: the row says it is working, the adapter is
+    // up and idle, and nothing will ever arrive to say otherwise.
+    await updateAgentSession(agent.id, { status: 'thinking' })
+    expect(await statusOf(agent.id)).toBe('thinking')
+
+    await acpManager.start(agent.id)
+
+    expect(await statusOf(agent.id)).toBe('idle')
+    // Nothing invented to explain it: the transcript is the adapter's, not a
+    // turn this made up.
+    expect(await typesOf(agent.id)).toEqual([])
+  })
+
   it('holds open for a permission, because what that waits on is a person', async () => {
     const { acpManager, agent, connection } = await attached()
 

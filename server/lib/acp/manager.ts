@@ -117,6 +117,12 @@ const STEERING_META = { steering: { idleBehavior: 'promptRequired' } }
  * `boot()` — that is, after `restoring` has been cleared, on a session that is
  * only attaching and has no turn of any kind.
  */
+/**
+ * The statuses that claim a session is mid-something, and so are the ones a
+ * live adapter with no turn and no waiter can disprove. See `reconcileStatus`.
+ */
+const BUSY_STATUSES = new Set<AgentSessionStatus>(['starting', 'thinking', 'awaiting-permission', 'error'])
+
 const SESSION_STATE_UPDATES = new Set([
   'usage_update',
   'available_commands_update',
@@ -754,14 +760,32 @@ class AgentRuntime {
   }
 
   /**
-   * The row still says `error`, but the adapter is up and nothing is running.
+   * The row claims something the runtime can disprove, so correct it.
    *
-   * That is the shape a *failed turn* leaves behind, and `ensureStarted` is a
-   * no-op for it — so without this a retry on a session-limit error would
-   * change nothing at all and the banner would stay put.
+   * An adapter that is up with no turn in flight and nobody waiting on a
+   * permission is idle — there is no state left for it to be in — and two rows
+   * get stuck saying otherwise. `error` is the shape a *failed turn* leaves
+   * behind, and `ensureStarted` is a no-op for it, so without this a retry on a
+   * session-limit error would change nothing and the banner would stay put.
+   * `thinking` is what a turn Domo could not see the end of used to leave
+   * behind for ever; nothing can reach that state now, but rows written before
+   * the watchdog existed are still out there and a live process will not
+   * restart just for them.
+   *
+   * Only ever called with a reason to look — `acpManager.start`, which is the
+   * retry button and the only thing a person can press at a stuck session.
+   * There is no sweep, because there is no clock-driven state here to
+   * reconcile: what makes the row wrong is a process that is already running,
+   * and a restart's own sweep in `server/plugins/boot.ts` catches the rest.
    */
-  async clearStaleError(): Promise<void> {
-    if (this.status !== 'error' || this.turn || !this.alive || !this.acpSessionId) return
+  async reconcileStatus(): Promise<void> {
+    if (this.turn || this.waiters.size || !this.alive || !this.acpSessionId) return
+    // The *row*, not `this.status`, which is only a memo of what this process
+    // last wrote and says nothing about a row left behind by a different one.
+    const session = await getAgentSession(this.agentSessionId)
+    if (!session || !BUSY_STATUSES.has(session.status)) return
+    // `touch` because `setStatus` skips a write that matches its memo, and the
+    // memo is exactly what is not to be trusted here.
     await this.setStatus('idle', { lastError: null, touch: true })
   }
 
@@ -1459,7 +1483,7 @@ class AgentRuntime {
    * Claim the turn slot for a turn the agent started on its own.
    *
    * The slot is the same one `prompt` uses, and deliberately so: `busy`,
-   * `deliver`, `drainInbox` and `clearStaleError` all ask "is a turn running",
+   * `deliver`, `drainInbox` and `reconcileStatus` all ask "is a turn running",
    * and every one of them wants the same answer about this one. A second field
    * beside `this.turn` would mean four call sites to keep in step and one of
    * them eventually missed.
@@ -2275,9 +2299,10 @@ class AcpManager {
   async start(agentSessionId: string): Promise<void> {
     const runtime = this.runtime(agentSessionId)
     await runtime.ensureStarted()
-    // A failed boot clears the error in `boot()`; a failed turn leaves a live
-    // adapter, which `ensureStarted` has nothing to do about.
-    await runtime.clearStaleError()
+    // A failed boot clears the error in `boot()`; a failed turn — and a turn
+    // from before the watchdog that never ended — leave a live adapter, which
+    // `ensureStarted` has nothing to do about.
+    await runtime.reconcileStatus()
   }
 
   /** Fire-and-forget turn: the UI and the voice bar follow it through events. */
