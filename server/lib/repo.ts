@@ -874,28 +874,29 @@ const SOURCE_PREFERENCE_MS = 15 * 60_000
  * row goes with it. A session event names one or two windows and knows nothing
  * about the rest, so it must never remove anything.
  *
- * `touchUnchanged` (default on) writes `updated_at` even when a check repeats
- * the same reading — it is what an "as of X ago" caption reads, and skipping
- * the write when nothing moved left the caption stuck on the *previous*
- * different reading, sometimes hours old, right after a refresh had just
- * confirmed the number. That is safe at the poller's own floor (once a minute
- * at most per provider, and every row here is streamed with `REPLICA IDENTITY
- * FULL` regardless of how many columns moved, so there is no cheaper write to
- * fall back to anyway) — but it is not safe on the session-event path in
- * `AgentRuntime.noteUsage`, which rides in on every `usage_update` and can fire
- * several times a second while an agent is writing. That caller passes
- * `touchUnchanged: false` to keep the original no-op-when-identical guard, or
- * a long answer would re-stream this row to every browser on every delta.
- * `changed` always tracks only genuine value changes regardless: the
- * `usage-limits-changed` bus event means "something moved", never "something
- * was checked".
+ * Every write moves `updated_at`, including one that repeats the reading
+ * exactly. That column is what an "as of X ago" caption reads, and skipping
+ * the write when nothing had moved left the caption stuck on the *previous*
+ * different reading — sometimes hours old — right after a refresh had just
+ * confirmed the number. There is no cheaper write to fall back to either:
+ * `usage_limits` is `REPLICA IDENTITY FULL`, so the whole row re-streams to
+ * every browser however few columns changed.
+ *
+ * What keeps that affordable is that nothing calls this often. The poller is
+ * floor-limited to one attempt a minute per provider, and the session-event
+ * path — which rides in on a `usage_update` and would otherwise fire several
+ * times a second while an agent writes — is debounced at its source in
+ * `AgentRuntime`, so the storm never reaches this function. Keep it that way:
+ * a new caller on a per-delta path needs its own debounce, not a flag here.
+ *
+ * `changed` tracks only genuine value changes: the `usage-limits-changed` bus
+ * event means "something moved", never "something was checked".
  */
 export async function writeUsageLimits(
   provider: UsageProviderId,
   limits: UsageLimitValue[],
-  options: { replace: boolean, touchUnchanged?: boolean } = { replace: true }
+  options: { replace: boolean } = { replace: true }
 ): Promise<void> {
-  const touchUnchanged = options.touchUnchanged ?? true
   const now = nowIso()
   const existing = new Map((await listUsageLimits(provider)).map(row => [row.limitId, row]))
   let changed = false
@@ -906,9 +907,7 @@ export async function writeUsageLimits(
       // A sparser source only wins once the better one has gone stale.
       if (SOURCE_RANK[limit.source] < SOURCE_RANK[current.source]
         && Date.now() - Date.parse(current.updatedAt) < SOURCE_PREFERENCE_MS) continue
-      const same = sameLimit(current, limit)
-      if (same && !touchUnchanged) continue
-      if (!same) changed = true
+      if (!sameLimit(current, limit)) changed = true
     } else {
       changed = true
     }

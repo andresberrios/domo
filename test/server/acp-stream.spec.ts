@@ -1362,6 +1362,91 @@ describe('plan limits that arrive on a working agent', () => {
     })
   })
 
+  /**
+   * Count the real writes to `usage_limits`, the same way the session-row
+   * throttle is measured: in Postgres, because what the debounce protects is
+   * the number of times a `REPLICA IDENTITY FULL` row re-streams to every
+   * open browser, and a spy on the repo function would not see that.
+   */
+  async function countLimitWrites<T>(run: () => Promise<T>): Promise<{ result: T, writes: number }> {
+    await query('create table if not exists limit_write_log (at timestamptz default now())')
+    await query('truncate limit_write_log')
+    await query(`
+      create or replace function log_limit_write() returns trigger as $$
+      begin
+        insert into limit_write_log default values;
+        return null;
+      end $$ language plpgsql`)
+    await query(`
+      create or replace trigger limit_write_counter after insert or update on usage_limits
+      for each row execute function log_limit_write()`)
+    try {
+      const result = await run()
+      const rows = await query<{ count: number }>('select count(*)::int as count from limit_write_log')
+      return { result, writes: rows[0]!.count }
+    } finally {
+      await query('drop trigger if exists limit_write_counter on usage_limits')
+    }
+  }
+
+  it('writes once for a burst of deltas, not once per reading', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+
+    const { writes } = await countLimitWrites(async () => {
+      const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+      await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+      serve(state.adapters[0]!, async (send) => {
+        // Forty readings inside one turn, which is an ordinary long answer.
+        // Every one of them carries the plan limits along with the context
+        // reading, and the number barely moves across the whole burst.
+        for (let i = 1; i <= 40; i++) {
+          await send(rateLimitUpdate({
+            status: 'allowed',
+            unifiedWindows: { five_hour: { utilization: 0.4 + i / 1000, resetsAt: 1_790_000_000 } }
+          }))
+        }
+      })
+      await started
+    })
+
+    // The trailing timer is five seconds and the turn is far shorter, so the
+    // flush at the turn boundary is the only write. The bound is what is
+    // pinned, not the exact number: forty readings must not be forty writes.
+    expect(writes).toBeGreaterThan(0)
+    expect(writes).toBeLessThanOrEqual(2)
+    // And the one that landed is the newest, not the first of the burst.
+    await vi.waitFor(async () => {
+      expect((await listUsageLimits('claude'))[0]).toMatchObject({ usedPercent: 44 })
+    })
+  })
+
+  it('writes nothing when the reading has not moved', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const unchanged = () => rateLimitUpdate({
+      status: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.4, resetsAt: 1_790_000_000 } }
+    })
+
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async send => await send(unchanged()))
+    await started
+
+    const { writes } = await countLimitWrites(async () => {
+      // A second turn reporting exactly what the first one did. The windows
+      // move on the scale of minutes, so this is the ordinary case, not an
+      // edge one — and the row is account-wide and synced, so rewriting it to
+      // say the same thing costs every open browser a round trip.
+      const again = acpManager.prompt(agent.id, [{ type: 'text', text: 'and again' }])
+      serve(state.adapters[0]!, async send => await send(unchanged()))
+      await again
+    })
+
+    expect(writes).toBe(0)
+  })
+
   it('leaves the windows it says nothing about alone', async () => {
     await writeUsageLimits('claude', [
       {
