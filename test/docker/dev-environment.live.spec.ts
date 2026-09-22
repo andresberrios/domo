@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import type { DevEnvironment } from '~~/shared/types'
+import type { DevEnvironment, WorkingTreeMode } from '~~/shared/types'
 
 /**
  * Creating a development environment for real: the real Dev Container CLI building a
@@ -145,8 +145,8 @@ async function exists(path: string): Promise<boolean> {
   return stat(path).then(() => true, () => false)
 }
 
-async function create(name = 'Live Test'): Promise<DevEnvironment> {
-  const environment = await createEnvironment({ projectId: 'prj_live', name })
+async function create(name = 'Live Test', workingTree?: WorkingTreeMode): Promise<DevEnvironment> {
+  const environment = await createEnvironment({ projectId: 'prj_live', name, workingTree })
   created.push(environment.id)
   return environment
 }
@@ -547,6 +547,97 @@ describe('exporting a branch out of an environment', () => {
     // `protocol.ext.allow` is passed per invocation and written nowhere: this
     // repository did not gain a transport that runs arbitrary commands.
     await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()
+
+    await removeEnvironment(environment.id)
+  }, HOUR / 4)
+})
+
+/**
+ * The incident this exists for: two environments were created while the host tree
+ * was dirty, the agents inside committed on top, and the branches that came back
+ * carried a stale copy of somebody else's UI work — which, merged, would have
+ * reverted a colour palette to an earlier version of itself. The export's whole
+ * value is that its diff can be trusted, so this is asserted end to end, against
+ * real git on both sides of the fetch.
+ */
+describe('an environment created while the host checkout is dirty', () => {
+  /** A checkout with committed work, ignored files the environment needs, and uncommitted work on top. */
+  async function dirtyCheckout(): Promise<string> {
+    const repo = await checkout({
+      '.gitignore': 'node_modules\n.env\n',
+      'palette.css': '--green: #118657;\n'
+    })
+    await writeIn(repo, {
+      // Uncommitted, tracked: the palette that nearly got reverted.
+      'palette.css': '--green: #02ab49;\n',
+      // Uncommitted, untracked, not ignored: `git add -A` would take this too.
+      'scratch.md': 'half an idea\n',
+      // Ignored: what the volume exists for, and what the environment needs to run.
+      'node_modules/pkg/index.js': 'module.exports = 1\n',
+      '.env': 'NUXT_SECRET=hunter2\n'
+    })
+    return repo
+  }
+
+  it('starts from HEAD, keeps the ignored files, and exports only the agent\'s own work', async () => {
+    const repo = await dirtyCheckout()
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    state.ports.length = 0
+
+    const environment = await create('Dirty Discard')
+    const exec = (...command: string[]) => run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, ...command
+    ])
+
+    // git and the filesystem agree, which is the whole property.
+    await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
+    await expect(exec('cat', 'palette.css')).resolves.toMatchObject({ stdout: '--green: #118657;' })
+    await expect(exec('git', 'rev-parse', 'HEAD')).resolves.toMatchObject({
+      stdout: (await run('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout
+    })
+    // The untracked-but-not-ignored file is on the side of the line `git add -A` takes.
+    await expect(exec('test', '-e', 'scratch.md')).rejects.toThrow()
+    // The ignored ones are not, and they are what the environment needs.
+    await expect(exec('cat', '.env')).resolves.toMatchObject({ stdout: 'NUXT_SECRET=hunter2' })
+    await expect(exec('cat', 'node_modules/pkg/index.js')).resolves.toMatchObject({ stdout: 'module.exports = 1' })
+
+    // An agent does its own, unrelated work and it comes home alone.
+    await exec('git', 'checkout', '--quiet', '-b', 'agent-work')
+    await exec('sh', '-c', 'echo shipped > shipped.txt')
+    await exec('git', 'add', '--all')
+    await exec('git', 'commit', '--quiet', '-m', 'the work the agent was asked for')
+
+    const result = await exportBranch({ environmentId: environment.id, branch: 'agent-work' })
+
+    expect(result.commits.map(commit => commit.subject)).toEqual(['the work the agent was asked for'])
+    const diff = await run('git', ['-C', repo, 'diff', '--name-only', 'HEAD', result.ref])
+    expect(diff.stdout.split('\n').filter(Boolean)).toEqual(['shipped.txt'])
+
+    await removeEnvironment(environment.id)
+  }, HOUR / 4)
+
+  it('commits what it carries, so the work arrives labelled instead of disguised', async () => {
+    const repo = await dirtyCheckout()
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    state.ports.length = 0
+
+    const environment = await create('Dirty Carry', 'carry')
+    const exec = (...command: string[]) => run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, ...command
+    ])
+
+    await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
+    // The files are the host's, and git now says so.
+    await expect(exec('cat', 'palette.css')).resolves.toMatchObject({ stdout: '--green: #02ab49;' })
+    await expect(exec('git', 'log', '-1', '--format=%s')).resolves.toMatchObject({
+      stdout: expect.stringContaining('carry the host\'s uncommitted changes into Dirty Carry')
+    })
+    const carried = await exec('git', 'show', '--name-only', '--format=', 'HEAD')
+    expect(carried.stdout.split('\n').filter(Boolean).sort()).toEqual(['palette.css', 'scratch.md'])
+    // Ignored files stayed out of the commit and stayed on disk.
+    await expect(exec('cat', '.env')).resolves.toMatchObject({ stdout: 'NUXT_SECRET=hunter2' })
 
     await removeEnvironment(environment.id)
   }, HOUR / 4)

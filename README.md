@@ -228,6 +228,14 @@ Domo at it instead of duplicating anything:
   into a private Docker volume mounted at `/workspaces/<environment>`. Nothing
   bind-mounts your working tree, so file-heavy work (installs, test runs) runs
   at native container speed and an agent's edits never touch your checkout.
+- **It starts at your last commit.** Whatever you have uncommitted stays on your
+  machine, so a branch coming back out of the environment contains the agent's
+  work and nothing else. Ignored files are still copied — `node_modules` and
+  your `.env` are there, which is what makes the copy worth having. Turn on
+  **Carry uncommitted changes from the host** when creating one if you want to
+  continue work in progress in it; those changes are then committed inside the
+  environment, so you can see them in the branch instead of finding them mixed
+  into the agent's.
 - Multiple Claude Code and Codex ACP sessions can run against that same copy.
 - With `"docker": true` the environment is privileged and has its own nested
   Docker daemon, so agents can use `docker compose` without sharing stacks with

@@ -206,6 +206,24 @@ export interface DevEnvironment {
   updatedAt: string
 }
 
+/**
+ * What to do with whatever was uncommitted on the host when an environment is
+ * created. `discard` (the default) starts the environment from the project's
+ * HEAD; `carry` brings the host's working tree over and records it as a commit,
+ * so the environment's git still agrees with its files.
+ */
+export type WorkingTreeMode = 'discard' | 'carry'
+
+/** What the host's working tree looked like when an environment was seeded, and what was done with it. */
+export interface WorkspaceSeedReport {
+  mode: WorkingTreeMode
+  /** Paths git called dirty on the host, capped; `total` is how many there really were. */
+  paths: string[]
+  total: number
+  /** The commit the carried changes were recorded as, when anything was carried. */
+  commit: string | null
+}
+
 export interface DevEnvironmentPort {
   id: string
   devEnvironmentId: string

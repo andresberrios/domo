@@ -48,7 +48,8 @@ const devEnvironments = vi.hoisted(() => ({
     projectId: input.projectId,
     name: input.name,
     status: 'running',
-    workspacePath: '/workspaces/env_new'
+    workspacePath: '/workspaces/env_new',
+    workspaceSeed: { mode: input.workingTree ?? 'discard', paths: [], total: 0, commit: null }
   })),
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
@@ -637,8 +638,31 @@ describe('projects and dev environments', () => {
       name: 'feature-x'
     })).body)
 
-    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({ projectId: project.id, name: 'feature-x' })
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: project.id,
+      name: 'feature-x',
+      workingTree: 'discard'
+    })
     expect(body).toMatchObject({ id: 'env_new', name: 'feature-x', status: 'running' })
+  })
+
+  // The host's uncommitted work is left behind unless the caller says otherwise:
+  // an agent asking for an environment has no idea what its human left in the tree.
+  it('carries the host working tree only when the caller asks for it', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+
+    await callTool(mintMeshToken(caller.id), 'create_dev_environment', {
+      projectId: project.id,
+      name: 'feature-y',
+      workingTree: 'carry'
+    })
+
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: project.id,
+      name: 'feature-y',
+      workingTree: 'carry'
+    })
   })
 
   it('starts, stops and renames a development environment', async () => {

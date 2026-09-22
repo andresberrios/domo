@@ -734,7 +734,16 @@ things that are easy to get wrong.
   busybox container (`COPYFILE_DISABLE=1`, or macOS adds `._*` files). It leaves
   out the Domo data dir when `NUXT_DATA_DIR` sits inside the project. Bind
   mounts on Docker Desktop cost 15–35x on metadata-heavy work (`git add` on 20k
-  files: 22.8 s vs 0.65 s), which is why the volume exists at all.
+  files: 22.8 s vs 0.65 s), which is why the volume exists at all. It copies the
+  **working tree**, so `reconcileWorkingTree()` makes the copy agree with the
+  HEAD beside it before anything else in the container sees it — without that an
+  agent's `git add -A` sweeps the host's uncommitted work into its own branch
+  and `exportBranch()` carries it home as the agent's, which is how a superseded
+  colour palette nearly got merged back over its replacement. Ignored files are
+  kept in both modes and that is the line rather than a convenience: an ignored
+  file cannot reach a commit without being force-added, so `git clean` there
+  must never grow an `-x` — it is what keeps `node_modules` and a gitignored
+  `.env` in place.
 - **`protocol.ext.allow=always` is passed with `-c` on the one `git fetch` that
   needs it, and written to no config, ever.** The `ext::` transport runs an
   arbitrary command, and git disables it by default for exactly that reason; a
@@ -1343,6 +1352,14 @@ and permissions are end to end because a permission is a row.
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no
   Node of its own, and an Alpine image failing the preflight and cleaning up.
+- **The dirty-checkout fix was verified against a real daemon**, `pnpm
+  test:docker` green (5 files, 67 tests, 851 s cold). Both directions were
+  asserted end to end from a dirty fixture: a `discard` environment whose
+  exported branch diffs to exactly the one file the agent wrote, and a `carry`
+  environment whose HEAD is the labelled commit holding exactly the tracked and
+  untracked host changes and nothing ignored. The `git clean -fd` behaviour
+  under it was measured separately (git 2.51.1): untracked-but-not-ignored
+  files go, ignored files stay, a directory holding only ignored content stays.
 - **Both agents were verified end to end inside a real environment**
   (`pnpm test:agents`, 11 tests, ~85 s warm): `session/new` through `docker exec`
   for Claude Code and Codex in one shared environment, each pinned to its cheap

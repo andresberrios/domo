@@ -621,12 +621,40 @@ describe('delete_project', () => {
 describe('create_dev_environment', () => {
   it('creates an environment for the named project', async () => {
     repo.listProjects.mockResolvedValue([project()])
-    devEnvironments.createEnvironment.mockResolvedValue(environment())
+    devEnvironments.createEnvironment.mockResolvedValue({
+      ...environment(),
+      workspaceSeed: { mode: 'discard', paths: ['app/main.css'], total: 1, commit: null }
+    })
 
     const result = await voiceTools.create_dev_environment!.handler({ project: 'domo', name: 'feature-auth' }, ctx)
 
-    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({ projectId: 'prj_1', name: 'feature-auth' })
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: 'prj_1',
+      name: 'feature-auth',
+      workingTree: 'discard'
+    })
     expect(result).toMatchObject({ id: 'env_1', name: 'feature-auth', status: 'running' })
+    // The voice agent is told what happened to the host's uncommitted work, so it can say so.
+    expect(result).toMatchObject({ workingTree: expect.stringContaining('1 uncommitted path') })
+  })
+
+  it('carries the host working tree only when asked', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+    devEnvironments.createEnvironment.mockResolvedValue({
+      ...environment(),
+      workspaceSeed: { mode: 'carry', paths: [], total: 2, commit: 'abcdef1234567890' }
+    })
+
+    await voiceTools.create_dev_environment!.handler(
+      { project: 'domo', name: 'feature-auth', workingTree: 'carry' },
+      ctx
+    )
+
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: 'prj_1',
+      name: 'feature-auth',
+      workingTree: 'carry'
+    })
   })
 
   it('refuses an empty name', async () => {

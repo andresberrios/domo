@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DevEnvironment, Project } from '~~/shared/types'
+import type { DevEnvironment, Project, WorkspaceSeedReport } from '~~/shared/types'
 
 /**
  * A new dev environment for one project. Shared by the sidebar's per-project
@@ -13,24 +13,44 @@ const emit = defineEmits<{ created: [environment: DevEnvironment] }>()
 const toast = useToast()
 const name = ref('')
 const submitting = ref(false)
+// Off by default: an environment seeded from a dirty host tree used to carry that
+// work back out inside the agent's own branch, invisibly. On, the same changes are
+// carried but committed, so they are still visible in the export.
+const carry = ref(false)
 
 watch(open, (isOpen) => {
-  if (isOpen) name.value = ''
+  if (isOpen) {
+    name.value = ''
+    carry.value = false
+  }
 })
+
+/** What the copy did with the host's uncommitted work, when there was any. */
+function seedDescription(seed: WorkspaceSeedReport | undefined): string {
+  const copied = 'The repository was copied into its container.'
+  if (!seed || seed.total === 0) return copied
+  const paths = `${seed.total} uncommitted ${seed.total === 1 ? 'path' : 'paths'}`
+  return seed.mode === 'carry'
+    ? `${copied} ${paths} were carried over and committed there.`
+    : `${copied} ${paths} were left behind; it starts from the last commit.`
+}
 
 async function submit() {
   const value = name.value.trim()
   if (!value || !props.project) return
   submitting.value = true
   try {
-    const environment = await $fetch<DevEnvironment>('/api/dev-environments', {
-      method: 'POST',
-      body: { projectId: props.project.id, name: value }
-    })
+    const environment = await $fetch<DevEnvironment & { workspaceSeed?: WorkspaceSeedReport }>(
+      '/api/dev-environments',
+      {
+        method: 'POST',
+        body: { projectId: props.project.id, name: value, workingTree: carry.value ? 'carry' : 'discard' }
+      }
+    )
     open.value = false
     toast.add({
       title: `${value} is ready`,
-      description: 'The repository was copied into its container.',
+      description: seedDescription(environment.workspaceSeed),
       color: 'success'
     })
     emit('created', environment)
@@ -64,6 +84,13 @@ async function submit() {
           @keyup.enter="submit"
         />
       </UFormField>
+
+      <USwitch
+        v-model="carry"
+        class="mt-4"
+        label="Carry uncommitted changes from the host"
+        description="Off, it starts from your last commit. On, whatever is uncommitted in your checkout is copied over and committed there, so it stays visible if you merge the branch back."
+      />
     </template>
 
     <template #footer>

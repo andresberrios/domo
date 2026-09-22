@@ -3,6 +3,7 @@ import { listAdapterCatalog } from '../acp/models'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
+import { describeSeed } from '../dev-env/workspace-seed'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
@@ -267,7 +268,15 @@ export const MESH_TOOLS = [
       type: 'object',
       properties: {
         projectId: { type: 'string', description: 'Project id, from list_projects.' },
-        name: { type: 'string', description: 'Short name for the environment, e.g. "feature-auth".' }
+        name: { type: 'string', description: 'Short name for the environment, e.g. "feature-auth".' },
+        workingTree: {
+          type: 'string',
+          enum: ['discard', 'carry'],
+          description:
+            'What to do with work that is uncommitted on the host. "discard" (the default) starts the '
+            + 'environment from the project\'s last commit. "carry" brings the uncommitted changes over and '
+            + 'commits them there, so they are visible rather than mixed into your own work later.'
+        }
       },
       required: ['projectId', 'name'],
       additionalProperties: false
@@ -565,8 +574,18 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'create_dev_environment': {
-      const environment = await createEnvironment({ projectId: args.projectId, name: args.name })
-      return { id: environment.id, name: environment.name, status: environment.status, workspace: environment.workspacePath }
+      const environment = await createEnvironment({
+        projectId: args.projectId,
+        name: args.name,
+        workingTree: args.workingTree === 'carry' ? 'carry' : 'discard'
+      })
+      return {
+        id: environment.id,
+        name: environment.name,
+        status: environment.status,
+        workspace: environment.workspacePath,
+        workingTree: describeSeed(environment.workspaceSeed)
+      }
     }
 
     case 'update_dev_environment': {

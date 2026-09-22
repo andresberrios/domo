@@ -195,10 +195,12 @@ describe('project details page', { timeout: 30_000 }, () => {
     })
     create.click()
 
+    // `discard` unless the switch was turned on: the host's uncommitted work must
+    // not ride along invisibly inside whatever branch comes back out.
     await vi.waitFor(() => expect(calls).toContainEqual({
       method: 'POST',
       path: '/api/dev-environments',
-      body: { projectId: 'p1', name: 'feature-billing' }
+      body: { projectId: 'p1', name: 'feature-billing', workingTree: 'discard' }
     }))
 
     wrapper.unmount()

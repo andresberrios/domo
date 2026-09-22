@@ -149,6 +149,19 @@ describe('projects', () => {
     expect(response.status).toBe(400)
   })
 
+  // Two honest states and nothing else: a typo must not fall through to the
+  // default, because the default is the one that discards the host's work.
+  it('refuses a workingTree it does not understand', async () => {
+    const response = await fetch('/api/dev-environments', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'prj_nope', name: 'api', workingTree: 'keep' })
+    })
+
+    expect(response.status).toBe(400)
+    expect((await response.json()).statusMessage).toMatch(/discard.*carry/)
+  })
+
   // The export itself needs a container; these are the routes and their errors.
   // `test/server/git-sync.spec.ts` drives the real git both ways.
   it('will not export a branch without naming one', async () => {
