@@ -12,7 +12,7 @@ else is a directory inside a project.
 | project | directories | what it is |
 | --- | --- | --- |
 | `unit` | `test/unit`, `test/docker` | plain node, no services, no Nuxt. Pure logic (`buildTranscript()`, the conversation-context builder and the
-compaction cut, formatters, settings reconciliation, `.domo.json` parsing and validation, the generated build config, the image-metadata allow-list, the `docker run` argv and the runtime volume's name, the voice tools with everything below them mocked) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
+compaction cut, formatters, settings reconciliation, `.domo.json` parsing and validation, the generated build config, the image-metadata allow-list, the `docker run` argv and the runtime volume's name, the voice tools with everything below them mocked, the usage normalisers and the poller's scheduling with injected clients) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database), the whole ACP client against a fake agent on a pair of pipes, and the voice runtime with Google replaced by a recorder (which model it asks for, and what context a connect is told after a conversation has been folded); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
@@ -98,11 +98,34 @@ visible in any single argv, and all of it has been wrong at some point.
 What is deliberately *not* tested: a real Gemini Live session and
 `useVoiceChannel` (a real browser and a real Live session; only what the runtime
 *sends* is covered, with the SDK faked — the model and voice it connects with in
-`test/server/voice-runtime-model.spec.ts`, and when a proactive note is allowed
-to reach the model in `test/unit/voice-runtime-notes.spec.ts`, where the repo,
-the settings and the tools are faked too so it needs no database). That is the
-whole list now: spawning ACP adapters used to be on it and is covered by
-`agents-live`.
+`test/server/voice-runtime-model.spec.ts`, when a proactive note is allowed
+to reach the model in `test/unit/voice-runtime-notes.spec.ts`, and what it
+records about its context window in `test/unit/voice-runtime-usage.spec.ts`,
+where the repo, the settings and the tools are faked too so they need no
+database). That is the whole list now: spawning ACP adapters used to be on it
+and is covered by `agents-live`.
+
+### No layer may reach a real usage account
+
+The usage poller starts with the Nitro server, so both server-backed layers
+would have polled a real Claude and a real Codex on boot. Blanking the API keys
+does not stop it — the poller reads `NUXT_CLAUDE_CODE_OAUTH_TOKEN`, and a
+developer with that exported would have had `pnpm test` spending their own
+quota. Three locks in `test/e2e/api.spec.ts` and `test/electric/global-setup.ts`,
+because one is brittle:
+
+- `NUXT_CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` blanked, which
+  makes the Claude poll answer `unconfigured` before it builds a request at all;
+- `NUXT_ANTHROPIC_API_BASE` pointed at `http://127.0.0.1:1`, so a token that
+  ever leaks in still cannot reach Anthropic;
+- `NUXT_CODEX_ENTRY` pointed at `test/helpers/dead-adapter.mjs`, the same stub
+  the ACP adapters get, so no real `codex app-server` is ever spawned.
+
+Everything else about the poller is covered in `unit` with injected clients and
+fake timers (`test/unit/usage-poller.spec.ts`), and the Codex exchange runs
+against a fake JSON-RPC server on a pair of pipes
+(`test/server/codex-usage.spec.ts`) — the same technique as the fake ACP agent,
+so the framing and the handshake order are the real ones.
 
 ## The `agents-live` layer
 

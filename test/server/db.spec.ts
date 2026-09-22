@@ -22,7 +22,9 @@ const TABLES = [
   'agent_permissions',
   'agent_inbox',
   'agent_subscriptions',
-  'mcp_servers'
+  'mcp_servers',
+  'usage_limits',
+  'usage_providers'
 ]
 
 /**

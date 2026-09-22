@@ -17,6 +17,7 @@ import { mintMeshToken } from '../mesh/token'
 import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEntry, adapterEnv } from './adapter-process'
+import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage } from '../usage/normalize'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
 import {
   appendAgentEvent,
@@ -29,8 +30,10 @@ import {
   listMcpServers,
   openAgentStream,
   resolvePermissionRow,
+  setAgentUsage,
   updateAgentSession,
-  writeAgentStream
+  writeAgentStream,
+  writeUsageLimits
 } from '../repo'
 import type {
   AgentAdapter,
@@ -38,6 +41,7 @@ import type {
   AgentSession,
   AgentSessionStatus,
   AgentStreamType,
+  AgentUsage,
   AppSettings,
   DevEnvironment,
   MessageDelivery,
@@ -134,6 +138,17 @@ function flushDelay(length: number): number {
  */
 const ACTIVITY_TOUCH_MS = 30_000
 
+/**
+ * How often the context-window reading is written mid-turn.
+ *
+ * `usage_update` arrives with every `message_delta` — several times a second on
+ * a long answer — and `agent_sessions` is synced with `REPLICA IDENTITY FULL`,
+ * so writing each one would re-stream the whole session row to every browser
+ * for a number that moved by forty tokens. The bar still has to *move* while
+ * the agent works, so this is a few seconds rather than a turn.
+ */
+const USAGE_WRITE_MS = 5_000
+
 class AgentRuntime {
   readonly agentSessionId: string
   private proc: ChildProcessWithoutNullStreams | null = null
@@ -165,6 +180,12 @@ class AgentRuntime {
   private status: AgentSessionStatus | null = null
   /** When `last_activity_at` was last written; see `ACTIVITY_TOUCH_MS`. */
   private touchedAt = 0
+  /** The most recent context/cost reading, whether or not it has been written. */
+  private usage: AgentUsage | null = null
+  /** What the row already holds, so an unchanged reading writes nothing. */
+  private writtenUsage: AgentUsage | null = null
+  /** The trailing timer that will write `usage`; see `USAGE_WRITE_MS`. */
+  private usageTimer: ReturnType<typeof setTimeout> | null = null
   /**
    * The ACP SDK dispatches notifications without awaiting the previous handler,
    * so concurrent inserts would take `seq` values out of arrival order and
@@ -221,6 +242,73 @@ class AgentRuntime {
     if (Date.now() - this.touchedAt < ACTIVITY_TOUCH_MS) return
     this.touchedAt = Date.now()
     await updateAgentSession(this.agentSessionId, { touch: true })
+  }
+
+  /* ---------------- context and cost ---------------- */
+
+  /**
+   * Take in a `usage_update`.
+   *
+   * It is *state*, not transcript, which is the whole reason it is handled
+   * before `takeStream()` in `onUpdate`: an open block of streaming text must
+   * survive it untouched. Were it appended like any other update, it would
+   * close the message the agent is halfway through writing and claim a `seq`
+   * in the middle of it, so the text would come out split in two around a row
+   * nothing renders.
+   */
+  private noteUsage(update: any): void {
+    const next = normalizeAgentUsage(update, this.usage)
+    if (next) {
+      this.usage = next
+      this.scheduleUsageWrite()
+    }
+
+    // A `rate_limit_event` rides in on one of these. It is the freshest reading
+    // of the plan's limits there is — the poller's endpoint answers about once
+    // an hour — so it goes to the account-wide table rather than to this row.
+    const rateLimit = update?._meta?.['_claude/rateLimit']
+    if (rateLimit) {
+      const limits = claudeSessionLimits(rateLimit)
+      // `replace: false`: this names one or two windows and knows nothing about
+      // the rest, so it must never remove a row a poll put there.
+      if (limits.length) {
+        void writeUsageLimits('claude', limits, { replace: false })
+          .catch(error => console.error(`[acp:${this.agentSessionId}] could not record plan limits`, error))
+      }
+    }
+  }
+
+  /** Write the latest reading in a moment, if one is not already due. */
+  private scheduleUsageWrite(): void {
+    if (this.usageTimer) return
+    const timer = setTimeout(() => {
+      this.usageTimer = null
+      void this.flushUsage()
+    }, USAGE_WRITE_MS)
+    timer.unref?.()
+    this.usageTimer = timer
+  }
+
+  /**
+   * Put the reading on the row, if it says anything new.
+   *
+   * Mirrors `setStatus`: remember what was last written, and skip the update
+   * when it would change nothing. Called on every turn boundary and on close,
+   * so the final number is never left sitting in a timer that gets cleared.
+   */
+  private async flushUsage(): Promise<void> {
+    if (this.usageTimer) {
+      clearTimeout(this.usageTimer)
+      this.usageTimer = null
+    }
+    const usage = this.usage
+    if (!usage || sameAgentUsage(usage, this.writtenUsage)) return
+    this.writtenUsage = usage
+    try {
+      await setAgentUsage(this.agentSessionId, usage)
+    } catch (error) {
+      console.error(`[acp:${this.agentSessionId}] could not record usage`, error)
+    }
   }
 
   /* ---------------- streaming text ---------------- */
@@ -329,6 +417,13 @@ class AgentRuntime {
     const session = await getAgentSession(this.agentSessionId)
     if (!session) throw new Error(`Agent session ${this.agentSessionId} not found`)
 
+    // Pick the row's reading back up, so a reattach neither rewrites the same
+    // numbers nor loses the context window it already learned: mid-stream
+    // updates carry the adapter's *guess* at the window until the first turn
+    // result corrects it, and the row already holds the corrected one.
+    this.usage = session.usage
+    this.writtenUsage = session.usage
+
     await this.setStatus('starting', { lastError: null })
 
     let environment: DevEnvironment | null = null
@@ -373,6 +468,7 @@ class AgentRuntime {
       const block = this.takeStream()
       void this.serial(async () => {
         await this.closeStream(block)
+        await this.flushUsage()
         await appendAgentEvent(this.agentSessionId, 'adapter-exit', { code, signal })
         // An adapter that could not start exits, so this handler and the boot
         // failure's own `setStatus('error')` race for the same row — and which
@@ -640,6 +736,14 @@ class AgentRuntime {
     if (!update) return
     const kind: string = update.sessionUpdate
 
+    // Before `takeStream()` and before anything claims a `seq`: this is state,
+    // it is not part of the transcript, and it arrives in the middle of the
+    // message the agent is still writing.
+    if (kind === 'usage_update') {
+      this.noteUsage(update)
+      return
+    }
+
     const streamType: AgentStreamType | null
       = kind === 'agent_message_chunk'
         ? 'agent_message'
@@ -793,6 +897,10 @@ class AgentRuntime {
           touch: true,
           summary: this.textBuffer.trim().slice(-1200) || undefined
         })
+        // The turn's final reading is the authoritative one — it is the result
+        // that carries the real context window and the session's cost — so it
+        // is written now rather than left in a timer a restart would drop.
+        await this.flushUsage()
       })
       return { stopReason: response?.stopReason ?? 'end_turn' }
     } catch (error) {
@@ -806,6 +914,7 @@ class AgentRuntime {
         await this.closeStream(block)
         await appendAgentEvent(this.agentSessionId, 'error', { message })
         await this.setStatus('error', { lastError: message, touch: true })
+        await this.flushUsage()
       })
       throw error
     }
@@ -955,9 +1064,13 @@ class AgentRuntime {
   }
 
   stop(): void {
-    // A block left open would render as text that streams forever.
+    // A block left open would render as text that streams forever, and a
+    // reading left in the trailing timer would be lost with the process.
     const block = this.takeStream()
-    void this.serial(() => this.closeStream(block)).catch(() => {})
+    void this.serial(async () => {
+      await this.closeStream(block)
+      await this.flushUsage()
+    }).catch(() => {})
     for (const waiter of this.waiters.values()) waiter.resolve(null)
     this.waiters.clear()
     this.connection?.close()

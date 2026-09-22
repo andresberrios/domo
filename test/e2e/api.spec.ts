@@ -66,8 +66,17 @@ await setup({
     // Blanking the keys is *not* enough to keep a real agent out of this layer:
     // on macOS Claude Code reads its login from the Keychain and starts a real,
     // billable session. Both adapters are pointed at a stub that exits instead.
+    // The usage poller starts with the server and would otherwise reach a real
+    // account on boot. Three locks, because one is not enough: no token at all
+    // (which makes the Claude poll answer `unconfigured` before any request),
+    // an unreachable API base if one ever leaks in, and the same dead stub for
+    // `codex app-server` that the adapters get.
+    NUXT_CLAUDE_CODE_OAUTH_TOKEN: '',
+    CLAUDE_CODE_OAUTH_TOKEN: '',
+    NUXT_ANTHROPIC_API_BASE: 'http://127.0.0.1:1',
     NUXT_CLAUDE_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
-    NUXT_CODEX_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs')
+    NUXT_CODEX_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
+    NUXT_CODEX_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs')
   }
 })
 
@@ -501,6 +510,38 @@ describe('the Electric shape proxy', () => {
       expect.objectContaining({ value: { id: 'prj_1', name: 'api' } }),
       { headers: { control: 'up-to-date' } }
     ])
+  })
+})
+
+describe('plan usage', () => {
+  it('syncs both usage tables, which have no `id` column of their own', async () => {
+    // They are keyed on what they describe — a provider, and a provider plus a
+    // window — so the client supplies its own `getKey`. The proxy still has to
+    // allow them through by name.
+    for (const table of ['usage_limits', 'usage_providers']) {
+      const response = await fetch(`/api/shape?table=${table}&offset=-1`)
+      expect(response.status).toBe(200)
+    }
+  })
+
+  it('answers a refresh at once, because the numbers arrive through Electric', async () => {
+    // Nothing is awaited server-side: waiting here would only make the button
+    // feel slower than the data it is fetching.
+    const response = await $fetch<{ requested: string[] }>('/api/usage/refresh', { method: 'POST' })
+
+    expect(response.requested).toEqual(['claude', 'codex'])
+  })
+
+  it('narrows to one provider when asked, and ignores a name it does not know', async () => {
+    await expect($fetch<{ requested: string[] }>('/api/usage/refresh', {
+      method: 'POST',
+      body: { provider: 'codex' }
+    })).resolves.toEqual({ requested: ['codex'] })
+
+    await expect($fetch<{ requested: string[] }>('/api/usage/refresh', {
+      method: 'POST',
+      body: { provider: 'nonsense' }
+    })).resolves.toEqual({ requested: ['claude', 'codex'] })
   })
 })
 

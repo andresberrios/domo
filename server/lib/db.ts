@@ -40,6 +40,9 @@ alter table voice_sessions add column if not exists resumption_fingerprint text;
 alter table voice_sessions add column if not exists summary text;
 alter table voice_sessions add column if not exists summary_through_seq bigint;
 alter table voice_sessions add column if not exists summary_updated_at text;
+-- How full the Live model's context is. State, not transcript: rewritten in
+-- place, and \`used\` may go down when sliding-window compression drops old turns.
+alter table voice_sessions add column if not exists usage jsonb;
 -- Rows from before auto-titling: anything but the placeholder was a rename.
 update voice_sessions
    set title_source = case when title = 'New conversation' then 'auto' else 'user' end
@@ -130,6 +133,10 @@ alter table agent_sessions add column if not exists dev_environment_id text refe
 -- The model this session runs on, so two agents can be on different ones at
 -- once. Written back from what the adapter says it actually landed on.
 alter table agent_sessions add column if not exists model text;
+-- Context occupancy and session cost, from the ACP \`usage_update\` stream. A
+-- column rather than an event: it arrives many times a turn, says nothing about
+-- what the agent did, and only the latest reading is ever of interest.
+alter table agent_sessions add column if not exists usage jsonb;
 
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.
@@ -181,6 +188,11 @@ update agent_events e
  where e.agent_session_id = f.agent_session_id and e.seq = f.head_seq;
 -- Whatever is left of those runs is the deltas the heads just absorbed.
 delete from agent_events where type in ('agent_message_chunk', 'agent_thought_chunk');
+
+-- \`usage_update\` was appended like any other update before it became session
+-- state, so an older install holds one row per reading — dozens per turn, none
+-- of them rendered. Idempotent: nothing writes them any more.
+delete from agent_events where type = 'usage_update';
 
 -- Messages waiting for an agent, because Domo owns the queue rather than the
 -- adapter. A second \`session/prompt\` sent while a turn runs is queued inside
@@ -242,6 +254,46 @@ create table if not exists mcp_servers (
   updated_at text not null
 );
 
+-- One row per rate-limit window per provider, account-wide: the limits belong
+-- to the developer rather than to any one session, and have to be readable when
+-- nothing is running at all. Fed by the poller and, between polls, by what
+-- rides in on a working agent's \`usage_update\`.
+--
+-- Nothing secret is allowed in here. The table is streamed to the browser
+-- through Electric, so no token, no \`Authorization\` header and no raw
+-- response body ever becomes a column.
+create table if not exists usage_limits (
+  provider text not null,
+  -- \`five_hour\`, \`seven_day\`, \`extra_usage\`, or for Codex \`<limitId>:primary\`.
+  limit_id text not null,
+  label text not null,
+  -- Always 0-100 and always ISO 8601, whatever scale the source reported in:
+  -- Claude's endpoint answers percentages, its session events fractions, and
+  -- resets arrive as epoch seconds from some sources and ISO strings from others.
+  used_percent double precision,
+  resets_at text,
+  window_minutes integer,
+  status text,
+  -- Money rather than a percentage, for a credits row.
+  amount_used double precision,
+  amount_limit double precision,
+  currency text,
+  source text not null,
+  updated_at text not null,
+  primary key (provider, limit_id)
+);
+
+-- Whether each provider's poll works, kept apart from the readings themselves
+-- so a failed poll leaves the last good numbers in place instead of rewriting
+-- every row. It is also what lets the UI tell "no data yet" from "not
+-- configured" from "the last attempt failed".
+create table if not exists usage_providers (
+  provider text primary key,
+  state text not null,
+  message text,
+  checked_at text not null
+);
+
 -- Electric replays updates from the WAL: FULL replica identity makes sure a
 -- changed row arrives complete, not just its key + changed columns.
 alter table voice_sessions replica identity full;
@@ -255,6 +307,8 @@ alter table settings replica identity full;
 alter table projects replica identity full;
 alter table dev_environments replica identity full;
 alter table dev_environment_ports replica identity full;
+alter table usage_limits replica identity full;
+alter table usage_providers replica identity full;
 `
 
 let pool: pg.Pool | null = null

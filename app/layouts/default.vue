@@ -288,17 +288,20 @@ const localAgents = computed(() =>
       </template>
 
       <template #footer="{ collapsed }">
-        <div class="flex w-full items-center justify-between gap-2">
-          <UButton
-            to="/settings"
-            icon="i-lucide-settings"
-            :label="collapsed ? undefined : 'Settings'"
-            color="neutral"
-            variant="ghost"
-            :block="!collapsed"
-            class="justify-start"
-          />
-          <ColorModeButton v-if="!collapsed" />
+        <div class="flex w-full flex-col gap-1">
+          <UsageSidebarSummary v-if="!collapsed" />
+          <div class="flex w-full items-center justify-between gap-2">
+            <UButton
+              to="/settings"
+              icon="i-lucide-settings"
+              :label="collapsed ? undefined : 'Settings'"
+              color="neutral"
+              variant="ghost"
+              :block="!collapsed"
+              class="justify-start"
+            />
+            <ColorModeButton v-if="!collapsed" />
+          </div>
         </div>
       </template>
     </UDashboardSidebar>

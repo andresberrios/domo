@@ -48,6 +48,11 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   [Long conversations](#long-conversations).
 - **Custom MCP servers** — add stdio / HTTP / SSE servers in Settings and scope
   them to the voice agent, the coding agents, or both.
+- **Usage and plan limits** — every coding session and every conversation shows
+  how full its context window is (and what the session has cost); the home page
+  and the sidebar show how much of your Claude and Codex plan limits are left,
+  kept current in the background. Ask by voice, too. See
+  [Usage and plan limits](#usage-and-plan-limits).
 - **Real-time UI** — Postgres is the source of truth, ElectricSQL streams
   changes, and TanStack DB keeps the browser in sync. No polling.
 
@@ -340,7 +345,10 @@ Requirements:
 
 ## Configuration
 
-Everything secret lives in `.env`; everything else is editable in **Settings**.
+Everything secret lives in `.env`; everything else is editable in **Settings**
+— including **Poll plan usage limits**, which decides whether Domo checks your
+Claude and Codex plan limits in the background (see
+[Usage and plan limits](#usage-and-plan-limits)).
 
 | Variable | Purpose |
 | --- | --- |
@@ -365,6 +373,47 @@ Everything secret lives in `.env`; everything else is editable in **Settings**.
 | `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts are read from (defaults to `$HOME`) |
 | `NUXT_GH_TOKEN` | GitHub token given to environment sessions; falls back to `gh auth token` on this machine |
 | `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` | Default model for new sessions of that adapter, when the session names none |
+| `NUXT_ANTHROPIC_API_BASE` | Where plan-limit requests go (default `https://api.anthropic.com`); set it to point the usage poller somewhere else |
+| `NUXT_CODEX_ENTRY` | Path to the Codex CLI the usage poller runs as `codex app-server` (defaults to the bundled `@openai/codex`) |
+
+### Usage and plan limits
+
+Two different things, in two places.
+
+**Context windows** are per session. A coding agent's header shows how full its
+context is and what the session has cost, both straight from the ACP
+`usage_update` its adapter sends; a conversation's header shows the same for the
+Gemini Live session. A conversation's number can go *down*, which is not a bug:
+Domo runs Live with sliding-window compression, so the oldest turns are dropped
+once the window fills.
+
+**Plan limits** are account-wide — they are yours, not any session's — so they
+are on the home page, in the sidebar footer, and inside each session's popover.
+They are refreshed in the background (Settings → **Poll plan usage limits**,
+on by default), soon after a turn ends, and on demand from the refresh button.
+Every row says how old it is, because the polls are minutes apart at best.
+
+For **Claude** this needs `NUXT_CLAUDE_CODE_OAUTH_TOKEN` — the same
+`claude setup-token` token everything else uses. Without one, the card says so
+rather than showing zeroes. Domo reads the limits from the
+`anthropic-ratelimit-unified-*` headers on one minimal API request, because the
+richer `/api/oauth/usage` endpoint that Claude Code's own `/usage` reads needs a
+`user:profile` scope that a headless setup token does not carry (it answers
+`403 oauth_scope_insufficient`). That endpoint is still tried first, so a
+differently-scoped token gets the better answer — including per-model weekly
+windows and your usage-credit balance. Whenever an agent is actually working,
+its own rate-limit events refresh the same rows for free.
+
+Domo never reads or refreshes your own Claude login for this, for exactly the
+reason it never copies one into a container (below).
+
+For **Codex** it needs a local `codex login`. Domo asks the bundled Codex CLI
+directly (`codex app-server`, `account/rateLimits/read`) — the same call the ACP
+adapter makes for its `/status` output — and shuts the process down again as
+soon as it has answered.
+
+Gemini publishes no plan-limit API, so a conversation shows its context window
+and nothing else.
 
 ### Claude authentication
 

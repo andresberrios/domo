@@ -2,6 +2,7 @@ import { getDb, query } from '../lib/db'
 import { acpManager } from '../lib/acp/manager'
 import { startSubscriptionNotifier } from '../lib/acp/subscriptions'
 import { voiceManager } from '../lib/voice/runtime'
+import { usagePoller } from '../lib/usage/poller'
 import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
@@ -31,7 +32,13 @@ export default defineNitroPlugin(async (nitro) => {
 
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
 
+  // Plan limits are account-wide, so they have to be current on a dashboard
+  // nobody has run an agent on today. What a working agent reports is the other
+  // half, and it arrives without this.
+  usagePoller.start()
+
   nitro.hooks.hook('close', async () => {
+    usagePoller.stop()
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()

@@ -46,7 +46,8 @@ function session(status: AgentSession['status']): AgentSession {
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     lastActivityAt: null,
-    archived: false
+    archived: false,
+    usage: null
   }
 }
 

@@ -25,6 +25,7 @@ const form = reactive<AppSettings>({
   defaultCwd: '',
   proactiveNotifications: true,
   autoApprovePermissions: false,
+  pollUsageLimits: true,
   defaultAgentModes: { 'claude-code': 'default', codex: 'agent' },
   language: 'en-US',
   autoTitle: true,
@@ -41,6 +42,7 @@ watchEffect(() => {
     defaultCwd: settings.value.defaultCwd,
     proactiveNotifications: settings.value.proactiveNotifications,
     autoApprovePermissions: settings.value.autoApprovePermissions,
+    pollUsageLimits: settings.value.pollUsageLimits,
     defaultAgentModes: { ...settings.value.defaultAgentModes },
     language: settings.value.language,
     autoTitle: settings.value.autoTitle,
@@ -301,6 +303,12 @@ async function deleteServer(server: McpServer) {
             v-model="form.autoApprovePermissions"
             label="Auto-approve permission requests"
             description="Answers every prompt with its first “allow once” option. Convenient and dangerous — the agent can edit and run things unattended."
+          />
+
+          <USwitch
+            v-model="form.pollUsageLimits"
+            label="Poll plan usage limits"
+            description="Checks your Claude and Codex plan limits in the background, so they are current even when nothing is running. Off, they only refresh while an agent works."
           />
         </section>
 

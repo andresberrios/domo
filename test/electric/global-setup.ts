@@ -75,7 +75,14 @@ async function prepare(): Promise<void> {
       NUXT_GEMINI_API_KEY: '',
       NUXT_ANTHROPIC_API_KEY: '',
       NUXT_CODEX_API_KEY: '',
-      NUXT_OPENAI_API_KEY: ''
+      NUXT_OPENAI_API_KEY: '',
+      // The usage poller starts with the server. No token makes the Claude poll
+      // answer `unconfigured` without a request at all; the unreachable base and
+      // the dead `codex app-server` stub are there in case one ever leaks in.
+      NUXT_CLAUDE_CODE_OAUTH_TOKEN: '',
+      CLAUDE_CODE_OAUTH_TOKEN: '',
+      NUXT_ANTHROPIC_API_BASE: 'http://127.0.0.1:1',
+      NUXT_CODEX_ENTRY: join(rootDir, 'test', 'helpers', 'dead-adapter.mjs')
     }
   })
   await loadFixture()

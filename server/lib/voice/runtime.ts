@@ -10,14 +10,15 @@ import {
   getVoiceSession,
   listAgentSessions,
   listVoiceMessages,
+  setVoiceUsage,
   updateVoiceSession
 } from '../repo'
-import { geminiApiKey } from '../gemini'
+import { ensureLiveContextWindows, geminiApiKey, liveContextWindow } from '../gemini'
 import { connectVoiceMcpServers, type ConnectedMcp } from './mcp'
 import { CONTEXT_MESSAGE_LIMIT, compactConversation, ensureCompacted } from './compaction'
 import { buildConversationContext } from './context'
 import { voiceToolDeclarations, voiceTools } from './tools'
-import type { VoiceServerMessage } from '../../../shared/types'
+import type { VoiceServerMessage, VoiceUsage } from '../../../shared/types'
 
 export const INPUT_SAMPLE_RATE = 16000
 export const OUTPUT_SAMPLE_RATE = 24000
@@ -30,6 +31,16 @@ const TOOL_TIMEOUT_MS = 30000
  * mid-sentence, short enough that a note is not held for a noticeable beat.
  */
 const USER_SILENCE_MS = 1500
+
+/**
+ * How often the conversation's context reading is written.
+ *
+ * `voice_sessions` is synced with `REPLICA IDENTITY FULL`, so each write
+ * re-streams the whole row; `usageMetadata` arrives with most server messages.
+ * Same trade as the coding agents' own reading: often enough that the bar moves
+ * while the model talks, rarely enough that it is not a write per packet.
+ */
+const USAGE_WRITE_MS = 5000
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>
@@ -86,6 +97,12 @@ class VoiceRuntime {
 
   private userTranscript = ''
   private assistantTranscript = ''
+  /** The latest context reading, and what the row already holds. */
+  private usage: VoiceUsage | null = null
+  private writtenUsage: VoiceUsage | null = null
+  private usageTimer: ReturnType<typeof setTimeout> | null = null
+  /** The window of the model this socket connected with, or null if unknown. */
+  private contextWindow: number | null = null
   /**
    * Live messages are handled one at a time. `onmessage` fires without waiting
    * for the previous handler, so concurrent flushes would store transcript rows
@@ -255,6 +272,20 @@ class VoiceRuntime {
       console.info(`[voice:${this.voiceSessionId}] model or tools changed since the last session; starting fresh instead of resuming`)
     }
 
+    // The denominator for the context bar. Best effort and not awaited on the
+    // hot path: a conversation starts whether or not the models API answers.
+    void ensureLiveContextWindows().then(() => { this.contextWindow = liveContextWindow(model) })
+    this.contextWindow = liveContextWindow(model)
+
+    // Resuming keeps the model's context; starting fresh does not. A fresh
+    // connect is therefore an empty window, and saying so at once beats leaving
+    // the previous conversation's number on screen until the first reading.
+    if (!handle) {
+      this.usage = { context: { used: 0, size: this.contextWindow }, updatedAt: new Date().toISOString() }
+      this.writtenUsage = null
+      this.scheduleUsageWrite()
+    }
+
     this.emit({ type: 'status', status: 'idle', detail: `connecting to ${model}` })
 
     const config: any = {
@@ -343,6 +374,9 @@ class VoiceRuntime {
     this.handedOver = false
     this.unsubscribeBus?.()
     this.unsubscribeBus = null
+    // Whatever is sitting in the trailing timer is the conversation's final
+    // reading; it would otherwise go with the process.
+    await this.flushUsage()
     try {
       this.session?.close()
     } catch {
@@ -482,6 +516,8 @@ class VoiceRuntime {
       this.emit({ type: 'status', status: 'live' })
     }
 
+    this.noteUsage(message.usageMetadata)
+
     if (message.sessionResumptionUpdate?.newHandle) {
       await updateVoiceSession(this.voiceSessionId, {
         resumptionHandle: message.sessionResumptionUpdate.newHandle,
@@ -556,6 +592,7 @@ class VoiceRuntime {
         this.lastUserSpeechAt = 0
         await this.flushUser()
         await this.flushAssistant()
+        await this.flushUsage()
         this.emit({ type: 'turn-complete' })
         this.scheduleCompaction()
         if (this.handOverTo && this.handOverTimer) this.completeHandOver()
@@ -592,6 +629,71 @@ class VoiceRuntime {
     void compactConversation(this.voiceSessionId).catch((error) => {
       console.warn(`[voice:${this.voiceSessionId}] background compaction failed`, error)
     })
+  }
+
+  /* ---------------------------- context ---------------------------- */
+
+  /**
+   * Take in a `usageMetadata` frame.
+   *
+   * The Live API reports what the conversation has spent and never how big the
+   * window is, so `size` comes from the models API (see `liveContextWindow`)
+   * and is null for a model Domo has not been told about.
+   *
+   * `used` going **down** is normal and must not be smoothed away: the session
+   * runs with `contextWindowCompression: { slidingWindow: {} }`, so the oldest
+   * turns are dropped once the window fills, and a conversation that starts
+   * fresh after a fingerprint mismatch begins again at zero.
+   */
+  private noteUsage(usageMetadata: LiveServerMessage['usageMetadata']): void {
+    if (!usageMetadata) return
+    // `totalTokenCount` is the whole exchange; `promptTokenCount` is what was
+    // sent, which is the conversation so far. Either answers "how full", and
+    // the second is what a frame carrying no total still has.
+    const used = usageMetadata.totalTokenCount ?? usageMetadata.promptTokenCount
+    if (typeof used !== 'number' || !Number.isFinite(used) || used < 0) return
+
+    this.usage = {
+      context: { used, size: this.contextWindow },
+      updatedAt: new Date().toISOString()
+    }
+    this.scheduleUsageWrite()
+  }
+
+  private scheduleUsageWrite(): void {
+    if (this.usageTimer) return
+    const timer = setTimeout(() => {
+      this.usageTimer = null
+      void this.flushUsage()
+    }, USAGE_WRITE_MS)
+    timer.unref?.()
+    this.usageTimer = timer
+  }
+
+  /**
+   * Write the reading, if it says anything new.
+   *
+   * Goes through `setVoiceUsage`, which touches the `usage` column and nothing
+   * else: `updated_at`, `title_source` and `last_activity_at` all stay put, so
+   * a conversation nobody is speaking in does not climb the sidebar because its
+   * token count moved.
+   */
+  private async flushUsage(): Promise<void> {
+    if (this.usageTimer) {
+      clearTimeout(this.usageTimer)
+      this.usageTimer = null
+    }
+    const usage = this.usage
+    if (!usage) return
+    if (this.writtenUsage
+      && this.writtenUsage.context.used === usage.context.used
+      && this.writtenUsage.context.size === usage.context.size) return
+    this.writtenUsage = usage
+    try {
+      await setVoiceUsage(this.voiceSessionId, usage)
+    } catch (error) {
+      console.error(`[voice:${this.voiceSessionId}] could not record usage`, error)
+    }
   }
 
   private async flushUser() {

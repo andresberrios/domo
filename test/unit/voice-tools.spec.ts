@@ -19,6 +19,8 @@ const repo = {
   listDevEnvironments: vi.fn(),
   listPermissions: vi.fn(),
   listProjects: vi.fn(),
+  listUsageLimits: vi.fn(),
+  listUsageProviders: vi.fn(),
   setAutoTitle: vi.fn(),
   updateAgentSession: vi.fn(),
   updateDevEnvironment: vi.fn(),
@@ -392,6 +394,100 @@ describe('list_agent_sessions', () => {
     const result = await voiceTools.list_agent_sessions!.handler({}, ctx)
 
     expect(result.agents.map((item: any) => item.awaitingPermission)).toEqual([2, 0])
+  })
+
+  it('reports how full each agent context is, as a whole percent', async () => {
+    repo.listAgentSessions.mockResolvedValue([
+      agent({ id: 'ag_1', usage: { context: { used: 100_000, size: 200_000 }, updatedAt: 'now' } })
+    ])
+    repo.listPermissions.mockResolvedValue([])
+
+    const result = await voiceTools.list_agent_sessions!.handler({}, ctx)
+
+    expect(result.agents[0].contextUsedPercent).toBe(50)
+  })
+
+  it('leaves the field out entirely when nothing has been reported', async () => {
+    // Absent means "no reading", which the model can say. A zero would be a
+    // claim that the context is empty.
+    repo.listAgentSessions.mockResolvedValue([agent({ id: 'ag_1', usage: null })])
+    repo.listPermissions.mockResolvedValue([])
+
+    const result = await voiceTools.list_agent_sessions!.handler({}, ctx)
+
+    expect(result.agents[0]).not.toHaveProperty('contextUsedPercent')
+  })
+})
+
+describe('get_usage_limits', () => {
+  const limit = (overrides: Record<string, unknown> = {}) => ({
+    provider: 'claude',
+    limitId: 'five_hour',
+    label: '5-hour limit',
+    usedPercent: 52,
+    resetsAt: '2026-09-21T17:00:00.000Z',
+    windowMinutes: 300,
+    status: 'allowed',
+    amountUsed: null,
+    amountLimit: null,
+    currency: null,
+    source: 'endpoint',
+    updatedAt: '2026-09-21T12:00:00.000Z',
+    ...overrides
+  })
+
+  it('reports each window with its label, percentage and reset', async () => {
+    repo.listUsageLimits.mockResolvedValue([limit()])
+    repo.listUsageProviders.mockResolvedValue([
+      { provider: 'claude', state: 'ok', message: null, checkedAt: '2026-09-21T12:00:00.000Z' }
+    ])
+
+    const result = await voiceTools.get_usage_limits!.handler({}, ctx)
+
+    expect(result.limits).toEqual([{
+      provider: 'claude',
+      limit: '5-hour limit',
+      usedPercent: 52,
+      resetsAt: '2026-09-21T17:00:00.000Z',
+      status: 'allowed',
+      asOf: '2026-09-21T12:00:00.000Z'
+    }])
+  })
+
+  it('carries the money for a credits row and omits it for the rest', async () => {
+    repo.listUsageLimits.mockResolvedValue([
+      limit({ limitId: 'extra_usage', label: 'Usage credits', amountUsed: 15.95, amountLimit: 100, currency: 'USD' })
+    ])
+    repo.listUsageProviders.mockResolvedValue([])
+
+    const result = await voiceTools.get_usage_limits!.handler({}, ctx)
+
+    expect(result.limits[0]).toMatchObject({ used: 15.95, of: 100, currency: 'USD' })
+  })
+
+  it('passes on why there is nothing to report, rather than answering with zero', async () => {
+    repo.listUsageLimits.mockResolvedValue([])
+    repo.listUsageProviders.mockResolvedValue([
+      { provider: 'claude', state: 'unconfigured', message: 'Set NUXT_CLAUDE_CODE_OAUTH_TOKEN', checkedAt: 'x' }
+    ])
+
+    const result = await voiceTools.get_usage_limits!.handler({}, ctx)
+
+    expect(result.limits).toEqual([])
+    expect(result.providers[0]).toMatchObject({ state: 'unconfigured', note: 'Set NUXT_CLAUDE_CODE_OAUTH_TOKEN' })
+  })
+
+  it('narrows to one account when asked for one', async () => {
+    repo.listUsageLimits.mockResolvedValue([])
+    repo.listUsageProviders.mockResolvedValue([
+      { provider: 'claude', state: 'ok', message: null, checkedAt: 'x' },
+      { provider: 'codex', state: 'ok', message: null, checkedAt: 'x' }
+    ])
+
+    const result = await voiceTools.get_usage_limits!.handler({ provider: 'codex' }, ctx)
+
+    expect(repo.listUsageLimits).toHaveBeenCalledWith('codex')
+    expect(result.providers.map((item: any) => item.provider)).toEqual(['codex'])
   })
 })
 

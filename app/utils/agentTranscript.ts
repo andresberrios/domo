@@ -208,6 +208,15 @@ export function buildTranscript(
         break
       }
 
+      // Context occupancy is session state and lives on `agent_sessions.usage`;
+      // nothing writes it here any more and the schema deletes the rows an
+      // older install left behind. Named explicitly all the same, because the
+      // rows can still arrive from a database the app has not booted on yet —
+      // and because falling through must not `closeText()` and split the
+      // message one of them landed in the middle of.
+      case 'usage_update':
+        break
+
       default: {
         const label = NOTICE_LABELS[event.type]?.(event.payload)
         if (label) {

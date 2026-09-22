@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
-import { hasClaudeSubscriptionLogin } from '../claude-credentials'
+import { claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
 import type { AgentAdapter } from '../../../shared/types'
 
 export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride: string }> = {
@@ -94,6 +94,9 @@ const PASSTHROUGH_ENV = [
   'COMSPEC',
   'PATHEXT'
 ]
+
+/** The allow-list itself, so a test can assert nothing else got through. */
+export const PASSTHROUGH_ENV_FOR_TEST: readonly string[] = PASSTHROUGH_ENV
 
 /**
  * Variables that describe *this machine* and mean something else inside a
@@ -199,7 +202,7 @@ export async function adapterEnv(
     if (token) env.GH_TOKEN = token
   }
   if (adapter === 'claude-code') {
-    const oauthToken = process.env.NUXT_CLAUDE_CODE_OAUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN
+    const oauthToken = claudeOauthToken()
     const apiKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
     if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
     else if (apiKey && (inContainer || !await hasClaudeSubscriptionLogin())) env.ANTHROPIC_API_KEY = apiKey

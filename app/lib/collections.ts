@@ -21,6 +21,13 @@ interface ShapeDef {
   table: string
   where?: string
   params?: string[]
+  /**
+   * What identifies a row, when it is not an `id` column. The usage tables are
+   * keyed on what they describe — a provider, or a provider and a window — so
+   * there is no surrogate id to carry, and inventing one would put the same
+   * fact in two columns.
+   */
+  key?: (row: Row) => string
 }
 
 function collection(key: string, def: ShapeDef): any {
@@ -38,7 +45,7 @@ function collection(key: string, def: ShapeDef): any {
           ...(def.params ? { params: def.params } : {})
         }
       },
-      getKey: (row: Row) => row.id as string
+      getKey: def.key ?? ((row: Row) => row.id as string)
     })
   )
   cache.set(key, created)
@@ -51,6 +58,17 @@ export const mcpServersCollection = () => collection('mcp_servers', { table: 'mc
 export const permissionsCollection = () => collection('agent_permissions', { table: 'agent_permissions' })
 export const projectsCollection = () => collection('projects', { table: 'projects' })
 export const devEnvironmentsCollection = () => collection('dev_environments', { table: 'dev_environments' })
+
+/** Account-wide plan limits, so every page can show them without a fetch. */
+export const usageLimitsCollection = () => collection('usage_limits', {
+  table: 'usage_limits',
+  key: row => `${row.provider}:${row.limit_id}`
+})
+
+export const usageProvidersCollection = () => collection('usage_providers', {
+  table: 'usage_providers',
+  key: row => row.provider as string
+})
 
 /** Per-session shapes keep the client store small on long-running sessions. */
 export const agentEventsCollection = (agentSessionId: string) =>

@@ -7,6 +7,8 @@ import {
   mcpServersCollection,
   permissionsCollection,
   projectsCollection,
+  usageLimitsCollection,
+  usageProvidersCollection,
   voiceMessagesCollection,
   voiceSessionsCollection
 } from '~/lib/collections'
@@ -18,6 +20,9 @@ import type {
   McpServer,
   PendingPermission,
   Project,
+  UsageLimit,
+  UsageProvider,
+  UsageProviderId,
   VoiceMessage,
   VoiceSession
 } from '~~/shared/types'
@@ -51,7 +56,8 @@ export function useVoiceSessions() {
         archived: !!row.archived,
         summary: row.summary ?? null,
         summaryThroughSeq: row.summary_through_seq == null ? null : asNumber(row.summary_through_seq),
-        summaryUpdatedAt: row.summary_updated_at ?? null
+        summaryUpdatedAt: row.summary_updated_at ?? null,
+        usage: row.usage ?? null
       }))
       .filter(session => !session.archived)
       .sort(byRecency)
@@ -82,7 +88,8 @@ export function useAgentSessions() {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         lastActivityAt: row.last_activity_at ?? null,
-        archived: !!row.archived
+        archived: !!row.archived,
+        usage: row.usage ?? null
       }))
       .filter(session => !session.archived)
       .sort(byRecency)
@@ -267,4 +274,57 @@ export function useMcpServers() {
   )
 
   return { servers, isReady }
+}
+
+/**
+ * The account-wide plan limits, live.
+ *
+ * Two collections rather than one because they answer different questions: the
+ * limits are the numbers, and the provider row is whether those numbers mean
+ * anything — "not configured", "the last poll failed", or "fine". Without the
+ * second, an empty list would be indistinguishable from a broken poll, and the
+ * UI would quietly render nothing instead of saying what to fix.
+ */
+export function useUsageLimits() {
+  const { data: limitRows, isReady } = useLiveQuery(q => q.from({ limit: usageLimitsCollection() }))
+  const { data: providerRows } = useLiveQuery(q => q.from({ provider: usageProvidersCollection() }))
+
+  const limits = computed<UsageLimit[]>(() =>
+    (limitRows.value ?? [])
+      .map((row: any) => ({
+        provider: row.provider,
+        limitId: row.limit_id,
+        label: row.label,
+        usedPercent: row.used_percent === null || row.used_percent === undefined ? null : Number(row.used_percent),
+        resetsAt: row.resets_at ?? null,
+        windowMinutes: row.window_minutes === null || row.window_minutes === undefined ? null : Number(row.window_minutes),
+        status: row.status ?? null,
+        amountUsed: row.amount_used === null || row.amount_used === undefined ? null : Number(row.amount_used),
+        amountLimit: row.amount_limit === null || row.amount_limit === undefined ? null : Number(row.amount_limit),
+        currency: row.currency ?? null,
+        source: row.source,
+        updatedAt: row.updated_at
+      }))
+      // Shortest window first, which is also most-urgent first: the 5-hour
+      // limit is the one that actually stops work today.
+      .sort((a, b) => (a.windowMinutes ?? Number.MAX_SAFE_INTEGER) - (b.windowMinutes ?? Number.MAX_SAFE_INTEGER)
+        || a.limitId.localeCompare(b.limitId))
+  )
+
+  const providers = computed<UsageProvider[]>(() =>
+    (providerRows.value ?? []).map((row: any) => ({
+      provider: row.provider,
+      state: row.state,
+      message: row.message ?? null,
+      checkedAt: row.checked_at
+    }))
+  )
+
+  const forProvider = (provider: UsageProviderId) =>
+    limits.value.filter(limit => limit.provider === provider)
+
+  const providerState = (provider: UsageProviderId) =>
+    providers.value.find(row => row.provider === provider) ?? null
+
+  return { limits, providers, forProvider, providerState, isReady }
 }
