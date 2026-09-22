@@ -4,6 +4,7 @@ import { Type, type FunctionDeclaration } from '@google/genai'
 
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
@@ -24,7 +25,6 @@ import {
   listUsageLimits,
   listUsageProviders,
   setAutoTitle,
-  updateAgentSession,
   updateDevEnvironment,
   updateProject,
   updateVoiceSession
@@ -104,6 +104,21 @@ function summarise(text: string | null, max = 400): string {
   if (!text) return ''
   const clean = text.replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max)}…` : clean
+}
+
+/**
+ * The adapter's own settings, as a peer or the voice agent needs to read them:
+ * what it is called, what it is on, and what else it could be. Both adapters
+ * name reasoning effort differently and offer it only on some models, so this
+ * is reported per session rather than documented per adapter.
+ */
+function describeConfig(session: AgentSession | null) {
+  return (session?.configOptions ?? []).map(option => ({
+    setting: option.name,
+    id: option.id,
+    value: session?.config?.[option.id] ?? option.currentValue,
+    options: option.options.map(entry => entry.value)
+  }))
 }
 
 export const voiceTools: Record<string, VoiceTool> = {
@@ -667,61 +682,45 @@ export const voiceTools: Record<string, VoiceTool> = {
     }
   },
 
-  set_agent_mode: {
+  manage_agent_session: {
     declaration: {
-      name: 'set_agent_mode',
+      name: 'manage_agent_session',
       description:
-        'Change a coding agent’s permission mode, e.g. "default" (ask every time), "acceptEdits", "plan", or "bypassPermissions".',
+        'Update a coding agent session: rename it, change its permission mode, switch its model, and/or '
+        + 'archive it, and change any setting the adapter itself offers (reasoning effort, for one). '
+        + 'Pass only the fields you want to change — everything but agentId is optional. '
+        + 'Call list_models first if you are not sure what model id the agent\'s adapter offers.',
       parameters: {
         type: Type.OBJECT,
         properties: {
           agentId: { type: Type.STRING, description: 'Agent session id or title.' },
-          modeId: { type: Type.STRING, description: 'Mode id to switch to.' }
-        },
-        required: ['modeId']
+          title: { type: Type.STRING, description: 'New title.' },
+          modeId: {
+            type: Type.STRING,
+            description: 'Permission mode id to switch to, e.g. "default" (ask every time), "acceptEdits", "plan", or "bypassPermissions".'
+          },
+          model: { type: Type.STRING, description: 'Model id or name to switch the session to.' },
+          setting: {
+            type: Type.STRING,
+            description:
+              'One of the adapter\'s own settings to change, by name — "reasoning effort" works on either adapter. '
+              + 'Call get_agent_status to see which settings this session has and what values they take.'
+          },
+          settingValue: { type: Type.STRING, description: 'The value for `setting`, e.g. "high".' },
+          archived: { type: Type.BOOLEAN, description: 'Set true to shut the session down and hide it from the session list.' }
+        }
       }
     },
     handler: async (args) => {
       const session = await resolveAgent(args.agentId)
-      await acpManager.setMode(session.id, args.modeId)
-      return { id: session.id, title: session.title, mode: args.modeId }
-    }
-  },
-
-  rename_agent_session: {
-    declaration: {
-      name: 'rename_agent_session',
-      description: 'Rename a coding agent session so it is easier to refer to later.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          agentId: { type: Type.STRING, description: 'Agent session id or current title.' },
-          title: { type: Type.STRING, description: 'New title.' }
-        },
-        required: ['title']
-      }
-    },
-    handler: async (args) => {
-      const session = await resolveAgent(args.agentId)
-      await updateAgentSession(session.id, { title: args.title })
-      return { id: session.id, title: args.title }
-    }
-  },
-
-  archive_agent_session: {
-    declaration: {
-      name: 'archive_agent_session',
-      description: 'Shut down a coding agent session and hide it from the session list.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: { agentId: { type: Type.STRING, description: 'Agent session id or title.' } }
-      }
-    },
-    handler: async (args) => {
-      const session = await resolveAgent(args.agentId)
-      acpManager.stop(session.id)
-      await updateAgentSession(session.id, { archived: true, status: 'stopped' })
-      return { id: session.id, archived: true }
+      return applyAgentSessionPatch(session, {
+        ...args,
+        // One named setting at a time: a spoken instruction is "set the
+        // reasoning effort to high", never a map, and the ids differ per
+        // adapter anyway (`effort` vs `reasoning_effort`) so the name is what
+        // a caller can actually be expected to know.
+        config: args.setting && args.settingValue ? { [args.setting]: args.settingValue } : undefined
+      })
     }
   },
 
@@ -815,6 +814,8 @@ export const voiceTools: Record<string, VoiceTool> = {
         title: session?.title,
         status: session?.status,
         mode: session?.modeId,
+        model: session?.model,
+        settings: describeConfig(session ?? null),
         cwd: session?.cwd,
         lastError: session?.lastError,
         summary: summarise(session?.summary ?? null, 500),

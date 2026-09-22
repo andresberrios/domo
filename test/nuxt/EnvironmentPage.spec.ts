@@ -49,6 +49,8 @@ const agent: AgentSession = {
   modeId: null,
   modes: null,
   model: null,
+  config: null,
+  configOptions: null,
   lastError: null,
   summary: null,
   createdAt: '2026-01-03T00:00:00.000Z',

@@ -41,6 +41,8 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     modeId: null,
     modes: null,
     model: null,
+    config: null,
+    configOptions: null,
     lastError: 'You\'ve hit your session limit · resets 11pm (UTC)',
     summary: null,
     usage: null,

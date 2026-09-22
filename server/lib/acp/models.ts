@@ -6,9 +6,10 @@ import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
 import { adapterEntry, adapterEnv } from './adapter-process'
+import { adapterConfigOptions } from './config-options'
 import { availableModelOptions, currentModel, modelConfigOption } from './model'
 import { availableModes, currentModeId } from './mode'
-import type { AgentAdapter, SessionModeInfo } from '../../../shared/types'
+import type { AgentAdapter, SessionConfigOptionInfo, SessionModeInfo } from '../../../shared/types'
 
 /**
  * What one `session/new` probe answered with. Modes ride along with the models
@@ -20,6 +21,16 @@ export interface AdapterModels {
   current: string | null
   modes: SessionModeInfo[]
   currentMode: string | null
+  /**
+   * The adapter's own settings, as offered to a session on its *default*
+   * model. That caveat is the whole reason this is not simply "the adapter's
+   * options": both adapters publish reasoning effort per model, so a model
+   * with no effort levels has no effort option at all, and the levels
+   * themselves differ. Good enough for the Settings page, which is choosing a
+   * default rather than describing a session — a live session reads its own
+   * `configOptions` off its row instead.
+   */
+  configOptions: SessionConfigOptionInfo[]
 }
 
 /**
@@ -86,6 +97,8 @@ export interface AdapterCatalogEntry {
   modes: SessionModeInfo[]
   /** The mode a session starts in when it asks for none. */
   defaultMode: string | null
+  /** The adapter's own settings on its default model; see `AdapterModels`. */
+  configOptions: SessionConfigOptionInfo[]
   /** Why this adapter could not be asked, when it could not be. */
   error?: string
 }
@@ -104,8 +117,8 @@ export async function listAdapterCatalog(only?: AgentAdapter): Promise<{ adapter
   const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex']
   const adapters = await Promise.all(wanted.map(async (id): Promise<AdapterCatalogEntry> => {
     try {
-      const { models, current, modes, currentMode } = await listAdapterModels(id)
-      return { id, name: ADAPTER_NAMES[id], models, default: current, modes, defaultMode: currentMode }
+      const { models, current, modes, currentMode, configOptions } = await listAdapterModels(id)
+      return { id, name: ADAPTER_NAMES[id], models, default: current, modes, defaultMode: currentMode, configOptions }
     } catch (error) {
       return {
         id,
@@ -114,6 +127,7 @@ export async function listAdapterCatalog(only?: AgentAdapter): Promise<{ adapter
         default: null,
         modes: [],
         defaultMode: null,
+        configOptions: [],
         error: error instanceof Error ? error.message : String(error)
       }
     }
@@ -179,7 +193,8 @@ async function probe(adapter: AgentAdapter): Promise<AdapterModels> {
       models: availableModelOptions(option),
       current: currentModel(option)?.value ?? null,
       modes: availableModes(created),
-      currentMode: currentModeId(created)
+      currentMode: currentModeId(created),
+      configOptions: adapterConfigOptions(created)
     }
   } finally {
     if (timer) clearTimeout(timer)

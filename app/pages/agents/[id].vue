@@ -31,26 +31,6 @@ const renaming = ref(false)
 const titleDraft = ref('')
 const starting = ref(false)
 
-const modeItems = computed(() =>
-  (session.value?.modes ?? []).map(mode => ({
-    id: mode.id,
-    label: mode.name,
-    value: mode.id,
-    description: mode.description ?? undefined
-  }))
-)
-
-const currentMode = computed({
-  get: () => session.value?.modeId ?? 'default',
-  set: async (value: string) => {
-    try {
-      await $fetch(`/api/agents/${agentId.value}/mode`, { method: 'POST', body: { modeId: value } })
-    } catch (error: any) {
-      toast.add({ title: 'Could not change mode', description: error?.message, color: 'error' })
-    }
-  }
-})
-
 async function start() {
   starting.value = true
   try {
@@ -87,20 +67,11 @@ async function remove() {
 }
 
 const menuItems = computed(() => [
-  modeItems.value.length
-    ? modeItems.value.map(mode => ({
-        label: mode.label,
-        icon: currentMode.value === mode.id ? 'i-lucide-check' : undefined,
-        class: 'sm:hidden',
-        onSelect: () => { currentMode.value = mode.id }
-      }))
-    : [],
-  [
   { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
   { label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start },
   { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
   { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: remove }
-]].filter(group => group.length))
+])
 </script>
 
 <template>
@@ -119,14 +90,6 @@ const menuItems = computed(() => [
           <UsageMeter
             :usage="session?.usage ?? null"
             :provider="session?.adapter === 'codex' ? 'codex' : 'claude'"
-          />
-          <USelectMenu
-            v-if="modeItems.length"
-            v-model="currentMode"
-            :items="modeItems"
-            value-key="value"
-            size="sm"
-            class="hidden w-40 sm:block"
           />
           <UButton
             v-if="session && (session.status === 'stopped' || session.status === 'error')"
@@ -154,14 +117,6 @@ const menuItems = computed(() => [
             variant="subtle"
             size="sm"
             :label="`${session?.adapter === 'codex' ? 'Codex' : 'Claude Code'} · ACP`"
-          />
-          <UBadge
-            v-if="session?.model"
-            color="neutral"
-            variant="subtle"
-            size="sm"
-            class="font-mono"
-            :label="session.model"
           />
           <UBadge
             v-if="environment"

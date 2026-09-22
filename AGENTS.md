@@ -115,6 +115,74 @@ things that are easy to get wrong.
   from `setMode` (the user or the voice agent) and from `current_mode_update`
   (the agent) only. The whole reconciliation returns a patch rather than
   writing one, so a start is still **one** `agent_sessions` update.
+- **A running session can change model, not just start on one.** `applyRequestedModel`
+  only ever ran at boot; `AgentRuntime.setModel` is the same `session/set_config_option`
+  call made live, against a `modelOption` cached off the last `session/new` /
+  `session/load` response (or the switch's own response) so a live call needs no
+  second probe. It resolves a preference the same fuzzy way boot does — an
+  adapter id, a display name, or a substring either way — and, like `setMode`,
+  believes what the adapter answers rather than what was asked for.
+- **Everything else an adapter can be configured with is a list, not a field.**
+  ACP lets an agent publish its own `configOptions`, and the two installed
+  adapters use it for things they do not agree on at all. Reasoning effort is
+  the one they share and they do not share its *id*: Claude Code publishes
+  `effort` ("Effort"), codex-acp `reasoning_effort` ("Reasoning effort"), both
+  tagged `category: "thought_level"`; codex alone adds a `collaboration_mode`,
+  and both add a fast-mode toggle only on models that support one. Worse, the
+  set is **per model** — `buildEffortConfigOption` returns nothing at all on a
+  model without effort levels — so it is not even a property of the adapter.
+  So Domo names none of it. `server/lib/acp/config-options.ts` turns whatever
+  arrives into `SessionConfigOptionInfo[]`, `agent_sessions.config` records
+  what was *asked for* by id (re-applied on every attach, for the
+  `session/load` reason above) and `agent_sessions.config_options` records what
+  the adapter last said it offers, so the composer renders pickers with no
+  probe. Every `session/set_config_option` answers with the whole list again,
+  which is how a model change refreshes the effort levels under it — and why
+  `setModel` writes `config_options` back in the same update. Only **selects**
+  are kept: an option is a `boolean` instead when the client advertises that
+  capability, Domo does not, and both adapters then fall back to a two-value
+  select. A saved value the adapter does not offer this time is **skipped, not
+  fatal** — an effort saved against Opus must not break a session since moved
+  to a model with no effort levels — while a value that *is* offered but wrong
+  throws, because that one is a typo somebody can fix. `findConfigOption`
+  matches id, name, then category, then containment in either direction but
+  only when exactly one option matches, so "reasoning effort" reaches both
+  adapters and an ambiguous word reaches neither.
+- **Renaming, mode, archiving and model are one endpoint and one tool on every
+  surface, on purpose.** `PATCH /api/agents/[id]`, the voice tool
+  `manage_agent_session` and the mesh tool of the same name all take any mix
+  of `title` / `archived` / `modeId` / `model` / `config` in one call (the
+  tools take one named `setting` and `settingValue` instead of a map, because
+  a spoken instruction is "set the reasoning effort to high"), replacing what used
+  to be a `PATCH` plus a dedicated `POST /mode` plus three separate voice tools
+  (`set_agent_mode`, `rename_agent_session`, `archive_agent_session`) — and,
+  on the mesh, nothing at all, since no mesh tool touched a session's own
+  settings before this. This is a deliberate exception to "one tool, one job"
+  elsewhere in the mesh and voice surfaces — every other mesh tool and every
+  other voice tool still does exactly one thing: these four are read and
+  written as a single settings panel in the UI, so a caller changing two of
+  them (renaming while switching model, say) gets one round trip and one
+  written-back session instead of two racing partial updates. `title`/
+  `archived` are plain column writes; `modeId`/`model` are live adapter
+  requests and can fail against a real process (unsupported mode, no matching
+  model) in a way a rename cannot — the handler runs the live calls first and
+  lets either throw before touching the row, so a rejected mode or model never
+  lands alongside a title/archived write it never asked to guarantee. That
+  four-field mutation — `applyAgentSessionPatch` in
+  `server/lib/acp/session-settings.ts` — is the one piece actually shared
+  between the voice and mesh handlers; each tool only does its own target
+  resolution and hands the result to the same function. They stay separate on
+  purpose: voice's `resolveAgent` takes an id or a fuzzy title match and
+  defaults to the most recently active session, for an unrestricted
+  human-facing surface with no caller identity, while the mesh handler
+  defaults `agentId` to the caller's own session (like `export_branch`
+  defaults its environment) and refuses `archived: true` against that same
+  session — the same self-targeting hazard `delete_project` /
+  `delete_dev_environment` already refuse, since stopping the adapter process
+  handling this very tool call would leave its own response undelivered. A
+  bearer-token-scoped caller identity has no equivalent on the voice side, so
+  folding that resolution logic into the shared function would only replace
+  two short, honest branches with one branch pretending to serve both.
 - **Messages to an agent go through an inbox that is rows.** The prompt
   endpoint, the voice tool, the mesh tool and a subscription note all end in
   `AgentRuntime.deliver` (`server/lib/acp/manager.ts`), which is the one place
@@ -308,6 +376,20 @@ things that are easy to get wrong.
   primitives rather than `UCollapsible` wrapping a button, because that shape
   makes a row *either* a link or a disclosure and leaves nowhere for the
   actions to sit.
+- **The mode, the model and the adapter's own settings live in the composer.**
+  They are decisions about the message being written — "plan this one", "switch
+  to Opus for this bit", "think harder about this" — so they sit under the box
+  it is written in rather than in the page header, which is where the mode
+  picker and a read-only model badge used to be. `AgentComposer.vue` renders
+  the mode from `session.modes`, the model from a probe, and then one picker
+  per entry in `session.configOptions`, all through the one
+  `PATCH /api/agents/[id]`. Nothing there holds the chosen value: every picker
+  reads the row, so a change the adapter refuses reverts on its own and one
+  made by the voice agent arrives through Electric like any other. The model is
+  the only one that costs a probe (an adapter reports its models in a
+  `session/new` response and nowhere else), so it is fetched on the picker's
+  first open rather than on mount — **opening an agent page must not spawn an
+  adapter**.
 - **A `NuxtLink` applies no active class unless you give it one.** There is no
   `router-link-active` fallback to hang a `has-[]` selector off, which is why
   each row's link carries `active-class="row-active"` — a bare marker with no
@@ -992,8 +1074,14 @@ things that are easy to get wrong.
   but *only* in the case the component drops: an empty textarea with something
   attached. Everything else still goes through `UChatPrompt` itself, including
   its IME guard and its touch rule, which the keydown path has to mirror.
-- **Reka's dropdown opens on `pointerdown`, not on `click`.** A component test
-  that only calls `.click()` on the trigger waits forever for `[role="menu"]`.
+- **Reka's dropdown opens on `pointerdown`, but its select menu opens on
+  `click`.** `UDropdownMenu` is a Menu and `USelectMenu` a Combobox, and they
+  do not take the same event: measured in happy-dom, a `pointerdown` on a
+  `USelectMenu` trigger leaves zero `[role="option"]` nodes in the document and
+  a `click` leaves all of them — the exact opposite of the dropdown. See
+  `openMenu()` in `AgentComposer.spec.ts` for the select and in
+  `ProjectTree.spec.ts` for the dropdown. A component test that only calls
+  `.click()` on a *dropdown* trigger waits forever for `[role="menu"]`.
   Dispatch `new MouseEvent('pointerdown', { bubbles: true, button: 0 })` first —
   see `openMenu()` in `test/nuxt/ProjectTree.spec.ts`. And scope the search for
   a dialog's submit button to the dialog: the menu that opened it is still in
@@ -1181,6 +1269,30 @@ and permissions are end to end because a permission is a row.
   with the header enforced and with it stripped.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
+- **The composer's pickers were covered in happy-dom, not in a browser.**
+  `test/nuxt/AgentComposer.spec.ts` asserts that the mode, the model and the
+  adapter's own settings render, that a reasoning-effort change leaves as
+  `{ config: { effort: 'high' } }`, and that no model probe is spawned until
+  the picker is opened; `test/server/acp-stream.spec.ts` covers the server half
+  against a fake adapter that publishes an `effort` option (recorded on the
+  row, re-applied after a reattach, skipped when the adapter stops offering
+  it). What no test can say is whether **four** pickers — mode, model, effort
+  and, on Codex, a collaboration mode — still fit beside the attach button at
+  390px. They are set to wrap, which is a guess that has not been looked at.
+  **The host still has to open it**, desktop and mobile, over the Caddy HTTPS
+  address.
+- **The reasoning-effort payloads were read out of both adapters' shipped
+  bundles, not assumed.** `buildEffortConfigOption` in claude-agent-acp's
+  `session-effort.js` (id `effort`, and `undefined` when the model has no
+  levels) and `createReasoningEffortConfigOption` in codex-acp's `index.js`
+  (id `reasoning_effort`, pushed only when `supportedReasoningEfforts` is
+  non-empty); both `category: "thought_level"`. `SetSessionConfigOptionResponse`
+  in the SDK is documented as "the full set of configuration options and their
+  current values", which is what the refresh-on-every-set design rests on.
+  The fixtures in `test/unit/acp-config-options.spec.ts` are those payloads.
+  **Not** verified against a live account: whether an effort actually changes
+  how either model behaves, and the fast-mode and collaboration-mode options,
+  which no test has ever seen an adapter emit.
 - **The condensed transcript was covered in happy-dom, not in a browser.**
   `test/nuxt/ActivityGroup.spec.ts` and the `condensed` block of
   `test/nuxt/AgentTranscript.spec.ts` assert the label, the breakdown, the

@@ -187,6 +187,7 @@ describe('the agent-mesh MCP endpoint', () => {
       'read_agent_transcript',
       'message_agent',
       'spawn_agent',
+      'manage_agent_session',
       'subscribe_to_agent',
       'unsubscribe_from_agent',
       'list_projects',

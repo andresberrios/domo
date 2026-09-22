@@ -67,6 +67,14 @@ export interface AgentSession {
   modes: SessionModeInfo[] | null
   /** The model this session runs on, as the adapter reports it. Null is "the adapter's default". */
   model: string | null
+  /**
+   * What was *asked for* on this session's adapter-specific settings, by id.
+   * Re-applied on every attach, because `session/load` restores the adapter's
+   * own defaults and not Domo's choices.
+   */
+  config: Record<string, string> | null
+  /** The selects the adapter last reported, minus mode and model. */
+  configOptions: SessionConfigOptionInfo[] | null
   lastError: string | null
   createdAt: string
   updatedAt: string
@@ -253,6 +261,30 @@ export interface SessionModeInfo {
 }
 
 /**
+ * One of the adapter's own `configOptions` selects, as it last reported it.
+ *
+ * ACP lets an agent publish whatever settings it has, so this is deliberately
+ * not a named list: Claude Code offers `effort`, codex-acp `reasoning_effort`
+ * and a `collaboration_mode` nobody else has, and both add a fast-mode toggle
+ * only on the models that support one. Domo renders what arrives rather than
+ * knowing any of them by name — the two it *does* know (`mode` and `model`)
+ * have dedicated columns and are filtered out of this list.
+ *
+ * The set is per *session* and moves with the model: Claude Code drops the
+ * effort option entirely on a model that has no effort levels, so this is
+ * rewritten from the adapter's answer on every change rather than probed once.
+ */
+export interface SessionConfigOptionInfo {
+  id: string
+  name: string
+  description?: string | null
+  /** ACP's own hint: `thought_level` is where both adapters put reasoning effort. */
+  category?: string | null
+  currentValue: string | null
+  options: Array<{ value: string, name: string, description?: string | null }>
+}
+
+/**
  * A durable row of the ACP session/update stream.
  *
  * Discrete events (`user_message`, `tool_call`, `turn_end`, …) are appended
@@ -414,6 +446,16 @@ export interface AppSettings {
    * of them, and it was — the other silently kept the adapter's own default.
    */
   defaultAgentModes: Record<AgentAdapter, string>
+  /**
+   * Per-adapter defaults for the adapter's *own* settings, by config option id
+   * — `{ 'claude-code': { effort: 'high' }, codex: { reasoning_effort: 'high' } }`.
+   *
+   * Keyed by id rather than by category because an adapter may publish several
+   * options in one category, and applied best-effort: an option the adapter
+   * does not offer on the session's model (Claude Code hides `effort` on a
+   * model without effort levels) is skipped rather than failing the start.
+   */
+  defaultAgentConfig: Record<AgentAdapter, Record<string, string>>
   language: string
   /** Let the voice agent name conversations, and rename them as the topic moves. */
   autoTitle: boolean

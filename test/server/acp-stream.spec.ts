@@ -84,6 +84,8 @@ interface ServeOptions {
   onNewSession?: (params: any) => void
   /** The model select this adapter offers, if any. */
   models?: { current: string, ids: string[] }
+  /** The reasoning-effort select this adapter offers, if any. */
+  effort?: { current: string, ids: string[] }
   /** Every `session/set_config_option` the adapter is asked for. */
   onSetConfigOption?: (params: any) => void
   /** The mode state `session/new` and `session/load` report, if any. */
@@ -120,12 +122,36 @@ function modelOption(models: { current: string, ids: string[] }) {
   }
 }
 
+/**
+ * The reasoning-effort select, shaped the way claude-agent-acp's
+ * `buildEffortConfigOption` builds one: its own id, and ACP's `thought_level`
+ * category. codex-acp publishes the same category under `reasoning_effort`,
+ * which is exactly why nothing in Domo matches on the id.
+ */
+function effortOption(effort: { current: string, ids: string[] }) {
+  return {
+    id: 'effort',
+    name: 'Effort',
+    description: 'Available effort levels for this model',
+    category: 'thought_level',
+    type: 'select' as const,
+    currentValue: effort.current,
+    options: effort.ids.map(id => ({ value: id, name: id.toUpperCase() }))
+  }
+}
+
 /** Serve one turn, scripted by the test, then answer `session/prompt`. */
 function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
   // What makes the steering answer meaningful: the real adapters inject into a
   // turn that is running and hand the content back when none is.
   let running = 0
   let cancelled = false
+  // What this adapter is on right now, so a set is reflected in the next answer.
+  const current = { model: options.models?.current, effort: options.effort?.current }
+  const configOptions = () => [
+    ...(options.models ? [modelOption({ ...options.models, current: current.model! })] : []),
+    ...(options.effort ? [effortOption({ ...options.effort, current: current.effort! })] : [])
+  ]
 
   return acp
     .agent({ name: 'fake' })
@@ -138,25 +164,30 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
       options.onNewSession?.(ctx.params)
       return {
         sessionId: 'acp_fake',
-        ...(options.models ? { configOptions: [modelOption(options.models)] } : {}),
+        ...(configOptions().length ? { configOptions: configOptions() } : {}),
         ...(options.modes ? { modes: modeState(options.modes) } : {})
       }
     })
-    .onRequest(acp.methods.agent.session.load, () => (
+    .onRequest(acp.methods.agent.session.load, () => ({
+      // `session/load` restores the adapter's *own* defaults, which is the
+      // whole reason Domo re-applies its choices on every attach: the effort
+      // comes back at whatever this adapter starts on, not what was picked.
+      ...(configOptions().length ? { configOptions: configOptions() } : {}),
       // `null` is the real shape of "loaded, and saying nothing about modes":
       // the SDK lets `session/load` answer with nothing at all.
-      options.modes ? { modes: modeState(options.modes) } : {}
-    ))
+      ...(options.modes ? { modes: modeState(options.modes) } : {})
+    }))
     .onRequest(acp.methods.agent.session.setMode, (ctx: any) => {
       options.onSetMode?.(ctx.params)
       return {}
     })
     .onRequest(acp.methods.agent.session.setConfigOption, (ctx: any) => {
       options.onSetConfigOption?.(ctx.params)
-      // The adapter answers with the full set, reporting what actually took.
-      return {
-        configOptions: [modelOption({ current: ctx.params.value, ids: options.models?.ids ?? [] })]
-      }
+      // A real adapter answers with the *whole* set and its current values, so
+      // one option's change is also how a client learns the rest still stand.
+      if (ctx.params.configId === 'model') current.model = ctx.params.value
+      if (ctx.params.configId === 'effort') current.effort = ctx.params.value
+      return { configOptions: configOptions() }
     })
     .onRequest(acp.methods.agent.session.prompt, async (ctx: any) => {
       options.onPrompt?.(ctx.params)
@@ -629,6 +660,143 @@ describe('the model a session runs on', () => {
     const row = await getAgentSession(agent.id)
     expect(row!.status).toBe('error')
     expect(row!.lastError).toContain('sonnet, haiku')
+  })
+})
+
+/**
+ * The settings that are the *adapter's* own, which Domo does not know the names
+ * of.
+ *
+ * Reasoning effort is the case that forced this: Claude Code publishes it as
+ * `effort` and codex-acp as `reasoning_effort`, both under ACP's
+ * `thought_level` category, and both only on models that have effort levels at
+ * all. So the row records what was asked for by id, the adapter's own answer is
+ * what gets rendered, and neither the server nor the UI names either one.
+ */
+describe('the adapter settings a session runs with', () => {
+  const EFFORT = { current: 'medium', ids: ['low', 'medium', 'high'] }
+
+  async function boot(
+    config: Record<string, string> | null,
+    options: { effort?: { current: string, ids: string[] } } = {}
+  ) {
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Effort',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+    })
+    if (config) await updateAgentSession(agent.id, { config })
+    return { agent, ...await attach(agent.id, options.effort ?? EFFORT) }
+  }
+
+  /**
+   * Serve the adapter this prompt spawns — the *next* one, not the first: a
+   * test that boots twice would otherwise script the process it already
+   * finished with and wait forever for the one it just started.
+   */
+  async function attach(agentId: string, effort?: { current: string, ids: string[] }) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const index = state.adapters.length
+    const asked: any[] = []
+    const started = acpManager.prompt(agentId, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters.length).toBeGreaterThan(index))
+    serve(state.adapters[index]!, async () => {}, {
+      ...(effort ? { effort } : {}),
+      onSetConfigOption: params => asked.push(params)
+    })
+    await started
+    return { asked }
+  }
+
+  it('records what the adapter offers, so the picker needs no probe', async () => {
+    const { agent } = await boot(null)
+
+    const row = await getAgentSession(agent.id)
+    expect(row!.configOptions).toEqual([{
+      id: 'effort',
+      name: 'Effort',
+      description: 'Available effort levels for this model',
+      category: 'thought_level',
+      currentValue: 'medium',
+      options: [
+        { value: 'low', name: 'LOW', description: null },
+        { value: 'medium', name: 'MEDIUM', description: null },
+        { value: 'high', name: 'HIGH', description: null }
+      ]
+    }])
+  })
+
+  it('asks the adapter for what the row asked for, and asks for nothing it is already on', async () => {
+    const { asked } = await boot({ effort: 'high' })
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'effort', value: 'high' }])
+
+    const already = await boot({ effort: 'medium' })
+    expect(already.asked).toEqual([])
+  })
+
+  it('re-applies the row on a reattach, because session/load restores the adapter’s own default', async () => {
+    // The reason this column exists at all: under `pnpm dev` every edit to
+    // `server/` reattaches every session, and the fake comes back on `medium`
+    // exactly as a real adapter does.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { agent } = await boot({ effort: 'high' })
+    await updateAgentSession(agent.id, { acpSessionId: 'acp_fake' })
+    acpManager.stop(agent.id)
+
+    const { asked } = await attach(agent.id, EFFORT)
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'effort', value: 'high' }])
+  })
+
+  it('skips a setting the adapter does not offer rather than failing the start', async () => {
+    // An effort saved against one model must not break a session the user has
+    // since moved to a model that has no effort levels.
+    const agent = await createAgentSession({
+      adapter: 'claude-code',
+      title: 'Effort',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+    })
+    await updateAgentSession(agent.id, { config: { effort: 'high' } })
+    // No effort option at all, the way Claude Code answers on a model without
+    // effort levels.
+    await attach(agent.id)
+
+    const row = await getAgentSession(agent.id)
+    expect(row!.status).not.toBe('error')
+    // Still remembered, for a model that does offer it again later.
+    expect(row!.config).toEqual({ effort: 'high' })
+  })
+
+  it('changes a setting on a running session and writes back what took', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { agent } = await boot(null)
+
+    await acpManager.setConfigOption(agent.id, 'effort', 'high')
+
+    const row = await getAgentSession(agent.id)
+    expect(row!.config).toEqual({ effort: 'high' })
+    expect(row!.configOptions?.[0]?.currentValue).toBe('high')
+    expect((await listAgentEvents(agent.id)).find(event => event.type === 'config_changed')?.payload)
+      .toMatchObject({ configId: 'effort', value: 'high' })
+  })
+
+  it('takes the name a person would use, on an adapter that calls it something else', async () => {
+    // "reasoning effort" is Codex's name for Claude Code's `effort`, and a
+    // caller should not have to know which adapter it is talking to.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { agent } = await boot(null)
+
+    await acpManager.setConfigOption(agent.id, 'reasoning effort', 'High')
+
+    await expect(getAgentSession(agent.id).then(row => row!.config)).resolves.toEqual({ effort: 'high' })
+  })
+
+  it('refuses a value the option does not offer, naming the ones it does', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { agent } = await boot(null)
+
+    await expect(acpManager.setConfigOption(agent.id, 'effort', 'maximum'))
+      .rejects.toThrow(/does not offer a value matching "maximum".*low, medium, high/s)
   })
 })
 
