@@ -358,6 +358,29 @@ only the objects you are missing cross. The voice agent and the coding agents
 can do it too: *"export main from the sidebar environment"*, or the
 `export_branch` tool in the agent mesh.
 
+### Getting a branch into an environment
+
+**Import branch** is the same road travelled the other way: your project's
+checkout pushes straight into the container. Use it to bring an environment's
+`main` up to date after work lands on the host, to seed an environment with a
+branch for an agent to carry on from, or — via the host — to move a branch from
+one environment to another.
+
+- Pick the branch on this machine to send and the branch to write in the
+  environment (the same name, by default). A name the environment does not have
+  yet is created.
+- The environment's branch is only ever **fast-forwarded**. If it has commits
+  yours does not — an agent has been working — the import says so and sends
+  nothing; export it and merge here instead.
+- **The branch the environment has checked out is refused.** That working tree
+  and index belong to an agent and may hold changes that are not committed
+  anywhere else, so Domo will not move the ref under it. Check out something
+  else in the environment, or import into a different name.
+
+It is one `git push` over the same `ext::` transport — git asks the same command
+for `git-receive-pack` instead — and the voice agent and the agent mesh have it
+too, as `import_branch`.
+
 ### Open an environment in VS Code
 
 The checkout lives inside the container, so editing it means attaching an editor

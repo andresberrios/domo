@@ -174,10 +174,25 @@ describe('projects', () => {
     expect(response.status).toBe(400)
   })
 
+  it('will not import a branch without naming the one to write', async () => {
+    const response = await fetch('/api/dev-environments/env_nope/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: 'main' })
+    })
+
+    expect(response.status).toBe(400)
+  })
+
   it('says which part is missing when the environment is not there', async () => {
     for (const request of [
       fetch('/api/dev-environments/env_nope/branches'),
       fetch('/api/dev-environments/env_nope/export', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ branch: 'main' })
+      }),
+      fetch('/api/dev-environments/env_nope/import', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ branch: 'main' })

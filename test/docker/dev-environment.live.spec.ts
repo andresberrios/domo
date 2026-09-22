@@ -80,7 +80,8 @@ const {
   removeEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
-const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
+const { exportBranch, importBranch, listEnvironmentBranches }
+  = await import('../../server/lib/dev-env/git-sync')
 
 const HOUR = 60 * 60 * 1000
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
@@ -638,6 +639,55 @@ describe('an environment created while the host checkout is dirty', () => {
     expect(carried.stdout.split('\n').filter(Boolean).sort()).toEqual(['palette.css', 'scratch.md'])
     // Ignored files stayed out of the commit and stayed on disk.
     await expect(exec('cat', '.env')).resolves.toMatchObject({ stdout: 'NUXT_SECRET=hunter2' })
+
+    await removeEnvironment(environment.id)
+  }, HOUR / 4)
+})
+
+/**
+ * The push half of the `ext::` transport, against a real container. The fetch
+ * half proves `git-upload-pack` is reachable inside the image; nothing but this
+ * says `git-receive-pack` is, and `%S` is what asks for it.
+ */
+describe('importing a branch into an environment', () => {
+  it('pushes a host branch into the container and refuses the one it has checked out', async () => {
+    const repo = await checkout()
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    state.ports.length = 0
+
+    const environment = await create('Import Live')
+    const exec = (...command: string[]) => run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, ...command
+    ])
+
+    // The agent is working on its own branch; `main` is the stale one.
+    await exec('git', 'checkout', '--quiet', '-b', 'agent-work')
+    const host = (...args: string[]) => run('git', [
+      '-C', repo, '-c', 'user.name=Domo Test', '-c', 'user.email=test@example.com', ...args
+    ])
+    await writeIn(repo, { 'landed.txt': 'merged on the host\n' })
+    await host('add', '--all')
+    await host('commit', '--quiet', '-m', 'landed on the host')
+    const sha = (await host('rev-parse', 'HEAD')).stdout
+
+    const result = await importBranch({ environmentId: environment.id, branch: 'main' })
+
+    expect(result).toMatchObject({ branch: 'main', from: 'main', sha, result: 'fast-forwarded' })
+    expect(result.commits.map(commit => commit.subject)).toEqual(['landed on the host'])
+    await expect(exec('git', 'rev-parse', 'refs/heads/main')).resolves.toMatchObject({ stdout: sha })
+    // The agent's own branch and working tree were not touched.
+    await expect(exec('git', 'symbolic-ref', '--short', 'HEAD')).resolves.toMatchObject({ stdout: 'agent-work' })
+    await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
+
+    // The branch it *is* on is refused, and nothing is sent.
+    const refused = await importBranch({ environmentId: environment.id, branch: 'agent-work', from: 'main' })
+    expect(refused.result).toBe('not-merged')
+    expect(refused.reason).toMatch(/has "agent-work" checked out/)
+    await expect(exec('git', 'rev-parse', 'refs/heads/agent-work')).resolves.not.toMatchObject({ stdout: sha })
+
+    // `protocol.ext.allow` was passed per invocation on the push too, not written.
+    await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()
 
     await removeEnvironment(environment.id)
   }, HOUR / 4)

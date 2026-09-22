@@ -250,9 +250,14 @@ export interface EnvironmentBranches {
   branches: EnvironmentBranch[]
 }
 
-export type BranchExportResult = 'fast-forwarded' | 'created' | 'up-to-date' | 'not-merged'
+/**
+ * How a branch sync ended, whichever way it moved. Both directions are
+ * fast-forward only, so `not-merged` — with a reason — is what a divergence
+ * comes back as rather than anything being rewritten.
+ */
+export type BranchSyncResult = 'fast-forwarded' | 'created' | 'up-to-date' | 'not-merged'
 
-export interface ExportedCommit {
+export interface SyncedCommit {
   sha: string
   subject: string
 }
@@ -264,11 +269,26 @@ export interface BranchExport {
   /** What that ref now points at. */
   sha: string
   /** What came over, newest first, relative to `into` (or to the previous tracking ref). */
-  commits: ExportedCommit[]
+  commits: SyncedCommit[]
   /** The local branch that was asked for, or null when only the fetch was. */
   into: string | null
-  result: BranchExportResult
+  result: BranchSyncResult
   /** Why `into` was left alone, when it was. */
+  reason?: string
+}
+
+/** What importing one branch into an environment did to the environment's checkout. */
+export interface BranchImport {
+  /** The branch in the environment that was written, or would have been. */
+  branch: string
+  /** The ref in the project's own checkout that was sent. */
+  from: string
+  /** What the environment's branch points at now — unchanged when nothing moved. */
+  sha: string
+  /** What crossed, newest first, relative to where the environment's branch stood. */
+  commits: SyncedCommit[]
+  result: BranchSyncResult
+  /** Why the environment's branch was left alone, when it was. */
   reason?: string
 }
 

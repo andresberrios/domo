@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
 /**
- * The two pure pieces of the branch export: the `ext::` URL a host `git fetch`
- * is handed, and the rule that decides which local branch (if any) an export
- * is allowed to move.
+ * The pure pieces of moving a branch between the host and an environment: the
+ * `ext::` URL a host `git fetch` or `git push` is handed, and the rules that
+ * decide which branch each direction is allowed to touch.
  *
  * The module's database and Docker neighbours are mocked away for the same
  * reason every other unit spec does it — this project has no services.
@@ -16,9 +16,10 @@ vi.mock('../../server/lib/dev-environments', () => ({
   safeEnvironmentName: (name: string) => name.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase()
 }))
 
-const { resolveIntoBranch, uploadPackTransport } = await import('../../server/lib/dev-env/git-sync')
+const { environmentTransport, resolveFromRef, resolveIntoBranch }
+  = await import('../../server/lib/dev-env/git-sync')
 
-const transport = (overrides: Record<string, unknown> = {}) => uploadPackTransport({
+const transport = (overrides: Record<string, unknown> = {}) => environmentTransport({
   containerId: 'c0ffee00',
   remoteUser: 'vscode',
   home: '/home/vscode',
@@ -26,18 +27,26 @@ const transport = (overrides: Record<string, unknown> = {}) => uploadPackTranspo
   ...overrides
 } as any)
 
-describe('uploadPackTransport', () => {
-  it('runs git-upload-pack in the container, as the remote user, with HOME set', () => {
+describe('environmentTransport', () => {
+  it('runs the service git asks for, in the container, as the remote user, with HOME set', () => {
     // Both are load-bearing: without them git calls the checkout "dubiously
     // owned", because the safe.directory is in that user's own ~/.gitconfig.
     expect(transport()).toBe(
-      'ext::docker exec -i -u vscode -e HOME=/home/vscode c0ffee00 git-upload-pack /workspaces/feature-auth'
+      'ext::docker exec -i -u vscode -e HOME=/home/vscode c0ffee00 %S /workspaces/feature-auth'
     )
+  })
+
+  // `%S` is the *long* service name, which is what the executables are called.
+  // `%s` is the short one: `docker exec` then cannot find `upload-pack`, and
+  // the user is handed `fatal: protocol error: bad line length character: OCI`.
+  it('substitutes the service with %S and never %s', () => {
+    expect(transport()).toContain(' %S ')
+    expect(transport()).not.toContain('%s')
   })
 
   it('leaves the user and HOME out for an environment that recorded neither', () => {
     expect(transport({ remoteUser: null, home: null })).toBe(
-      'ext::docker exec -i c0ffee00 git-upload-pack /workspaces/feature-auth'
+      'ext::docker exec -i c0ffee00 %S /workspaces/feature-auth'
     )
   })
 
@@ -64,5 +73,22 @@ describe('resolveIntoBranch', () => {
     expect(resolveIntoBranch('main', null)).toBeNull()
     expect(resolveIntoBranch('main', '')).toBeNull()
     expect(resolveIntoBranch('main', '   ')).toBeNull()
+  })
+})
+
+describe('resolveFromRef', () => {
+  it('defaults to the same name on the host', () => {
+    expect(resolveFromRef('main', undefined)).toBe('main')
+  })
+
+  it('takes an explicit ref, trimmed', () => {
+    expect(resolveFromRef('main', '  release  ')).toBe('release')
+  })
+
+  // Unlike an export, there is no "send nothing" mode: something has to be sent,
+  // so a blank means the branch's own name rather than null.
+  it('reads null and blank as the branch\'s own name', () => {
+    expect(resolveFromRef('main', null)).toBe('main')
+    expect(resolveFromRef('main', '   ')).toBe('main')
   })
 })

@@ -371,7 +371,12 @@ things that are easy to get wrong.
   look at. One function serves the API, the mesh's `export_branch` and the voice
   tool of the same name, and the transport is an injected parameter so the whole
   thing is tested against two temp repos with no Docker
-  (`test/server/git-sync.spec.ts`).
+  (`test/server/git-sync.spec.ts`). `importBranch` is the same road the other
+  way — one `git push` over the same URL, same fast-forward-only discipline —
+  and it additionally refuses the branch the container has **checked out**,
+  read from the same `ls-remote --symref` that tells it where the branch
+  stands. `receive.denyCurrentBranch` would refuse too, but that is a default
+  somebody can change, and what it protects is an agent's live working tree.
 
 - **The sidebar is the management surface; there is no Projects page.**
   `app/pages/projects.vue` is gone. `ProjectTree.vue` (mounted by the layout,
@@ -751,10 +756,16 @@ things that are easy to get wrong.
   that executes whatever a URL says. One invocation, one repository, one fetch.
 - **The `ext::` command is split on whitespace and `%`-expanded, so every part
   of it has to be a bare word.** There is no quoting: a workspace path with a
-  space in it would become two arguments to `git-upload-pack`. All the inputs
-  are words already (`safeEnvironmentName()`, a hex container id, a unix user
-  name), and `uploadPackTransport()` still refuses one that is not, because the
-  failure mode is a command that quietly means something else.
+  space in it would become two arguments to the service. All the inputs are
+  words already (`safeEnvironmentName()`, a hex container id, a unix user
+  name), and `environmentTransport()` still refuses one that is not, because
+  the failure mode is a command that quietly means something else. The one
+  `%` the command is *meant* to contain is **`%S`**, which is how a single URL
+  serves both a fetch and a push: it expands to the long service name
+  (`git-upload-pack` / `git-receive-pack`), which is what the executables are
+  called. `%s` is the short name, `docker exec` then finds no `upload-pack`,
+  and what surfaces is `fatal: protocol error: bad line length character: OCI`
+  — an hour of looking in the wrong place.
 - **The exec has to run as the environment's remote user, with `HOME` set.**
   Without `-u` git finds the checkout owned by another uid and refuses it as
   "dubious ownership"; without `HOME` it never reads the `~/.gitconfig` Domo
@@ -1352,6 +1363,14 @@ and permissions are end to end because a permission is a row.
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no
   Node of its own, and an Alpine image failing the preflight and cleaning up.
+- **The branch import was verified against a real container**, so
+  `git-receive-pack` really is reachable inside the image the way
+  `git-upload-pack` is: a host commit fast-forwarded the environment's `main`
+  while an agent sat on another branch, and the branch it *was* on came back
+  refused with nothing sent. The rules either side of that are covered against
+  real git on both ends with no Docker (`test/server/git-sync.spec.ts`,
+  including a round trip that would fail on the push half if the transport were
+  still hard-coded to `git-upload-pack`).
 - **The dirty-checkout fix was verified against a real daemon**, `pnpm
   test:docker` green (5 files, 67 tests, 851 s cold). Both directions were
   asserted end to end from a dirty fixture: a `discard` environment whose
