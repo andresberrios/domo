@@ -2294,7 +2294,11 @@ describe('a turn the agent starts for itself', () => {
     expect(events[0]!.payload).toEqual({ origin: 'adapter' })
     expect(events[2]!.payload.origin).toBe('adapter')
     expect(textOf(events)).toEqual(['The build finished. It is green.'])
-    expect(await statusOf(agent.id)).toBe('idle')
+
+    const row = (await getAgentSession(agent.id))!
+    expect(row.status).toBe('idle')
+    // What the turn said, and only what *this* turn said.
+    expect(row.summary).toBe('The build finished. It is green.')
   })
 
   it('drains the inbox behind it, which is the part that was silently lost', async () => {

@@ -1478,6 +1478,9 @@ class AgentRuntime {
     this.turn = turn
     this.adapterTurnSettle = settle
     this.openToolCalls.clear()
+    // Reset for the same reason `runTurn` resets it: what this turn says is
+    // what becomes the session summary, and the last turn's text is not it.
+    this.textBuffer = ''
     this.armAdapterTurn()
 
     const block = this.takeStream()

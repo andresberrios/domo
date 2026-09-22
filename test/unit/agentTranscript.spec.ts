@@ -259,6 +259,26 @@ describe('buildTranscript', () => {
       expect(items[0]).toMatchObject({ kind: 'notice', tone: 'info', text: 'Turn ended: max tokens' })
     })
 
+    /**
+     * Every other turn opens with a `user_message`, and that row is what tells
+     * a reader the text under it is an answer. A turn the agent started for
+     * itself has none, so without this its output is welded to the end of the
+     * previous exchange with nothing to say nobody asked for it.
+     */
+    it('says so when the agent started a turn on its own', () => {
+      const items = buildTranscript([
+        agentEvent('turn_start', { origin: 'adapter' }),
+        textChunk('The build finished. It is green.')
+      ])
+
+      expect(kinds(items)).toEqual(['notice', 'assistant'])
+      expect(items[0]).toMatchObject({ tone: 'info', text: 'The agent started this turn on its own' })
+    })
+
+    it('ends such a turn quietly, because the head of it already said', () => {
+      expect(buildTranscript([agentEvent('turn_end', { stopReason: 'end_turn', origin: 'adapter' })])).toEqual([])
+    })
+
     it('labels the mesh events agents use to talk to each other', () => {
       const items = buildTranscript([
         agentEvent('mesh_inbound', { from: 'ag_1', fromTitle: 'auth', message: 'take over' }),
