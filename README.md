@@ -382,9 +382,16 @@ one environment to another.
   cherry-pick out of. An agent in the middle of something always has
   uncommitted files, which is exactly when you most want to reach it.
 - **A conflict is aborted, not left in the working tree.** The imported commits
-  stay on `domo-import/<branch>` and the agents are told to merge it
-  themselves. A half-merged checkout handed to a running agent gets read as its
-  own work.
+  stay on `domo-import/<branch>`. A half-merged checkout handed to a running
+  agent gets read as its own work.
+- **Every agent session in the environment is told; exactly one is asked to
+  merge.** They all share one checkout, so two of them resolving the same
+  conflict would be editing the same files at once. The one asked is the most
+  recently active, and the others are told which one it was — so any of them
+  can pick it up if it does not.
+- **The modal says what it will do before you press it** — which branch, whether
+  it merges or lands on a side branch, how many uncommitted files it will commit
+  first, who it will tell and who it will ask.
 - **If an agent is mid-turn, the branch lands on that side branch** without
   touching the working tree at all, and the agent is told to merge it when it
   reaches a sensible point.

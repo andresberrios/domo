@@ -1,7 +1,14 @@
-import type { AgentSession, DevEnvironment, EnvironmentBranchImport } from '../../shared/types'
+import type {
+  AgentSession,
+  DevEnvironment,
+  EnvironmentBranchImport,
+  ImportPlan,
+  ImportPlanSession
+} from '../../shared/types'
 import { acpManager } from './acp/manager'
 import type { EnvironmentGit } from './dev-env/git-sync'
 import { importBranch, resolveFromRef, runEnvironmentGit } from './dev-env/git-sync'
+import { MAX_REPORTED_PATHS, parsePorcelain } from './dev-env/workspace-seed'
 import { enqueueInboxMessage, getDevEnvironment, listAgentSessions } from './repo'
 
 /**
@@ -95,14 +102,37 @@ interface Notice {
   wip: string | null
   outcome: 'merged' | 'up-to-date' | 'side-branch' | 'conflict'
   checkedOut: string | null
+  /** The one session asked to merge by hand, when anything was left to merge. */
+  resolver: ImportPlanSession | null
+  /** Which session is being written to, so the asked one is addressed directly. */
+  reader: string
 }
 
+/**
+ * The one message, phrased so that no second one is ever needed.
+ *
+ * It says what is true at the moment it is sent and stays true afterwards: the
+ * commits are on this ref, they conflict (or not), and *this* session has been
+ * **asked** to merge them. Nothing has to observe whether that session gets to
+ * it — "is being handled" would be a claim about the future, and keeping it
+ * honest would mean detecting when a merge finished, which an agent ending its
+ * turn does not tell you. Any of the others can pick it up, and the note reads
+ * the same either way.
+ */
 function noticeFor(notice: Notice): string {
   const commits = `${notice.count} commit${notice.count === 1 ? '' : 's'}`
   const parked = notice.wip
-    ? ` Your uncommitted files were committed first, as ${notice.wip.slice(0, 8)} — nothing was stashed or `
-      + 'discarded, so amend or reset that commit if you were mid-thought.'
+    ? ` Uncommitted work here was committed first, as ${notice.wip.slice(0, 8)} — nothing was stashed or `
+      + 'discarded, so amend or reset that commit if it was mid-thought.'
     : ''
+  const asked = !notice.resolver
+    ? ` Merge it when you can: \`git merge ${notice.branch}\`.`
+    : notice.resolver.agentSessionId === notice.reader
+      ? ` You have been asked to merge it: \`git merge ${notice.branch}\`.`
+      : ` ${notice.resolver.title} (${notice.resolver.agentSessionId}) has been asked to merge it, so leave `
+        + 'it to them unless they do not get to it — you share one checkout, and two of you merging at once '
+        + 'would be editing the same files.'
+
   switch (notice.outcome) {
     case 'merged':
       return `Domo imported "${notice.from}" from the host (${commits}) and merged it into `
@@ -112,12 +142,11 @@ function noticeFor(notice: Notice): string {
         + `it.${parked}`
     case 'conflict':
       return `Domo imported "${notice.from}" from the host (${commits}) onto "${notice.branch}", but merging `
-        + `it into "${notice.checkedOut}" conflicts, so the merge was aborted and your working tree is as `
-        + `you left it.${parked} Resolve it when you can: \`git merge ${notice.branch}\`.`
+        + `it into "${notice.checkedOut}" conflicts, so the merge was aborted and the working tree is as it `
+        + `was.${parked}${asked}`
     default:
-      return `Domo imported "${notice.from}" from the host (${commits}) onto "${notice.branch}". You have `
-        + `"${notice.checkedOut ?? 'no branch'}" checked out, so merge it when you reach a sensible point: `
-        + `\`git merge ${notice.branch}\`.`
+      return `Domo imported "${notice.from}" from the host (${commits}) onto "${notice.branch}". `
+        + `"${notice.checkedOut ?? 'No branch'}" is checked out here.${parked}${asked}`
   }
 }
 
@@ -136,15 +165,116 @@ function noticeFor(notice: Notice): string {
  * about something Domo did, not the words of whoever asked for the import —
  * exactly the case subscription notes already use it for.
  */
-async function tell(session: AgentSession, text: string): Promise<'steer' | 'queue' | 'inbox'> {
+async function tell(session: ImportPlanSession, text: string): Promise<'steer' | 'queue' | 'inbox'> {
   const content = [{ type: 'text', text }]
-  if (acpManager.isBusy(session.id)) {
-    const delivery = deliveryFor(session.id)
-    await acpManager.deliver(session.id, { content, delivery, origin: 'system' })
+  const id = session.agentSessionId
+  if (acpManager.isBusy(id)) {
+    const delivery = deliveryFor(id)
+    await acpManager.deliver(id, { content, delivery, origin: 'system' })
     return delivery
   }
-  await enqueueInboxMessage({ agentSessionId: session.id, content, delivery: 'queue', origin: 'system' })
+  await enqueueInboxMessage({ agentSessionId: id, content, delivery: 'queue', origin: 'system' })
   return 'inbox'
+}
+
+/**
+ * Everything the plan is worked out from. Observed once, so the description a
+ * person is shown and the work that is actually done come from one reading of
+ * the environment rather than two.
+ */
+export interface ImportState {
+  requested: string
+  from: string
+  /** The branch the environment has checked out, or null when its HEAD is detached. */
+  checkedOut: string | null
+  /** Paths `git status --porcelain` reports in the environment. */
+  dirty: string[]
+  /** Sessions in this environment, **most recently active first**. */
+  sessions: ImportPlanSession[]
+}
+
+/**
+ * What an import would do, from what was observed. Pure, and the only place
+ * the decision is made: `importBranchIntoEnvironment` carries this out rather
+ * than working it out again, and the modal renders the same structure. A
+ * button whose behaviour the user cannot predict is a button they are afraid
+ * to press, and the only way to guarantee the preview and the act agree is for
+ * both to read one function.
+ */
+export function planImport(state: ImportState): ImportPlan {
+  const intoCheckedOut = state.requested === state.checkedOut
+  const working = state.sessions.some(session => session.busy)
+  // A turn in flight is holding files open and about to write more, so nothing
+  // touches the working tree: the commits go to a ref of their own and an agent
+  // is asked to merge them when it reaches a sensible point.
+  const toSideBranch = intoCheckedOut && working
+  const merge = intoCheckedOut && !working
+
+  /**
+   * One session, not all of them. Every session in an environment shares the
+   * one workspace volume — one checkout, one working tree — so asking two to
+   * resolve the same merge has them editing the same files at once, and the
+   * second finds the first's half-finished work. The most recently active is
+   * this codebase's existing answer to "which agent did the user mean"; it is
+   * what `last_activity_at` is for and what the voice agent picks.
+   */
+  const resolver = state.sessions[0] ?? null
+
+  return {
+    requested: state.requested,
+    from: state.from,
+    branch: intoCheckedOut ? sideBranch(state.requested) : state.requested,
+    toSideBranch,
+    sideBranchReason: toSideBranch ? 'agent-mid-turn' : null,
+    checkedOut: state.checkedOut,
+    // Only ever before a merge: a push to a branch nobody has checked out does
+    // not go near the working tree, so there is nothing to protect.
+    commitFirst: merge && state.dirty.length
+      ? { paths: state.dirty.slice(0, MAX_REPORTED_PATHS), total: state.dirty.length }
+      : null,
+    merge,
+    notify: state.sessions,
+    // Named whenever anything could be left to merge by hand — on a side
+    // branch always, and after a merge only if it conflicts. Which of those it
+    // turns out to be is not knowable until the merge is tried, so the plan
+    // says who would be asked rather than pretending to know whether they will.
+    resolver
+  }
+}
+
+/** Read the environment once, for both the preview and the act. */
+export async function observeImportState(input: {
+  environment: DevEnvironment
+  git: EnvironmentGit
+  requested: string
+  from?: string | null
+}): Promise<ImportState> {
+  const status = await input.git(input.environment, ['status', '--porcelain', '-z'], { allowFailure: true })
+    .catch(() => ({ stdout: '', stderr: '' }))
+  const sessions = await sessionsIn(input.environment.id)
+  return {
+    requested: input.requested,
+    from: resolveFromRef(input.requested, input.from),
+    checkedOut: await checkedOutBranch(input.environment, input.git),
+    dirty: parsePorcelain(status.stdout),
+    sessions: sessions.map(session => ({
+      agentSessionId: session.id,
+      title: session.title,
+      busy: acpManager.isBusy(session.id)
+    }))
+  }
+}
+
+/** What would happen if this import ran right now. */
+export async function previewImport(input: ImportIntoEnvironmentInput): Promise<ImportPlan> {
+  const environment = await getDevEnvironment(input.environmentId)
+  if (!environment) throw new Error('Development environment not found.')
+  return planImport(await observeImportState({
+    environment,
+    git: input.environmentGit ?? runEnvironmentGit,
+    requested: input.branch.trim(),
+    from: input.from
+  }))
 }
 
 /**
@@ -190,42 +320,40 @@ export interface ImportIntoEnvironmentInput {
 export async function importBranchIntoEnvironment(
   input: ImportIntoEnvironmentInput
 ): Promise<EnvironmentBranchImport> {
-  const requested = input.branch.trim()
   const git = input.environmentGit ?? runEnvironmentGit
   const environment = await getDevEnvironment(input.environmentId)
   if (!environment) throw new Error('Development environment not found.')
 
-  const sessions = await sessionsIn(input.environmentId)
-  const working = sessions.some(session => acpManager.isBusy(session.id))
-  // Through the injected runner rather than `listEnvironmentBranches`: this is
-  // the same question asked of the same checkout, and routing it here is what
-  // keeps the whole sequence testable against a plain directory.
-  const current = await checkedOutBranch(environment, git)
-
-  // Merging only ever happens into the branch the environment is on, and only
-  // when no turn is in flight. Everything else is a plain ref push.
-  const merging = requested === current && !working
-  const branch = requested === current ? sideBranch(requested) : requested
-  // Resolved against what was *asked for*, not against where it is going: a
-  // default `from` means "the branch of the same name on the host", and there
-  // is no `domo-import/main` there to send.
-  const from = resolveFromRef(requested, input.from)
+  // Observed now, not trusted from a preview the caller may have taken minutes
+  // ago: a turn can start and files can change in between, and acting on what
+  // is true when the button is pressed is the honest thing.
+  const plan = planImport(await observeImportState({
+    environment,
+    git,
+    requested: input.branch.trim(),
+    from: input.from
+  }))
 
   // Before the push, and before anything else touches the checkout: the only
   // work that can be lost is work git cannot see.
-  const wip = merging ? await commitWorkInProgress(environment, git, requested) : null
+  const wip = plan.commitFirst ? await commitWorkInProgress(environment, git, plan.requested) : null
 
-  const pushed = await importBranch({ environmentId: input.environmentId, branch, from, transport: input.transport })
-  const report: EnvironmentBranchImport = { ...pushed, requested, wip, notified: [] }
+  const pushed = await importBranch({
+    environmentId: input.environmentId,
+    branch: plan.branch,
+    from: plan.from,
+    transport: input.transport
+  })
+  const report: EnvironmentBranchImport = { ...pushed, requested: plan.requested, wip, notified: [] }
   if (pushed.result === 'not-merged') return report
 
   let outcome: Notice['outcome'] = 'side-branch'
-  if (merging) {
+  if (plan.merge) {
     const head = async () => (await git(environment, ['rev-parse', 'HEAD'])).stdout.trim()
     const before = await head()
     // No `allowFailure`: the exit code *is* the answer. A conflict leaves the
     // tree half-merged, so the abort is not optional.
-    const clean = await git(environment, ['merge', '--no-edit', branch]).then(() => true, () => false)
+    const clean = await git(environment, ['merge', '--no-edit', plan.branch]).then(() => true, () => false)
     if (clean) {
       outcome = (await head()) === before ? 'up-to-date' : 'merged'
       report.result = outcome === 'up-to-date' ? 'up-to-date' : 'merged'
@@ -233,28 +361,36 @@ export async function importBranchIntoEnvironment(
       await git(environment, ['merge', '--abort'], { allowFailure: true }).catch(() => {})
       outcome = 'conflict'
       report.result = 'not-merged'
-      report.reason = `The imported commits are on "${branch}", but merging them into "${current}" conflicts. `
-        + 'The merge was aborted, so the environment\'s working tree is untouched.'
+      report.reason = `The imported commits are on "${plan.branch}", but merging them into `
+        + `"${plan.checkedOut}" conflicts. The merge was aborted, so the environment's working tree is `
+        + 'untouched.'
     }
-  } else if (requested === current) {
-    report.diverted = `An agent is mid-turn in this environment, so "${requested}" was left on "${branch}" `
-      + 'rather than merged under a running working tree.'
+  } else if (plan.toSideBranch) {
+    report.diverted = `An agent is mid-turn in this environment, so "${plan.requested}" was left on `
+      + `"${plan.branch}" rather than merged under a running working tree.`
   }
 
-  const text = noticeFor({
-    branch,
-    from: pushed.from,
-    count: pushed.commits.length,
-    wip,
-    outcome,
-    checkedOut: current
-  })
-  for (const session of sessions) {
+  // Exactly one session is *asked*, and only when something is left to merge.
+  // They all share one workspace volume, so two of them acting on the same
+  // conflict would be editing the same files at once.
+  const resolver = outcome === 'merged' || outcome === 'up-to-date' ? null : plan.resolver
+  report.resolver = resolver
+  for (const session of plan.notify) {
+    const text = noticeFor({
+      branch: plan.branch,
+      from: pushed.from,
+      count: pushed.commits.length,
+      wip,
+      outcome,
+      checkedOut: plan.checkedOut,
+      resolver,
+      reader: session.agentSessionId
+    })
     const via = await tell(session, text).catch((error) => {
-      console.error(`[branch-import] could not tell ${session.id} about ${branch}`, error)
+      console.error(`[branch-import] could not tell ${session.agentSessionId} about ${plan.branch}`, error)
       return null
     })
-    if (via) report.notified.push({ agentSessionId: session.id, title: session.title, via })
+    if (via) report.notified.push({ agentSessionId: session.agentSessionId, title: session.title, via })
   }
   return report
 }

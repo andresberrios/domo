@@ -281,6 +281,47 @@ export interface BranchExport {
   reason?: string
 }
 
+/** One agent session, as an import plan refers to it. */
+export interface ImportPlanSession {
+  agentSessionId: string
+  title: string
+  /** Whether a turn is in flight right now. */
+  busy: boolean
+}
+
+/**
+ * What an import *would* do, worked out from the environment's observed state
+ * before anything is touched. The executor carries this out rather than
+ * deciding again, and the modal renders it — so the button cannot promise
+ * something different from what the server does.
+ */
+export interface ImportPlan {
+  /** The branch the caller asked the environment to have. */
+  requested: string
+  /** The ref in the project's checkout that will be sent. */
+  from: string
+  /** The branch the commits will land on in the environment. */
+  branch: string
+  /** True when `branch` is a side ref rather than the one asked for. */
+  toSideBranch: boolean
+  /** Why it is going to a side ref, when it is. */
+  sideBranchReason: 'agent-mid-turn' | null
+  /** The branch the environment has checked out, or null when its HEAD is detached. */
+  checkedOut: string | null
+  /** Paths that will be committed before anything else happens, capped, with the true total. */
+  commitFirst: { paths: string[], total: number } | null
+  /** Whether a merge into the checked-out branch will be attempted. */
+  merge: boolean
+  /** Every session that will be told what happened. */
+  notify: ImportPlanSession[]
+  /**
+   * The one session that will be asked to merge by hand — when the changes land
+   * on a side branch, or if the merge conflicts. Null when the environment has
+   * no sessions, or when there will be nothing left to merge.
+   */
+  resolver: ImportPlanSession | null
+}
+
 /** What an import did, and what it told the agents working in the environment. */
 export interface EnvironmentBranchImport extends BranchImport {
   /** The branch the caller asked for. Differs from `branch` when the import went to a side ref. */
@@ -289,6 +330,8 @@ export interface EnvironmentBranchImport extends BranchImport {
   diverted?: string
   /** The commit an agent's uncommitted work was parked in before the merge, if there was any. */
   wip?: string | null
+  /** The session that was asked to merge the changes by hand, when one was. */
+  resolver?: ImportPlanSession | null
   /** The sessions told where the changes are, and how each one was reached. */
   notified: Array<{ agentSessionId: string, title: string, via: 'steer' | 'queue' | 'inbox' }>
 }

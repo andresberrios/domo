@@ -5,7 +5,7 @@ import { defineComponent, h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ImportBranchModal from '~/components/ImportBranchModal.vue'
-import type { DevEnvironment, EnvironmentBranchImport } from '~~/shared/types'
+import type { DevEnvironment, EnvironmentBranchImport, ImportPlan } from '~~/shared/types'
 
 /**
  * The other direction's face. The branch it starts on is the environment's own
@@ -49,6 +49,23 @@ registerEndpoint('/api/dev-environments/env_1/branches', () => ({
     { name: 'main', sha: 'a'.repeat(40), subject: 'docs: y' }
   ]
 }))
+
+let planned: ImportPlan = {
+  requested: 'main',
+  from: 'main',
+  branch: 'domo-import/main',
+  toSideBranch: false,
+  sideBranchReason: null,
+  checkedOut: 'main',
+  commitFirst: null,
+  merge: true,
+  notify: [{ agentSessionId: 'ag_1', title: 'the agent', busy: false }],
+  resolver: { agentSessionId: 'ag_1', title: 'the agent', busy: false }
+}
+registerEndpoint('/api/dev-environments/env_1/import-plan', {
+  method: 'POST',
+  handler: () => planned
+})
 
 const posted: any[] = []
 const landed: EnvironmentBranchImport = {
@@ -96,6 +113,18 @@ async function openModal(overrides: Partial<DevEnvironment> = {}) {
 beforeEach(() => {
   posted.length = 0
   answer = landed
+  planned = {
+    requested: 'main',
+    from: 'main',
+    branch: 'domo-import/main',
+    toSideBranch: false,
+    sideBranchReason: null,
+    checkedOut: 'main',
+    commitFirst: null,
+    merge: true,
+    notify: [{ agentSessionId: 'ag_1', title: 'the agent', busy: false }],
+    resolver: { agentSessionId: 'ag_1', title: 'the agent', busy: false }
+  }
   document.body.innerHTML = ''
 })
 
@@ -150,10 +179,66 @@ describe('ImportBranchModal', () => {
     const wrapper = await openModal()
 
     expect(button('Import')?.disabled).toBe(false)
-    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('is on “main”')
 
     button('Import')!.click()
     await vi.waitFor(() => expect(posted).toHaveLength(1))
+    wrapper.unmount()
+  })
+
+  /**
+   * The outcome depends on live state — is a turn running, is the tree dirty —
+   * so the button has to say what it will do before it is pressed. Rendered
+   * from the server's own plan, never guessed at here.
+   */
+  it('says what it will do before it is pressed', async () => {
+    planned = {
+      ...planned,
+      commitFirst: { paths: ['app/main.css', 'app/app.vue'], total: 2 }
+    }
+    const wrapper = await openModal()
+
+    await vi.waitFor(() => {
+      const text = document.body.querySelector('[role="dialog"]')?.textContent ?? ''
+      expect(text).toContain('Will merge into “main”')
+      expect(text).toContain('Commit 2 uncommitted files')
+      expect(text).toContain('app/main.css')
+      expect(text).toContain('merge it into "main"')
+      expect(text).toContain('If the merge conflicts')
+      expect(text).toContain('Tell the agent')
+      expect(text).toContain('Ask the agent')
+    })
+    wrapper.unmount()
+  })
+
+  it('says the working tree will be left alone while an agent is mid-turn', async () => {
+    planned = {
+      ...planned,
+      toSideBranch: true,
+      sideBranchReason: 'agent-mid-turn',
+      merge: false,
+      commitFirst: null,
+      notify: [{ agentSessionId: 'ag_1', title: 'the agent', busy: true }],
+      resolver: { agentSessionId: 'ag_1', title: 'the agent', busy: true }
+    }
+    const wrapper = await openModal()
+
+    await vi.waitFor(() => {
+      const text = document.body.querySelector('[role="dialog"]')?.textContent ?? ''
+      expect(text).toContain('Will land on “domo-import/main”')
+      expect(text).toContain('working tree is left alone entirely')
+      expect(text).not.toContain('Commit ')
+    })
+    wrapper.unmount()
+  })
+
+  it('says when there is nobody in the environment to tell', async () => {
+    planned = { ...planned, notify: [], resolver: null }
+    const wrapper = await openModal()
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[role="dialog"]')?.textContent)
+        .toContain('nobody to tell')
+    })
     wrapper.unmount()
   })
 
@@ -207,6 +292,7 @@ describe('ImportBranchModal', () => {
       result: 'not-merged',
       wip: 'f'.repeat(40),
       notified: [],
+      resolver: { agentSessionId: 'ag_1', title: 'the agent', busy: false },
       reason: 'The imported commits are on "domo-import/main", but merging them into "main" conflicts. '
         + 'The merge was aborted, so the environment\'s working tree is untouched.'
     }
@@ -220,6 +306,9 @@ describe('ImportBranchModal', () => {
       expect(text).toContain('conflicts')
       expect(text).toContain('working tree is untouched')
       expect(text).toContain('No commits crossed.')
+      // One session only, and the reason, so nobody races it.
+      expect(text).toContain('the agent was asked to merge it')
+      expect(text).toContain('single checkout')
     })
     wrapper.unmount()
   })

@@ -34,16 +34,25 @@ const repo = vi.hoisted(() => ({
  * it" case is distinguishable from a real one, and the merge itself is whatever
  * the test says it is.
  */
-const container = vi.hoisted(() => ({ head: 'aaa', branch: 'main', dirty: '', mergeFails: false }))
+const container = vi.hoisted(() => ({
+  head: 'aaa',
+  branch: 'main',
+  dirty: [] as string[],
+  mergeFails: false
+}))
 const environmentGit = vi.hoisted(() => vi.fn(async (_environment: any, args: string[]) => {
   const answer = (stdout: string) => ({ stdout, stderr: '' })
   if (args[0] === 'symbolic-ref') return answer(container.branch)
-  if (args[0] === 'status') return answer(container.dirty)
+  // The observer asks with `-z` and parses it; `commitWorkInProgress` only
+  // asks whether there is anything at all.
+  if (args[0] === 'status') {
+    return answer(container.dirty.map(path => ` M ${path}`).join(args.includes('-z') ? '\0' : '\n'))
+  }
   if (args[0] === 'rev-parse') return answer(container.head)
   if (args[0] === 'config') return answer('dev@example.com')
   if (args[0] === 'add') return answer('')
   if (args.includes('commit')) {
-    container.dirty = ''
+    container.dirty = []
     container.head = 'wip'.padEnd(40, '0')
     return answer('')
   }
@@ -63,7 +72,8 @@ vi.mock('../../server/lib/dev-env/git-sync', async (importOriginal) => ({
 }))
 vi.mock('../../server/lib/repo', () => repo)
 
-const { importBranchIntoEnvironment, sideBranch } = await import('../../server/lib/branch-import')
+const { importBranchIntoEnvironment, planImport, sideBranch }
+  = await import('../../server/lib/branch-import')
 
 function session(id: string, overrides: Record<string, unknown> = {}) {
   return { id, title: `agent ${id}`, devEnvironmentId: 'env_1', status: 'idle', ...overrides }
@@ -96,7 +106,7 @@ beforeEach(() => {
   repo.getDevEnvironment.mockResolvedValue({ id: 'env_1', name: 'env', remoteUser: 'vscode' } as any)
   repo.listAgentSessions.mockResolvedValue([session('ag_1')])
   repo.enqueueInboxMessage.mockResolvedValue({})
-  Object.assign(container, { head: 'aaa', branch: 'main', dirty: '', mergeFails: false })
+  Object.assign(container, { head: 'aaa', branch: 'main', dirty: [], mergeFails: false })
 })
 
 describe('importing into an environment', () => {
@@ -124,7 +134,7 @@ describe('importing into an environment', () => {
   })
 
   it('commits what is uncommitted before it merges, and never after', async () => {
-    container.dirty = ' M app/main.css\n'
+    container.dirty = ['app/main.css']
 
     const result = await importIt('main')
 
@@ -159,7 +169,7 @@ describe('importing into an environment', () => {
 
   it('leaves the branch on the side ref while an agent is mid-turn, touching nothing', async () => {
     acp.isBusy.mockReturnValue(true)
-    container.dirty = ' M app/main.css\n'
+    container.dirty = ['app/main.css']
 
     const result = await importIt('main')
 
@@ -229,11 +239,11 @@ describe('telling the agents where the changes are', () => {
   // The agent has to know its files were committed, and that nothing was thrown
   // away — otherwise a commit it did not make looks like something went wrong.
   it('names the commit an agent\'s uncommitted work was parked in', async () => {
-    container.dirty = ' M app/main.css\n'
+    container.dirty = ['app/main.css']
 
     await importIt('main')
 
-    expect(noticeTo('ag_1')).toMatch(/uncommitted files were committed first/)
+    expect(noticeTo('ag_1')).toMatch(/Uncommitted work here was committed first/)
     expect(noticeTo('ag_1')).toMatch(/nothing was stashed or discarded/)
   })
 
@@ -269,6 +279,37 @@ describe('telling the agents where the changes are', () => {
     expect(result.reason).toMatch(/local changes/)
   })
 
+  /**
+   * The one message has to be phrased so nothing ever has to follow it up.
+   * "It is being handled" would be a claim about the future — something would
+   * then have to notice when the merge actually finished, and an agent ending
+   * its turn does not mean it resolved anything. "Has been asked" is true when
+   * sent and stays true, whoever ends up doing it.
+   */
+  it('names the asked session to the others, and addresses it directly', async () => {
+    container.mergeFails = true
+    repo.listAgentSessions.mockResolvedValue([session('ag_newest'), session('ag_older')])
+
+    const result = await importIt('main')
+
+    expect(result.resolver).toMatchObject({ agentSessionId: 'ag_newest' })
+    expect(noticeTo('ag_newest')).toMatch(/You have been asked to merge it/)
+    expect(noticeTo('ag_older')).toMatch(/agent ag_newest \(ag_newest\) has been asked to merge it/)
+    // And why the others should not race it.
+    expect(noticeTo('ag_older')).toMatch(/you share one checkout/)
+    // Nothing claims it is finished, or will be.
+    expect(noticeTo('ag_older')).not.toMatch(/being handled|will be merged|resolved/)
+  })
+
+  it('asks nobody, and tells nobody to wait, when a merge went through', async () => {
+    repo.listAgentSessions.mockResolvedValue([session('ag_newest'), session('ag_older')])
+
+    const result = await importIt('main')
+
+    expect(result.resolver).toBeNull()
+    expect(noticeTo('ag_older')).not.toMatch(/has been asked/)
+  })
+
   // One agent that cannot be reached must not cost the others their message,
   // nor turn a completed import into a failure.
   it('keeps going when one session cannot be told', async () => {
@@ -280,5 +321,86 @@ describe('telling the agents where the changes are', () => {
 
     expect(result.result).toBe('merged')
     expect(result.notified.map(entry => entry.agentSessionId)).toEqual(['ag_2'])
+  })
+})
+
+/**
+ * The decision itself, with nothing around it. Pure, so the modal can render
+ * exactly what the executor will do — the whole reason it was split out is
+ * that a preview which can disagree with the act is worse than no preview.
+ */
+describe('planImport', () => {
+  const state = (overrides: Partial<Parameters<typeof planImport>[0]> = {}) => planImport({
+    requested: 'main',
+    from: 'main',
+    checkedOut: 'main',
+    dirty: [],
+    sessions: [{ agentSessionId: 'ag_1', title: 'first', busy: false }],
+    ...overrides
+  })
+
+  it('merges into the branch the environment is on', () => {
+    expect(state()).toMatchObject({ branch: 'domo-import/main', merge: true, toSideBranch: false })
+  })
+
+  it('pushes straight to a branch nobody has checked out, and merges nothing', () => {
+    expect(state({ requested: 'release' }))
+      .toMatchObject({ branch: 'release', merge: false, toSideBranch: false, commitFirst: null })
+  })
+
+  it('goes to the side branch, untouched, while a turn is in flight', () => {
+    const plan = state({
+      dirty: ['app/main.css'],
+      sessions: [{ agentSessionId: 'ag_1', title: 'first', busy: true }]
+    })
+
+    expect(plan).toMatchObject({ branch: 'domo-import/main', merge: false, toSideBranch: true })
+    expect(plan.sideBranchReason).toBe('agent-mid-turn')
+    // Nothing is committed under a running turn.
+    expect(plan.commitFirst).toBeNull()
+  })
+
+  it('names the files it will commit first, and how many there really are', () => {
+    const dirty = Array.from({ length: 30 }, (_value, index) => `file-${index}.ts`)
+
+    const plan = state({ dirty })
+
+    expect(plan.commitFirst!.total).toBe(30)
+    expect(plan.commitFirst!.paths.length).toBeLessThan(30)
+  })
+
+  it('does not promise a commit when there is nothing uncommitted', () => {
+    expect(state({ dirty: [] }).commitFirst).toBeNull()
+  })
+
+  /**
+   * One session, not all of them: they share a single workspace volume, so two
+   * agents resolving the same merge are editing the same files at once and the
+   * second finds the first's half-finished work. Most recently active is this
+   * codebase's existing answer to "which agent did the user mean".
+   */
+  it('asks only the most recently active session, and tells them all', () => {
+    const plan = state({
+      sessions: [
+        { agentSessionId: 'ag_newest', title: 'newest', busy: false },
+        { agentSessionId: 'ag_older', title: 'older', busy: false }
+      ]
+    })
+
+    expect(plan.resolver).toEqual({ agentSessionId: 'ag_newest', title: 'newest', busy: false })
+    expect(plan.notify.map(entry => entry.agentSessionId)).toEqual(['ag_newest', 'ag_older'])
+  })
+
+  it('has nobody to ask in an environment with no sessions', () => {
+    const plan = state({ sessions: [] })
+
+    expect(plan.resolver).toBeNull()
+    expect(plan.notify).toEqual([])
+    // And with nobody working, the merge still happens.
+    expect(plan.merge).toBe(true)
+  })
+
+  it('carries the host ref through as resolved, not as the side branch name', () => {
+    expect(state({ from: 'release' })).toMatchObject({ from: 'release', branch: 'domo-import/main' })
   })
 })

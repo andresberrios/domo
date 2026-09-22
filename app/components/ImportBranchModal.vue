@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import type { DevEnvironment, EnvironmentBranchImport, EnvironmentBranches } from '~~/shared/types'
+import type {
+  DevEnvironment,
+  EnvironmentBranchImport,
+  EnvironmentBranches,
+  ImportPlan
+} from '~~/shared/types'
 
 /**
  * The other direction from `ExportBranchModal`: a branch in the project's own
@@ -21,17 +26,66 @@ const submitting = ref(false)
 const loadError = ref('')
 const failure = ref('')
 const result = ref<EnvironmentBranchImport | null>(null)
+/**
+ * What the server says it would do, from the same pure `planImport()` it will
+ * run on. Refreshed as the branches are edited, because the outcome depends on
+ * live state — is a turn running, is the tree dirty — and a button whose
+ * behaviour cannot be predicted is one people are afraid to press.
+ */
+const plan = ref<ImportPlan | null>(null)
+const planning = ref(false)
 
 const running = computed(() => props.environment.status === 'running')
-/**
- * Not a warning — this is the branch an import most often *wants*. Importing
- * into one the agent is not on is inert: nothing in the container tells it that
- * some other branch moved. Said out loud only because what happens to that
- * branch is a merge rather than a push, which is worth knowing before pressing
- * the button.
- */
-const isCheckedOut = computed(() =>
-  !!branch.value.trim() && branch.value.trim() === branches.value.current)
+
+/** The plan in sentences, in the order they happen. */
+const steps = computed<string[]>(() => {
+  const preview = plan.value
+  if (!preview) return []
+  const lines: string[] = []
+  if (preview.commitFirst) {
+    const { total } = preview.commitFirst
+    lines.push(`Commit ${total} uncommitted ${total === 1 ? 'file' : 'files'} in the environment first, `
+      + 'so nothing is stashed or discarded.')
+  }
+  lines.push(preview.merge
+    ? `Send "${preview.from}" to "${preview.branch}" and merge it into "${preview.checkedOut}".`
+    : `Send "${preview.from}" to "${preview.branch}".`)
+  if (preview.sideBranchReason === 'agent-mid-turn') {
+    lines.push('An agent is mid-turn, so the working tree is left alone entirely.')
+  }
+  if (preview.merge) lines.push('If the merge conflicts, abort it and leave the commits on the side branch.')
+  if (preview.notify.length) {
+    lines.push(`Tell ${preview.notify.map(entry => entry.title).join(', ')} what happened.`)
+  }
+  if (preview.resolver) {
+    lines.push(`Ask ${preview.resolver.title} — the most recently active — to merge anything left over. `
+      + 'Only one, because they share a single checkout.')
+  } else if (!preview.notify.length) {
+    lines.push('No agent sessions are running here, so there is nobody to tell.')
+  }
+  return lines
+})
+
+async function refreshPlan() {
+  const target = branch.value.trim()
+  if (!target || !running.value) {
+    plan.value = null
+    return
+  }
+  planning.value = true
+  try {
+    plan.value = await $fetch<ImportPlan>(`/api/dev-environments/${props.environment.id}/import-plan`, {
+      method: 'POST',
+      body: { branch: target, from: from.value.trim() || null }
+    })
+  } catch {
+    // A preview that cannot be taken is not worth an error of its own; the
+    // import itself reports properly if it fails too.
+    plan.value = null
+  } finally {
+    planning.value = false
+  }
+}
 
 /** What the import did, as one sentence and a colour. */
 const outcome = computed(() => {
@@ -58,6 +112,7 @@ async function load() {
     branches.value = await $fetch(`/api/dev-environments/${props.environment.id}/branches`)
     // The branch the environment is on is the one an import usually means:
     // bringing it up to date after work landed here.
+    // Assigning these is what asks for the plan, through the watcher below.
     branch.value = branches.value.current ?? branches.value.branches[0]?.name ?? ''
     from.value = branch.value
   } catch (error: any) {
@@ -70,8 +125,14 @@ async function load() {
 watch(open, (isOpen) => {
   if (!isOpen) return
   result.value = null
+  plan.value = null
   failure.value = ''
   branches.value = { current: null, branches: [] }
+  // Cleared so that `load()` assigning the same branch name as last time is
+  // still a change, and still asks for a fresh plan: the answer depends on
+  // what the environment is doing now, not on what it was doing then.
+  branch.value = ''
+  from.value = ''
   load()
 })
 
@@ -79,6 +140,11 @@ watch(open, (isOpen) => {
 // having the same name is what somebody wants almost every time.
 watch(branch, (value, previous) => {
   if (from.value === previous) from.value = value
+})
+
+watch([branch, from], () => {
+  result.value = null
+  refreshPlan()
 })
 
 async function submit() {
@@ -141,13 +207,38 @@ async function submit() {
           </template>
         </UFormField>
 
+        <!--
+          What will happen, before it happens. The outcome depends on live state
+          — is a turn running, is the tree dirty — so a button whose behaviour
+          cannot be predicted is one people are afraid to press. Rendered from
+          the same plan the server executes, never from a guess made here.
+        -->
+        <div v-if="planning && !plan" class="text-xs text-muted">Working out what this would do…</div>
         <UAlert
-          v-if="isCheckedOut"
+          v-else-if="plan"
           color="neutral"
           variant="subtle"
-          :title="`${environment.name} is on “${branch}”`"
-          description="Anything uncommitted there is committed first, so nothing is ever stashed or discarded, and then the import is merged in. If the merge conflicts it is aborted and the commits are left on a side branch; if an agent is mid-turn they go straight to that side branch. Either way the agents there are told where the changes are."
-        />
+          :title="plan.merge
+            ? `Will merge into “${plan.checkedOut}”, the branch ${environment.name} is on`
+            : `Will land on “${plan.branch}”`"
+        >
+          <template #description>
+            <ol class="mt-1 space-y-1 text-sm">
+              <li v-for="(step, index) in steps" :key="index" class="flex gap-2">
+                <span class="text-dimmed">{{ index + 1 }}.</span>
+                <span>{{ step }}</span>
+              </li>
+            </ol>
+            <p v-if="plan.commitFirst?.paths.length" class="mt-2 text-xs text-muted">
+              <span v-for="(path, index) in plan.commitFirst.paths" :key="path">
+                <span v-if="index">, </span><code>{{ path }}</code>
+              </span>
+              <span v-if="plan.commitFirst.total > plan.commitFirst.paths.length">
+                and {{ plan.commitFirst.total - plan.commitFirst.paths.length }} more
+              </span>
+            </p>
+          </template>
+        </UAlert>
 
         <UAlert v-if="failure" color="error" variant="subtle" :title="failure" />
 
@@ -164,6 +255,10 @@ async function submit() {
               <p v-if="result.wip" class="text-sm">
                 Uncommitted work in the environment was committed first, as
                 <code>{{ result.wip.slice(0, 8) }}</code> — nothing was stashed or discarded.
+              </p>
+              <p v-if="result.resolver" class="text-sm">
+                {{ result.resolver.title }} was asked to merge it — one session only, because they all
+                share the environment's single checkout.
               </p>
               <p v-if="result.notified.length" class="text-xs text-muted">
                 Told:
