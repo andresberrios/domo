@@ -102,13 +102,62 @@ const STEERING_METHOD = '_session/steering'
  */
 const STEERING_META = { steering: { idleBehavior: 'promptRequired' } }
 
-/** A turn Domo started and is waiting on. */
+/**
+ * The `session/update` kinds that are *about* a session rather than work done
+ * in it, and so must never be read as a turn beginning.
+ *
+ * A deny-list and not an allow-list on purpose: a kind wrongly counted as work
+ * costs one spurious turn that ends on its own twenty seconds later, while a
+ * kind wrongly left out reproduces the bug this exists to fix — a session stuck
+ * at `thinking` with its inbox stranded. Of the two, only the second is silent.
+ *
+ * `available_commands_update` is the one that would really bite.
+ * claude-agent-acp sends it from a `setTimeout(…, 0)` scheduled *inside*
+ * `loadSession`, so it lands after the load response and can outrun the end of
+ * `boot()` — that is, after `restoring` has been cleared, on a session that is
+ * only attaching and has no turn of any kind.
+ */
+const SESSION_STATE_UPDATES = new Set([
+  'usage_update',
+  'available_commands_update',
+  'current_mode_update'
+])
+
+/**
+ * Who started the turn in flight, which is the whole of the difference between
+ * the two.
+ *
+ * A `domo` turn is a `session/prompt` this process is waiting on, so its end is
+ * a promise resolving and its `stopReason` comes off the wire. An `adapter` one
+ * is a turn the agent started by itself — it schedules itself to wake up later,
+ * it is re-invoked when a background task it launched finishes, it watches for
+ * something and resumes when it changes — and there is no request outstanding
+ * to answer, so nothing on the wire ever says it ended. See `openAdapterTurn`.
+ */
+type TurnOrigin = 'domo' | 'adapter'
+
+/** A turn in flight, whoever started it. */
 interface Turn {
+  origin: TurnOrigin
   cancel: () => void
   /** Resolves once the turn has settled, however it settled. */
   done: Promise<void>
   /** Set by an `interrupt` delivery: the abort is deliberate, not a failure. */
   interrupted: boolean
+  /**
+   * The adapter has finished and only Domo's own bookkeeping is left.
+   *
+   * `this.turn` is cleared in `prompt`'s `finally`, which runs after `runTurn`
+   * has written `turn_end`, flushed the usage and set the status — several
+   * round trips *after* the adapter answered. For that whole window the slot
+   * still says "a turn is running" while the adapter is idle, and a `steer`
+   * landing in it is sent to an adapter with nothing to steer. claude-agent-acp
+   * answers `promptRequired` and hands it back; codex-acp and OpenCode ignore
+   * the opt-in and start a detached turn — the exact thing this file exists to
+   * stop. So the flag is raised the instant the request answers, and a delivery
+   * that sees it queues instead: the drain right behind it is what sends it.
+   */
+  settled: boolean
 }
 
 /** What a delivery ended up doing, after the fallbacks. */
@@ -158,6 +207,40 @@ function flushDelay(length: number): number {
  * would look like the stalest one in the list.
  */
 const ACTIVITY_TOUCH_MS = 30_000
+
+/**
+ * How long an adapter-initiated turn may say nothing before Domo calls it over.
+ *
+ * There is no `stopReason` to wait on — nobody sent a `session/prompt`, so
+ * nothing will ever answer one — and the alternative to a deadline is a session
+ * that streams an unprompted answer and then sits at `thinking` for ever, with
+ * its inbox stranded behind a turn that cannot end. Being a little late is
+ * cheap and never ending is not, so quiet is what the turn is read off.
+ *
+ * Twenty seconds is far longer than the gap between two deltas of one answer
+ * and far shorter than a person would wait before deciding the badge is stuck.
+ * The two things that legitimately go quiet for longer are both held open
+ * explicitly instead of by a bigger number here: see `ADAPTER_TURN_WORKING_MS`
+ * for a tool call that is still running, and the permission gate in
+ * `adapterTurnExpired`.
+ */
+const ADAPTER_TURN_IDLE_MS = 20_000
+
+/**
+ * The same deadline while a tool call this turn opened has not reported back.
+ *
+ * A coding agent's silence is usually a command running, not a turn that ended:
+ * an install, a test suite, a build. Closing the turn under one would drain the
+ * inbox into an adapter that is still working, and a `session/prompt` sent then
+ * lands in the adapter's own invisible queue — which is the failure `agent_inbox`
+ * exists to avoid in the first place.
+ *
+ * It is still a deadline and not a gate, because "the tool call is open" is the
+ * adapter's word for it: a terminal `tool_call_update` that never arrives would
+ * otherwise hang the turn for as long as the process lives. Ten minutes of
+ * complete silence is longer than any real command and still an ending.
+ */
+const ADAPTER_TURN_WORKING_MS = 10 * 60_000
 
 /**
  * How often the context-window reading is written mid-turn.
@@ -236,6 +319,22 @@ class AgentRuntime {
    * would make a turn that is already Domo's look idle.
    */
   private turn: Turn | null = null
+  /**
+   * The watchdog that ends an adapter-initiated turn; see `openAdapterTurn`.
+   * Null whenever `this.turn` is Domo's own or there is no turn at all.
+   */
+  private adapterTurnTimer: ReturnType<typeof setTimeout> | null = null
+  /** Resolves the open adapter turn's `done`; null when there is no such turn. */
+  private adapterTurnSettle: (() => void) | null = null
+  /**
+   * Tool calls the current turn has opened and not yet heard back about.
+   *
+   * Only the adapter-turn watchdog reads it — a Domo turn ends on its own
+   * promise and does not care — but it is kept for every turn because the
+   * cheapest way to be right about which calls belong to *this* turn is to
+   * clear it whenever one starts.
+   */
+  private openToolCalls = new Set<string>()
   /** Whether the adapter advertised `_session/steering`; per connection. */
   private steering = false
   /**
@@ -709,6 +808,9 @@ class AgentRuntime {
       this.containerPidFile = null
       for (const waiter of this.waiters.values()) waiter.resolve(null)
       this.waiters.clear()
+      // Nothing is running any more, so a watchdog still armed would fire
+      // against a dead connection and write `turn_end` under `adapter-exit`.
+      this.discardAdapterTurn()
       const block = this.takeStream()
       void this.serial(async () => {
         await this.closeStream(block)
@@ -837,7 +939,11 @@ class AgentRuntime {
       // reattached session deaf for as long as the process lives.
       this.restoring = false
     }
-    await this.setStatus('idle', { touch: true })
+    // Only if nothing is running. Two things can hold the slot by now: the
+    // prompt that started this adapter, and — in the window between clearing
+    // `restoring` and here — a turn the agent began on its own. Writing `idle`
+    // over either says the session is free when it is working.
+    if (!this.turn) await this.setStatus('idle', { touch: true })
 
     // Queued messages outlive the process that queued them — that is the whole
     // point of owning the queue — so an attach is one of the two moments they
@@ -1138,6 +1244,13 @@ class AgentRuntime {
     // have, and `boot()` has already picked the row's own reading back up.
     if (this.restoring) return
 
+    // Before the branches below, because what this decides is whether there is
+    // a turn at all. An update arriving with the slot empty is the agent having
+    // woken itself — see `noteAdapterActivity` — and the tool state it reads
+    // has to be current before the deadline is set from it.
+    this.noteToolCall(kind, update)
+    this.noteAdapterActivity(kind)
+
     // Before `takeStream()` and before anything claims a `seq`: this is state,
     // it is not part of the transcript, and it arrives in the middle of the
     // message the agent is still writing.
@@ -1282,6 +1395,180 @@ class AgentRuntime {
     return this.steering
   }
 
+  /* ---------------- turns the adapter starts by itself ---------------- */
+
+  /**
+   * Take in an update that may or may not belong to a turn Domo knows about.
+   *
+   * With no turn in flight nobody prompted this: the agent woke itself, and the
+   * only record that it is working at all is the updates themselves. Left
+   * alone, the session streams an answer, goes to `thinking`, and stays there
+   * for ever — its inbox stranded behind a turn that has no end to hang a drain
+   * off, and `list_agents` telling every other agent it is busy.
+   */
+  private noteAdapterActivity(kind: string): void {
+    if (SESSION_STATE_UPDATES.has(kind)) return
+    if (!this.turn) {
+      this.openAdapterTurn()
+      return
+    }
+    // The agent is still going: push the deadline out. Domo's own turns end on
+    // their `session/prompt` and want no watchdog.
+    if (this.turn.origin === 'adapter') this.armAdapterTurn()
+  }
+
+  /**
+   * Follow which tool calls are still outstanding, so the watchdog can tell a
+   * turn that has ended from a command that is taking a while.
+   */
+  private noteToolCall(kind: string, update: any): void {
+    if (kind !== 'tool_call' && kind !== 'tool_call_update') return
+    const id = update?.toolCallId
+    if (!id) return
+    // A `tool_call` can arrive already finished for something instantaneous,
+    // and a `tool_call_update` is the only thing that ever ends one — so both
+    // are read the same way, off the status rather than off the kind.
+    const status = update.status
+    if (status === 'completed' || status === 'failed') this.openToolCalls.delete(id)
+    else this.openToolCalls.add(id)
+  }
+
+  /**
+   * Claim the turn slot for a turn the agent started on its own.
+   *
+   * The slot is the same one `prompt` uses, and deliberately so: `busy`,
+   * `deliver`, `drainInbox` and `clearStaleError` all ask "is a turn running",
+   * and every one of them wants the same answer about this one. A second field
+   * beside `this.turn` would mean four call sites to keep in step and one of
+   * them eventually missed.
+   */
+  private openAdapterTurn(): void {
+    let settle!: () => void
+    const turn: Turn = {
+      origin: 'adapter',
+      interrupted: false,
+      settled: false,
+      done: new Promise<void>((resolve) => { settle = resolve }),
+      // `session/cancel` has already gone out by the time this runs, and
+      // `cancel` writes the `cancelled` line and sets the status itself — so
+      // all that is left is to stop waiting for an end nothing will announce.
+      // Deliberately not `endAdapterTurn`: a cancelled turn gets no `turn_end`,
+      // exactly as a cancelled prompted one does not.
+      cancel: () => this.discardAdapterTurn()
+    }
+    // Claimed before the first await, for the reason `prompt` claims its own
+    // synchronously: a delivery reading the slot as free in the gap would send
+    // a `session/prompt` into a turn that is already running in the adapter,
+    // where it lands in the adapter's own invisible queue.
+    this.turn = turn
+    this.adapterTurnSettle = settle
+    this.openToolCalls.clear()
+    this.armAdapterTurn()
+
+    const block = this.takeStream()
+    void this.serial(async () => {
+      await this.closeStream(block)
+      // The head of the turn, and it has to be the head: a reader meets the
+      // agent's text first, and with no `user_message` above it there is
+      // nothing to say whether they asked for it. See `turn_start` in
+      // `buildTranscript`.
+      await appendAgentEvent(this.agentSessionId, 'turn_start', { origin: 'adapter' })
+      // Same clearing a prompted turn does, for the same reason: `last_error`
+      // describes the current state, and the agent is plainly working.
+      await this.setStatus('thinking', { touch: true, lastError: null })
+    }).catch(error => console.error(`[acp:${this.agentSessionId}] could not open an agent-started turn`, error))
+  }
+
+  /** Push the watchdog's deadline out to the full window from now. */
+  private armAdapterTurn(): void {
+    this.clearAdapterTurnTimer()
+    const timer = setTimeout(
+      () => this.onAdapterTurnQuiet(),
+      this.openToolCalls.size ? ADAPTER_TURN_WORKING_MS : ADAPTER_TURN_IDLE_MS
+    )
+    // A pending watchdog must not keep Node alive on its own.
+    timer.unref?.()
+    this.adapterTurnTimer = timer
+  }
+
+  private clearAdapterTurnTimer(): void {
+    if (!this.adapterTurnTimer) return
+    clearTimeout(this.adapterTurnTimer)
+    this.adapterTurnTimer = null
+  }
+
+  /** The turn has said nothing for its whole window. */
+  private onAdapterTurnQuiet(): void {
+    this.adapterTurnTimer = null
+    const turn = this.turn
+    if (turn?.origin !== 'adapter') return
+    // A permission is the one wait with no deadline on it, because the thing it
+    // is waiting for is a person. Declaring the turn over here would drain the
+    // inbox into an adapter parked inside `session/request_permission`, and the
+    // session would stop saying what it is blocked on. It terminates by other
+    // means every time: the answer, auto-approve, `cancel`, or the adapter
+    // exiting — all of which resolve every waiter.
+    if (this.waiters.size) {
+      this.armAdapterTurn()
+      return
+    }
+    void this.endAdapterTurn(turn)
+  }
+
+  /**
+   * Close a turn the agent started, as far as Domo can tell.
+   *
+   * Everything a prompted turn does at its end, minus the one thing there is no
+   * source for: a `stopReason` off the wire. The event records `end_turn`
+   * because that is what it looks like and what the UI reads as ordinary, and
+   * `origin: 'adapter'` beside it is the honest part — it says the end was
+   * inferred, and from where.
+   */
+  private async endAdapterTurn(turn: Turn): Promise<void> {
+    if (this.turn !== turn) return
+    this.clearAdapterTurnTimer()
+    this.turn = null
+    const settle = this.adapterTurnSettle
+    this.adapterTurnSettle = null
+
+    const block = this.takeStream()
+    // Fire-and-forget, and the drain below is not held behind it: the writes
+    // are already ordered by `serial`, so a turn the drain starts still lands
+    // after this one's `turn_end`.
+    void this.serial(async () => {
+      await this.closeStream(block)
+      await appendAgentEvent(this.agentSessionId, 'turn_end', { stopReason: 'end_turn', origin: 'adapter' })
+      await this.setStatus('idle', {
+        touch: true,
+        summary: this.textBuffer.trim().slice(-1200) || undefined
+      })
+      await this.flushUsage()
+    }).catch(error => console.error(`[acp:${this.agentSessionId}] could not close an agent-started turn`, error))
+
+    settle?.()
+    // The whole point of seeing the end: everything that piled up behind a turn
+    // nobody started is delivered exactly as it would be after a prompted one.
+    this.drainInbox()
+  }
+
+  /**
+   * Give up on an adapter-initiated turn without ending it, because something
+   * that really is a turn is taking the slot.
+   *
+   * Every path that prompts checks `this.turn` first, so this is a backstop
+   * rather than a route — but a watchdog left armed against a slot it no longer
+   * owns is the kind of leak that surfaces as a `turn_end` in the middle of
+   * somebody else's turn.
+   */
+  private discardAdapterTurn(): void {
+    if (this.turn?.origin !== 'adapter') return
+    this.clearAdapterTurnTimer()
+    this.turn = null
+    const settle = this.adapterTurnSettle
+    this.adapterTurnSettle = null
+    settle?.()
+  }
+
   /**
    * Start a turn now and see it through.
    *
@@ -1296,11 +1583,17 @@ class AgentRuntime {
     const controller = new AbortController()
     let settle!: () => void
     const turn: Turn = {
+      origin: 'domo',
       interrupted: false,
+      settled: false,
       cancel: () => controller.abort(),
       done: new Promise<void>((resolve) => { settle = resolve })
     }
+    // A turn the agent started for itself is superseded by one Domo is about to
+    // run, and its watchdog must not outlive the slot it was watching.
+    this.discardAdapterTurn()
     this.turn = turn
+    this.openToolCalls.clear()
 
     return this.runTurn(content, turn, controller).finally(() => {
       if (this.turn === turn) this.turn = null
@@ -1343,6 +1636,9 @@ class AgentRuntime {
         { sessionId: this.acpSessionId, prompt: content } as any,
         { signal: controller.signal } as any
       )) as any
+      // The adapter is done; everything below is Domo's own bookkeeping, and
+      // for its duration this turn must not be steered into. See `Turn.settled`.
+      turn.settled = true
       // Queued behind any text writes still in flight, so the turn closes last.
       const block = this.takeStream()
       await this.serial(async () => {
@@ -1363,6 +1659,9 @@ class AgentRuntime {
       // An `interrupt` aborts this request on purpose and `cancel` has already
       // written the `cancelled` line; calling that an error would put the
       // session in `error` for doing what it was told.
+      // Settled first: the turn-end listeners below are bookkeeping too, and a
+      // delivery landing while they run must queue, not steer an idle adapter.
+      turn.settled = true
       if (turn.interrupted) {
         await this.turnEnded({ content, ok: false, text: this.textBuffer })
         return { stopReason: 'cancelled' }
@@ -1423,6 +1722,14 @@ class AgentRuntime {
         turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
         return { delivery: input.delivery, outcome: 'prompted' as const }
       }
+
+      // The adapter answered and only the bookkeeping is left, so there is
+      // nothing here to steer into and nothing to interrupt. All three modes
+      // mean the same thing in this window — go next — and the drain queued
+      // right behind this turn is what delivers it, in the very next turn.
+      // Steering instead would reach an idle adapter, which is how a detached
+      // turn nobody can see the end of gets started.
+      if (this.turn.settled) return this.enqueue(input.content, input.delivery, input.origin)
 
       switch (input.delivery) {
         case 'queue':
@@ -1517,6 +1824,23 @@ class AgentRuntime {
       if (this.turn || !this.alive || !this.acpSessionId) return
       const waiting = await claimInboxMessages(this.agentSessionId)
       if (!waiting.length) return
+      // The claim is a round trip, and a turn the agent starts for itself takes
+      // the slot synchronously from `onUpdate` — which is not serialised with
+      // deliveries, so it can land inside that gap. Prompting anyway would send
+      // a `session/prompt` into a running turn, where the adapter queues it out
+      // of sight. Put them back instead: they are still waiting, in order, and
+      // the turn that took the slot drains them when it ends.
+      if (this.turn) {
+        for (const message of waiting) {
+          await enqueueInboxMessage({
+            agentSessionId: this.agentSessionId,
+            content: message.content,
+            delivery: message.delivery,
+            origin: message.origin
+          })
+        }
+        return
+      }
       const turn = this.prompt(combineInboxContent(waiting))
       // Anything that arrives *during* this turn is drained when it ends.
       turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
@@ -1537,6 +1861,11 @@ class AgentRuntime {
       await appendAgentEvent(this.agentSessionId, 'cancelled', {})
       await this.setStatus('idle', { touch: true })
     })
+    // A prompted turn drains from `prompt`'s `finally`; one the agent started
+    // has no such promise to hang it off, so the drain is asked for here. It is
+    // a no-op when something has already taken the slot — an `interrupt` is
+    // exactly that, and its own turn drains the queue when it ends.
+    this.drainInbox()
   }
 
   /**
@@ -1788,6 +2117,7 @@ class AgentRuntime {
   }
 
   stop(): void {
+    this.discardAdapterTurn()
     // A block left open would render as text that streams forever, and a
     // reading left in the trailing timer would be lost with the process.
     const block = this.takeStream()
