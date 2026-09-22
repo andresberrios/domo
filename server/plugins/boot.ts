@@ -8,6 +8,7 @@ import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
 } from '../lib/dev-environment-ports'
+import { environmentJanitor } from '../lib/dev-env/reconcile'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
@@ -34,6 +35,12 @@ export default defineNitroPlugin(async (nitro) => {
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
   cronScheduler.start()
 
+  // A cleanup that failed is otherwise waiting for the next retirement to
+  // notice it, which may be never. Not awaited: it is a `docker volume ls`
+  // against a daemon that may be slow or absent, and nothing here depends on
+  // it. It only asks Docker anything if a row says something is owed.
+  environmentJanitor.start()
+
   // Plan limits are account-wide, so they have to be current on a dashboard
   // nobody has run an agent on today. What a working agent reports is the other
   // half, and it arrives without this.
@@ -42,6 +49,7 @@ export default defineNitroPlugin(async (nitro) => {
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()
     cronScheduler.stop()
+    environmentJanitor.stop()
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()

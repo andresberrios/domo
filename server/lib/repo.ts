@@ -15,6 +15,7 @@ import type {
   CronRun,
   DevEnvironment,
   DevEnvironmentPort,
+  EnvironmentLeftover,
   McpServer,
   MessageDelivery,
   MessageOrigin,
@@ -146,7 +147,8 @@ function mapDevEnvironment(r: any): DevEnvironment {
     lastError: r.last_error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    retiredAt: r.retired_at ?? null
+    retiredAt: r.retired_at ?? null,
+    leftovers: r.leftovers ?? []
   }
 }
 
@@ -492,6 +494,30 @@ export async function retireDevEnvironmentRow(id: string): Promise<DevEnvironmen
 }
 
 /**
+ * Record the Docker resources a cleanup could not remove — or that it finally
+ * did, with an empty list.
+ *
+ * Written on change only, like every other column of a table Electric streams:
+ * a sweep that finds the same thing it found ten minutes ago must not re-stream
+ * the whole row to every browser. There is no timestamp to keep honest here,
+ * which is what makes this the opposite case from `usage_limits.updated_at` —
+ * the value *is* the whole of what this says.
+ */
+export async function setEnvironmentLeftovers(
+  id: string,
+  leftovers: EnvironmentLeftover[]
+): Promise<DevEnvironment | null> {
+  const row = await queryOne(
+    `update dev_environments set leftovers = $2::jsonb, updated_at = $3
+      where id = $1 and leftovers::text is distinct from $2::jsonb::text returning *`,
+    [id, JSON.stringify(leftovers), nowIso()]
+  )
+  if (!row) return null
+  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
+  return mapDevEnvironment(row)
+}
+
+/**
  * Drop the retired rows nothing points at any more.
  *
  * A retired environment exists to say where its sessions ran, so it has earned
@@ -504,6 +530,7 @@ export async function pruneRetiredRecords(): Promise<{ environments: number, pro
   const environments = await query<{ id: string }>(
     `delete from dev_environments
       where retired_at is not null
+        and coalesce(jsonb_array_length(leftovers), 0) = 0
         and not exists (select 1 from agent_sessions where dev_environment_id = dev_environments.id)
       returning id`
   )

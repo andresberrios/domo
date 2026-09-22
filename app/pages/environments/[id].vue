@@ -16,6 +16,13 @@ const { pending } = usePermissions()
 const environment = computed(() => environments.value.find(item => item.id === environmentId.value) ?? null)
 const project = computed(() => projects.value.find(item => item.id === environment.value?.projectId) ?? null)
 const retired = computed(() => !!environment.value?.retiredAt)
+/**
+ * Docker resources this environment still owns and should not. Normally empty;
+ * when it is not, the "everything was destroyed" line above it is not the whole
+ * truth, and gigabytes are the difference.
+ */
+const leftovers = computed(() => environment.value?.leftovers ?? [])
+const leftoverNames = computed(() => leftovers.value.map(left => `${left.kind} ${left.name}`).join(', '))
 const agents = computed(() => agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId.value))
 /** Every session that ran here, archived ones included: this page is their record. */
 const pastAgents = computed(() =>
@@ -65,8 +72,18 @@ async function retireEnvironment() {
   confirmingRetire.value = false
   busy.value = true
   try {
-    await $fetch(`/api/dev-environments/${environmentId.value}`, { method: 'DELETE' })
-    toast.add({ title: 'Environment retired', description: 'Its records stay readable.', color: 'neutral' })
+    const result = await $fetch(`/api/dev-environments/${environmentId.value}`, { method: 'DELETE' })
+    // Normally empty. When it is not, Docker refused to remove something and
+    // that is gigabytes still on the disk — said out loud rather than swallowed,
+    // even though Domo keeps retrying it on its own.
+    toast.add(result.leftovers.length
+      ? {
+          title: 'Environment retired, with leftovers',
+          description: `Docker would not remove ${result.leftovers.map(left => left.name).join(', ')}. `
+            + 'Domo will keep trying.',
+          color: 'warning'
+        }
+      : { title: 'Environment retired', description: 'Its records stay readable.', color: 'neutral' })
     // The row is still here — it is the record — but the actions are not, so
     // the project is the more useful place to land.
     await router.push(project.value ? `/projects/${project.value.id}` : '/')
@@ -146,6 +163,15 @@ const importOpen = ref(false)
           icon="i-lucide-archive"
           title="Retired"
           :description="`The container, its copy of the checkout and its image were destroyed ${relativeTime(environment.retiredAt)}. This page is the record of it: the sessions that ran here are still readable and can no longer be started. Nothing about the environment itself can be restored.`"
+        />
+
+        <UAlert
+          v-if="leftovers.length"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-hard-drive"
+          title="Not everything could be removed"
+          :description="`Docker still has ${leftoverNames}: ${leftovers[0]?.error} Domo retries on its own, and keeps this record until they are gone.`"
         />
 
         <UAlert

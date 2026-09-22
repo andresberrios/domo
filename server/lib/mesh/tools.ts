@@ -632,8 +632,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (caller.devEnvironmentId && environments.some(environment => environment.id === caller.devEnvironmentId)) {
         throw new Error('Refusing to retire the project this agent session is running in. Ask the user or another agent to do it.')
       }
-      await retireProjectCascade(args.projectId)
-      return { id: args.projectId, retired: true }
+      const { leftovers } = await retireProjectCascade(args.projectId)
+      return { id: args.projectId, retired: true, leftovers }
     }
 
     case 'create_dev_environment': {
@@ -671,7 +671,9 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         retired: true,
         // Named rather than counted: the caller may well have been talking to
         // one of them a moment ago, and it is still readable.
-        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title }))
+        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title })),
+        // Empty unless Docker refused something; Domo keeps retrying those.
+        leftovers: retirement.leftovers
       }
     }
 

@@ -14,6 +14,8 @@ import {
   resolveRemoteUser
 } from './dev-env/container'
 import { inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './dev-env/docker'
+import { environmentResources, workspaceVolumeName } from './dev-env/leftovers'
+import { environmentJanitor, type CleanupReport } from './dev-env/reconcile'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
 import {
@@ -32,6 +34,7 @@ import {
   getProject,
   pruneRetiredRecords,
   retireDevEnvironmentRow,
+  setEnvironmentLeftovers,
   updateDevEnvironment,
   upsertDevEnvironmentPort
 } from './repo'
@@ -46,10 +49,8 @@ export function safeEnvironmentName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase()
 }
 
-/** The named volume that holds an environment's checkout. Derived from the id, so it needs no column. */
-export function workspaceVolumeName(environmentId: string): string {
-  return `${resourcePrefix()}${environmentId}-workspace`.toLowerCase()
-}
+/** Named from the id, like every Docker resource an environment owns — see `dev-env/leftovers.ts`. */
+export { workspaceVolumeName }
 
 function containerReference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
@@ -412,8 +413,32 @@ export async function createEnvironment(input: {
     }
     await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
     await removeImage(environmentImageName(id))
+    // Same hazard as a retirement, and the same answer: any of those removals
+    // can fail for a reason that has nothing to do with this environment, and
+    // the row is what makes the leftover findable afterwards. It is not
+    // retired — a failed creation is not a retirement — so it has to claim the
+    // resources explicitly, and the sweep below is what confirms each one is
+    // really gone and clears it.
+    await claimResources(id)
+    await environmentJanitor.sweep()
     throw error
   }
+}
+
+/**
+ * Write down what a cleanup owes before it is confirmed, so a crash in the
+ * middle of one is still a row that knows what to look for.
+ *
+ * A retired environment needs none of this: `retired_at` claims all four names
+ * on its own. This is for the rows that are *not* retired and still own
+ * resources nothing will ever use — the wreckage of a failed creation.
+ */
+async function claimResources(id: string): Promise<void> {
+  await setEnvironmentLeftovers(id, environmentResources(id).map(({ kind, name }) => ({
+    kind,
+    name,
+    error: 'Cleanup after a failed creation has not been confirmed.'
+  })))
 }
 
 async function toolConfigDir(variable: string, fallbackName: string): Promise<string | null> {
@@ -471,21 +496,40 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
  * never a thing to restart. The row is dropped for real by
  * `pruneRetiredRecords` once the last session naming it has been purged.
  *
+ * **A removal that failed is not a retirement that succeeded.** Every step here
+ * can fail for a reason that has nothing to do with this environment, and used
+ * to fail silently and for ever: what is still there afterwards is written to
+ * the row, returned to whoever asked, and retried — see `dev-env/reconcile.ts`.
+ *
  * Standing those sessions down — stopping their adapters first — belongs to
  * `retireProjectEnvironment` in `projects.ts`, one layer up: importing
  * `acpManager` here would cycle back through this file.
  */
-export async function retireEnvironment(id: string): Promise<void> {
+export async function retireEnvironment(id: string): Promise<CleanupReport> {
   const environment = await getDevEnvironment(id)
-  if (!environment) return
+  if (!environment) return { removed: [], leftovers: [] }
   stopEnvironmentForwarders(id)
   await removeContainer(containerReference(environment))
   await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
   await removeImage(environmentImageName(id))
   await collectRuntimeVolumes().catch(() => {})
   await collectBrowserVolumes().catch(() => {})
+  // Before the sweep, because `retired_at` is what makes the row claim those
+  // four names: until it is set, a leftover of this environment is a resource
+  // the janitor is required to leave alone.
   await retireDevEnvironmentRow(id)
+  // Whether any of the removals above worked is decided by *asking Docker*,
+  // never by an exit code — `docker volume rm` fails the same way for a volume
+  // something still has mounted and for one that was never created, and only
+  // the first of those is a leftover. The sweep removes whatever is still
+  // there, writes the rest to the row, and arms the retry.
+  const report = await environmentJanitor.sweep()
   await pruneRetiredRecords()
+  return {
+    removed: report.removed.filter(leftover => leftover.environmentId === id),
+    leftovers: report.leftovers.filter(leftover => leftover.environmentId === id),
+    unreachable: report.unreachable
+  }
 }
 
 export function containerExecArgs(environment: DevEnvironment, env: NodeJS.ProcessEnv = {}): string[] {

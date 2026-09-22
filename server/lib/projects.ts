@@ -1,7 +1,7 @@
 import { access, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 
-import type { AgentSession, Project } from '../../shared/types'
+import type { AgentSession, EnvironmentLeftover, Project } from '../../shared/types'
 import { acpManager } from './acp/manager'
 import { retireEnvironment } from './dev-environments'
 import { normalizeCwd } from './paths'
@@ -56,6 +56,14 @@ export interface EnvironmentRetirement {
   cronJobsDisabled: number
   subscriptionsRemoved: number
   permissionsCancelled: number
+  /**
+   * The Docker resources the cleanup could not remove, and why. Empty is the
+   * normal answer; anything here is gigabytes still on the disk, so it is
+   * reported rather than swallowed. It stays on the environment row and is
+   * retried — a retirement is never undone by one, and never claims to have
+   * finished when it has not.
+   */
+  leftovers: EnvironmentLeftover[]
 }
 
 /**
@@ -65,7 +73,9 @@ export interface EnvironmentRetirement {
  * happened: the events, the inbox rows and the resolved permissions are the
  * record, and the record is the point.
  */
-async function standDown(session: AgentSession): Promise<Omit<EnvironmentRetirement, 'sessions'>> {
+async function standDown(
+  session: AgentSession
+): Promise<Omit<EnvironmentRetirement, 'sessions' | 'leftovers'>> {
   // The adapter first: everything below describes a session that has stopped,
   // and it has not stopped until the process is down.
   acpManager.stop(session.id)
@@ -98,7 +108,8 @@ export async function retireProjectEnvironment(environmentId: string): Promise<E
     sessions: [],
     cronJobsDisabled: 0,
     subscriptionsRemoved: 0,
-    permissionsCancelled: 0
+    permissionsCancelled: 0,
+    leftovers: []
   }
   for (const session of await listAgentSessionsInEnvironment(environmentId)) {
     const counts = await standDown(session)
@@ -107,7 +118,8 @@ export async function retireProjectEnvironment(environmentId: string): Promise<E
     result.subscriptionsRemoved += counts.subscriptionsRemoved
     result.permissionsCancelled += counts.permissionsCancelled
   }
-  await retireEnvironment(environmentId)
+  const cleanup = await retireEnvironment(environmentId)
+  result.leftovers = cleanup.leftovers.map(({ kind, name, error }) => ({ kind, name, error }))
   return result
 }
 
@@ -118,11 +130,16 @@ export async function retireProjectEnvironment(environmentId: string): Promise<E
  * environment that outlived its project would be an orphan, and the sessions
  * below it could no longer say where they ran.
  */
-export async function retireProjectCascade(projectId: string): Promise<void> {
+export async function retireProjectCascade(projectId: string): Promise<{ leftovers: EnvironmentLeftover[] }> {
+  const leftovers: EnvironmentLeftover[] = []
   for (const environment of await listDevEnvironments(projectId)) {
-    await retireProjectEnvironment(environment.id)
+    leftovers.push(...(await retireProjectEnvironment(environment.id)).leftovers)
   }
   await retireProjectRow(projectId)
   // A project nothing ever ran in leaves no record behind at all.
   await pruneRetiredRecords()
+  // Ten environments retired in one go is exactly when one silent failure
+  // disappears, so what is still on the disk is carried back out of the loop
+  // rather than summed into a success.
+  return { leftovers }
 }
