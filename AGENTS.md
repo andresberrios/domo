@@ -837,7 +837,10 @@ things that are easy to get wrong.
   of deciding again and `POST /api/dev-environments/[id]/import-plan` hands the
   same structure to the UI, so the button cannot promise something different
   from what the server does — the same reason `home-overlay.ts` is written as a
-  pure function. The outcome depends on live state (is a turn running, is the
+  pure function. That agreement is *observed* rather than merely structural:
+  `test/server/branch-import.spec.ts` runs the preview and the import against
+  the same environment and compares them, down to which files the plan said it
+  would commit. The outcome depends on live state (is a turn running, is the
   tree dirty), which is exactly when an unpredictable button stops being
   pressed. **The plan is never handed back in to execute**: the import
   re-observes and re-plans, because acting on what is true when the button is
