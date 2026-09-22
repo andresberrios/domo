@@ -814,6 +814,34 @@ things that are easy to get wrong.
   losing work. `branch-import.ts` sits *above* `dev-env/` for the reason
   `projects.ts` does: it needs `acpManager`, which is the layer that imports
   `dev-env/`.
+- **Every session is *told*; exactly one is *asked*.** Every session in an
+  environment shares the one workspace volume — one checkout, one working tree
+  — so two agents resolving the same merge are editing the same files at once
+  and the second finds the first's half-finished work. The one asked is the
+  **most recently active**, which is this codebase's existing answer to "which
+  agent did the user mean" (`last_activity_at`, the same column the voice agent
+  picks on). And the message is phrased so **nothing ever has to follow it
+  up**: it says the commits are on `domo-import/<branch>`, whether they
+  conflict, and that *this* session has been **asked** to merge them. "It is
+  being handled" would be a claim about the future — something would then have
+  to detect when the merge actually finished, and an agent ending its turn does
+  not mean it resolved anything. "Has been asked" is true when sent and stays
+  true whoever ends up doing it, so there is no completion tracking anywhere.
+  A **dedicated resolver agent is not the answer** here and the reason inverts
+  the intuition: it would be another actor in the *same* tree, adding the
+  contention it was meant to avoid. (It is not built for the no-sessions case
+  either — see the verification note.)
+- **The import is planned before it is run, and the modal renders the plan.**
+  `planImport()` in `branch-import.ts` is pure: observed state in, a structured
+  description of what would be done out. The executor carries that out instead
+  of deciding again and `POST /api/dev-environments/[id]/import-plan` hands the
+  same structure to the UI, so the button cannot promise something different
+  from what the server does — the same reason `home-overlay.ts` is written as a
+  pure function. The outcome depends on live state (is a turn running, is the
+  tree dirty), which is exactly when an unpredictable button stops being
+  pressed. **The plan is never handed back in to execute**: the import
+  re-observes and re-plans, because acting on what is true when the button is
+  pressed is the honest thing and a stale plan is a promise nobody can keep.
 - **A working agent is told with `steer` only if its adapter advertises
   steering, and `queue` otherwise — never `interrupt`.** `steer` falls back to
   `interrupt`, and cancelling a running turn to hand over a branch is far
@@ -1461,9 +1489,15 @@ and permissions are end to end because a permission is a row.
   sequence itself, including **an aborted conflicting merge leaving the working
   tree byte-identical**, is covered against real git with no Docker in
   `test/server/branch-import.spec.ts`; the decisions above it — side branch,
-  steer, queue, inbox — in `test/unit/branch-import.spec.ts`. **Not** verified:
-  a real agent mid-turn receiving a steered branch notice and acting on it, and
-  what an agent makes of finding a WIP commit it did not write.
+  steer, queue, inbox, who is asked — in `test/unit/branch-import.spec.ts`.
+  **Not** verified: a real agent mid-turn receiving a steered branch notice and
+  acting on it, what an agent makes of finding a WIP commit it did not write,
+  and whether the asked session actually resolves rather than the others racing
+  it. **No throwaway resolver agent is spawned for an environment with no
+  sessions**, deliberately: the conflict is not unnoticed there, because the
+  import returns it synchronously to whoever asked and the modal shows it, and
+  an agent resolving a merge in a container nobody is working in produces a
+  resolution nobody reviews.
 - **The dirty-checkout fix was verified against a real daemon**, `pnpm
   test:docker` green (5 files, 67 tests, 851 s cold). Both directions were
   asserted end to end from a dirty fixture: a `discard` environment whose

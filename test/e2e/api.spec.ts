@@ -179,8 +179,8 @@ describe('projects', () => {
     expect(response.status).toBe(400)
   })
 
-  it('will not import a branch without naming the one to write', async () => {
-    const response = await fetch('/api/dev-environments/env_nope/import', {
+  it.each(['import', 'import-plan'])('will not %s a branch without naming the one to write', async (route) => {
+    const response = await fetch(`/api/dev-environments/env_nope/${route}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ from: 'main' })
@@ -198,6 +198,11 @@ describe('projects', () => {
         body: JSON.stringify({ branch: 'main' })
       }),
       fetch('/api/dev-environments/env_nope/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ branch: 'main' })
+      }),
+      fetch('/api/dev-environments/env_nope/import-plan', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ branch: 'main' })
