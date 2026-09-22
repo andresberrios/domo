@@ -17,7 +17,8 @@ const project = ref<Project>({
   name: 'Domo',
   repoPath: '/work/domo',
   createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z'
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  deletedAt: null,
 })
 
 const environment: DevEnvironment = {
@@ -33,7 +34,8 @@ const environment: DevEnvironment = {
   status: 'running',
   lastError: null,
   createdAt: '2026-01-02T00:00:00.000Z',
-  updatedAt: '2026-01-02T00:00:00.000Z'
+  updatedAt: '2026-01-02T00:00:00.000Z',
+  deletedAt: null,
 }
 
 /** One agent inside the environment, one directly in the host checkout. */
@@ -58,7 +60,9 @@ const agents: AgentSession[] = [
     updatedAt: '2026-01-03T00:00:00.000Z',
     lastActivityAt: null,
     usage: null,
-    archived: false
+    archived: false,
+    retiredAt: null,
+    retiredReason: null,
   },
   {
     id: 'ag_local',
@@ -80,7 +84,9 @@ const agents: AgentSession[] = [
     updatedAt: '2026-01-04T00:00:00.000Z',
     lastActivityAt: null,
     usage: null,
-    archived: false
+    archived: false,
+    retiredAt: null,
+    retiredReason: null,
   }
 ]
 

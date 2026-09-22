@@ -18,7 +18,8 @@ const project: Project = {
   name: 'Domo',
   repoPath: '/work/domo',
   createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z'
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  deletedAt: null,
 }
 
 const environment = ref<DevEnvironment>({
@@ -34,7 +35,8 @@ const environment = ref<DevEnvironment>({
   status: 'running',
   lastError: null,
   createdAt: '2026-01-02T00:00:00.000Z',
-  updatedAt: '2026-01-02T00:00:00.000Z'
+  updatedAt: '2026-01-02T00:00:00.000Z',
+  deletedAt: null,
 })
 
 const agent: AgentSession = {
@@ -57,7 +59,9 @@ const agent: AgentSession = {
   updatedAt: '2026-01-03T00:00:00.000Z',
   lastActivityAt: null,
   usage: null,
-  archived: false
+  archived: false,
+  retiredAt: null,
+  retiredReason: null,
 }
 
 mockNuxtImport('useRoute', () => () => ({ params: { id: 'env_1' } }))
