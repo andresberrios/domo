@@ -10,7 +10,8 @@ let agentRows: any[] = []
 let jobRows: CronJob[] = []
 
 mockNuxtImport('useAgentSessions', () => () => ({
-  sessions: computed(() => agentRows),
+  sessions: computed(() => agentRows.filter(row => !row.archived)),
+  all: computed(() => agentRows),
   isReady: ref(true)
 }))
 

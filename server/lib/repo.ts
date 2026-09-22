@@ -313,8 +313,10 @@ export async function updateProject(id: string, patch: { name: string }): Promis
  * Tombstone a project: its environments are already gone for real, and what is
  * left is a name for the sessions that ran under it.
  *
- * `purgeProject` below is the real delete, and it is only ever reached once
- * nothing points here any more.
+ * There is deliberately no hard delete beside this one. `pruneEmptyTombstones`
+ * is the only thing that really removes a project or an environment row, and
+ * only once nothing references it — an exported `deleteProject` would be an
+ * open invitation to take a retired session's context away with it.
  */
 export async function softDeleteProject(id: string): Promise<Project | null> {
   const row = await queryOne(
@@ -325,11 +327,6 @@ export async function softDeleteProject(id: string): Promise<Project | null> {
   if (!row) return null
   bus.publish({ type: 'project-changed' })
   return mapProject(row)
-}
-
-export async function deleteProject(id: string): Promise<void> {
-  await query('delete from projects where id = $1', [id])
-  bus.publish({ type: 'project-changed' })
 }
 
 /** The live environments. Deleted ones are tombstones; see `listProjects`. */
@@ -493,11 +490,6 @@ export async function softDeleteDevEnvironmentRow(id: string): Promise<DevEnviro
   if (!row) return null
   bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
   return mapDevEnvironment(row)
-}
-
-export async function deleteDevEnvironmentRow(id: string): Promise<void> {
-  await query('delete from dev_environments where id = $1', [id])
-  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
 }
 
 /**

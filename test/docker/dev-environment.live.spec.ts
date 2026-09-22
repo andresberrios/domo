@@ -54,7 +54,8 @@ vi.mock('../../server/lib/repo', () => ({
     return row
   },
   getDevEnvironment: async (id: string) => state.rows.get(id) ?? null,
-  deleteDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
+  softDeleteDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
+  pruneEmptyTombstones: async () => ({ environments: 0, projects: 0 }),
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) }
 }))
 // Settings live in Postgres, which this project does not have. The home

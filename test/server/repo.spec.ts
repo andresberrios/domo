@@ -14,7 +14,7 @@ import {
   createVoiceSession,
   deleteAgentSession,
   deleteInboxMessage,
-  deleteProject,
+  pruneEmptyTombstones,
   deleteVoiceSession,
   getAgentSession,
   enqueueInboxMessage,
@@ -40,6 +40,7 @@ import {
   updateDevEnvironment,
   updateDevEnvironmentPort,
   updateMcpServer,
+  softDeleteProject,
   updateVoiceSession,
   upsertDevEnvironmentPort,
   writeAgentStream
@@ -89,7 +90,7 @@ describe('projects', () => {
     await expect(listProjects().then(items => items.map(item => item.name))).resolves.toEqual(['api', 'web'])
   })
 
-  it('takes its environments with it when it is deleted', async () => {
+  it('is tombstoned rather than deleted, and leaves its environments alone', async () => {
     const created = await project()
     await createDevEnvironmentRow({
       projectId: created.id,
@@ -98,9 +99,18 @@ describe('projects', () => {
       workspacePath: '/workspaces/api'
     })
 
-    await deleteProject(created.id)
+    // Tombstoning takes the project off the live list and, unlike the hard
+    // delete it replaced, does *not* cascade to its environments — nothing is
+    // removed, so the `on delete cascade` never fires. Standing each
+    // environment down is `removeProjectCascade`'s own job, and forgetting it
+    // would leave a live environment under a deleted project.
+    await softDeleteProject(created.id)
 
-    await expect(listDevEnvironments()).resolves.toEqual([])
+    await expect(listProjects()).resolves.toEqual([])
+    await expect(listDevEnvironments()).resolves.toEqual([
+      expect.objectContaining({ name: 'api' })
+    ])
+    await expect(pruneEmptyTombstones()).resolves.toEqual({ environments: 0, projects: 0 })
   })
 })
 
