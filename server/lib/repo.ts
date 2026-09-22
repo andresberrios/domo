@@ -1150,29 +1150,37 @@ export async function listInboxMessages(
 }
 
 /**
- * Take the oldest waiting message, marking it delivered in the same statement.
+ * Take everything that is waiting, marking it delivered in the same statement.
  *
  * One statement so two drains — a turn ending while the adapter reattaches, say
  * — can never hand the same message over twice. The claim happens before the
- * prompt, so a turn that fails to start loses the message rather than replaying
- * it forever; the failure is recorded as an `error` event on the session.
+ * prompt, so a turn that fails to start loses the messages rather than
+ * replaying them forever; the failure is recorded as an `error` event on the
+ * session.
+ *
+ * All of them rather than the oldest one: everything that piled up during a
+ * turn is one thing to answer, and the caller hands the batch over as a single
+ * prompt. `returning` says nothing about order, so the rows are sorted by `seq`
+ * here — the caller's whole job depends on it.
  */
-export async function claimNextInboxMessage(agentSessionId: string): Promise<AgentInboxMessage | null> {
-  const row = await queryOne(
+export async function claimInboxMessages(agentSessionId: string): Promise<AgentInboxMessage[]> {
+  const rows = await query(
     `update agent_inbox set delivered_at = $2
-      where id = (
+      where id in (
         select id from agent_inbox
          where agent_session_id = $1 and delivered_at is null
-         order by seq asc limit 1
+         order by seq asc
          for update skip locked
       )
       returning *`,
     [agentSessionId, nowIso()]
   )
-  if (!row) return null
-  const message = mapInboxMessage(row)
-  bus.publish({ type: 'agent-inbox-changed', agentSessionId, message })
-  return message
+  const messages = rows.map(mapInboxMessage).sort((a, b) => a.seq - b.seq)
+  // One event per row, as when they were enqueued: the panel is showing rows.
+  for (const message of messages) {
+    bus.publish({ type: 'agent-inbox-changed', agentSessionId, message })
+  }
+  return messages
 }
 
 /** Drop a message that is still waiting. Returns false if it already went out. */

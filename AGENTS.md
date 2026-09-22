@@ -129,11 +129,19 @@ things that are easy to get wrong.
   Domo *now*, while a peer has no idea what it is cutting across. **`steer` on
   an adapter that does not advertise steering falls back to `interrupt`**, never
   to `queue` — the intent is "change course now", and waiting is the one thing
-  it definitely does not mean. The queue drains one row at a time in `seq`
-  order, when a turn ends (however it ends) and when an adapter attaches idle,
-  so **a queued message survives a restart**. That is the point of Domo owning
-  the queue rather than the adapter (see the gotcha below), and it is why the
-  agent page can show what is waiting and take it back.
+  it definitely does not mean. **The queue drains as one turn**: one
+  `claimInboxMessages` takes every waiting row in `seq` order and marks them all
+  delivered in the same statement, and `combineInboxContent`
+  (`server/lib/acp/inbox.ts`) hands them over as a single prompt — each message
+  introduced by a line naming its origin (`[From Domo]`, `[From you]`,
+  `[Message from agent <id>]`), a single row untouched. Everything that piled up
+  during a turn is one thing to answer; a turn per row meant the second message
+  arrived after the agent had already answered the first and read that answer as
+  context nobody asked for. It drains when a turn ends (however it ends) and
+  when an adapter attaches idle, so **a queued message survives a restart**.
+  That is the point of Domo owning the queue rather than the adapter (see the
+  gotcha below), and it is why the agent page can show what is waiting and take
+  it back.
 - **Cron wakes agents through that same delivery path.** `cron_jobs` stores a
   materialised `next_run_at` for either a five-field cron expression (with an
   IANA time zone) or a one-time instant; `cron_runs` is the durable claim and
@@ -522,6 +530,19 @@ things that are easy to get wrong.
   the same row. The exit handler yields to an `error` already recorded, because
   that one carries the `lastError` the UI offers a retry on. Left racing, the
   status after a failed spawn was a coin toss.
+- **`last_error` is history, `status` is state, and the banner keys on the
+  state.** A failed boot or a failed turn writes both, but only `status ===
+  'error'` still means "this session is broken and you have to do something".
+  So a turn starting clears the field (`runTurn`'s first
+  `setStatus('thinking', { touch: true, lastError: null })`, which is the only
+  place that does — a boot already clears it at `starting`), and
+  `AgentErrorBanner.vue` renders on the status rather than on the field. The
+  error itself is not lost: `buildTranscript()` renders the `error` event as an
+  error-toned notice at the `seq` it was appended at, which is where a past
+  failure belongs. Keyed on `lastError`, the banner outlived what it described
+  — a Claude "You've hit your session limit · resets 11pm (UTC)" sat at the top
+  of the agent page long after the limit had reset, through every later turn of
+  the conversation, because nothing but `boot()` ever cleared the column.
 - **Sequence columns are `bigserial`, not `max(seq)+1`.** Concurrent event
   appends collided and produced duplicate `seq` values within a session.
 - **Open the streaming row on the first delta, and close it before anything

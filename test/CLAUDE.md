@@ -287,6 +287,13 @@ real. Three things in it are load-bearing and easy to break:
   adapter does, and Domo's own abort races that answer — whichever lands first,
   the turn must settle as cancelled and never as an `error`. A fake that
   returned `end_turn` made the `interrupt` test depend on which won.
+- **A turn that fails has to fail with a `RequestError`.** A bare `throw new
+  Error('You\'ve hit your session limit …')` inside the fake reaches the client
+  as JSON-RPC's own `Internal error` and nothing else: the SDK's `errorToResult`
+  moves the reason into `data`, so `last_error` reads "Internal error" and an
+  assertion on what the row *says* is testing the test. `refuse()` in the
+  failed-turn describe throws `acp.RequestError.internalError({}, LIMIT)`, which
+  is the shape a real adapter reports a refused turn in.
 
 `stopSubscriptionNotifier()` runs in `afterEach` **before** `acpManager.shutdown()`:
 `adapter-exit` is one of the things a subscriber is told about, and the shutdown

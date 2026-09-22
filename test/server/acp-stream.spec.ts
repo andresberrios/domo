@@ -409,6 +409,99 @@ describe('a streamed turn', () => {
 })
 
 /**
+ * `last_error` is history; `status === 'error'` is the state the user has to act
+ * on. A failed turn writes both, a turn starting clears the state, and the
+ * transcript keeps the history — which is what lets the UI show the banner only
+ * while the session really is broken.
+ */
+describe('a turn that failed', () => {
+  const LIMIT = 'You\'ve hit your session limit · resets 11pm (UTC)'
+
+  /**
+   * How a turn fails at the ACP boundary. A bare `throw` inside the adapter
+   * reaches the client as JSON-RPC's own bare "Internal error" — the reason
+   * ends up in `data` and `lastError` says nothing useful — so a `RequestError`
+   * is what a message a person can read has to travel in.
+   */
+  const refuse = (): never => { throw acp.RequestError.internalError({}, LIMIT) }
+
+  it('records the failure as status and last error, and appends it to the log', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const failed = acpManager
+      .prompt(agent.id, [{ type: 'text', text: 'keep going' }])
+      .catch((error: unknown) => error)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => refuse())
+
+    expect(await failed).toBeInstanceOf(Error)
+
+    await expect(getAgentSession(agent.id)).resolves.toMatchObject({
+      status: 'error',
+      lastError: expect.stringContaining(LIMIT)
+    })
+    const events = await listAgentEvents(agent.id)
+    // No `turn_end`: the turn did not end, it failed.
+    expect(events.map(event => event.type)).toEqual(['user_message', 'error'])
+    expect(events[1]!.payload.message).toContain(LIMIT)
+  })
+
+  it('clears the error when the next turn starts, and leaves it in the transcript', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    let attempt = 0
+    const failed = acpManager
+      .prompt(agent.id, [{ type: 'text', text: 'keep going' }])
+      .catch((error: unknown) => error)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      attempt++
+      if (attempt === 1) refuse()
+      await send(textChunk('Back at it.'))
+    })
+    await failed
+    await expect(getAgentSession(agent.id)).resolves.toMatchObject({ status: 'error' })
+
+    // The limit has reset and the user says "continue".
+    await acpManager.prompt(agent.id, [{ type: 'text', text: 'continue' }])
+
+    await expect(getAgentSession(agent.id)).resolves.toMatchObject({
+      status: 'idle',
+      lastError: null
+    })
+    const events = await listAgentEvents(agent.id)
+    expect(events.map(event => event.type)).toEqual([
+      'user_message', 'error', 'user_message', 'agent_message', 'turn_end'
+    ])
+    // Still there, at the moment it happened, which is where it belongs.
+    expect(events[1]!.payload.message).toContain(LIMIT)
+  })
+
+  it('answers a retry on a live adapter by clearing the state, not by respawning', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const failed = acpManager
+      .prompt(agent.id, [{ type: 'text', text: 'keep going' }])
+      .catch((error: unknown) => error)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => refuse())
+    await failed
+
+    await acpManager.start(agent.id)
+
+    // The adapter never died, so there is nothing to boot: what the retry fixes
+    // is the row, which was describing a turn that is over.
+    expect(state.adapters).toHaveLength(1)
+    await expect(getAgentSession(agent.id)).resolves.toMatchObject({
+      status: 'idle',
+      lastError: null
+    })
+    const events = await listAgentEvents(agent.id)
+    expect(events.map(event => event.type)).toEqual(['user_message', 'error'])
+  })
+})
+
+/**
  * The mesh is an HTTP MCP server Domo hosts itself, so the only thing the
  * adapter is handed is a URL and a bearer token that names the session. An
  * adapter that cannot speak HTTP MCP is given nothing at all, rather than a
@@ -756,12 +849,54 @@ describe('delivering a message to an agent that is already working', () => {
     await running
 
     await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    // One row is handed over exactly as it was written: nothing prefixed, no
+    // divider, the same content the caller queued.
     expect(promptText(prompts[1])).toBe('then push it')
+    expect(prompts[1]!.prompt).toEqual([{ type: 'text', text: 'then push it' }])
     // Nothing waiting, and the row records when it went out.
     await expect(listInboxMessages(agent.id)).resolves.toEqual([])
     await expect(listInboxMessages(agent.id, false)).resolves.toMatchObject([
       { deliveredAt: expect.any(String) }
     ])
+  })
+
+  /**
+   * Two notes that arrived during one turn are one thing to answer. A turn each
+   * meant the second one arrived after the agent had already answered the
+   * first, reading that answer as context nobody asked for — and cost two
+   * round trips to say so.
+   */
+  it('drains everything that piled up as one turn, each message named', async () => {
+    const { acpManager, agent, prompts, running, release } = await working()
+
+    for (const [text, origin] of [
+      ['the deploy finished', 'system'],
+      ['take a look when you can', 'agent:ag_peer']
+    ] as const) {
+      await acpManager.deliver(agent.id, { content: [{ type: 'text', text }], delivery: 'queue', origin })
+    }
+    await expect(listInboxMessages(agent.id)).resolves.toHaveLength(2)
+
+    release()
+    await running
+
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    // Two messages, one prompt — and a divider so the agent can tell that it is
+    // being handed two of them rather than one run-on sentence.
+    expect(promptText(prompts[1])).toBe(
+      '[From Domo]\nthe deploy finished\n[Message from agent ag_peer]\ntake a look when you can'
+    )
+    // Both rows went out in the same claim, in `seq` order.
+    await expect(listInboxMessages(agent.id)).resolves.toEqual([])
+    await expect(listInboxMessages(agent.id, false)).resolves.toMatchObject([
+      { origin: 'system', deliveredAt: expect.any(String) },
+      { origin: 'agent:ag_peer', deliveredAt: expect.any(String) }
+    ])
+
+    // One turn means one `user_message`, and it carries the whole batch.
+    const user = (await listAgentEvents(agent.id)).filter(event => event.type === 'user_message')
+    expect(user).toHaveLength(2)
+    expect(user[1]!.payload.content).toEqual(prompts[1]!.prompt)
   })
 
   it('cancels the running turn first when told to interrupt', async () => {

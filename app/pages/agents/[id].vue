@@ -183,15 +183,7 @@ const menuItems = computed(() => [
     <template #body>
       <div class="flex h-full min-h-0 flex-col">
         <ServiceBanner />
-        <UAlert
-          v-if="session?.lastError"
-          color="error"
-          variant="subtle"
-          icon="i-lucide-triangle-alert"
-          :title="'Adapter error'"
-          :description="session.lastError"
-          class="mb-3"
-        />
+        <AgentErrorBanner v-if="session" :session="session" @retried="refresh" />
 
         <div v-if="!events.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
           <div class="max-w-sm text-center">

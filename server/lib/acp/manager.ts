@@ -18,10 +18,11 @@ import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEntry, adapterEnv } from './adapter-process'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage } from '../usage/normalize'
+import { combineInboxContent } from './inbox'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
 import {
   appendAgentEvent,
-  claimNextInboxMessage,
+  claimInboxMessages,
   createAgentSession,
   createPermission,
   enqueueInboxMessage,
@@ -411,6 +412,18 @@ class AgentRuntime {
       })
     }
     return this.booting
+  }
+
+  /**
+   * The row still says `error`, but the adapter is up and nothing is running.
+   *
+   * That is the shape a *failed turn* leaves behind, and `ensureStarted` is a
+   * no-op for it — so without this a retry on a session-limit error would
+   * change nothing at all and the banner would stay put.
+   */
+  async clearStaleError(): Promise<void> {
+    if (this.status !== 'error' || this.turn || !this.alive || !this.acpSessionId) return
+    await this.setStatus('idle', { lastError: null, touch: true })
   }
 
   private async boot(): Promise<void> {
@@ -879,7 +892,11 @@ class AgentRuntime {
     await this.serial(async () => {
       await this.closeStream(stale)
       await appendAgentEvent(this.agentSessionId, 'user_message', { content })
-      await this.setStatus('thinking', { touch: true })
+      // `last_error` is history and the transcript already carries it at the
+      // moment it happened; the row's copy describes the *current* state, so a
+      // turn starting clears it. Left behind, a failed turn's message outlived
+      // the failure and the banner kept describing it.
+      await this.setStatus('thinking', { touch: true, lastError: null })
     })
 
     try {
@@ -1020,7 +1037,12 @@ class AgentRuntime {
   }
 
   /**
-   * Hand over the oldest waiting message, if the agent is free to take it.
+   * Hand over everything that is waiting, if the agent is free to take it.
+   *
+   * One turn for the whole queue: two notes that arrived while the last turn
+   * ran are one thing to answer, and a turn each meant the second one read the
+   * first one's answer as context it never asked about. `combineInboxContent`
+   * keeps them legible as separate messages.
    *
    * Fire-and-forget on purpose: the callers are a turn that has just ended and
    * an adapter that has just attached, and neither should wait on a whole turn.
@@ -1028,10 +1050,10 @@ class AgentRuntime {
   drainInbox(): void {
     void this.serialDeliver(async () => {
       if (this.turn || !this.alive || !this.acpSessionId) return
-      const next = await claimNextInboxMessage(this.agentSessionId)
-      if (!next) return
-      const turn = this.prompt(next.content)
-      // The turn drains again when it ends, so one claim per step is enough.
+      const waiting = await claimInboxMessages(this.agentSessionId)
+      if (!waiting.length) return
+      const turn = this.prompt(combineInboxContent(waiting))
+      // Anything that arrives *during* this turn is drained when it ends.
       turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
     }).catch(error => console.error(`[acp:${this.agentSessionId}] could not drain the inbox`, error))
   }
@@ -1162,7 +1184,11 @@ class AcpManager {
   }
 
   async start(agentSessionId: string): Promise<void> {
-    await this.runtime(agentSessionId).ensureStarted()
+    const runtime = this.runtime(agentSessionId)
+    await runtime.ensureStarted()
+    // A failed boot clears the error in `boot()`; a failed turn leaves a live
+    // adapter, which `ensureStarted` has nothing to do about.
+    await runtime.clearStaleError()
   }
 
   /** Fire-and-forget turn: the UI and the voice agent follow it through events. */
