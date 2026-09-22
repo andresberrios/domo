@@ -61,6 +61,30 @@ describe('AgentTranscript', () => {
     await text(component).toContain('adapter crashed')
   })
 
+  /**
+   * The transcript is where an error lives on after the session has recovered
+   * (the banner keys on `status` and goes), so it has to stay visible, in
+   * error tone, at the point in the turn where it happened — a message of its
+   * own between the text before it and the text after, never folded into
+   * either. There is no condensed/uncondensed switch in this component: it
+   * renders one item per transcript item and nothing groups them, so "outside
+   * any activity group" is the only mode there is.
+   */
+  it('renders an error as its own error-toned notice, between the text around it', async () => {
+    const component = await render([
+      textChunk('working on it'),
+      agentEvent('error', { message: 'You\'ve hit your session limit · resets 11pm (UTC)' }),
+      textChunk('continuing')
+    ])
+
+    await text(component).toContain('You\'ve hit your session limit')
+    const notice = component.find('.text-error')
+    expect(notice.exists()).toBe(true)
+    expect(notice.text()).toBe('You\'ve hit your session limit · resets 11pm (UTC)')
+    // Three items, not a bubble that swallowed the error.
+    expect(component.findAll('[data-role="assistant"]')).toHaveLength(3)
+  })
+
   it('separates the user\'s messages from the agent\'s', async () => {
     const component = await render([userMessage('fix the build'), textChunk('on it')])
 

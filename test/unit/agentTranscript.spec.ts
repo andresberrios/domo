@@ -234,6 +234,20 @@ describe('buildTranscript', () => {
       expect(items[0]).toMatchObject({ kind: 'notice', tone: 'error', text: 'adapter crashed' })
     })
 
+    /**
+     * The error belongs to the moment it happened, which is the whole reason
+     * the banner does not need to outlive it: it breaks the run of streamed
+     * text rather than merging into the bubble above, and it carries the seq
+     * and timestamp of its own event.
+     */
+    it('keeps an error in its own place in the turn that failed', () => {
+      const failure = agentEvent('error', { message: 'You\'ve hit your session limit · resets 11pm (UTC)' })
+      const items = buildTranscript([textChunk('working on it'), failure, textChunk('continuing')])
+
+      expect(kinds(items)).toEqual(['assistant', 'notice', 'assistant'])
+      expect(items[1]).toMatchObject({ tone: 'error', seq: failure.seq, at: failure.createdAt })
+    })
+
     it('stays quiet about a turn that ended normally', () => {
       expect(buildTranscript([agentEvent('turn_end', { stopReason: 'end_turn' })])).toEqual([])
     })

@@ -371,6 +371,19 @@ things that are easy to get wrong.
   the same row. The exit handler yields to an `error` already recorded, because
   that one carries the `lastError` the UI offers a retry on. Left racing, the
   status after a failed spawn was a coin toss.
+- **`last_error` is history, `status` is state, and the banner keys on the
+  state.** A failed boot or a failed turn writes both, but only `status ===
+  'error'` still means "this session is broken and you have to do something".
+  So a turn starting clears the field (`runTurn`'s first
+  `setStatus('thinking', { touch: true, lastError: null })`, which is the only
+  place that does — a boot already clears it at `starting`), and
+  `AgentErrorBanner.vue` renders on the status rather than on the field. The
+  error itself is not lost: `buildTranscript()` renders the `error` event as an
+  error-toned notice at the `seq` it was appended at, which is where a past
+  failure belongs. Keyed on `lastError`, the banner outlived what it described
+  — a Claude "You've hit your session limit · resets 11pm (UTC)" sat at the top
+  of the agent page long after the limit had reset, through every later turn of
+  the conversation, because nothing but `boot()` ever cleared the column.
 - **Sequence columns are `bigserial`, not `max(seq)+1`.** Concurrent event
   appends collided and produced duplicate `seq` values within a session.
 - **Open the streaming row on the first delta, and close it before anything

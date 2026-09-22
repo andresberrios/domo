@@ -325,6 +325,18 @@ class AgentRuntime {
     return this.booting
   }
 
+  /**
+   * The row still says `error`, but the adapter is up and nothing is running.
+   *
+   * That is the shape a *failed turn* leaves behind, and `ensureStarted` is a
+   * no-op for it — so without this a retry on a session-limit error would
+   * change nothing at all and the banner would stay put.
+   */
+  async clearStaleError(): Promise<void> {
+    if (this.status !== 'error' || this.turn || !this.alive || !this.acpSessionId) return
+    await this.setStatus('idle', { lastError: null, touch: true })
+  }
+
   private async boot(): Promise<void> {
     const session = await getAgentSession(this.agentSessionId)
     if (!session) throw new Error(`Agent session ${this.agentSessionId} not found`)
@@ -775,7 +787,11 @@ class AgentRuntime {
     await this.serial(async () => {
       await this.closeStream(stale)
       await appendAgentEvent(this.agentSessionId, 'user_message', { content })
-      await this.setStatus('thinking', { touch: true })
+      // `last_error` is history and the transcript already carries it at the
+      // moment it happened; the row's copy describes the *current* state, so a
+      // turn starting clears it. Left behind, a failed turn's message outlived
+      // the failure and the banner kept describing it.
+      await this.setStatus('thinking', { touch: true, lastError: null })
     })
 
     try {
@@ -1049,7 +1065,11 @@ class AcpManager {
   }
 
   async start(agentSessionId: string): Promise<void> {
-    await this.runtime(agentSessionId).ensureStarted()
+    const runtime = this.runtime(agentSessionId)
+    await runtime.ensureStarted()
+    // A failed boot clears the error in `boot()`; a failed turn leaves a live
+    // adapter, which `ensureStarted` has nothing to do about.
+    await runtime.clearStaleError()
   }
 
   /** Fire-and-forget turn: the UI and the voice agent follow it through events. */
