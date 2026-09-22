@@ -158,7 +158,7 @@ export function containerRunArgs(input: RunContainerInput): string[] {
     '--label', `domo.portsAttributes=${JSON.stringify(input.config.portsAttributes ?? {})}`,
     '--add-host', 'host.docker.internal:host-gateway',
     ...mountArg({ source: input.workspaceVolume, target: input.workspacePath }),
-    // Node and both ACP adapters, shared by every environment and never written to.
+    // Node and the ACP adapters, shared by every environment and never written to.
     ...mountArg({ source: input.runtimeVolume, target: '/opt/domo', readonly: true })
   ]
   // There is deliberately no mount of the host's `~/.claude`. It carries

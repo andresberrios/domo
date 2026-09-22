@@ -5,7 +5,7 @@ import { availableModes, currentModeId } from '../../server/lib/acp/mode'
 
 /**
  * What the models endpoint makes of a `session/new` response — the model
- * selector out of `configOptions`, and the permission modes out of `modes`. The
+ * selector out of `configOptions`, plus modes from either ACP representation. The
  * spawn itself needs a real account and belongs to
  * `test/server/adapter-models.spec.ts` (with the adapter faked) and the live
  * layer; this is the parsing.
@@ -108,6 +108,22 @@ const codexModes = {
   }
 }
 
+/** Shaped the way OpenCode 1.18.28 answers: no top-level `modes` object. */
+const openCodeModes = {
+  sessionId: 'acp_1',
+  configOptions: [{
+    id: 'mode',
+    name: 'Mode',
+    category: 'mode',
+    type: 'select',
+    currentValue: 'build',
+    options: [
+      { value: 'build', name: 'Build', description: 'The default agent with all tools enabled' },
+      { value: 'plan', name: 'Plan', description: 'A restricted agent for planning' }
+    ]
+  }]
+}
+
 describe('reading an adapter\'s permission modes', () => {
   it('takes the ACP `modes` object, ids and labels and all', () => {
     expect(availableModes(claudeModes).map(mode => mode.id)).toEqual([
@@ -126,6 +142,14 @@ describe('reading an adapter\'s permission modes', () => {
       'read-only', 'agent', 'agent-full-access'
     ])
     expect(currentModeId(codexModes)).toBe('agent')
+  })
+
+  it('reads OpenCode modes from its config option representation', () => {
+    expect(availableModes(openCodeModes)).toEqual([
+      { id: 'build', name: 'Build', description: 'The default agent with all tools enabled' },
+      { id: 'plan', name: 'Plan', description: 'A restricted agent for planning' }
+    ])
+    expect(currentModeId(openCodeModes)).toBe('build')
   })
 
   it('shares no mode id between the two adapters, which is the whole point', () => {

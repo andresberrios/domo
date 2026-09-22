@@ -1,9 +1,10 @@
 import { acpManager } from '../../lib/acp/manager'
+import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{
     title?: string
-    adapter?: 'claude-code' | 'codex'
+    adapter?: 'claude-code' | 'codex' | 'opencode'
     cwd?: string
     voiceSessionId?: string | null
     modeId?: string | null
@@ -13,7 +14,7 @@ export default defineEventHandler(async (event) => {
   }>(event)
 
   return acpManager.create({
-    adapter: body?.adapter === 'codex' ? 'codex' : 'claude-code',
+    adapter: isAgentAdapter(body?.adapter) ? body.adapter : 'claude-code',
     title: body?.title,
     cwd: body?.cwd,
     voiceSessionId: body?.voiceSessionId ?? null,

@@ -3,6 +3,7 @@ import { PassThrough, Readable, Writable } from 'node:stream'
 
 import * as acp from '@agentclientprotocol/sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AgentAdapter } from '../../shared/types'
 
 /**
  * The adapter probe: a throwaway session asked what it could run on, and in
@@ -20,11 +21,15 @@ vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:child_process')>()
   return {
     ...original,
-    spawn: (_command: string, args: string[]) => {
+    spawn: (command: string, args: string[]) => {
       state.spawns += 1
       // The catalog probes both adapters concurrently, so which one this is has
       // to come from the argv; the order they spawn in is a race.
-      const adapter = new FakeAdapter(String(args?.[0] ?? '').includes('codex') ? 'codex' : 'claude-code')
+      const invocation = `${command} ${args.join(' ')}`
+      const which: AgentAdapter = invocation.includes('/opencode-ai/')
+        ? 'opencode'
+        : invocation.includes('/codex-acp/') ? 'codex' : 'claude-code'
+      const adapter = new FakeAdapter(which)
       state.adapters.push(adapter)
       return adapter
     }
@@ -39,7 +44,7 @@ class FakeAdapter extends EventEmitter {
   killed = false
   served = false
 
-  constructor(readonly which: 'claude-code' | 'codex' = 'claude-code') {
+  constructor(readonly which: AgentAdapter = 'claude-code') {
     super()
   }
 
@@ -124,8 +129,8 @@ type Answer = { current: string, ids: string[] } | null | 'fail'
  * them one at a time deadlocks the second probe until its timeout.
  */
 function autoServe(
-  answers: Partial<Record<'claude-code' | 'codex', Answer>>,
-  modes?: Partial<Record<'claude-code' | 'codex', { current: string, ids: string[] }>>
+  answers: Partial<Record<AgentAdapter, Answer>>,
+  modes?: Partial<Record<AgentAdapter, { current: string, ids: string[] }>>
 ): () => void {
   const timer = setInterval(() => {
     for (const adapter of state.adapters) {
@@ -283,11 +288,12 @@ describe('listAdapterModels', () => {
 })
 
 describe('listAdapterCatalog', () => {
-  it('names both harnesses and what each offers', async () => {
+  it('names every harness and what each offers', async () => {
     const { listAdapterCatalog } = await import('../../server/lib/acp/models')
     const stop = autoServe({
       'claude-code': { current: 'sonnet', ids: ['sonnet', 'haiku'] },
-      codex: { current: 'gpt-5.6-terra', ids: ['gpt-5.6-terra', 'gpt-5.6-luna'] }
+      codex: { current: 'gpt-5.6-terra', ids: ['gpt-5.6-terra', 'gpt-5.6-luna'] },
+      opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] }
     })
     const catalog = listAdapterCatalog().finally(stop)
 
@@ -310,6 +316,15 @@ describe('listAdapterCatalog', () => {
           modes: [],
           defaultMode: null,
           configOptions: []
+        },
+        {
+          id: 'opencode',
+          name: 'OpenCode',
+          models: [{ id: 'opencode-go/kimi-k3', name: 'OPENCODE-GO/KIMI-K3' }],
+          default: 'opencode-go/kimi-k3',
+          modes: [],
+          defaultMode: null,
+          configOptions: []
         }
       ]
     })
@@ -318,10 +333,15 @@ describe('listAdapterCatalog', () => {
   it('carries each harness\'s own modes, which share not one id', async () => {
     const { listAdapterCatalog } = await import('../../server/lib/acp/models')
     const stop = autoServe(
-      { 'claude-code': { current: 'sonnet', ids: ['sonnet'] }, codex: { current: 'gpt-5.5', ids: ['gpt-5.5'] } },
+      {
+        'claude-code': { current: 'sonnet', ids: ['sonnet'] },
+        codex: { current: 'gpt-5.5', ids: ['gpt-5.5'] },
+        opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] }
+      },
       {
         'claude-code': { current: 'default', ids: ['default', 'acceptEdits'] },
-        codex: { current: 'agent', ids: ['read-only', 'agent'] }
+        codex: { current: 'agent', ids: ['read-only', 'agent'] },
+        opencode: { current: 'build', ids: ['build', 'plan'] }
       }
     )
 
@@ -337,6 +357,11 @@ describe('listAdapterCatalog', () => {
       defaultMode: 'agent',
       modes: [{ id: 'read-only', name: 'READ-ONLY' }, { id: 'agent', name: 'AGENT' }]
     })
+    expect(adapters[2]).toMatchObject({
+      id: 'opencode',
+      defaultMode: 'build',
+      modes: [{ id: 'build', name: 'BUILD' }, { id: 'plan', name: 'PLAN' }]
+    })
   })
 
   it('asks only the harness it was filtered to', async () => {
@@ -351,7 +376,11 @@ describe('listAdapterCatalog', () => {
   it('puts one harness\'s failure on its own entry and still answers for the other', async () => {
     // Not being logged into Codex is no reason to withhold the Claude list.
     const { listAdapterCatalog } = await import('../../server/lib/acp/models')
-    const stop = autoServe({ 'claude-code': { current: 'sonnet', ids: ['sonnet'] }, codex: 'fail' })
+    const stop = autoServe({
+      'claude-code': { current: 'sonnet', ids: ['sonnet'] },
+      codex: 'fail',
+      opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] }
+    })
 
     const { adapters } = await listAdapterCatalog().finally(stop)
 
@@ -363,4 +392,3 @@ describe('listAdapterCatalog', () => {
     expect(adapters[1]!.error).toMatch(/Not logged in/)
   })
 })
-
