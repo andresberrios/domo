@@ -8,6 +8,13 @@ const text = ref('')
 const sending = ref(false)
 
 /**
+ * On a phone the on-screen keyboard's return key is the only way to type a line
+ * break, so Enter must not send: the button does. Desktop keeps Enter to send
+ * and Shift+Enter to break, which is what `UChatPrompt` does by default.
+ */
+const isTouch = useIsTouch()
+
+/**
  * What happens to a message sent while the agent is mid-turn.
  *
  * `steer` is preselected because that is what typing at a working agent
@@ -131,6 +138,7 @@ async function stop() {
       :placeholder="placeholder"
       :autoresize="true"
       :maxrows="10"
+      :submit-on-enter="!isTouch"
       variant="outline"
       @submit="submit"
     >

@@ -2,7 +2,7 @@ import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { UApp } from '#components'
 import { readBody } from 'h3'
 import { defineComponent, h } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AgentComposer from '~/components/AgentComposer.vue'
 import type { AgentSession } from '~~/shared/types'
@@ -56,7 +56,28 @@ async function type(component: any, text: string) {
   await input.trigger('keydown', { key: 'Enter' })
 }
 
+/**
+ * `matchMedia` is what decides whether Enter sends. happy-dom has one, so the
+ * pointer is faked by answering the one query the composer asks.
+ */
+function pointer(kind: 'coarse' | 'fine') {
+  const real = window.matchMedia
+  window.matchMedia = ((query: string) => ({
+    matches: query === `(pointer: ${kind})`,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {}
+  })) as unknown as typeof window.matchMedia
+  return () => { window.matchMedia = real }
+}
+
+let restorePointer: (() => void) | null = null
+
 beforeEach(() => sent.mockClear())
+afterEach(() => {
+  restorePointer?.()
+  restorePointer = null
+})
 
 describe('AgentComposer', () => {
   it('sends with a delivery mode, and steers by default', async () => {
@@ -76,5 +97,31 @@ describe('AgentComposer', () => {
 
     const busy = await mountSuspended(Harness, { props: { session: session('thinking') } })
     expect(busy.text()).toContain('Steer')
+  })
+})
+
+describe('AgentComposer on a touch screen', () => {
+  it('lets Enter make a line break instead of sending', async () => {
+    restorePointer = pointer('coarse')
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    await type(component, 'first line')
+
+    // The keyboard's return key is the only line break a phone has; the send
+    // button is how a message leaves.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(sent).not.toHaveBeenCalled()
+  })
+
+  it('still sends on Enter with a fine pointer', async () => {
+    restorePointer = pointer('fine')
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    await type(component, 'ship it')
+
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledWith({
+      content: [{ type: 'text', text: 'ship it' }],
+      delivery: 'steer'
+    }))
   })
 })
