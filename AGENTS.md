@@ -186,6 +186,45 @@ things that are easy to get wrong.
   thing is tested against two temp repos with no Docker
   (`test/server/git-sync.spec.ts`).
 
+- **The sidebar is the management surface; there is no Projects page.**
+  `app/pages/projects.vue` is gone. `ProjectTree.vue` (mounted by the layout,
+  and the only thing the layout knows about the tree) renders projects →
+  environments → agents, and every row carries its own actions: one primary
+  plus button inline and the rest behind an ellipsis `UDropdownMenu`. Details
+  live on `app/pages/projects/[id].vue` and `app/pages/environments/[id].vue`.
+  The rows are `SidebarProjectRow` / `SidebarEnvironmentRow` /
+  `SidebarAgentRow` / `SidebarConversationRow` — plain flex rows built from
+  primitives rather than `UCollapsible` wrapping a button, because that shape
+  makes a row *either* a link or a disclosure and leaves nowhere for the
+  actions to sit.
+- **A `NuxtLink` applies no active class unless you give it one.** There is no
+  `router-link-active` fallback to hang a `has-[]` selector off, which is why
+  each row's link carries `active-class="row-active"` — a bare marker with no
+  styling of its own — and the *wrapper* does the work with
+  `has-[a.row-active]:bg-elevated`. The highlight has to be on the wrapper
+  rather than the link because the link is only part of the row now. Measured:
+  with the marker removed the anchor's class list comes back with nothing added
+  after a navigation that `matched` the route.
+- **On a tree row the link and the chevron are separate controls.** The name is
+  a `NuxtLink` and the whole accessible name of the row; the chevron is a real
+  `<button>` with `aria-expanded` and an `aria-label` that only toggles. A
+  button nested inside an anchor is invalid HTML and swallows the navigation,
+  so **no row may ever put one there** — `ProjectTree.spec.ts` asserts
+  `document.querySelectorAll('a button')` is empty, which is the cheapest way
+  to keep it true. The open/closed state is the tree's own: a `Set` in
+  `ProjectTree`, persisted to `localStorage` under `domo.sidebar.collapsed`. It
+  stores what was **closed**, not what was opened — rows default to open, so an
+  expanded-id set would start a fresh sidebar fully collapsed and would also
+  collapse every project created after it was written.
+- **Renaming a project or an environment is `PATCH`, and those two routes were
+  added for the menus.** `server/api/projects/[id].patch.ts` and
+  `server/api/dev-environments/[id]/index.patch.ts` are thin wrappers over the
+  `updateProject` / `updateDevEnvironment` that `repo.ts` already had and that
+  the voice agent and the mesh already called — the HTTP surface was simply
+  missing. Only the display name is patchable: a project *is* its checkout, and
+  an environment's container, workspace volume and DinD volume are all named
+  from its id at creation and are never renamed with it.
+
 ## Gotchas (learned the hard way)
 
 - **Scrub the environment when spawning the ACP adapter.** `adapterEnv()` in
@@ -671,6 +710,63 @@ things that are easy to get wrong.
   through the `Host` header). Changing the policy means loading the production
   build in a real browser and reading the console.
 
+- **`UDashboardPanel`'s default slot *replaces* `#header` and `#body`.** Its
+  template is `<slot><slot name="header"/>…<slot name="body"/>…</slot>`, so
+  anything written as a plain child of the panel — a `UModal`, a
+  `ConfirmModal` — becomes the default slot and the page renders **blank**, with
+  no error beyond a bare "Unhandled error during execution of component update".
+  Modals belong *inside* `#body`. Both detail pages were written the wrong way
+  first and their specs caught it as an empty `document.body.textContent`.
+- **Row actions reveal with `pointer-coarse:`, not with JavaScript.** Tailwind 4
+  has the variant, so the ellipsis and plus buttons are
+  `opacity-0 group-hover:opacity-100 group-focus-within:opacity-100
+  pointer-coarse:opacity-100` (`ROW_ACTIONS_CLASS` in `app/utils/sidebar.ts`).
+  `opacity-0` rather than `hidden` on purpose: the buttons keep their place in
+  the tab order, so tabbing into a row is what makes them visible. The count
+  badge takes the matching `ROW_BADGE_CLASS` and yields to the actions, which is
+  what keeps a row from overflowing in the mobile drawer at 390px.
+- **On a touch screen Enter must not send.** `UChatPrompt`'s `submitOnEnter`
+  defaults to true, and on a phone the keyboard's return key is the *only* way
+  to type a line break — so a multi-line message was impossible and every
+  newline sent the message instead. `AgentComposer` binds
+  `:submit-on-enter="!isTouch"` off `useIsTouch()`
+  (`matchMedia('(pointer: coarse)')`, evaluated in `onMounted` because Domo is
+  SPA-only). Desktop is unchanged: Enter sends, Shift+Enter breaks. The voice
+  page's typed input is a single-line `UInput` and needs none of this.
+- **Reka's dropdown opens on `pointerdown`, not on `click`.** A component test
+  that only calls `.click()` on the trigger waits forever for `[role="menu"]`.
+  Dispatch `new MouseEvent('pointerdown', { bubbles: true, button: 0 })` first —
+  see `openMenu()` in `test/nuxt/ProjectTree.spec.ts`. And scope the search for
+  a dialog's submit button to the dialog: the menu that opened it is still in
+  the DOM and usually has an item with the same word on it.
+
+## Theme
+
+- **`domo` is a forest green, `bark` is the neutral, and both are full 50–950
+  scales in `app/assets/css/main.css`.** The palette name `domo` was kept so
+  nothing else had to change; `ui.colors.neutral` is `bark` rather than `zinc`.
+  Mid-tones: primary **500 `#3d7d4e`** and **600 `#2f6b45`** (white text at
+  4.95:1 and 6.3:1), **400 `#5fa472`** for dark mode, where Nuxt UI puts dark
+  text on it (7.0:1). The old scale was emerald, which reads as a signal colour
+  rather than an organic one. `bark` leans warm olive at very low chroma —
+  every surface in the app is a neutral, so a blue-grey beside a green primary
+  is the one thing that makes the accent look artificial. Its derived tokens
+  were checked by hand: `text-muted` is 4.7:1 on white (500 `#6e7666`) and
+  6.0:1 on the dark background (400 `#99a191` on 900 `#1e221c`), and the 800
+  border sits 1.27:1 off the 900 background — the same separation zinc gave.
+- **The font is Figtree, self-hosted, and `@nuxt/fonts` is already there.**
+  Nuxt UI lists it as a `moduleDependency` and registers it with weights
+  400–700, so it must **not** be added to `modules` or to `package.json` — it is
+  active already, and Inter was being self-hosted the same way. Figtree over
+  Inter for a warmer, rounder skeleton that still holds up at the 11–13px this
+  dashboard is mostly made of. The module picks the family up straight out of
+  the Tailwind `@theme` block, which is worth knowing because it is not a
+  `font-family` declaration. Verified on a production build: 16 `.woff2` under
+  `.output/public/_fonts/`, 64 `/_fonts/` references in the entry CSS, both
+  Figtree and JetBrains Mono, and **no `fonts.gstatic.com` or
+  `fonts.googleapis.com` anywhere in the output**. `font-src 'self'` in
+  `server/lib/csp.ts` already covered it, so the CSP was not touched.
+
 ## Tests
 
 **`test/CLAUDE.md` is the authoritative guide** — layout, the database
@@ -742,6 +838,19 @@ and permissions are end to end because a permission is a row.
 
 ## Verification notes
 
+- **The active-row highlight is browser-only.** `test/nuxt` cannot see it: the
+  links `mountSuspended` renders do not observe navigation pushed through the
+  wrapper's own `$router`, so a test asserting the active class fails whether
+  the code is right or wrong. It was removed rather than left as a false
+  negative; the mechanism (`active-class` → `has-[a.row-active]`) is Vue
+  Router's own and has to be confirmed by looking at it.
+- **The theme was *not* checked in a rendered browser.** This change was made
+  in a dev environment with no browser in it, so the palette, the font and the
+  sidebar's hover/touch behaviour have been verified only by their contrast
+  arithmetic, by the built CSS and by component tests. The a11y tree will not
+  tell you whether a forest green reads as organic or as swamp, and it will not
+  tell you whether the row actions fit at 390px. **The host still has to look at
+  it** — light and dark, desktop and mobile, over the Caddy HTTPS address.
 - The CSP was verified in Chromium against the production build: dashboard,
   settings, projects, a conversation and an agent transcript, light and dark,
   desktop and mobile, zero violations. The agent page rendered byte-identically
@@ -789,7 +898,8 @@ and permissions are end to end because a permission is a row.
 ## Conventions
 
 - Components live flat in `app/components` with plain names; pages under
-  `app/pages`; the dashboard shell is `app/layouts/default.vue`.
+  `app/pages`; the dashboard shell is `app/layouts/default.vue`, which mounts
+  `ProjectTree.vue` and otherwise knows nothing about the tree.
 - Prefer Nuxt UI components (`UDashboard*`, `UChat*`, `UModal`, `UAlert`, …)
   over bespoke markup. Always give `UModal` both `title` and `description`.
 - Server helpers go in `server/lib/<area>/`; anything that writes to the
