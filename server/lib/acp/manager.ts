@@ -243,6 +243,21 @@ const ADAPTER_TURN_IDLE_MS = 20_000
 const ADAPTER_TURN_WORKING_MS = 10 * 60_000
 
 /**
+ * The two windows above, in the one place a test can shorten them.
+ *
+ * An injected parameter rather than two `const`s for the same reason the git
+ * transport and the `gh` lookup are: the alternative is faking `setTimeout`
+ * around a runtime that is doing real Postgres I/O on every one of these
+ * paths, which makes the test about the fake clock instead of about the turn —
+ * and, measured, deadlocks the `pg` pool once its own timers are pretend.
+ * Nothing in the app writes to it.
+ */
+export const adapterTurnWindows = {
+  idle: ADAPTER_TURN_IDLE_MS,
+  working: ADAPTER_TURN_WORKING_MS
+}
+
+/**
  * How often the context-window reading is written mid-turn.
  *
  * `usage_update` arrives with every `message_delta` — several times a second on
@@ -1484,7 +1499,7 @@ class AgentRuntime {
     this.clearAdapterTurnTimer()
     const timer = setTimeout(
       () => this.onAdapterTurnQuiet(),
-      this.openToolCalls.size ? ADAPTER_TURN_WORKING_MS : ADAPTER_TURN_IDLE_MS
+      this.openToolCalls.size ? adapterTurnWindows.working : adapterTurnWindows.idle
     )
     // A pending watchdog must not keep Node alive on its own.
     timer.unref?.()
