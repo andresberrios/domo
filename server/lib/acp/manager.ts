@@ -646,8 +646,8 @@ class AgentRuntime {
     const httpMcp = !!initialized?.agentCapabilities?.mcpCapabilities?.http
     if (!httpMcp) warnNoHttpMcp(session.adapter)
 
-    const mcpServers = await this.mcpServersForSession(environment, httpMcp)
     const settings = await getSettings()
+    const mcpServers = await this.mcpServersForSession(environment, httpMcp, settings)
 
     let sessionResponse: any = null
     if (session.acpSessionId) {
@@ -900,7 +900,11 @@ class AgentRuntime {
     if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
   }
 
-  private async mcpServersForSession(environment: DevEnvironment | null, httpMcp: boolean) {
+  private async mcpServersForSession(
+    environment: DevEnvironment | null,
+    httpMcp: boolean,
+    settings: AppSettings
+  ) {
     const servers = await listMcpServers()
     const out: any[] = []
     for (const server of servers) {
@@ -926,7 +930,7 @@ class AgentRuntime {
     // deliberately not a row in `mcp_servers`: every path in it names a volume
     // that is mounted into the container and exists nowhere on the host, while
     // a configured row is written once and handed to both.
-    if (environment && (await getSettings()).browserTools) out.push(browserMcpServer())
+    if (environment && settings.browserTools) out.push(browserMcpServer())
 
     // The agent-mesh server lets coding agents talk to each other and spawn
     // peers. One code path for host and container sessions: the container only
