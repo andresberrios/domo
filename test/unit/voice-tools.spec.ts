@@ -710,6 +710,18 @@ describe('transcriptDigest', () => {
     ])
   })
 
+  it('clips a message to the spoken size by default, and to what a reader asks for', async () => {
+    const long = 'word '.repeat(300).trim()
+    repo.listAgentEvents.mockResolvedValue([userMessage('go'), textChunk(long)])
+
+    const spoken = await transcriptDigest('ag_1')
+    expect(spoken[1]!.text.length).toBeLessThanOrEqual(601)
+    expect(spoken[1]!.text.endsWith('…')).toBe(true)
+
+    const read = await transcriptDigest('ag_1', { messageChars: 4000 })
+    expect(read[1]!.text).toBe(long)
+  })
+
   it('keeps only the most recent items', async () => {
     repo.listAgentEvents.mockResolvedValue(
       Array.from({ length: 30 }, (_, index) => userMessage(`message ${index}`))

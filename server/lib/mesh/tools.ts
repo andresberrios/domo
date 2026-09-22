@@ -389,7 +389,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'read_agent_transcript': {
       const target = await getAgentSession(args.agentId)
       if (!target) throw new Error(`No agent ${args.agentId}`)
-      const items = await transcriptDigest(target.id, { limit: args.limit, include: args.include })
+      // A peer reading a report needs the report, not the spoken-size clip.
+      const items = await transcriptDigest(target.id, { limit: args.limit, include: args.include, messageChars: 4000 })
       return { agentId: target.id, title: target.title, items }
     }
 

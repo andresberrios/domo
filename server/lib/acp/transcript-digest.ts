@@ -6,6 +6,12 @@ export type TranscriptDigestKind = typeof TRANSCRIPT_DIGEST_KINDS[number]
 export interface TranscriptDigestOptions {
   limit?: number
   include?: TranscriptDigestKind[]
+  /**
+   * How much of a user or agent message to keep. The voice agent reads the
+   * digest out loud, so its default is a sentence or two; a coding agent
+   * reviewing a peer's report needs the report, and passes something larger.
+   */
+  messageChars?: number
 }
 
 export interface TranscriptDigestItem {
@@ -35,13 +41,14 @@ export async function transcriptDigest(
   const requested = Number(options.limit ?? 20)
   const limit = Number.isFinite(requested) ? Math.max(1, Math.min(100, Math.floor(requested))) : 20
   const include = new Set(options.include ?? TRANSCRIPT_DIGEST_KINDS)
+  const messageChars = Math.max(100, Math.min(20_000, Number(options.messageChars) || 600))
   const events = await listAgentEvents(agentSessionId, 0, 4000)
   const items: TranscriptDigestItem[] = []
   let assistant = ''
   let thought = ''
 
   const flushAssistant = () => {
-    if (assistant.trim()) items.push({ kind: 'agent', text: summarise(assistant, 600) })
+    if (assistant.trim()) items.push({ kind: 'agent', text: summarise(assistant, messageChars) })
     assistant = ''
   }
   const flushThought = () => {
@@ -61,7 +68,7 @@ export async function transcriptDigest(
           .filter((block: any) => block?.type === 'text')
           .map((block: any) => block.text)
           .join(' ')
-        items.push({ kind: 'user', text: summarise(text, 400) })
+        items.push({ kind: 'user', text: summarise(text, Math.min(messageChars, 2000)) })
         break
       }
       case 'agent_message':
