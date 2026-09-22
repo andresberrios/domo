@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AgentSession } from '~~/shared/types'
+import { agentAdapterInfo } from '~~/shared/agent-adapters'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +27,14 @@ const session = computed<AgentSession | null>(
 const environment = computed(() =>
   environments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
 )
+const adapter = computed(() => session.value ? agentAdapterInfo(session.value.adapter) : null)
+const usageProvider = computed(() => session.value?.adapter === 'claude-code'
+  ? 'claude' as const
+  : session.value?.adapter === 'codex'
+    ? 'codex' as const
+    : session.value?.adapter === 'opencode'
+      ? 'opencode' as const
+      : undefined)
 
 const renaming = ref(false)
 const titleDraft = ref('')
@@ -89,7 +98,7 @@ const menuItems = computed(() => [
         <template #right>
           <UsageMeter
             :usage="session?.usage ?? null"
-            :provider="session?.adapter === 'codex' ? 'codex' : 'claude'"
+            :provider="usageProvider"
           />
           <UButton
             v-if="session && (session.status === 'stopped' || session.status === 'error')"
@@ -116,7 +125,7 @@ const menuItems = computed(() => [
             color="neutral"
             variant="subtle"
             size="sm"
-            :label="`${session?.adapter === 'codex' ? 'Codex' : 'Claude Code'} · ACP`"
+            :label="`${adapter?.label ?? 'Coding agent'} · ACP`"
           />
           <UBadge
             v-if="environment"

@@ -1,6 +1,7 @@
 allowBuilds:
   '@google/genai': true
   esbuild: true
+  opencode-ai: true
   protobufjs: true
   unrs-resolver: true
   vue-demi: true

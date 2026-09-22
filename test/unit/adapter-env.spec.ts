@@ -1,6 +1,9 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { adapterEnv } from '../../server/lib/acp/adapter-process'
+import { adapterEnv, adapterLaunch, opencodeConfigContent } from '../../server/lib/acp/adapter-process'
 
 /** `gh` must never be spawned from a test, so the lookup is always injected. */
 const noGh = async () => null
@@ -14,6 +17,7 @@ const noGh = async () => null
  */
 
 const saved = { ...process.env }
+const systemTmp = tmpdir()
 
 beforeEach(() => {
   // A token, so the Claude branch never reaches the Keychain — reading it would
@@ -116,6 +120,36 @@ describe('adapterEnv for codex', () => {
     // No key means `codex login` is the credential, and forcing api-key would
     // stop it being used.
     expect(withoutKey.DEFAULT_AUTH_REQUEST).toBeUndefined()
+  })
+})
+
+describe('OpenCode', () => {
+  it('launches the native CLI through its ACP subcommand', () => {
+    process.env.NUXT_OPENCODE_ACP_ENTRY = '/opt/opencode/bin/opencode'
+    expect(adapterLaunch('opencode')).toEqual({ command: '/opt/opencode/bin/opencode', args: ['acp'] })
+    delete process.env.NUXT_OPENCODE_ACP_ENTRY
+  })
+
+  it('passes an explicit auth snapshot and common provider keys', async () => {
+    process.env.NUXT_OPENCODE_AUTH_CONTENT = '{"opencode-go":{"type":"api","key":"secret"}}'
+    process.env.NUXT_OPENAI_API_KEY = 'openai-test'
+    const env = await adapterEnv('opencode', true, noGh)
+
+    expect(env.OPENCODE_AUTH_CONTENT).toContain('opencode-go')
+    expect(env.OPENAI_API_KEY).toBe('openai-test')
+  })
+
+  it('finds the global config that managed environments receive as a snapshot', async () => {
+    const home = await mkdtemp(join(systemTmp, 'domo-opencode-'))
+    try {
+      const directory = join(home, '.config', 'opencode')
+      await mkdir(directory, { recursive: true })
+      await writeFile(join(directory, 'opencode.jsonc'), '{ // global\n "agent": {}\n }')
+
+      await expect(opencodeConfigContent({ HOME: home })).resolves.toContain('"agent"')
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
   })
 })
 

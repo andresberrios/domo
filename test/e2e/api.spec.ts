@@ -76,6 +76,7 @@ await setup({
     NUXT_ANTHROPIC_API_BASE: 'http://127.0.0.1:1',
     NUXT_CLAUDE_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
     NUXT_CODEX_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
+    NUXT_OPENCODE_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
     NUXT_CODEX_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs')
   }
 })
@@ -529,7 +530,7 @@ describe('plan usage', () => {
     // feel slower than the data it is fetching.
     const response = await $fetch<{ requested: string[] }>('/api/usage/refresh', { method: 'POST' })
 
-    expect(response.requested).toEqual(['claude', 'codex'])
+    expect(response.requested).toEqual(['claude', 'codex', 'opencode'])
   })
 
   it('narrows to one provider when asked, and ignores a name it does not know', async () => {
@@ -541,7 +542,7 @@ describe('plan usage', () => {
     await expect($fetch<{ requested: string[] }>('/api/usage/refresh', {
       method: 'POST',
       body: { provider: 'nonsense' }
-    })).resolves.toEqual({ requested: ['claude', 'codex'] })
+    })).resolves.toEqual({ requested: ['claude', 'codex', 'opencode'] })
   })
 })
 
