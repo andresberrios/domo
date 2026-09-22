@@ -416,11 +416,7 @@ things that are easy to get wrong.
   tool of the same name, and the transport is an injected parameter so the whole
   thing is tested against two temp repos with no Docker
   (`test/server/git-sync.spec.ts`). `importBranch` is the same road the other
-  way — one `git push` over the same URL, same fast-forward-only discipline —
-  and it additionally refuses the branch the container has **checked out**,
-  read from the same `ls-remote --symref` that tells it where the branch
-  stands. `receive.denyCurrentBranch` would refuse too, but that is a default
-  somebody can change, and what it protects is an agent's live working tree.
+  way — one `git push` over the same URL, same fast-forward-only discipline.
 
 - **The sidebar is the management surface; there is no Projects page.**
   `app/pages/projects.vue` is gone. `ProjectTree.vue` (mounted by the layout,
@@ -793,6 +789,32 @@ things that are easy to get wrong.
   file cannot reach a commit without being force-added, so `git clean` there
   must never grow an `-x` — it is what keeps `node_modules` and a gitignored
   `.env` in place.
+- **An import into a branch the agent is not on is inert, which is why
+  `importBranch` writes the checked-out one and `branch-import.ts` exists.**
+  Nothing in a container tells an agent that some other branch moved, so it
+  never merges what it never hears about — the obvious safe-looking design
+  (refuse the checked-out branch) produces an import that does nothing. So the
+  push carries `receive.denyCurrentBranch=updateInstead`, which moves the
+  working tree with the ref, and what decides whether that is safe is **what
+  the session is doing, not which branch it is on**: idle and clean goes
+  straight in, a **dirty** tree is refused outright (by Domo and by git — that
+  work has no second copy), and an agent **mid-turn** gets the branch beside it
+  on `domo-import/<branch>` plus a message telling it to merge. Every path ends
+  with the agent either holding the changes or holding a note saying where they
+  are. `server/lib/branch-import.ts` owns that decision and sits *above*
+  `dev-env/` for the reason `projects.ts` does: it needs `acpManager`, which is
+  the layer that imports `dev-env/`.
+- **A working agent is told with `steer` only if its adapter advertises
+  steering, and `queue` otherwise — never `interrupt`.** `steer` falls back to
+  `interrupt`, and cancelling a running turn to hand over a branch is far
+  blunter than the news deserves. Measured by sending `initialize` to each:
+  claude-agent-acp answers `_meta.steering.supported: true`, **opencode sends
+  no `_meta` at all**. `acpManager.supportsSteering()` asks the connection
+  rather than a list of adapter names, so an adapter that gains steering is
+  steered with nothing here changing. An **idle** session gets the
+  `agent_inbox` row written directly instead, for the reason
+  `subscriptions.ts` does it that way: `deliver()` starts the adapter it
+  delivers to, and a branch notice must not spawn a process per stopped session.
 - **`protocol.ext.allow=always` is passed with `-c` on the one `git fetch` that
   needs it, and written to no config, ever.** The `ext::` transport runs an
   arbitrary command, and git disables it by default for exactly that reason; a
@@ -803,13 +825,19 @@ things that are easy to get wrong.
   space in it would become two arguments to the service. All the inputs are
   words already (`safeEnvironmentName()`, a hex container id, a unix user
   name), and `environmentTransport()` still refuses one that is not, because
-  the failure mode is a command that quietly means something else. The one
-  `%` the command is *meant* to contain is **`%S`**, which is how a single URL
-  serves both a fetch and a push: it expands to the long service name
+  the failure mode is a command that quietly means something else. The one `%`
+  the command is *meant* to contain is the service substitution, which is how a
+  single URL serves both a fetch and a push — and the two forms are not
+  interchangeable. **`%s` is the short name (`upload-pack` / `receive-pack`),
+  which is what `git` takes as a subcommand; `%S` is the long one
   (`git-upload-pack` / `git-receive-pack`), which is what the executables are
-  called. `%s` is the short name, `docker exec` then finds no `upload-pack`,
-  and what surfaces is `fatal: protocol error: bad line length character: OCI`
-  — an hour of looking in the wrong place.
+  called.** Mismatch them and `docker exec` finds no such executable, and what
+  surfaces is `fatal: protocol error: bad line length character: OCI` — an hour
+  of looking in the wrong place. The command runs `git %s` rather than the
+  binary because that is the only place a `-c` for the *receiving* end can go:
+  measured, the `ext::` transport ignores `--receive-pack` entirely, and
+  without `receive.denyCurrentBranch=updateInstead` an import cannot touch the
+  branch an agent is actually on.
 - **The exec has to run as the environment's remote user, with `HOME` set.**
   Without `-u` git finds the checkout owned by another uid and refuses it as
   "dubious ownership"; without `HOME` it never reads the `~/.gitconfig` Domo
@@ -1418,14 +1446,17 @@ and permissions are end to end because a permission is a row.
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no
   Node of its own, and an Alpine image failing the preflight and cleaning up.
-- **The branch import was verified against a real container**, so
-  `git-receive-pack` really is reachable inside the image the way
-  `git-upload-pack` is: a host commit fast-forwarded the environment's `main`
-  while an agent sat on another branch, and the branch it *was* on came back
-  refused with nothing sent. The rules either side of that are covered against
-  real git on both ends with no Docker (`test/server/git-sync.spec.ts`,
-  including a round trip that would fail on the push half if the transport were
-  still hard-coded to `git-upload-pack`).
+- **The branch import was verified against a real container**: `receive-pack`
+  is reachable inside the image, and `updateInstead` really does move a
+  container's working tree — a host commit fast-forwarded the environment's
+  checked-out `main` and the file appeared on disk with `git status` clean,
+  while a second import against a dirty tree was refused and the uncommitted
+  work survived. The rules either side of that are covered against real git on
+  both ends with no Docker (`test/server/git-sync.spec.ts`, including a round
+  trip that would fail on the push half if the transport served only
+  upload-pack), and the decisions above it — divert, steer, queue, inbox — in
+  `test/unit/branch-import.spec.ts`. **Not** verified: a real agent mid-turn
+  receiving a steered branch notice and acting on it.
 - **The dirty-checkout fix was verified against a real daemon**, `pnpm
   test:docker` green (5 files, 67 tests, 851 s cold). Both directions were
   asserted end to end from a dirty fixture: a `discard` environment whose

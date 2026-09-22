@@ -5,14 +5,14 @@ import { defineComponent, h } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ImportBranchModal from '~/components/ImportBranchModal.vue'
-import type { BranchImport, DevEnvironment } from '~~/shared/types'
+import type { DevEnvironment, EnvironmentBranchImport } from '~~/shared/types'
 
 /**
- * The other direction's face. Two things here are not cosmetic: the branch it
- * starts on is the one an import can actually write (not the one an agent is
- * sitting on), and the refusal is shown *before* the round trip, because
- * learning it from a failed request is how somebody concludes the feature is
- * broken.
+ * The other direction's face. The branch it starts on is the environment's own
+ * checked-out one, because that is what an import almost always means —
+ * importing into a branch the agent is *not* on is inert, since nothing in the
+ * container ever tells it that branch moved. What the server decided, including
+ * a diversion and who was told, has to come back out on screen.
  */
 
 // `UTooltip` reads the provider context `UApp` installs, so mount inside one.
@@ -42,9 +42,8 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
   } as DevEnvironment
 }
 
-// `feat/x` is what the agent has checked out, so `main` is the one to offer.
 registerEndpoint('/api/dev-environments/env_1/branches', () => ({
-  current: 'feat/x',
+  current: 'main',
   branches: [
     { name: 'feat/x', sha: 'b'.repeat(40), subject: 'feat: x' },
     { name: 'main', sha: 'a'.repeat(40), subject: 'docs: y' }
@@ -52,13 +51,16 @@ registerEndpoint('/api/dev-environments/env_1/branches', () => ({
 }))
 
 const posted: any[] = []
-let answer: BranchImport = {
+const landed: EnvironmentBranchImport = {
   branch: 'main',
+  requested: 'main',
   from: 'main',
   sha: 'a'.repeat(40),
   commits: [{ sha: 'a'.repeat(40), subject: 'docs: y' }],
-  result: 'fast-forwarded'
+  result: 'fast-forwarded',
+  notified: [{ agentSessionId: 'ag_1', title: 'the agent', via: 'inbox' }]
 }
+let answer: EnvironmentBranchImport = landed
 registerEndpoint('/api/dev-environments/env_1/import', {
   method: 'POST',
   handler: async (event) => {
@@ -92,6 +94,7 @@ async function openModal(overrides: Partial<DevEnvironment> = {}) {
 
 beforeEach(() => {
   posted.length = 0
+  answer = landed
   document.body.innerHTML = ''
 })
 
@@ -105,15 +108,15 @@ describe('ImportBranchModal', () => {
     wrapper.unmount()
   })
 
-  // The reported incident: work lands on the host, the environment's main is
-  // stale, and the agent is on another branch. That is the case to land on.
-  it('starts on a branch that is not the one the environment has checked out', async () => {
+  // The reported incident: work lands on the host and the environment's own
+  // branch is stale. That branch is the default, not a thing to avoid.
+  it('starts on the branch the environment has checked out', async () => {
     const wrapper = await openModal()
 
     const [from, branch] = inputs()
     expect(from!.value).toBe('main')
     expect(branch!.value).toBe('main')
-    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('feat/x (checked out)')
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('main (checked out)')
     wrapper.unmount()
   })
 
@@ -140,35 +143,49 @@ describe('ImportBranchModal', () => {
     wrapper.unmount()
   })
 
-  /**
-   * Nothing is sent at all: the server refuses this too, but an agent's
-   * uncommitted work is what is at stake, so the UI says so up front rather
-   * than spending a round trip to be told.
-   */
-  it('refuses the environment\'s checked-out branch before anything is sent', async () => {
+  // It used to be disabled here, on a premise that was wrong: this is the case
+  // the whole feature exists for, so it has to be submittable.
+  it('lets the environment\'s own branch be imported into', async () => {
     const wrapper = await openModal()
 
-    const branch = inputs()[1]!
-    branch.value = 'feat/x'
-    branch.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(button('Import')?.disabled).toBe(false)
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('is on “main”')
 
-    await vi.waitFor(() => {
-      expect(document.body.querySelector('[role="dialog"]')?.textContent)
-        .toContain('has “feat/x” checked out')
-    })
-    expect(button('Import')?.disabled).toBe(true)
-    expect(posted).toHaveLength(0)
+    button('Import')!.click()
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
     wrapper.unmount()
   })
 
-  it('shows what crossed, and why nothing did when nothing did', async () => {
+  it('says who was told, and where a diverted branch landed', async () => {
     answer = {
-      branch: 'main',
-      from: 'main',
+      ...landed,
+      branch: 'domo-import/main',
+      requested: 'main',
+      diverted: 'An agent is mid-turn in this environment, so "main" was left on "domo-import/main".',
+      notified: [{ agentSessionId: 'ag_1', title: 'the agent', via: 'steer' }]
+    }
+    const wrapper = await openModal()
+
+    button('Import')!.click()
+
+    await vi.waitFor(() => {
+      const text = document.body.querySelector('[role="dialog"]')?.textContent ?? ''
+      expect(text).toContain('domo-import/main fast-forwarded')
+      expect(text).toContain('is mid-turn')
+      expect(text).toContain('the agent')
+      expect(text).toContain('steer')
+    })
+    wrapper.unmount()
+  })
+
+  it('shows why nothing was sent when nothing was', async () => {
+    answer = {
+      ...landed,
       sha: 'c'.repeat(40),
       commits: [],
       result: 'not-merged',
-      reason: 'feature-auth\'s "main" has commits that "main" does not, so it cannot be fast-forwarded.'
+      notified: [],
+      reason: '"main" is checked out in feature-auth and its working tree has local changes; nothing was sent.'
     }
     const wrapper = await openModal()
 
@@ -177,7 +194,7 @@ describe('ImportBranchModal', () => {
     await vi.waitFor(() => {
       const text = document.body.querySelector('[role="dialog"]')?.textContent ?? ''
       expect(text).toContain('Nothing was sent')
-      expect(text).toContain('cannot be fast-forwarded')
+      expect(text).toContain('working tree has local changes')
       expect(text).toContain('No commits crossed.')
     })
     wrapper.unmount()

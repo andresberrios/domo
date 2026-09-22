@@ -715,11 +715,13 @@ describe('an environment created while the host checkout is dirty', () => {
 
 /**
  * The push half of the `ext::` transport, against a real container. The fetch
- * half proves `git-upload-pack` is reachable inside the image; nothing but this
- * says `git-receive-pack` is, and `%S` is what asks for it.
+ * half proves `upload-pack` is reachable inside the image; nothing but this
+ * says `receive-pack` is — nor that `receive.denyCurrentBranch=updateInstead`,
+ * which is the only way an import can reach the branch an agent is actually
+ * on, really moves a working tree inside a container.
  */
 describe('importing a branch into an environment', () => {
-  it('pushes a host branch into the container and refuses the one it has checked out', async () => {
+  it('pushes a host branch into the container, tree and all, and refuses a dirty one', async () => {
     const repo = await checkout()
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
     state.ports.length = 0
@@ -730,8 +732,6 @@ describe('importing a branch into an environment', () => {
       environment.containerId!, ...command
     ])
 
-    // The agent is working on its own branch; `main` is the stale one.
-    await exec('git', 'checkout', '--quiet', '-b', 'agent-work')
     const host = (...args: string[]) => run('git', [
       '-C', repo, '-c', 'user.name=Domo Test', '-c', 'user.email=test@example.com', ...args
     ])
@@ -740,20 +740,31 @@ describe('importing a branch into an environment', () => {
     await host('commit', '--quiet', '-m', 'landed on the host')
     const sha = (await host('rev-parse', 'HEAD')).stdout
 
+    // The environment is sitting on `main`, which is the whole point: an import
+    // into a branch the agent is not on would never be noticed.
+    await expect(exec('git', 'symbolic-ref', '--short', 'HEAD')).resolves.toMatchObject({ stdout: 'main' })
+
     const result = await importBranch({ environmentId: environment.id, branch: 'main' })
 
     expect(result).toMatchObject({ branch: 'main', from: 'main', sha, result: 'fast-forwarded' })
     expect(result.commits.map(commit => commit.subject)).toEqual(['landed on the host'])
-    await expect(exec('git', 'rev-parse', 'refs/heads/main')).resolves.toMatchObject({ stdout: sha })
-    // The agent's own branch and working tree were not touched.
-    await expect(exec('git', 'symbolic-ref', '--short', 'HEAD')).resolves.toMatchObject({ stdout: 'agent-work' })
+    await expect(exec('git', 'rev-parse', 'HEAD')).resolves.toMatchObject({ stdout: sha })
+    // Not just the ref: `updateInstead` moved the real working tree with it.
+    await expect(exec('cat', 'landed.txt')).resolves.toMatchObject({ stdout: 'merged on the host' })
     await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
 
-    // The branch it *is* on is refused, and nothing is sent.
-    const refused = await importBranch({ environmentId: environment.id, branch: 'agent-work', from: 'main' })
+    // Now with uncommitted work in there: refused, and the work survives.
+    await exec('sh', '-c', 'echo half-finished > landed.txt')
+    await writeIn(repo, { 'second.txt': 'more from the host\n' })
+    await host('add', '--all')
+    await host('commit', '--quiet', '-m', 'second from the host')
+
+    const refused = await importBranch({ environmentId: environment.id, branch: 'main' })
+
     expect(refused.result).toBe('not-merged')
-    expect(refused.reason).toMatch(/has "agent-work" checked out/)
-    await expect(exec('git', 'rev-parse', 'refs/heads/agent-work')).resolves.not.toMatchObject({ stdout: sha })
+    expect(refused.reason).toMatch(/working tree has local changes/)
+    await expect(exec('git', 'rev-parse', 'HEAD')).resolves.toMatchObject({ stdout: sha })
+    await expect(exec('cat', 'landed.txt')).resolves.toMatchObject({ stdout: 'half-finished' })
 
     // `protocol.ext.allow` was passed per invocation on the push too, not written.
     await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()

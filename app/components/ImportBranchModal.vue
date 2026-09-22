@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BranchImport, DevEnvironment, EnvironmentBranches } from '~~/shared/types'
+import type { DevEnvironment, EnvironmentBranchImport, EnvironmentBranches } from '~~/shared/types'
 
 /**
  * The other direction from `ExportBranchModal`: a branch in the project's own
@@ -20,13 +20,14 @@ const loading = ref(false)
 const submitting = ref(false)
 const loadError = ref('')
 const failure = ref('')
-const result = ref<BranchImport | null>(null)
+const result = ref<EnvironmentBranchImport | null>(null)
 
 const running = computed(() => props.environment.status === 'running')
 /**
- * Named before the round trip rather than after it: the environment's own
- * working tree belongs to this branch, so it is the one thing an import will
- * never write, and finding that out by pressing the button is worse.
+ * Not a warning — this is the branch an import most often *wants*. Importing
+ * into one the agent is not on is inert: nothing in the container tells it that
+ * some other branch moved. Said out loud only because what happens next depends
+ * on whether an agent is working, which the server decides.
  */
 const isCheckedOut = computed(() =>
   !!branch.value.trim() && branch.value.trim() === branches.value.current)
@@ -52,9 +53,9 @@ async function load() {
   loadError.value = ''
   try {
     branches.value = await $fetch(`/api/dev-environments/${props.environment.id}/branches`)
-    // The branch somebody wants to update is almost never the one an agent is
-    // working on — that one is refused — so start on the first other branch.
-    branch.value = branches.value.branches.find(entry => entry.name !== branches.value.current)?.name ?? ''
+    // The branch the environment is on is the one an import usually means:
+    // bringing it up to date after work landed here.
+    branch.value = branches.value.current ?? branches.value.branches[0]?.name ?? ''
     from.value = branch.value
   } catch (error: any) {
     loadError.value = error?.data?.statusMessage ?? error?.message ?? 'Could not list the branches.'
@@ -82,7 +83,7 @@ async function submit() {
   failure.value = ''
   result.value = null
   try {
-    result.value = await $fetch<BranchImport>(`/api/dev-environments/${props.environment.id}/import`, {
+    result.value = await $fetch<EnvironmentBranchImport>(`/api/dev-environments/${props.environment.id}/import`, {
       method: 'POST',
       // Blank means the branch's own name: unlike an export there is no
       // "send nothing" mode to fall back to.
@@ -112,7 +113,7 @@ async function submit() {
   <UModal
     v-model:open="open"
     title="Import branch"
-    :description="`Sends a branch from the project’s own checkout on this machine into ${environment.name}, and fast-forwards the branch there onto it. Nothing in the environment is ever rewritten or merged, and the branch it has checked out is left alone.`"
+    :description="`Sends a branch from the project’s own checkout on this machine into ${environment.name}, and fast-forwards the branch there onto it. Fast-forward only — nothing in the environment is ever rewritten or merged, and uncommitted work there is never written over.`"
   >
     <template #body>
       <div class="space-y-4">
@@ -139,10 +140,10 @@ async function submit() {
 
         <UAlert
           v-if="isCheckedOut"
-          color="warning"
+          color="neutral"
           variant="subtle"
-          :title="`${environment.name} has “${branch}” checked out`"
-          description="Its working tree may hold work that is not committed anywhere else, so Domo will not write that branch from outside. Check out another branch in the environment, or import into a different name."
+          :title="`${environment.name} is on “${branch}”`"
+          description="Its working tree will move with it, so the agent simply finds the new files. If an agent is mid-turn the branch lands beside it instead, and either way the agents there are told where the changes are. Uncommitted work in the environment stops the import rather than being written over."
         />
 
         <UAlert v-if="failure" color="error" variant="subtle" :title="failure" />
@@ -156,6 +157,14 @@ async function submit() {
           <template #description>
             <div class="space-y-2">
               <p v-if="result.reason" class="text-sm">{{ result.reason }}</p>
+              <p v-if="result.diverted" class="text-sm">{{ result.diverted }}</p>
+              <p v-if="result.notified.length" class="text-xs text-muted">
+                Told:
+                <span v-for="(entry, index) in result.notified" :key="entry.agentSessionId">
+                  <span v-if="index">, </span>{{ entry.title }}
+                  <span class="text-dimmed">({{ entry.via === 'inbox' ? 'waiting in its inbox' : entry.via }})</span>
+                </span>
+              </p>
               <ul v-if="result.commits.length" class="space-y-1">
                 <li v-for="commit in result.commits" :key="commit.sha" class="flex gap-2 text-xs">
                   <span class="font-mono text-dimmed">{{ commit.sha.slice(0, 8) }}</span>
@@ -176,7 +185,7 @@ async function submit() {
           label="Import"
           icon="i-lucide-upload"
           :loading="submitting"
-          :disabled="!branch.trim() || isCheckedOut"
+          :disabled="!branch.trim()"
           @click="submit"
         />
       </div>

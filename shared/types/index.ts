@@ -317,6 +317,16 @@ export interface BranchExport {
   reason?: string
 }
 
+/** What an import did, and what it told the agents working in the environment. */
+export interface EnvironmentBranchImport extends BranchImport {
+  /** The branch the caller asked for. Differs from `branch` when the import was diverted. */
+  requested: string
+  /** Why it was diverted, when it was. */
+  diverted?: string
+  /** The sessions told where the changes are, and how each one was reached. */
+  notified: Array<{ agentSessionId: string, title: string, via: 'steer' | 'queue' | 'inbox' }>
+}
+
 /** What importing one branch into an environment did to the environment's checkout. */
 export interface BranchImport {
   /** The branch in the environment that was written, or would have been. */

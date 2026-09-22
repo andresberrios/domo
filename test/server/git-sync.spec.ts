@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -27,8 +27,16 @@ let host: string
 let container: string
 let environment: DevEnvironment
 
-/** The service git asks for, straight against a directory: the same transport, without a container. */
-const transport = () => `ext::%S ${container}`
+/**
+ * The same transport, without a container: `git <service>` against a directory,
+ * carrying whatever `-c` settings the caller asked for. `%s` (short) because
+ * the command invokes git as a subcommand, exactly as the real one does.
+ */
+const transport = (_environment?: unknown, config: string[] = []) =>
+  `ext::git ${config.flatMap(setting => ['-c', setting]).join(' ')} %s ${container}`.replace(/\s+/g, ' ')
+
+/** The environment's working tree, read the way the real probe does. */
+const workingTree = async () => (await git(container, 'status', '--porcelain')).stdout
 
 async function git(repo: string, ...args: string[]) {
   return run('git', [
@@ -227,7 +235,7 @@ describe('exporting a branch from an environment', () => {
  * common case; the tests below name it only where they mean something else.
  */
 const importIt = (branch: string, from?: string) =>
-  importBranch({ environmentId: environment.id, branch, from, transport })
+  importBranch({ environmentId: environment.id, branch, from, transport, workingTree })
 
 describe('importing a branch into an environment', () => {
   it('creates a branch the environment does not have yet, and lists what crossed', async () => {
@@ -274,23 +282,57 @@ describe('importing a branch into an environment', () => {
   })
 
   /**
-   * The one that destroys work rather than merely annoying someone. The
-   * environment's working tree and index belong to its checked-out branch and
-   * may hold an agent's uncommitted changes; moving the ref under it strands
-   * them. `receive.denyCurrentBranch` would refuse too, but it is a default
-   * somebody can turn off, so this is checked before anything is sent.
+   * The case the whole feature is for. Importing into a branch the agent is
+   * *not* on is inert — nothing in the container ever tells it that branch
+   * moved — so writing the checked-out one is the normal path, and git moves
+   * the working tree with the ref.
    */
-  it('refuses the branch the environment has checked out, and sends nothing', async () => {
-    const before = await revision(container, 'refs/heads/feature')
-    await git(host, 'checkout', '--quiet', '-b', 'feature')
-    await commit(host, 'feature.txt', 'on the host')
+  it('writes the checked-out branch and takes its working tree with it', async () => {
+    await git(container, 'checkout', '--quiet', 'main')
+    const sha = await commit(host, 'landed.txt', 'landed on the host')
 
-    const result = await importIt('feature')
+    const result = await importIt('main')
+
+    expect(result).toMatchObject({ result: 'fast-forwarded', sha })
+    await expect(revision(container, 'refs/heads/main')).resolves.toBe(sha)
+    // Not just the ref: the file is really on disk and git is not confused.
+    await expect(run('git', ['-C', container, 'status', '--porcelain'])).resolves.toMatchObject({ stdout: '' })
+    await expect(run('git', ['-C', container, 'show', 'HEAD:landed.txt']))
+      .resolves.toMatchObject({ stdout: 'landed on the host' })
+  })
+
+  /**
+   * The one that destroys work rather than merely annoying someone: that
+   * working tree may hold an agent's uncommitted changes, which exist nowhere
+   * else. Checked here *and* enforced by git's own `updateInstead`.
+   */
+  it('refuses a dirty working tree on the checked-out branch, and sends nothing', async () => {
+    await git(container, 'checkout', '--quiet', 'main')
+    const before = await revision(container, 'refs/heads/main')
+    await writeFile(join(container, 'README.md'), 'an agent was in the middle of something\n', 'utf8')
+    await commit(host, 'landed.txt', 'landed on the host')
+
+    const result = await importIt('main')
 
     expect(result.result).toBe('not-merged')
-    expect(result.reason).toMatch(/has "feature" checked out/)
+    expect(result.reason).toMatch(/working tree has local changes/)
     expect(result.commits).toEqual([])
-    await expect(revision(container, 'refs/heads/feature')).resolves.toBe(before)
+    await expect(revision(container, 'refs/heads/main')).resolves.toBe(before)
+    // The uncommitted work is untouched, which is the entire point.
+    await expect(readFile(join(container, 'README.md'), 'utf8'))
+      .resolves.toBe('an agent was in the middle of something\n')
+  })
+
+  // A branch nobody has checked out is just a ref; what the agent is doing to
+  // its own files is none of that import's business.
+  it('does not care about a dirty tree when the target is some other branch', async () => {
+    await writeFile(join(container, 'README.md'), 'the agent is working\n', 'utf8')
+    const sha = await commit(host, 'landed.txt', 'landed on the host')
+
+    const result = await importIt('main')
+
+    expect(result).toMatchObject({ result: 'fast-forwarded', sha })
+    await expect(revision(container, 'refs/heads/main')).resolves.toBe(sha)
   })
 
   it('refuses a branch the environment has moved on its own, and says where to look', async () => {
@@ -348,5 +390,7 @@ describe('one transport, both directions', () => {
     await expect(revision(container, 'refs/heads/feature-reviewed')).resolves.toBe(reviewed)
     // The branch the environment is working on was not touched by either leg.
     await expect(revision(container, 'refs/heads/feature')).resolves.toBe(sha)
+    await expect(run('git', ['-C', container, 'symbolic-ref', '--short', 'HEAD']))
+      .resolves.toMatchObject({ stdout: 'feature' })
   })
 })

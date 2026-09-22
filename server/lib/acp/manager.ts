@@ -1175,6 +1175,16 @@ class AgentRuntime {
   }
 
   /**
+   * Whether this connection advertised `_session/steering`. Worth asking before
+   * choosing a delivery: `steer` on an adapter without it falls back to
+   * `interrupt`, never to `queue`, which is right for "change course now" and
+   * much too blunt for "here is something for later".
+   */
+  get steers() {
+    return this.steering
+  }
+
+  /**
    * Start a turn now and see it through.
    *
    * Deliberately not `async`: the turn slot has to be claimed before the first
@@ -1790,6 +1800,14 @@ class AcpManager {
 
   isBusy(agentSessionId: string) {
     return this.runtimes.get(agentSessionId)?.busy ?? false
+  }
+
+  /**
+   * Whether this session's adapter advertised steering. False for a session
+   * with no live connection, which is the honest answer — nothing has said yet.
+   */
+  supportsSteering(agentSessionId: string) {
+    return this.runtimes.get(agentSessionId)?.steers ?? false
   }
 
   async cancel(agentSessionId: string) {

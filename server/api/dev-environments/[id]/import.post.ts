@@ -1,4 +1,4 @@
-import { importBranch, resolveFromRef } from '../../../lib/dev-env/git-sync'
+import { importBranchIntoEnvironment } from '../../../lib/branch-import'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{ branch?: string, from?: string | null }>(event)
@@ -7,12 +7,12 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'Name the branch to write in the environment.' })
   }
   try {
-    return await importBranch({
+    // The orchestrator, not `importBranch`: landing the refs is only half of
+    // it, and an import the agents are never told about is inert.
+    return await importBranchIntoEnvironment({
       environmentId: getRouterParam(event, 'id')!,
       branch,
-      // Unlike an export there is no "send nothing" mode, so a blank `from`
-      // means the branch's own name rather than null.
-      from: resolveFromRef(branch, body.from)
+      from: body.from
     })
   } catch (error) {
     throw createError({
