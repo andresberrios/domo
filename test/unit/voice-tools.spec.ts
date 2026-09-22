@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { agentEvent, textChunk, userMessage } from '../helpers/events'
+import { agentEvent, textChunk, thoughtChunk, userMessage } from '../helpers/events'
 import type { VoiceToolContext } from '../../server/lib/voice/tools'
 
 /**
@@ -82,9 +82,10 @@ vi.mock('../../server/lib/settings', () => ({
   getSettings: async () => ({ defaultCwd: '/workspace', autoTitle: true })
 }))
 
-const { cleanTitle, transcriptDigest, voiceTools, voiceToolDeclarations } = await import(
+const { cleanTitle, voiceTools, voiceToolDeclarations } = await import(
   '../../server/lib/voice/tools'
 )
+const { transcriptDigest } = await import('../../server/lib/acp/transcript-digest')
 
 const handOver = vi.fn()
 const ctx: VoiceToolContext = { voiceSessionId: 'vs_1', handOver }
@@ -714,7 +715,7 @@ describe('transcriptDigest', () => {
       Array.from({ length: 30 }, (_, index) => userMessage(`message ${index}`))
     )
 
-    const items = await transcriptDigest('ag_1', 5)
+    const items = await transcriptDigest('ag_1', { limit: 5 })
 
     expect(items).toHaveLength(5)
     expect(items.at(-1)).toEqual({ kind: 'user', text: 'message 29' })
@@ -727,6 +728,43 @@ describe('transcriptDigest', () => {
 
     expect(items[0]!.text).toHaveLength(601)
     expect(items[0]!.text.endsWith('…')).toBe(true)
+  })
+
+  it('filters kinds before applying the limit', async () => {
+    repo.listAgentEvents.mockResolvedValue([
+      userMessage('first'),
+      agentEvent('tool_call', { title: 'Bash', status: 'completed' }),
+      thoughtChunk('private reasoning'),
+      userMessage('second'),
+      agentEvent('error', { message: 'notice' }),
+      userMessage('third')
+    ])
+
+    await expect(transcriptDigest('ag_1', { limit: 2, include: ['messages'] })).resolves.toEqual([
+      { kind: 'user', text: 'second' },
+      { kind: 'user', text: 'third' }
+    ])
+  })
+})
+
+describe('get_agent_transcript', () => {
+  it('passes a messages-only filter through the shared digest', async () => {
+    repo.listAgentSessions.mockResolvedValue([agent()])
+    repo.listAgentEvents.mockResolvedValue([
+      userMessage('Review this.'),
+      agentEvent('tool_call', { title: 'Read', status: 'completed' }),
+      textChunk('Looks good.')
+    ])
+
+    const result = await voiceTools.get_agent_transcript!.handler({
+      agentId: 'ag_1',
+      include: ['messages']
+    }, ctx)
+
+    expect(result.items).toEqual([
+      { kind: 'user', text: 'Review this.' },
+      { kind: 'agent', text: 'Looks good.' }
+    ])
   })
 })
 

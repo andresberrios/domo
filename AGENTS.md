@@ -258,7 +258,8 @@ things that are easy to get wrong.
   nothing in the request body is trusted. A host agent may pass a running
   `devEnvironmentId` to `spawn_agent`; omission preserves the caller's own
   environment. `read_agent_transcript` is the bounded detailed view behind
-  `list_agents`' one-line summary.
+  `list_agents`' one-line summary and shares `transcriptDigest()` with the
+  voice agent's `get_agent_transcript` tool.
 - **Project and environment lifecycle has one cascade, not three.** The voice
   agent, the agent mesh and the HTTP API can all create, rename and delete
   projects and dev environments, and deleting either one has to stop and
