@@ -228,6 +228,69 @@ delete from agent_events where type in ('agent_message_chunk', 'agent_thought_ch
 -- of them rendered. Idempotent: nothing writes them any more.
 delete from agent_events where type = 'usage_update';
 
+-- Bursts of replayed history, from before Domo learned to ignore what an
+-- adapter says while it is answering \`session/load\`. Both adapters restore a
+-- session by reading its transcript back as ordinary session/update
+-- notifications, so every reattach appended a second copy of the conversation
+-- — several times an hour on a machine running Domo under pnpm dev.
+--
+-- A burst is recognised by what only a replay produces: a user_message_chunk
+-- whose text is the session's own first prompt, which Domo already holds as a
+-- user_message and never writes this way itself. From there the burst runs to
+-- the first row of a kind a replay cannot contain (user_message, turn_end,
+-- permission_request, model_changed, an error, the adapter exiting), which is
+-- what keeps the deletion inside it. A session whose history was compacted, or
+-- whose first prompt was an attachment with no text, matches nothing and keeps
+-- its duplicates: leaving a mess is the failure to prefer here.
+with first_prompt as (
+  select distinct on (agent_session_id)
+         agent_session_id,
+         (select block ->> 'text'
+            from jsonb_array_elements(
+                   case when jsonb_typeof(payload -> 'content') = 'array'
+                        then payload -> 'content' else '[]'::jsonb end
+                 ) block
+           where block ->> 'type' = 'text'
+           limit 1) as text
+    from agent_events
+   where type = 'user_message'
+   order by agent_session_id, seq
+),
+replayable as (
+  select id, agent_session_id, seq, type, payload,
+         type in (
+           'user_message_chunk', 'agent_message', 'agent_thought',
+           'tool_call', 'tool_call_update', 'plan', 'plan_update',
+           'available_commands_update', 'session_info_update'
+         ) as replayed_kind
+    from agent_events
+   where agent_session_id in (
+     select agent_session_id from agent_events where type = 'user_message_chunk'
+   )
+),
+runs as (
+  select *,
+         sum(case when replayed_kind then 0 else 1 end)
+           over (partition by agent_session_id order by seq) as run
+    from replayable
+),
+bursts as (
+  select r.agent_session_id, r.run, min(r.seq) as from_seq
+    from runs r
+    join first_prompt f on f.agent_session_id = r.agent_session_id
+   where r.type = 'user_message_chunk'
+     and f.text is not null
+     and r.payload #>> '{content,text}' = f.text
+   group by r.agent_session_id, r.run
+)
+delete from agent_events e
+ using runs r, bursts b
+ where e.id = r.id
+   and r.replayed_kind
+   and r.agent_session_id = b.agent_session_id
+   and r.run = b.run
+   and r.seq >= b.from_seq;
+
 -- Messages waiting for an agent, because Domo owns the queue rather than the
 -- adapter. A second \`session/prompt\` sent while a turn runs is queued inside
 -- the adapter, invisibly, and lost when it restarts; a row here is neither.
