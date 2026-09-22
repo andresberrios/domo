@@ -42,6 +42,46 @@ they are seductive because they are all true things you did.
   around, the clever bit. Nobody is grading the method.
 - **A problem you hit and fully solved**, unless it will recur.
 
+## The rule for risks: mitigate, or ask. Never narrate.
+
+A risk is not news. Work through it in this order and only the last branch
+reaches the reader:
+
+1. **Already handled, and it will not recur?** Say nothing. It is not a risk,
+   it is a thing that happened.
+2. **Can you do something about it?** Do that, and say nothing. Telling them
+   about a hazard you are capable of managing just moves your job into their
+   head.
+3. **Only they can act?** Then tell them — and write it as *what needs doing*,
+   not as a description of the danger. "The env pins are gone with no
+   migration; say if you want one" beats a paragraph on what could go wrong.
+
+The instinct this kills is the one that wants credit for noticing something.
+A risk you spotted, handled, and reported is a risk you reported for yourself.
+
+## Define the vocabulary before you use it
+
+When the work invents a term — or, worse, introduces a second term next to one
+that already exists — the reader does not yet have the distinction you spent
+an hour building. A decision phrased in vocabulary they have not been taught
+is not a decision they can make; it is a research task you handed them.
+
+So lead with the meanings, in one compact line each, and *then* ask the
+question. This is the one place where a few extra words are not padding: they
+are what makes the rest of the report answerable at all.
+
+> Archived: hidden from the sidebar, still fully live. Retired: kept forever,
+> read-only, cannot be started. Deleted: actually gone from the database.
+>
+> Retiring also archives, which is what kept retired sessions off every live
+> surface without touching any caller. Reversing that later means re-auditing
+> every one of them.
+
+Note the ordering: three definitions, then the consequence, then the decision.
+The version that opens with "retiring a session sets `archived = true` and
+that is load-bearing" is unanswerable, because the reader does not yet know
+what either word means here.
+
 ## Answering a direct question
 
 When the reader asked you something, the report *is* the answer. Give it,
@@ -62,8 +102,8 @@ Then, in this order, only the sections that have content:
 
 1. **Decisions needed** — where you need them to choose, or where you made a
    call they might want to reverse.
-2. **Risks** — what could bite them, including things you already handled
-   that will recur.
+2. **Risks** — only where *they* have to act. See below; this section is
+   empty far more often than it feels like it should be.
 3. **Follow-ups** — what to track, what is deferred, what is blocked.
 4. **Verification** — one line. What ran clean, and how to confirm it.
 
