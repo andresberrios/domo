@@ -503,13 +503,22 @@ things that are easy to get wrong.
   hours earlier, right after a manual refresh had just confirmed the number.
   The difference from the rule above is frequency: a poll is floor-limited to
   once a minute per provider, so the round trip that write costs is not one
-  worth trading the timestamp's honesty for. `writeUsageLimits`'s
-  `touchUnchanged` option (default on) is the escape hatch for the one caller
-  where frequency does matter — `AgentRuntime.noteUsage` rides `_claude/rateLimit`
-  in on every `usage_update`, several times a second on a long answer, and
-  passes `touchUnchanged: false` to keep the original skip. Both functions still
-  gate their own change-notification (the `usage-limits-changed` bus event, the
-  row's other columns) on a genuine value change; only the timestamp write is
+  worth trading the timestamp's honesty for. **There is no flag for the caller
+  where frequency *does* matter — the frequency is fixed where it is created
+  instead.** `AgentRuntime.noteUsage` rides `_claude/rateLimit` in on every
+  `usage_update`, several times a second on a long answer, so it holds the
+  newest reading and writes it on a trailing `PLAN_LIMIT_WRITE_MS` timer
+  (5 s), flushed from `flushUsage` at every turn boundary and on close — the
+  same shape as the context reading beside it, and the reason `flushUsage`
+  drains both rather than there being a second set of call sites to drift out
+  of step. `flushPlanLimits` also keeps a fingerprint of what it last wrote,
+  because the windows move on the scale of minutes and most readings in a turn
+  repeat the last one exactly. `writeUsageLimits` took a `touchUnchanged`
+  option for this before; a debounce at the source is better because the
+  storm's shape is the caller's business and its absence is not something the
+  repo should have to be told about. Both functions still gate their own
+  change-notification (the `usage-limits-changed` bus event, the row's other
+  columns) on a genuine value change; only the timestamp write is
   unconditional.
 - **Every source counts usage in its own units, and one of them is a trap.**
   Claude's usage endpoint answers percentages (0-100) and ISO timestamps; its

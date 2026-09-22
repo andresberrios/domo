@@ -17,7 +17,7 @@ import { mintMeshToken } from '../mesh/token'
 import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEntry, adapterEnv } from './adapter-process'
-import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage } from '../usage/normalize'
+import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
 import {
@@ -150,6 +150,22 @@ const ACTIVITY_TOUCH_MS = 30_000
  */
 const USAGE_WRITE_MS = 5_000
 
+/**
+ * How often a plan-limit reading that rode in on a `usage_update` is written.
+ *
+ * Same problem as `USAGE_WRITE_MS` and the same answer, against a different
+ * table. `_meta["_claude/rateLimit"]` is attached to the same per-delta event,
+ * so an un-throttled write path would rewrite an account-wide `usage_limits`
+ * row several times a second on a long answer — and that table is
+ * `REPLICA IDENTITY FULL` too, so each one re-streams to every open browser.
+ *
+ * Debounced here rather than guarded inside `writeUsageLimits`, because the
+ * frequency is this path's problem: the poller wants every one of its (rare)
+ * checks written, including a check that confirms the same number, or the
+ * "as of X ago" caption lies about when it last looked.
+ */
+const PLAN_LIMIT_WRITE_MS = 5_000
+
 class AgentRuntime {
   readonly agentSessionId: string
   private proc: ChildProcessWithoutNullStreams | null = null
@@ -187,6 +203,12 @@ class AgentRuntime {
   private writtenUsage: AgentUsage | null = null
   /** The trailing timer that will write `usage`; see `USAGE_WRITE_MS`. */
   private usageTimer: ReturnType<typeof setTimeout> | null = null
+  /** The newest plan-limit reading a `usage_update` carried, still unwritten. */
+  private planLimits: UsageLimitValue[] | null = null
+  /** What was last written, so a repeated reading writes nothing. */
+  private writtenPlanLimits: string | null = null
+  /** The trailing timer that will write it; see `PLAN_LIMIT_WRITE_MS`. */
+  private planLimitTimer: ReturnType<typeof setTimeout> | null = null
   /**
    * The ACP SDK dispatches notifications without awaiting the previous handler,
    * so concurrent inserts would take `seq` values out of arrival order and
@@ -267,17 +289,14 @@ class AgentRuntime {
     // A `rate_limit_event` rides in on one of these. It is the freshest reading
     // of the plan's limits there is — the poller's endpoint answers about once
     // an hour — so it goes to the account-wide table rather than to this row.
+    // Held rather than written: it arrives on the same per-delta event as the
+    // reading above and is throttled the same way.
     const rateLimit = update?._meta?.['_claude/rateLimit']
     if (rateLimit) {
       const limits = claudeSessionLimits(rateLimit)
-      // `replace: false`: this names one or two windows and knows nothing about
-      // the rest, so it must never remove a row a poll put there.
-      // `touchUnchanged: false`: this can fire several times a second on a
-      // long answer, and the reading rarely moves tick to tick — unlike the
-      // poller's own calls, which want `updated_at` bumped even on a repeat.
       if (limits.length) {
-        void writeUsageLimits('claude', limits, { replace: false, touchUnchanged: false })
-          .catch(error => console.error(`[acp:${this.agentSessionId}] could not record plan limits`, error))
+        this.planLimits = limits
+        this.schedulePlanLimitWrite()
       }
     }
   }
@@ -299,8 +318,14 @@ class AgentRuntime {
    * Mirrors `setStatus`: remember what was last written, and skip the update
    * when it would change nothing. Called on every turn boundary and on close,
    * so the final number is never left sitting in a timer that gets cleared.
+   *
+   * The held plan limits settle with it. They ride in on the same event and
+   * every boundary that wants the final context reading written wants the
+   * final plan reading written too, so there is nothing to gain from a second
+   * set of call sites that could drift out of step with this one.
    */
   private async flushUsage(): Promise<void> {
+    await this.flushPlanLimits()
     if (this.usageTimer) {
       clearTimeout(this.usageTimer)
       this.usageTimer = null
@@ -312,6 +337,52 @@ class AgentRuntime {
       await setAgentUsage(this.agentSessionId, usage)
     } catch (error) {
       console.error(`[acp:${this.agentSessionId}] could not record usage`, error)
+    }
+  }
+
+  /** Write the held plan limits in a moment, if a write is not already due. */
+  private schedulePlanLimitWrite(): void {
+    if (this.planLimitTimer) return
+    const timer = setTimeout(() => {
+      this.planLimitTimer = null
+      void this.flushPlanLimits()
+    }, PLAN_LIMIT_WRITE_MS)
+    timer.unref?.()
+    this.planLimitTimer = timer
+  }
+
+  /**
+   * Put the newest held reading on the account-wide table.
+   *
+   * Taking the reading is what makes a repeat cost nothing: only a
+   * `usage_update` that arrived since the last write leaves anything here, so
+   * a boundary flush with nothing new pending is a no-op without having to
+   * compare values. `replace: false` because this names one or two windows and
+   * knows nothing about the rest, so it must never remove a row a poll put
+   * there.
+   */
+  private async flushPlanLimits(): Promise<void> {
+    if (this.planLimitTimer) {
+      clearTimeout(this.planLimitTimer)
+      this.planLimitTimer = null
+    }
+    const limits = this.planLimits
+    if (!limits) return
+    this.planLimits = null
+    // The same guard `writtenUsage` gives the reading above, and needed for
+    // the same reason: the windows move on the scale of minutes, so most
+    // readings in a turn repeat the last one exactly, and writing those would
+    // re-stream an account-wide row to every browser to say nothing. Compared
+    // as JSON because the array is small and built in a fixed order by
+    // `claudeSessionLimits`, so there is nothing a field-by-field compare
+    // would catch that this does not.
+    const fingerprint = JSON.stringify(limits)
+    if (fingerprint === this.writtenPlanLimits) return
+    this.writtenPlanLimits = fingerprint
+    try {
+      await writeUsageLimits('claude', limits, { replace: false })
+    } catch (error) {
+      console.error(`[acp:${this.agentSessionId}] could not record plan limits`, error)
     }
   }
 

@@ -126,17 +126,19 @@ describe('writing plan limits', () => {
     expect((await listUsageLimits('claude'))[0]!.updatedAt > first.updatedAt).toBe(true)
   })
 
-  it('leaves an unchanged row completely alone when told not to touch it', async () => {
-    // `AgentRuntime.noteUsage` passes `touchUnchanged: false`: it can fire
-    // several times a second on a long answer, and the poller's own honesty
-    // guarantee would turn that into a full-row rewrite on every delta.
-    await writeUsageLimits('claude', [limit()], { replace: false, touchUnchanged: false })
+  it('bumps it for a session event too, because there is no opt-out', async () => {
+    // There is no flag for this: the one caller that could have spammed the
+    // table — a `usage_update` riding in on every delta — is debounced at its
+    // own source in `AgentRuntime`, so this function stays honest for every
+    // caller rather than taking an argument about how often it is called.
+    const event = () => limit({ source: 'session-event' as UsageLimitSource })
+    await writeUsageLimits('claude', [event()], { replace: false })
     const first = (await listUsageLimits('claude'))[0]!
 
     await new Promise(resolve => setTimeout(resolve, 5))
-    await writeUsageLimits('claude', [limit()], { replace: false, touchUnchanged: false })
+    await writeUsageLimits('claude', [event()], { replace: false })
 
-    expect((await listUsageLimits('claude'))[0]!.updatedAt).toBe(first.updatedAt)
+    expect((await listUsageLimits('claude'))[0]!.updatedAt > first.updatedAt).toBe(true)
   })
 
   it('updates a row whose reading moved', async () => {
