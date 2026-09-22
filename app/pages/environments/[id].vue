@@ -5,14 +5,20 @@ const toast = useToast()
 
 const environmentId = computed(() => route.params.id as string)
 
-const { environments, isReady } = useDevEnvironments()
-const { projects } = useProjects()
-const { sessions: agentSessions } = useAgentSessions()
+// `all`, not `environments`: a deleted environment is a tombstone kept for the
+// retired sessions that ran in it, and this page is where their badge links to.
+const { all: environments, isReady } = useDevEnvironments()
+const { all: projects } = useProjects()
+const { sessions: agentSessions, all: allAgents } = useAgentSessions()
 const { pending } = usePermissions()
 
 const environment = computed(() => environments.value.find(item => item.id === environmentId.value) ?? null)
 const project = computed(() => projects.value.find(item => item.id === environment.value?.projectId) ?? null)
+const deleted = computed(() => !!environment.value?.deletedAt)
 const agents = computed(() => agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId.value))
+const retiredAgents = computed(() =>
+  allAgents.value.filter(agent => agent.devEnvironmentId === environmentId.value && agent.retiredAt)
+)
 
 const pendingByAgent = computed(() => {
   const map = new Map<string, number>()
@@ -80,12 +86,13 @@ const exportOpen = ref(false)
         </template>
 
         <template #trailing>
-          <UBadge v-if="environment" :color="status.color" variant="subtle" size="sm" :label="status.label" />
+          <UBadge v-if="deleted" color="neutral" variant="subtle" size="sm" label="Deleted" />
+          <UBadge v-else-if="environment" :color="status.color" variant="subtle" size="sm" :label="status.label" />
         </template>
 
         <template #right>
           <UButton
-            v-if="environment"
+            v-if="environment && !deleted"
             label="New agent"
             icon="i-lucide-plus"
             size="sm"
@@ -93,7 +100,7 @@ const exportOpen = ref(false)
             @click="newAgentOpen = true"
           />
           <UButton
-            v-if="environment"
+            v-if="environment && !deleted"
             :label="running ? 'Stop' : 'Start'"
             :icon="running ? 'i-lucide-square' : 'i-lucide-play'"
             color="neutral"
@@ -104,7 +111,7 @@ const exportOpen = ref(false)
             @click="action(running ? 'stop' : 'start')"
           />
           <UDropdownMenu
-            v-if="environment"
+            v-if="environment && !deleted"
             :items="[[
               { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } },
               { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running, onSelect: () => { exportOpen = true } }
@@ -128,7 +135,16 @@ const exportOpen = ref(false)
 
       <div v-else class="mx-auto w-full max-w-4xl space-y-6 py-4">
         <UAlert
-          v-if="environment.lastError"
+          v-if="deleted"
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-archive"
+          title="Deleted"
+          :description="`The container, its checkout volume and its image were removed ${relativeTime(environment.deletedAt)}. This page is what is left of it: the sessions that ran here are retired, and their transcripts are still readable. Nothing about the environment itself can be restored.`"
+        />
+
+        <UAlert
+          v-if="environment.lastError && !deleted"
           color="error"
           variant="subtle"
           icon="i-lucide-triangle-alert"
@@ -179,12 +195,12 @@ const exportOpen = ref(false)
           </dl>
         </section>
 
-        <section class="space-y-2">
+        <section v-if="!deleted" class="space-y-2">
           <h2 class="text-sm font-semibold">Ports</h2>
           <DevEnvironmentPorts :environment="environment" />
         </section>
 
-        <section class="space-y-2">
+        <section v-if="!deleted" class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold">Agents</h2>
             <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" @click="newAgentOpen = true" />
@@ -205,7 +221,20 @@ const exportOpen = ref(false)
           </p>
         </section>
 
-        <section class="flex flex-wrap gap-2">
+        <section v-if="retiredAgents.length" class="space-y-2">
+          <h2 class="text-sm font-semibold">Retired agents</h2>
+          <ul class="divide-y divide-default overflow-hidden rounded-lg border border-default">
+            <li v-for="agent in retiredAgents" :key="agent.id">
+              <NuxtLink :to="`/agents/${agent.id}`" class="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-elevated">
+                <UIcon name="i-lucide-box" class="size-4 shrink-0 text-dimmed" />
+                <span class="min-w-0 flex-1 truncate">{{ agent.title }}</span>
+                <span class="text-xs text-dimmed">{{ relativeTime(agent.retiredAt) }}</span>
+              </NuxtLink>
+            </li>
+          </ul>
+        </section>
+
+        <section v-if="!deleted" class="flex flex-wrap gap-2">
           <OpenInVsCode :environment="environment" />
           <ExportBranchModal v-model:open="exportOpen" :environment="environment" />
         </section>
@@ -226,7 +255,7 @@ const exportOpen = ref(false)
         v-if="environment"
         v-model:open="confirmingDelete"
         :title="`Delete ${environment.name}?`"
-        :description="`Stops and deletes the container, its checkout volume, any Docker-in-Docker volume, and ${agents.length === 1 ? 'the 1 coding agent session' : `all ${agents.length} coding agent sessions`} running inside it. Work that has not been pushed or exported is lost.`"
+        :description="`Stops and deletes the container, its checkout volume and any Docker-in-Docker volume. ${agents.length === 1 ? 'The 1 coding agent session' : `All ${agents.length} coding agent sessions`} running inside it are retired — their transcripts stay readable — but they can never be revived, and work that has not been pushed or exported is lost.`"
         confirm-label="Delete environment"
         :loading="busy"
         @confirm="remove"

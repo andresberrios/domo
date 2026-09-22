@@ -1,4 +1,5 @@
 import { acpManager } from './manager'
+import { assertSessionLive } from './retirement'
 import { updateAgentSession } from '../repo'
 import type { AgentSession } from '../../../shared/types'
 
@@ -57,6 +58,14 @@ export interface AgentSessionPatchResult {
  */
 export async function applyAgentSessionPatch(target: AgentSession, patch: AgentSessionPatch): Promise<AgentSessionPatchResult> {
   const result: AgentSessionPatchResult = { id: target.id, title: target.title }
+
+  // A retired session is a record, and a record can be relabelled but not
+  // reconfigured: the mode, the model and the adapter's own settings are all
+  // requests to a process that no longer exists, and un-archiving one would
+  // put it back on the live list without ever reviving it.
+  if (target.retiredAt && (patch.modeId || patch.model || patch.config || patch.archived !== undefined)) {
+    assertSessionLive(target, 'changing anything but its title')
+  }
 
   if (patch.modeId) {
     await acpManager.setMode(target.id, patch.modeId)

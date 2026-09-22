@@ -91,7 +91,9 @@ const cascade = computed(() => {
   const environmentsText = count === 1 ? '1 development environment' : `${count} development environments`
   const agents = environmentAgentCount.value
   const agentsText = agents === 1 ? '1 coding agent session' : `${agents} coding agent sessions`
-  return `Deletes ${environmentsText} and ${agentsText}, including each container, its checkout volume and any Docker-in-Docker volume. The checkout at ${project.value?.repoPath} is left on disk, but anything that only exists inside an environment is lost.`
+  return `Deletes ${environmentsText}, including each container, its checkout volume and any Docker-in-Docker volume. `
+    + `${agentsText} inside them are retired rather than deleted, so their transcripts stay readable, but they can never be revived. `
+    + `The checkout at ${project.value?.repoPath} is left on disk; anything that only exists inside an environment is lost.`
 })
 </script>
 

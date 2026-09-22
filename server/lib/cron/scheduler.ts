@@ -1,10 +1,13 @@
 import { acpManager } from '../acp/manager'
+import { isRetired } from '../acp/retirement'
 import { nextCronOccurrence } from './expression'
 import {
   appendAgentEvent,
   claimCronJob,
+  disableCronJobsForAgent,
   failCronJobSchedule,
   finishCronRun,
+  getAgentSession,
   listDueCronJobs
 } from '../repo'
 import type { CronJob } from '../../../shared/types'
@@ -48,6 +51,14 @@ export class CronScheduler {
 
   private async fire(job: CronJob, now: Date): Promise<void> {
     if (!job.nextRunAt) return
+    // Retiring a session disables its schedules, so this is the case where the
+    // two raced — a job claimed in the same tick the session was retired in.
+    // Disabling here as well means a due job can never spin: the alternative is
+    // a failed run every fifteen seconds for ever.
+    if (isRetired(await getAgentSession(job.agentSessionId))) {
+      await disableCronJobsForAgent(job.agentSessionId)
+      return
+    }
     let nextRunAt: string | null
     try {
       // Catch-up is deliberately one firing, not replay: after downtime the

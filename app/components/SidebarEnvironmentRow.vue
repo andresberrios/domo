@@ -151,7 +151,7 @@ const items = computed(() => [
     <ConfirmModal
       v-model:open="confirmingDelete"
       :title="`Delete ${environment.name}?`"
-      :description="`Stops and deletes the container, its checkout volume, any Docker-in-Docker volume, and every coding agent session running inside it. Work that has not been pushed or exported is lost.`"
+      description="Stops and deletes the container, its checkout volume and any Docker-in-Docker volume. The coding agent sessions running inside it are retired rather than deleted — their transcripts stay readable — but they can never be revived, and work that has not been pushed or exported is lost."
       confirm-label="Delete environment"
       :loading="busy"
       @confirm="remove"

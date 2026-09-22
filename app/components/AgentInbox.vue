@@ -8,7 +8,16 @@ import type { AgentInboxMessage } from '~~/shared/types'
  * An adapter's own queue — which is what a second `session/prompt` lands in —
  * is invisible and does not survive a restart.
  */
-const props = defineProps<{ agentSessionId: string, messages: AgentInboxMessage[] }>()
+const props = withDefaults(defineProps<{
+  agentSessionId: string
+  messages: AgentInboxMessage[]
+  /**
+   * A retired session's queue is a record of what was waiting when it ended, so
+   * it is still worth showing — but nothing may be taken back out of it, and a
+   * button that only ever errored would be worse than no button.
+   */
+  readonly?: boolean
+}>(), { readonly: false })
 
 const toast = useToast()
 const removing = ref<string | null>(null)
@@ -57,7 +66,7 @@ async function remove(message: AgentInboxMessage) {
         block
         icon="i-lucide-inbox"
         trailing-icon="i-lucide-chevron-down"
-        :label="`${messages.length} queued`"
+        :label="readonly ? `${messages.length} never delivered` : `${messages.length} queued`"
         :ui="{ trailingIcon: 'group-data-[state=open]:rotate-180 transition-transform' }"
       />
 
@@ -76,7 +85,7 @@ async function remove(message: AgentInboxMessage) {
                 {{ preview(message) }}
               </p>
             </div>
-            <UTooltip text="Remove from the queue">
+            <UTooltip v-if="!readonly" text="Remove from the queue">
               <UButton
                 icon="i-lucide-x"
                 color="neutral"

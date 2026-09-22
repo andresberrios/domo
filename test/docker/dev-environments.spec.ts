@@ -30,7 +30,11 @@ const ensureRuntimeVolume = vi.fn(async () => 'domo-dev-runtime-abc123')
 const collectRuntimeVolumes = vi.fn(async () => undefined)
 const repo = {
   createDevEnvironmentRow: vi.fn(),
-  deleteDevEnvironmentRow: vi.fn(),
+  // Removal tombstones the row rather than deleting it: the retired sessions
+  // that ran here still name it. `pruneEmptyTombstones` is what eventually
+  // drops it, once nothing does.
+  softDeleteDevEnvironmentRow: vi.fn(),
+  pruneEmptyTombstones: vi.fn(async () => ({ environments: 0, projects: 0 })),
   getDevEnvironment: vi.fn(),
   getProject: vi.fn(),
   updateDevEnvironment: vi.fn(),
@@ -106,6 +110,7 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     lastError: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
+    deletedAt: null,
     ...overrides
   }
 }
@@ -255,7 +260,7 @@ describe('start, stop and remove', () => {
     expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
     expect(dockerCalls()).toContainEqual(['image', 'rm', 'domo-dev-env_1'])
     expect(collectRuntimeVolumes).toHaveBeenCalled()
-    expect(repo.deleteDevEnvironmentRow).toHaveBeenCalledWith('env_1')
+    expect(repo.softDeleteDevEnvironmentRow).toHaveBeenCalledWith('env_1')
   })
 
   it('leaves a named volume the project mounted itself alone, and reads the mounts first', async () => {
@@ -281,7 +286,7 @@ describe('start, stop and remove', () => {
     await removeEnvironment('env_gone')
 
     expect(run).not.toHaveBeenCalled()
-    expect(repo.deleteDevEnvironmentRow).not.toHaveBeenCalled()
+    expect(repo.softDeleteDevEnvironmentRow).not.toHaveBeenCalled()
   })
 })
 

@@ -71,6 +71,11 @@ create table if not exists projects (
   created_at text not null,
   updated_at text not null
 );
+-- Tombstone, not a delete. A project is deleted for its containers' sake, but
+-- the retired agent sessions that ran inside it still name it, so the row has
+-- to stay readable. Nothing here is ever restorable: the containers, volumes
+-- and images really are gone. See server/lib/session-retention.ts.
+alter table projects add column if not exists deleted_at text;
 
 create table if not exists dev_environments (
   id text primary key,
@@ -91,6 +96,9 @@ alter table dev_environments add column if not exists config_path text;
 alter table dev_environments add column if not exists remote_user text;
 update dev_environments set remote_user = 'node'
 where remote_user is null and container_id is null and workspace_path = '/workspace/repo';
+-- The same tombstone as projects, and for the same reason: a retired session
+-- that ran here still has to be able to say where it ran.
+alter table dev_environments add column if not exists deleted_at text;
 
 create table if not exists dev_environment_ports (
   id text primary key,
@@ -147,6 +155,22 @@ alter table agent_sessions add column if not exists usage jsonb;
 -- is only ever a record of its answer.
 alter table agent_sessions add column if not exists config jsonb;
 alter table agent_sessions add column if not exists config_options jsonb;
+-- Retirement: the session is over, and what is left is the record of it.
+--
+-- archived is a shelf and retired_at a tombstone, and the two are not
+-- independent: retiring sets archived too, so every query that already asks
+-- for the live list (where archived = false) excludes a retired session
+-- without being changed. What retirement adds on top is that it cannot be
+-- undone by unarchiving — only by an explicit revival, which is refused
+-- outright when the environment the session ran in has been deleted.
+--
+-- agent_events is the transcript and is never touched by any of this: it
+-- cascades from agent_sessions, and the whole point of the tombstone is that
+-- the row it cascades from does not go away.
+alter table agent_sessions add column if not exists retired_at text;
+alter table agent_sessions add column if not exists retired_reason text;
+create index if not exists agent_sessions_retired on agent_sessions(retired_at)
+  where retired_at is not null;
 
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.

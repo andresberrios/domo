@@ -25,6 +25,8 @@ const session: AgentSession = {
   updatedAt: '2026-01-01T00:00:00.000Z',
   lastActivityAt: null,
   archived: false,
+  retiredAt: null,
+  retiredReason: null,
   usage: null
 }
 

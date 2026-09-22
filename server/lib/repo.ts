@@ -1,5 +1,6 @@
 import { getDb, newId, nowIso, query, queryOne } from './db'
 import { bus } from './bus'
+import { assertSessionLive } from './acp/retirement'
 import { getSettings } from './settings'
 import type {
   AgentEvent,
@@ -8,6 +9,7 @@ import type {
   AgentAdapter,
   AgentSession,
   AgentSessionStatus,
+  AgentRetirementReason,
   AgentSubscription,
   AgentUsage,
   CronJob,
@@ -89,6 +91,8 @@ function mapAgentSession(r: any): AgentSession {
     updatedAt: r.updated_at,
     lastActivityAt: r.last_activity_at,
     archived: r.archived,
+    retiredAt: r.retired_at ?? null,
+    retiredReason: r.retired_reason ?? null,
     usage: r.usage ?? null
   }
 }
@@ -125,7 +129,8 @@ function mapProject(r: any): Project {
     name: r.name,
     repoPath: r.repo_path,
     createdAt: r.created_at,
-    updatedAt: r.updated_at
+    updatedAt: r.updated_at,
+    deletedAt: r.deleted_at ?? null
   }
 }
 
@@ -143,7 +148,8 @@ function mapDevEnvironment(r: any): DevEnvironment {
     status: r.status,
     lastError: r.last_error ?? null,
     createdAt: r.created_at,
-    updatedAt: r.updated_at
+    updatedAt: r.updated_at,
+    deletedAt: r.deleted_at ?? null
   }
 }
 
@@ -263,8 +269,18 @@ function mapCronRun(r: any): CronRun {
 /* projects and isolated development environments                     */
 /* ------------------------------------------------------------------ */
 
-export async function listProjects(): Promise<Project[]> {
-  return (await query('select * from projects order by name asc')).map(mapProject)
+/**
+ * The live projects.
+ *
+ * A deleted project is a tombstone, not a row that is gone — retired sessions
+ * still name it — so every caller that means "the projects" gets the live ones
+ * and has to ask for the rest. `getProject` is the other way round on purpose:
+ * looking one up by id is what a transcript does, and it must find the dead one.
+ */
+export async function listProjects(includeDeleted = false): Promise<Project[]> {
+  return (await query(
+    `select * from projects ${includeDeleted ? '' : 'where deleted_at is null'} order by name asc`
+  )).map(mapProject)
 }
 
 export async function getProject(id: string): Promise<Project | null> {
@@ -293,15 +309,43 @@ export async function updateProject(id: string, patch: { name: string }): Promis
   return mapProject(row)
 }
 
-export async function deleteProject(id: string): Promise<void> {
-  await query('delete from projects where id = $1', [id])
+/**
+ * Tombstone a project: its environments are already gone for real, and what is
+ * left is a name for the sessions that ran under it.
+ *
+ * There is deliberately no hard delete beside this one. `pruneEmptyTombstones`
+ * is the only thing that really removes a project or an environment row, and
+ * only once nothing references it — an exported `deleteProject` would be an
+ * open invitation to take a retired session's context away with it.
+ */
+export async function softDeleteProject(id: string): Promise<Project | null> {
+  const row = await queryOne(
+    `update projects set deleted_at = coalesce(deleted_at, $2), updated_at = $2
+      where id = $1 returning *`,
+    [id, nowIso()]
+  )
+  if (!row) return null
   bus.publish({ type: 'project-changed' })
+  return mapProject(row)
 }
 
-export async function listDevEnvironments(projectId?: string): Promise<DevEnvironment[]> {
-  const rows = projectId
-    ? await query('select * from dev_environments where project_id = $1 order by created_at desc', [projectId])
-    : await query('select * from dev_environments order by created_at desc')
+/** The live environments. Deleted ones are tombstones; see `listProjects`. */
+export async function listDevEnvironments(
+  projectId?: string,
+  includeDeleted = false
+): Promise<DevEnvironment[]> {
+  const where: string[] = []
+  const params: any[] = []
+  if (projectId) {
+    params.push(projectId)
+    where.push(`project_id = $${params.length}`)
+  }
+  if (!includeDeleted) where.push('deleted_at is null')
+  const rows = await query(
+    `select * from dev_environments ${where.length ? `where ${where.join(' and ')}` : ''}
+     order by created_at desc`,
+    params
+  )
   return rows.map(mapDevEnvironment)
 }
 
@@ -427,9 +471,54 @@ export async function updateDevEnvironmentPort(
   return row ? mapDevEnvironmentPort(row) : null
 }
 
-export async function deleteDevEnvironmentRow(id: string): Promise<void> {
-  await query('delete from dev_environments where id = $1', [id])
+/**
+ * Tombstone an environment whose container, volumes and image are really gone.
+ *
+ * The port rows go with them — they are live forwarding state and mean nothing
+ * once the container has been removed — but the row itself stays, because the
+ * retired sessions that ran here still point at it and a transcript that cannot
+ * say where it ran is worth less.
+ */
+export async function softDeleteDevEnvironmentRow(id: string): Promise<DevEnvironment | null> {
+  await query('delete from dev_environment_ports where dev_environment_id = $1', [id])
+  const row = await queryOne(
+    `update dev_environments
+        set deleted_at = coalesce(deleted_at, $2), status = 'stopped', updated_at = $2
+      where id = $1 returning *`,
+    [id, nowIso()]
+  )
+  if (!row) return null
   bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
+  return mapDevEnvironment(row)
+}
+
+/**
+ * Drop the tombstones nothing points at any more.
+ *
+ * A tombstone exists to label a retired session, so it has earned its keep only
+ * for as long as one still references it. Purging the last session that ran in
+ * an environment takes the environment with it, and the project above it once
+ * that is empty too — which is what keeps "never delete anything" from meaning
+ * "accumulate rows for ever".
+ */
+export async function pruneEmptyTombstones(): Promise<{ environments: number, projects: number }> {
+  const environments = await query<{ id: string }>(
+    `delete from dev_environments
+      where deleted_at is not null
+        and not exists (select 1 from agent_sessions where dev_environment_id = dev_environments.id)
+      returning id`
+  )
+  const projects = await query<{ id: string }>(
+    `delete from projects
+      where deleted_at is not null
+        and not exists (select 1 from dev_environments where project_id = projects.id)
+      returning id`
+  )
+  for (const row of environments) {
+    bus.publish({ type: 'dev-environment-changed', devEnvironmentId: row.id })
+  }
+  if (projects.length) bus.publish({ type: 'project-changed' })
+  return { environments: environments.length, projects: projects.length }
 }
 
 /* ------------------------------------------------------------------ */
@@ -633,12 +722,134 @@ export async function appendVoiceMessage(input: {
 /* agent sessions                                                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The sessions that are still sessions.
+ *
+ * Retiring sets `archived` as well as `retired_at`, so the default answer here
+ * — the one the voice agent, the mesh and the sidebar all read — excludes
+ * retired sessions without a second condition anywhere. `includeArchived` is
+ * for the callers that genuinely mean *every row*, and it still does.
+ */
 export async function listAgentSessions(includeArchived = false): Promise<AgentSession[]> {
   const rows = await query(
     `select * from agent_sessions ${includeArchived ? '' : 'where archived = false'}
      order by coalesce(last_activity_at, created_at) desc`
   )
   return rows.map(mapAgentSession)
+}
+
+/** The tombstones, newest first: the transcripts that outlived their sessions. */
+export async function listRetiredAgentSessions(): Promise<AgentSession[]> {
+  const rows = await query(
+    'select * from agent_sessions where retired_at is not null order by retired_at desc'
+  )
+  return rows.map(mapAgentSession)
+}
+
+/** Every live session that ran in one environment, archived ones included. */
+export async function listAgentSessionsInEnvironment(devEnvironmentId: string): Promise<AgentSession[]> {
+  const rows = await query(
+    `select * from agent_sessions where dev_environment_id = $1 and retired_at is null
+     order by coalesce(last_activity_at, created_at) desc`,
+    [devEnvironmentId]
+  )
+  return rows.map(mapAgentSession)
+}
+
+/**
+ * Turn a session into a record of itself.
+ *
+ * Writes `archived` in the same statement, because a retired session is by
+ * definition not on the live list and nothing should have to remember to ask
+ * for both. Idempotent on `retired_at` — a session retired by a cascade and
+ * then retired again by hand keeps the first timestamp and the first reason,
+ * which is the one that explains what actually happened to it.
+ *
+ * It writes no `agent_events` row itself: the caller
+ * (`server/lib/session-retention.ts`) appends one after the adapter is down, so
+ * the transcript's last line is the truth rather than a promise.
+ */
+export async function retireAgentSessionRow(
+  id: string,
+  reason: AgentRetirementReason
+): Promise<AgentSession | null> {
+  const row = await queryOne(
+    `update agent_sessions
+        set retired_at = coalesce(retired_at, $2),
+            retired_reason = coalesce(retired_reason, $3),
+            archived = true,
+            status = 'stopped',
+            updated_at = $2
+      where id = $1 returning *`,
+    [id, nowIso(), reason]
+  )
+  if (!row) return null
+  bus.publish({ type: 'agent-changed', agentSessionId: id })
+  bus.publish({ type: 'agent-list-changed' })
+  return mapAgentSession(row)
+}
+
+/**
+ * Put a retired session back into service.
+ *
+ * Clears `archived` too: the pair went on together and comes off together, so
+ * there is no state where a session is live but still hidden for a reason
+ * nobody wrote down. It is left `stopped` rather than started — spawning an
+ * adapter (and, in a container session, waking the environment) is a separate,
+ * explicit act, and the Start button already exists for it.
+ */
+export async function reviveAgentSessionRow(id: string): Promise<AgentSession | null> {
+  const row = await queryOne(
+    `update agent_sessions
+        set retired_at = null, retired_reason = null, archived = false,
+            status = 'stopped', last_error = null, updated_at = $2
+      where id = $1 and retired_at is not null returning *`,
+    [id, nowIso()]
+  )
+  if (!row) return null
+  bus.publish({ type: 'agent-changed', agentSessionId: id })
+  bus.publish({ type: 'agent-list-changed' })
+  return mapAgentSession(row)
+}
+
+/**
+ * Resolve every permission a retired session was still blocked on.
+ *
+ * The adapter is gone and its waiter was resolved with null, so the request was
+ * cancelled whether or not anything wrote that down. `retired` rather than
+ * `auto`, because "nobody ever answered this" and "the auto-approve setting
+ * answered it" are different facts about the same row.
+ */
+export async function cancelPendingPermissions(agentSessionId: string): Promise<number> {
+  const rows = await query(
+    `update agent_permissions set resolved_at = $2, resolved_by = 'retired'
+      where agent_session_id = $1 and resolved_at is null returning *`,
+    [agentSessionId, nowIso()]
+  )
+  for (const row of rows) {
+    bus.publish({ type: 'permission-changed', agentSessionId, permission: mapPermission(row) })
+  }
+  return rows.length
+}
+
+/** Stop every schedule pointed at a session that can no longer take a prompt. */
+export async function disableCronJobsForAgent(agentSessionId: string): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `update cron_jobs set enabled = false, next_run_at = null, updated_at = $2
+      where agent_session_id = $1 and enabled = true returning id`,
+    [agentSessionId, nowIso()]
+  )
+  for (const row of rows) bus.publish({ type: 'cron-job-changed', cronJobId: row.id })
+  return rows.length
+}
+
+/** Drop the subscriptions a retired session is either end of. Pure plumbing; no record value. */
+export async function removeAllAgentSubscriptions(agentSessionId: string): Promise<number> {
+  const rows = await query(
+    'delete from agent_subscriptions where subscriber_id = $1 or target_id = $1 returning subscriber_id',
+    [agentSessionId]
+  )
+  return rows.length
 }
 
 export async function getAgentSession(id: string): Promise<AgentSession | null> {
@@ -1011,7 +1222,14 @@ export async function getCronJob(id: string): Promise<CronJob | null> {
   return row ? mapCronJob(row) : null
 }
 
+/**
+ * Guarded here rather than in each of the three callers (HTTP, voice, mesh),
+ * for the same reason `enqueueInboxMessage` is: a schedule pointed at a retired
+ * session is a prompt that can never be delivered, and the check belongs where
+ * every path already meets.
+ */
 export async function createCronJob(input: StoredCronInput): Promise<CronJob> {
+  assertSessionLive(await getAgentSession(input.agentSessionId), 'scheduling a task for it')
   const now = nowIso()
   const row = await queryOne(
     `insert into cron_jobs
@@ -1029,6 +1247,7 @@ export async function createCronJob(input: StoredCronInput): Promise<CronJob> {
 }
 
 export async function replaceCronJob(id: string, input: StoredCronInput): Promise<CronJob | null> {
+  assertSessionLive(await getAgentSession(input.agentSessionId), 'scheduling a task for it')
   const row = await queryOne(
     `update cron_jobs set
        agent_session_id = $2, name = $3, prompt = $4, schedule_type = $5,
@@ -1150,13 +1369,22 @@ export async function listCronRuns(cronJobId: string, limit = 50): Promise<CronR
 /* the agent inbox                                                     */
 /* ------------------------------------------------------------------ */
 
-/** Park a message until the agent's turn ends. */
+/**
+ * Park a message until the agent's turn ends.
+ *
+ * The retirement check lives *here*, not only in `AgentRuntime.deliver`,
+ * because this is the one write the subscription notifier makes directly —
+ * deliberately, since `deliver` would start the adapter it delivers to. A guard
+ * in `deliver` alone would leave exactly one path able to queue a message for a
+ * session that can never read it.
+ */
 export async function enqueueInboxMessage(input: {
   agentSessionId: string
   content: any[]
   delivery: MessageDelivery
   origin: MessageOrigin
 }): Promise<AgentInboxMessage> {
+  assertSessionLive(await getAgentSession(input.agentSessionId), 'queueing a message for it')
   const row = await queryOne(
     `insert into agent_inbox (id, agent_session_id, content, delivery, origin, created_at)
      values ($1, $2, $3::jsonb, $4, $5, $6) returning *`,

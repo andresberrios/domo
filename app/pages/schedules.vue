@@ -2,7 +2,10 @@
 import type { CronJob } from '~~/shared/types'
 
 const toast = useToast()
-const { sessions: agents } = useAgentSessions()
+// `agents` is who you may schedule *for*; `all` is who a job may point *at*.
+// Retiring a session disables its jobs but leaves them in this list, and a row
+// naming a bare id rather than the agent is the one case that reads as a bug.
+const { sessions: agents, all: allAgents } = useAgentSessions()
 const { jobs } = useCronJobs()
 const saving = ref(false)
 const deleteOpen = ref(false)
@@ -34,7 +37,9 @@ watchEffect(() => {
 const agentItems = computed(() => agents.value.map(agent => ({ label: agent.title, value: agent.id })))
 
 function agentName(id: string) {
-  return agents.value.find(agent => agent.id === id)?.title ?? id
+  const agent = allAgents.value.find(item => item.id === id)
+  if (!agent) return id
+  return agent.retiredAt ? `${agent.title} (retired)` : agent.title
 }
 
 function when(job: CronJob) {

@@ -69,57 +69,102 @@ export function useVoiceSessions() {
   return { sessions, isReady }
 }
 
+function toAgentSession(row: any): AgentSession {
+  return {
+    id: row.id,
+    voiceSessionId: row.voice_session_id ?? null,
+    adapter: isAgentAdapter(row.adapter) ? row.adapter : 'claude-code',
+    acpSessionId: row.acp_session_id ?? null,
+    title: row.title,
+    cwd: row.cwd,
+    devEnvironmentId: row.dev_environment_id ?? null,
+    status: row.status,
+    modeId: row.mode_id ?? null,
+    modes: row.modes ?? null,
+    model: row.model ?? null,
+    config: row.config ?? null,
+    configOptions: row.config_options ?? null,
+    lastError: row.last_error ?? null,
+    summary: row.summary ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastActivityAt: row.last_activity_at ?? null,
+    archived: !!row.archived,
+    retiredAt: row.retired_at ?? null,
+    retiredReason: row.retired_reason ?? null,
+    usage: row.usage ?? null
+  }
+}
+
+/**
+ * The coding agent sessions.
+ *
+ * The shape carries every row, archived and retired included — filtering a row
+ * out of a *shape* would make it unreachable in the browser, and the whole
+ * point of retention is that a retired session stays consultable. So the
+ * filtering is here, and `all` is what the surfaces that must see a tombstone
+ * (the agent page, the archive) read instead.
+ */
 export function useAgentSessions() {
   const { data, isReady } = useLiveQuery(q => q.from({ agent: agentSessionsCollection() }))
 
-  const sessions = computed<AgentSession[]>(() =>
-    (data.value ?? [])
-      .map((row: any) => ({
-        id: row.id,
-        voiceSessionId: row.voice_session_id ?? null,
-        adapter: isAgentAdapter(row.adapter) ? row.adapter : 'claude-code',
-        acpSessionId: row.acp_session_id ?? null,
-        title: row.title,
-        cwd: row.cwd,
-        devEnvironmentId: row.dev_environment_id ?? null,
-        status: row.status,
-        modeId: row.mode_id ?? null,
-        modes: row.modes ?? null,
-        model: row.model ?? null,
-        config: row.config ?? null,
-        configOptions: row.config_options ?? null,
-        lastError: row.last_error ?? null,
-        summary: row.summary ?? null,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastActivityAt: row.last_activity_at ?? null,
-        archived: !!row.archived,
-        usage: row.usage ?? null
-      }))
-      .filter(session => !session.archived)
-      .sort(byRecency)
-  )
+  const all = computed<AgentSession[]>(() => (data.value ?? []).map(toAgentSession).sort(byRecency))
+  const sessions = computed<AgentSession[]>(() => all.value.filter(session => !session.archived))
 
-  return { sessions, isReady }
+  return { sessions, all, isReady }
 }
 
+/** One session by id, tombstone or not — what the agent page renders from. */
+export function useAgentSession(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
+  const { all, isReady } = useAgentSessions()
+  const session = computed<AgentSession | null>(() => {
+    const id = toValue(agentSessionId)
+    return (id && all.value.find(item => item.id === id)) || null
+  })
+  return { session, isReady }
+}
+
+/**
+ * The two ways a session leaves the sidebar, kept apart because only one of
+ * them is reversible by unarchiving.
+ */
+export function useArchivedAgentSessions() {
+  const { all, isReady } = useAgentSessions()
+  const archived = computed(() => all.value.filter(session => session.archived && !session.retiredAt))
+  const retired = computed(() =>
+    all.value
+      .filter(session => !!session.retiredAt)
+      .sort((a, b) => (b.retiredAt ?? '').localeCompare(a.retiredAt ?? ''))
+  )
+  return { archived, retired, isReady }
+}
+
+/**
+ * Projects, live ones by default.
+ *
+ * A deleted project is a tombstone that the retired sessions under it still
+ * name, so it stays in the shape and `all` is how the archive reads it.
+ */
 export function useProjects() {
   const { data, isReady } = useLiveQuery(q => q.from({ project: projectsCollection() }))
-  const projects = computed<Project[]>(() =>
+  const all = computed<Project[]>(() =>
     (data.value ?? []).map((row: any) => ({
       id: row.id,
       name: row.name,
       repoPath: row.repo_path,
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
+      deletedAt: row.deleted_at ?? null
     })).sort((a, b) => a.name.localeCompare(b.name))
   )
-  return { projects, isReady }
+  const projects = computed(() => all.value.filter(project => !project.deletedAt))
+  return { projects, all, isReady }
 }
 
+/** Development environments, live ones by default. See `useProjects`. */
 export function useDevEnvironments() {
   const { data, isReady } = useLiveQuery(q => q.from({ environment: devEnvironmentsCollection() }))
-  const environments = computed<DevEnvironment[]>(() =>
+  const all = computed<DevEnvironment[]>(() =>
     (data.value ?? []).map((row: any) => ({
       id: row.id,
       projectId: row.project_id,
@@ -133,10 +178,12 @@ export function useDevEnvironments() {
       status: row.status,
       lastError: row.last_error ?? null,
       createdAt: row.created_at,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
+      deletedAt: row.deleted_at ?? null
     })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   )
-  return { environments, isReady }
+  const environments = computed(() => all.value.filter(environment => !environment.deletedAt))
+  return { environments, all, isReady }
 }
 
 export function useCronJobs() {
