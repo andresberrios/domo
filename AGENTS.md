@@ -131,6 +131,40 @@ things that are easy to get wrong.
   It keeps the set of followed agents in memory so an agent nobody follows costs
   no query per turn. Both ends cascade with the session; a mutual pair is
   refused, because each finished turn would be a message and each message a turn.
+- **Usage is session state, not transcript.** The ACP `usage_update` carries
+  context occupancy and the session's cost, and it arrives with every
+  `message_delta` — several times a second on a long answer. It is handled in
+  `onUpdate` **before** `takeStream()`, normalised (`server/lib/usage/normalize.ts`)
+  and written to `agent_sessions.usage`; it appends no `agent_events` row and
+  claims no `seq`. `voice_sessions.usage` is the same idea for a conversation,
+  fed by the Live API's `usageMetadata`. Both are throttled (~5 s, trailing) and
+  written on change only, because both tables are synced.
+- **Plan limits are account-wide rows, fed by a poller.** They belong to the
+  developer rather than to any session, so they have to be right on a dashboard
+  nobody has run an agent on today: `usage_limits` (one row per provider per
+  window) and `usage_providers` (whether each provider's poll works, so the UI
+  can tell "not configured" from "failed" from "nothing yet"). `server/lib/usage/`
+  holds the clients, the pure normalisers and the poller, which starts in
+  `server/plugins/boot.ts` and stops on Nitro's `close`. **Nothing secret ever
+  goes in those tables** — they stream to the browser through Electric.
+- **Claude's limits come from response headers, not from the usage endpoint.**
+  `GET /api/oauth/usage` is what Claude Code's own `/usage` reads and it answers
+  far more (per-model weekly buckets, the credits balance) — but it needs the
+  `user:profile` scope, and a `claude setup-token` token carries only
+  `user:inference`. Measured: **403 `oauth_scope_insufficient`, `required_scopes:
+  ["user:profile"]`**. So the endpoint is still tried hourly (an operator with a
+  differently-scoped token gets the better answer) and the working source is a
+  minimal `POST /v1/messages` read for its `anthropic-ratelimit-unified-*`
+  headers, which needs only the inference scope. A third source is always on and
+  free: `_meta["_claude/rateLimit"]` rides in on a `usage_update` whenever an
+  agent works.
+- **Codex limits come from a short-lived `codex app-server`.** The ACP adapter
+  does not expose them — it spawns the bundled Codex CLI as a JSON-RPC server
+  over stdio, calls `account/rateLimits/read`, and renders the answer as text in
+  `/status`. Domo makes the same call directly rather than scraping that text.
+  Newline-delimited JSON, `initialize` first, a 15 s cap, and the process is
+  killed as soon as it has answered: nothing is kept resident for a number that
+  moves on the scale of hours.
 - **Permission requests are rows, not callbacks.** `onPermission` writes a
   pending `agent_permissions` row, then parks on a promise. The UI, the voice
   agent (`answer_permission`) and the auto-approve setting all resolve the same
@@ -328,6 +362,54 @@ things that are easy to get wrong.
   advertise it (claude-agent-acp `{http: true, sse: true}`, codex-acp
   `{acp: false, http: true, sse: false}`), verified by sending `initialize` to
   each — no account needed for that call.
+- **`usage_update` must never go through `takeStream()`.** It is state, and it
+  arrives in the middle of the message the agent is still writing. Closing the
+  open block around one splits the message in two on screen and puts a row
+  nothing renders between the halves. `buildTranscript()` names it explicitly
+  and draws nothing for it, because old installs still hold those rows (the
+  schema deletes them once, idempotently).
+- **Usage writes are throttled because the rows are synced.** `agent_sessions`
+  and `voice_sessions` are `REPLICA IDENTITY FULL`, so every write re-streams the
+  whole row to every browser. Both runtimes keep the latest reading, write it on
+  a trailing ~5 s timer, skip a write that would change nothing, and flush at
+  every turn boundary and on close — the same "remember what was last written"
+  shape as `setStatus`. A usage write must not touch `last_activity_at`: the
+  voice agent picks "the most recently active agent" off that column, and a
+  reading is not activity.
+- **Every source counts usage in its own units, and one of them is a trap.**
+  Claude's usage endpoint answers percentages (0-100) and ISO timestamps; its
+  `anthropic-ratelimit-unified-*` headers and its `rate_limit_event` both answer
+  **fractions** (0-1) and epoch **seconds**; Codex answers percent and epoch
+  seconds. A real response carried `5h-utilization: 0.41` for a window that was
+  41% spent — read as a percentage that renders as "0%", which is the most
+  reassuring possible way for this feature to be wrong. Everything is normalised
+  on write to percent 0-100 and an ISO string, in `normalize.ts`, and the units
+  are pinned by tests against captured payloads.
+- **A window can refuse work below 100%**, so the colour follows
+  `status: 'rejected'` and not the number. And a Claude response for an account
+  with no extra usage carries `overage-status: rejected` with
+  `overage-disabled-reason: out_of_credits` and *no* utilization — that means
+  "you never bought any", not "you hit a limit", so no credits row is drawn.
+- **The Live API never reports a context window, and `used` can go down.** The
+  size comes from the models API's own `inputTokenLimit` (learned and cached in
+  `server/lib/gemini.ts`, with a seeded table for an offline install); an unknown
+  model is `null` and the UI then shows a token count with no bar, because a
+  made-up denominator is worse than no percentage. `used` falling is normal:
+  `contextWindowCompression: { slidingWindow: {} }` drops the oldest turns, and a
+  fresh session after a fingerprint mismatch starts again at zero. The whole Live
+  family is on **131,072** tokens, not the 1M the non-Live Gemini models get.
+- **The usage endpoint is rate-limited to about one call an hour** even when the
+  token *can* use it: the second call inside the window answers 429 with
+  `retry-after: 3591`. `Retry-After` is honoured and a 429 is not an error
+  state — the last good rows stay on screen with their own timestamp, and the UI
+  says how old they are. The header probe spends real quota (one token in, one
+  out) so it runs in minutes, not seconds.
+- **Never read or refresh the developer's own Claude login for polling.** The
+  poller uses `claudeOauthToken()` — `NUXT_CLAUDE_CODE_OAUTH_TOKEN` /
+  `CLAUDE_CODE_OAUTH_TOKEN` and nothing else, the same resolver the adapter
+  uses. Reading the Keychain prompts on macOS, and refreshing that token would
+  race the developer's own CLI over a refresh token Anthropic rotates on every
+  use — the same hazard `home-overlay.ts` refuses to mount `~/.claude` for.
 - **`UChatMessages` skips messages whose `parts` array is empty.** Rich items
   ride in `metadata` and render through the `#content` slot, but each message
   still needs a plain-text part (see `AgentTranscript.vue`).
@@ -729,11 +811,20 @@ inside a project.
   arrives as an `AggregateError` with an *empty* message, so "could not reach
   the database" must not be derived from `error.message` alone.
 
+**Nothing in the suite may reach a real account**, and blanking the keys is not
+enough for the usage poller any more than it was for the adapters: it starts
+with the server. The `e2e` and `electric` layers therefore blank
+`NUXT_CLAUDE_CODE_OAUTH_TOKEN` (which makes the Claude poll answer
+`unconfigured` before any request is made), point `NUXT_ANTHROPIC_API_BASE` at
+an unreachable address, and point `NUXT_CODEX_ENTRY` at the same dead stub the
+ACP adapters get.
+
 What is deliberately *not* tested: a real Gemini Live session and
 `useVoiceChannel` (a real browser and a real Live session; what the runtime
 *sends* is covered with the SDK faked — the model and voice in
-`test/server/voice-runtime-model.spec.ts`, and when a proactive note is allowed
-out in `test/unit/voice-runtime-notes.spec.ts`). **Spawning ACP adapters is now
+`test/server/voice-runtime-model.spec.ts`, when a proactive note is allowed
+out in `test/unit/voice-runtime-notes.spec.ts`, and what it records about its
+context window in `test/unit/voice-runtime-usage.spec.ts`). **Spawning ACP adapters is now
 covered** — `pnpm test:agents` runs both, for real, inside a real environment.
 Everything above that boundary is still covered without an account:
 `test/server/acp-stream.spec.ts` mocks `spawn` with a pair of pipes and puts the
@@ -776,6 +867,22 @@ and permissions are end to end because a permission is a row.
   that verifies back to the calling session. The same prompt also runs as a host
   session per adapter, so a regression can be attributed to "container" or
   "adapter".
+- **Both usage sources were verified against real accounts**, and the answers
+  are why the design is shaped the way it is. The Claude OAuth usage endpoint
+  refused a real `claude setup-token` token with 403
+  `{"required_scopes":["user:profile"],"error_code":"oauth_scope_insufficient"}`;
+  a minimal `POST /v1/messages` with the same token answered 200 carrying
+  `anthropic-ratelimit-unified-5h-utilization: 0.41`,
+  `7d-utilization: 0.67` and both resets as epoch seconds. Running the
+  production build against the real database then wrote, from the live poller:
+  Claude `5-hour limit 50%` / `Weekly · all models 67%` (source `headers`) and
+  Codex `5h limit 49%` / `Weekly limit 24%` / `Credits` (source `app-server`),
+  with both providers `ok`. The per-model weekly buckets and the credits row the
+  endpoint would add are therefore **not** exercised against a live account.
+- The CSP needed no change and was checked rather than assumed: `connect-src`
+  is still `'self'` plus the dev WebSocket, no built client asset names
+  `api.anthropic.com`, `api.openai.com` or `generativelanguage.googleapis.com`,
+  and only the server bundle does. Every outbound call is server-side.
 - The ACP path was verified end to end against a real Claude Code account:
   `session/new` with the agent-mesh MCP server attached (then a stdio shim,
   now the HTTP endpoint), streaming
