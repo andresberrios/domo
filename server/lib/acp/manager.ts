@@ -217,14 +217,21 @@ const ACTIVITY_TOUCH_MS = 30_000
  * its inbox stranded behind a turn that cannot end. Being a little late is
  * cheap and never ending is not, so quiet is what the turn is read off.
  *
- * Twenty seconds is far longer than the gap between two deltas of one answer
- * and far shorter than a person would wait before deciding the badge is stuck.
- * The two things that legitimately go quiet for longer are both held open
- * explicitly instead of by a bigger number here: see `ADAPTER_TURN_WORKING_MS`
- * for a tool call that is still running, and the permission gate in
- * `adapterTurnExpired`.
+ * The error to design against is ending *early*, not ending late. A turn
+ * declared over while the adapter is still in one drains the inbox into it, and
+ * a `session/prompt` sent then lands in the adapter's own invisible queue —
+ * precisely the failure `agent_inbox` exists to prevent. Ending late costs a
+ * badge that reads `thinking` for a while longer, and nothing else.
+ *
+ * So a minute, not the twenty seconds that covers the gap between two deltas of
+ * one answer. The gap that sets the floor is the other one: a model round trip
+ * on a full context, between a tool call reporting back and the next token,
+ * which is tens of seconds on a large session. The two things that legitimately
+ * go quiet for longer than any number belongs here are held open explicitly
+ * instead — `ADAPTER_TURN_WORKING_MS` for a tool call still running, and the
+ * permission gate in `onAdapterTurnQuiet`.
  */
-const ADAPTER_TURN_IDLE_MS = 20_000
+const ADAPTER_TURN_IDLE_MS = 60_000
 
 /**
  * The same deadline while a tool call this turn opened has not reported back.

@@ -2240,16 +2240,19 @@ describe('a turn the agent starts for itself', () => {
   const IDLE = 120
   const WORKING = 2_000
 
+  /** Whatever the app ships, so a change to either constant costs nothing here. */
+  let windows: { idle: number, working: number }
+
   beforeEach(async () => {
     const { adapterTurnWindows } = await import('../../server/lib/acp/manager')
+    windows = { ...adapterTurnWindows }
     adapterTurnWindows.idle = IDLE
     adapterTurnWindows.working = WORKING
   })
 
   afterEach(async () => {
     const { adapterTurnWindows } = await import('../../server/lib/acp/manager')
-    adapterTurnWindows.idle = 20_000
-    adapterTurnWindows.working = 10 * 60_000
+    Object.assign(adapterTurnWindows, windows)
   })
 
   /**
