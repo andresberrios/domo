@@ -65,9 +65,24 @@ const agent: AgentSession = {
 }
 
 mockNuxtImport('useRoute', () => () => ({ params: { id: 'env_1' } }))
-mockNuxtImport('useProjects', () => () => ({ projects: computed(() => [project]), isReady: ref(true) }))
-mockNuxtImport('useDevEnvironments', () => () => ({ environments: computed(() => [environment.value]), isReady: ref(true) }))
-mockNuxtImport('useAgentSessions', () => () => ({ sessions: computed(() => [agent]), isReady: ref(true) }))
+// `all` carries the tombstones. This page reads it rather than the live list:
+// a deleted environment is what a retired session's badge links to, and the
+// page has to render it instead of claiming the environment never existed.
+mockNuxtImport('useProjects', () => () => ({
+  projects: computed(() => [project]),
+  all: computed(() => [project]),
+  isReady: ref(true)
+}))
+mockNuxtImport('useDevEnvironments', () => () => ({
+  environments: computed(() => [environment.value].filter(item => !item.deletedAt)),
+  all: computed(() => [environment.value]),
+  isReady: ref(true)
+}))
+mockNuxtImport('useAgentSessions', () => () => ({
+  sessions: computed(() => [agent].filter(item => !item.archived)),
+  all: computed(() => [agent]),
+  isReady: ref(true)
+}))
 mockNuxtImport('usePermissions', () => () => ({
   permissions: computed(() => []),
   pending: computed(() => []),
@@ -189,7 +204,10 @@ describe('environment details page', { timeout: 30_000 }, () => {
     entry.click()
 
     await vi.waitFor(() => expect(document.body.textContent).toContain('Delete feature-auth?'))
-    expect(document.body.textContent).toContain('the 1 coding agent session')
+    // The cascade is named, and named honestly: the container goes, the
+    // session does not — it is retired, and its transcript stays readable.
+    expect(document.body.textContent).toContain('The 1 coding agent session')
+    expect(document.body.textContent).toContain('retired')
     expect(calls).toHaveLength(0)
 
     buttonWithText('Delete environment')!.click()
@@ -197,6 +215,25 @@ describe('environment details page', { timeout: 30_000 }, () => {
       expect.objectContaining({ method: 'DELETE', path: '/api/dev-environments/env_1' })
     ))
 
+    wrapper.unmount()
+  })
+
+  it('renders a deleted environment as a tombstone rather than as missing', async () => {
+    // The row outlives the container so a retired session can still say where
+    // it ran, and this page is where its badge links. It must not offer to
+    // start, stop or open anything that no longer exists.
+    environment.value = { ...environment.value, deletedAt: '2026-01-09T00:00:00.000Z' }
+    const wrapper = await mountSuspended(defineComponent({
+      setup: () => () => h(UApp, null, { default: () => h(EnvironmentPage) })
+    }), { attachTo: document.body })
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Deleted'))
+    expect(document.body.textContent).toContain('the sessions that ran here are retired')
+    expect(document.body.textContent).not.toContain('This environment no longer exists.')
+    expect(buttonWithText('Stop')).toBeFalsy()
+    expect(buttonWithText('New agent')).toBeFalsy()
+
+    environment.value = { ...environment.value, deletedAt: null }
     wrapper.unmount()
   })
 
