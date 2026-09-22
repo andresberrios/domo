@@ -69,6 +69,8 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
           description="Add NUXT_GEMINI_API_KEY to your .env and restart the dev server to enable the voice agent."
         />
 
+        <UsageLimitsCard />
+
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <UPageCard
             icon="i-lucide-container"

@@ -115,6 +115,10 @@ const menuItems = computed(() => [
         </template>
 
         <template #right>
+          <UsageMeter
+            :usage="session?.usage ?? null"
+            :provider="session?.adapter === 'codex' ? 'codex' : 'claude'"
+          />
           <USelectMenu
             v-if="modeItems.length"
             v-model="currentMode"

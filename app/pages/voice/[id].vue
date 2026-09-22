@@ -142,6 +142,9 @@ function roleMeta(role: string) {
         </template>
 
         <template #right>
+          <!-- Context only: Gemini publishes no plan-limit API, so there is
+               nothing account-wide to show beside it. -->
+          <UsageMeter :usage="session?.usage ?? null" />
           <UTooltip text="Start over with a fresh context">
             <UButton
               icon="i-lucide-message-square-plus"
