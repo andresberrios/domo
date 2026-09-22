@@ -81,6 +81,25 @@ things that are easy to get wrong.
   `pnpm dev` every edit to `server/` restarts Nitro and reattaches every
   session — and the symptom of missing it was a Claude Code agent quietly
   asking for permissions again minutes after being told not to.
+- **The way `session/load` restores a transcript is by replaying it at you**,
+  as ordinary `session/update` notifications, inside the load request and
+  before its response — claude-agent-acp's `replaySessionHistory`, codex-acp's
+  `streamThreadHistory`, OpenCode's `replayMessage`; all three read out of
+  their shipped bundles. Nothing on the wire marks one as history,
+  so `onUpdate` appended the lot and every attach grew a second copy of the
+  conversation. `AgentRuntime.restoring` is what stops it, and it stays set to
+  the **end of `boot()`** rather than to the load response: nothing live can
+  happen in the difference (the adapter has no turn, Domo has not prompted,
+  and a prompt waits on `ensureStarted`), while ending it on the response
+  would rest on how the SDK orders an already-read notification against the
+  response line behind it. It is cleared before `drainInbox()`, because a
+  queued message drains the moment an idle adapter attaches. The duplicate
+  looked *partial* on screen for one reason worth knowing: the replayed user
+  messages arrive as `user_message_chunk`, a type `buildTranscript` draws
+  nothing for, so the copy showed the agent's side and none of the user's.
+  `server/lib/db.ts` deletes the bursts an older install already holds,
+  recognising one by a `user_message_chunk` carrying the session's own first
+  prompt and taking it to the end of its run of replayable kinds.
 - **Projects own dev environments; dev environments own isolation.** A managed
   environment is a long-lived container whose checkout lives in a named Docker
   volume (`domo-dev-<id>-workspace`, derived from the id, so no column). There is
