@@ -27,9 +27,17 @@ const DELIVERY_ITEMS = [
   { value: 'interrupt' as const, label: 'Interrupt', icon: 'i-lucide-octagon-x', description: 'Stop the current turn first' }
 ]
 const delivery = ref<MessageDelivery>('steer')
-const uploading = ref(false)
 const attachments = ref<Array<{ name: string, path: string, mimeType: string, size: number }>>([])
 const fileInput = ref<HTMLInputElement | null>(null)
+
+/**
+ * Uploads are counted rather than flagged, and they chain: a paste while an
+ * earlier one is still in flight is normal, and a submit in the gap has to
+ * wait for both rather than send the message without its attachments.
+ */
+const uploads = ref(0)
+const uploading = computed(() => uploads.value > 0)
+let inflight: Promise<void> = Promise.resolve()
 
 const busy = computed(() => props.session.status === 'thinking' || props.session.status === 'starting')
 const status = computed(() => (busy.value ? ('streaming' as const) : ('ready' as const)))
@@ -41,13 +49,13 @@ const placeholder = computed(() => {
   return 'The agent is working — this goes into the turn it is running…'
 })
 
-async function onFiles(event: Event) {
-  const input = event.target as HTMLInputElement
-  if (!input.files?.length) return
-  uploading.value = true
+/** Never rejects: a failed upload is a toast, not something a caller handles. */
+async function upload(files: File[]) {
   try {
     const form = new FormData()
-    for (const file of Array.from(input.files)) form.append('files', file)
+    // The third argument is the filename the server sees, which is the only
+    // way a clipboard file with no name of its own gets one.
+    for (const file of files) form.append('files', file, uploadName(file))
     const result = await $fetch<{ files: typeof attachments.value }>('/api/uploads', {
       method: 'POST',
       body: form
@@ -55,21 +63,83 @@ async function onFiles(event: Event) {
     attachments.value = [...attachments.value, ...result.files]
   } catch (error: any) {
     toast.add({ title: 'Upload failed', description: error?.message, color: 'error' })
-  } finally {
-    uploading.value = false
-    input.value = ''
   }
+}
+
+function attach(files: File[]) {
+  if (!files.length) return
+  uploads.value += 1
+  inflight = inflight
+    .then(() => upload(files))
+    .finally(() => { uploads.value -= 1 })
+}
+
+function onFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length) return
+  attach(Array.from(input.files))
+  input.value = ''
+}
+
+/**
+ * A screenshot or a copied file goes straight in as an attachment; anything
+ * the clipboard also has text for is left to the textarea, which is every
+ * ordinary paste.
+ */
+function onPaste(event: ClipboardEvent) {
+  const files = pastedFiles(event.clipboardData)
+  if (!files.length) return
+  event.preventDefault()
+  attach(files)
 }
 
 function removeAttachment(path: string) {
   attachments.value = attachments.value.filter(attachment => attachment.path !== path)
 }
 
+/**
+ * `UChatPrompt` refuses to emit `submit` while its textarea is empty, so a
+ * message that is *only* an attachment — which is what pasting a screenshot
+ * and pressing Enter produces — could never leave. Both of its send paths are
+ * caught in the capture phase instead, and only in the case it drops.
+ */
+function attachmentOnly() {
+  return !text.value.trim() && (attachments.value.length > 0 || uploading.value)
+}
+
+function onSubmitCapture(event: Event) {
+  if (!attachmentOnly()) return
+  event.preventDefault()
+  event.stopPropagation()
+  void submit()
+}
+
+function onKeydownCapture(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.isComposing) return
+  if ((event.target as HTMLElement | null)?.tagName !== 'TEXTAREA') return
+  // The same rule `UChatPrompt` applies, since this stands in for it: Enter
+  // sends unless the prompt is in touch mode, where a modifier is needed.
+  const sends = isTouch.value
+    ? event.ctrlKey || event.metaKey
+    : !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey
+  if (!sends || !attachmentOnly()) return
+  event.preventDefault()
+  event.stopPropagation()
+  void submit()
+}
+
 async function submit() {
   const body = text.value.trim()
-  if (!body && !attachments.value.length) return
+  if (!body && !attachments.value.length && !uploading.value) return
 
   sending.value = true
+  // Enter right after a paste is the normal way to send a screenshot, so the
+  // message waits for the upload rather than leaving it behind.
+  if (uploading.value) await inflight
+  if (!body && !attachments.value.length) {
+    sending.value = false
+    return
+  }
   try {
     const content: any[] = []
     for (const attachment of attachments.value) {
@@ -110,8 +180,12 @@ async function stop() {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-3xl space-y-2">
-    <div v-if="attachments.length" class="flex flex-wrap gap-1.5">
+  <div
+    class="mx-auto w-full max-w-3xl space-y-2"
+    @keydown.capture="onKeydownCapture"
+    @submit.capture="onSubmitCapture"
+  >
+    <div v-if="attachments.length || uploading" class="flex flex-wrap gap-1.5">
       <UBadge
         v-for="attachment in attachments"
         :key="attachment.path"
@@ -131,6 +205,11 @@ async function stop() {
           @click="removeAttachment(attachment.path)"
         />
       </UBadge>
+
+      <UBadge v-if="uploading" color="neutral" variant="subtle" size="md" class="gap-1">
+        <UIcon name="i-lucide-loader-circle" class="size-3 animate-spin" />
+        Attaching…
+      </UBadge>
     </div>
 
     <UChatPrompt
@@ -141,11 +220,12 @@ async function stop() {
       :submit-on-enter="!isTouch"
       variant="outline"
       @submit="submit"
+      @paste="onPaste"
     >
       <template #footer>
         <div class="flex w-full items-center justify-between gap-2">
           <div class="flex items-center gap-1">
-            <UTooltip text="Attach files">
+            <UTooltip text="Attach files — or paste them in">
               <UButton
                 icon="i-lucide-paperclip"
                 color="neutral"

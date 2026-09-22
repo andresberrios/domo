@@ -963,6 +963,26 @@ things that are easy to get wrong.
   (`matchMedia('(pointer: coarse)')`, evaluated in `onMounted` because Domo is
   SPA-only). Desktop is unchanged: Enter sends, Shift+Enter breaks. The voice
   page's typed input is a single-line `UInput` and needs none of this.
+- **A clipboard with a file on it did not necessarily mean "attach a file".**
+  A spreadsheet range, a rich-text selection and several editors put an
+  `image/png` rendering *beside* the text, so `clipboardData.files` is not
+  empty for an ordinary paste. `pastedFiles()` (`app/utils/paste.ts`) therefore
+  takes the files only when the clipboard has no `text/plain` worth pasting:
+  attaching a picture of what was about to paste correctly is the worse of the
+  two failures. Verified in Chromium as well as in happy-dom, because a
+  synthetic `DataTransfer` is exactly the thing that can be built wrong.
+  The same pass gives a clipboard image a name — one arrives with none at all,
+  and the name is both what the badge shows and what the agent is told the
+  resource link is, so `uploadName()` dates one and it goes to the server as
+  `FormData.append`'s third argument.
+- **`UChatPrompt` will not emit `submit` while its textarea is empty**, which
+  makes a message that is *only* an attachment — pasting a screenshot and
+  pressing Enter — impossible through either of its send paths. `AgentComposer`
+  catches both on the wrapper in the **capture** phase (`@keydown.capture` on
+  the textarea only, `@submit.capture` for the form) and calls its own submit,
+  but *only* in the case the component drops: an empty textarea with something
+  attached. Everything else still goes through `UChatPrompt` itself, including
+  its IME guard and its touch rule, which the keydown path has to mirror.
 - **Reka's dropdown opens on `pointerdown`, not on `click`.** A component test
   that only calls `.click()` on the trigger waits forever for `[role="menu"]`.
   Dispatch `new MouseEvent('pointerdown', { bubbles: true, button: 0 })` first —
@@ -1174,6 +1194,18 @@ and permissions are end to end because a permission is a row.
   `AgentComposer.spec.ts`), **not** by a rendered screenshot. The a11y tree does
   not tell you whether the panel and the composer's picker sit right above each
   other correctly at mobile widths; that is still worth a real browser pass.
+- **Pasting into the composer was verified in Chromium against the running dev
+  server**, not only in happy-dom, because a synthetic `DataTransfer` is
+  precisely the part a component test cannot vouch for. Over the Caddy HTTPS
+  address, on an idle agent: a nameless `image/png` pasted into the textarea
+  was prevented, uploaded, and rendered as a `pasted-20260922-155005.png`
+  badge; Enter with an empty textarea sent
+  `content: [{ type: 'resource_link', … }]` and cleared the badge (the prompt
+  request was intercepted in the page, so no real turn was started); and a
+  `text/plain` paste, with and without an `image/png` beside it, was left to
+  the textarea with nothing uploaded. What is still unexercised is a *real*
+  system clipboard — whether macOS Chrome offers `text/plain` beside a Finder
+  file copy is assumed, not measured.
 - The dev-environment path was verified against a real Docker daemon by
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no

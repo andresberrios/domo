@@ -21,6 +21,30 @@ registerEndpoint('/api/agents/ag_1/prompt', {
   }
 })
 
+/** What the upload endpoint answered with, so a test can decide per case. */
+const uploaded = vi.fn(() => ({
+  files: [{ name: 'shot.png', path: '/data/uploads/up_1.png', mimeType: 'image/png', size: 12 }]
+}))
+
+registerEndpoint('/api/uploads', { method: 'POST', handler: () => uploaded() })
+
+/**
+ * happy-dom has no `ClipboardEvent` worth using, and the component only ever
+ * asks the event for its `clipboardData`.
+ */
+function paste(component: any, files: File[], text = '') {
+  const event = new Event('paste', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'clipboardData', {
+    value: { files, getData: (format: string) => (format === 'text/plain' ? text : '') }
+  })
+  component.find('textarea').element.dispatchEvent(event)
+  return event
+}
+
+function image(name = ''): File {
+  return new File([new Uint8Array([1, 2, 3])], name, { type: 'image/png' })
+}
+
 const Harness = defineComponent({
   props: { session: { type: Object as () => AgentSession, required: true } },
   setup: props => () => h(UApp, null, {
@@ -74,7 +98,10 @@ function pointer(kind: 'coarse' | 'fine') {
 
 let restorePointer: (() => void) | null = null
 
-beforeEach(() => sent.mockClear())
+beforeEach(() => {
+  sent.mockClear()
+  uploaded.mockClear()
+})
 afterEach(() => {
   restorePointer?.()
   restorePointer = null
@@ -124,5 +151,86 @@ describe('AgentComposer on a touch screen', () => {
       content: [{ type: 'text', text: 'ship it' }],
       delivery: 'steer'
     }))
+  })
+})
+
+describe('AgentComposer pasting', () => {
+  it('attaches a pasted image and sends it with the message', async () => {
+    restorePointer = pointer('fine')
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    paste(component, [image()])
+    await vi.waitFor(() => expect(component.text()).toContain('shot.png'))
+
+    await type(component, 'what is wrong here?')
+
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledWith({
+      content: [
+        {
+          type: 'resource_link',
+          uri: 'file:///data/uploads/up_1.png',
+          name: 'shot.png',
+          mimeType: 'image/png',
+          size: 12
+        },
+        { type: 'text', text: 'what is wrong here?' }
+      ],
+      delivery: 'steer'
+    }))
+  })
+
+  it('sends an attachment with no message at all', async () => {
+    // `UChatPrompt` will not emit `submit` for an empty textarea, and a pasted
+    // screenshot on its own is the ordinary thing to send.
+    restorePointer = pointer('fine')
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    paste(component, [image()])
+    await vi.waitFor(() => expect(component.text()).toContain('shot.png'))
+
+    await component.find('textarea').trigger('keydown', { key: 'Enter' })
+
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledWith({
+      content: [{
+        type: 'resource_link',
+        uri: 'file:///data/uploads/up_1.png',
+        name: 'shot.png',
+        mimeType: 'image/png',
+        size: 12
+      }],
+      delivery: 'steer'
+    }))
+  })
+
+  it('leaves an ordinary text paste to the textarea', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    const event = paste(component, [], 'just some words')
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(uploaded).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('does not hijack a paste that carries text beside its picture', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    const event = paste(component, [image()], 'one\ttwo')
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(uploaded).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('says so when an upload fails and keeps nothing', async () => {
+    uploaded.mockImplementationOnce(() => {
+      throw createError({ statusCode: 500, statusMessage: 'Disk full' })
+    })
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+
+    paste(component, [image()])
+
+    await vi.waitFor(() => expect(component.text()).toContain('Upload failed'))
+    expect(component.text()).not.toContain('shot.png')
   })
 })
