@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
-import type { DevEnvironment } from '../../shared/types'
+import type { DevEnvironment, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
 import { seedClaudeHome } from './dev-env/claude-home'
@@ -18,6 +18,7 @@ import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
 import { collectBrowserVolumes, ensureBrowserVolume } from './dev-env/browser-volume'
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
+import { carryMessage, readHostWorkingTree, reconcileArgs, seedReport } from './dev-env/workspace-seed'
 import { dataDir } from './paths'
 import { getSettings } from './settings'
 import {
@@ -162,16 +163,70 @@ const SSH_HOME_SCRIPT = [
   'for entry in "$@"; do ln -sfn "$host/$entry" "$dir/$entry"; done'
 ].join('\n')
 
+/**
+ * Reconciles the copied checkout with the HEAD copied beside it — see
+ * `workspace-seed.ts` for which direction, and why there are two.
+ *
+ * It fails creation when it fails. The alternative is an environment that looks
+ * created and quietly carries invisible work back out, which is the whole thing
+ * being fixed; a repository with no commits yet is the one case that is not a
+ * failure, because there is no HEAD to reconcile against.
+ */
+async function reconcileWorkingTree(input: {
+  containerId: string
+  remoteUser: string
+  home: string
+  workspacePath: string
+  mode: WorkingTreeMode
+  dirtyPaths: string[]
+  environmentName: string
+  repoPath: string
+}): Promise<WorkspaceSeedReport> {
+  const result = await run('docker', [
+    ...execArgs({
+      containerId: input.containerId,
+      user: input.remoteUser,
+      workdir: input.workspacePath,
+      env: { HOME: input.home }
+    }),
+    ...reconcileArgs({
+      mode: input.mode,
+      workspacePath: input.workspacePath,
+      message: carryMessage({ environmentName: input.environmentName, repoPath: input.repoPath })
+    })
+  ]).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `Could not reconcile the copied checkout with its HEAD: ${message}. `
+      + 'The environment would have started with files its own git does not describe.'
+    )
+  })
+  if (result.stderr.includes('no-head')) {
+    console.warn(
+      `[dev-env] ${input.environmentName} was created from a checkout with no commit to reconcile against; `
+      + 'its working tree was copied as it stood.'
+    )
+  }
+  return seedReport({
+    mode: input.mode,
+    paths: input.dirtyPaths,
+    commit: input.mode === 'carry' ? result.stdout.trim() || null : null
+  })
+}
+
 export async function createEnvironment(input: {
   projectId: string
   name: string
-}): Promise<DevEnvironment> {
+  /** What to do with whatever is uncommitted on the host. Defaults to `discard`. */
+  workingTree?: WorkingTreeMode
+}): Promise<DevEnvironment & { workspaceSeed: WorkspaceSeedReport }> {
   const project = await getProject(input.projectId)
   if (!project) throw new Error('Project not found')
   if (project.deletedAt) throw new Error('That project has been deleted; its environments cannot be recreated.')
   await access(join(project.repoPath, '.git'))
 
   const id = newId('env')
+  const workingTree = input.workingTree ?? 'discard'
   const name = input.name.trim()
   const safeName = safeEnvironmentName(name) || id
   const workspacePath = `/workspaces/${safeName}`
@@ -201,6 +256,9 @@ export async function createEnvironment(input: {
         return null
       })
       : null
+    // Read before the tar and only to be able to say what happened; the reconcile
+    // below runs on what actually landed in the volume, not on this list.
+    const dirtyPaths = await readHostWorkingTree(project.repoPath)
     const workspaceVolume = await copyRepository(project.repoPath, id)
     const imageName = await buildEnvironmentImage({
       config: resolved.config,
@@ -282,6 +340,20 @@ export async function createEnvironment(input: {
         'sh', '-c', SSH_HOME_SCRIPT, 'sh', `${home}/.ssh`, `${home}/.ssh-host`, ...overlay.ssh.links
       ], { input: overlay.ssh.config })
     }
+    // Before anything else looks at the checkout, and in particular before
+    // `postCreateCommand` and any agent: the tar copied the host's *working tree*,
+    // so until this runs the environment's files and its HEAD disagree. Needs the
+    // generated `~/.gitconfig` above, which is where the commit identity comes from.
+    const workspaceSeed = await reconcileWorkingTree({
+      containerId: inspection.id,
+      remoteUser,
+      home,
+      workspacePath,
+      mode: workingTree,
+      dirtyPaths,
+      environmentName: name,
+      repoPath: project.repoPath
+    })
     // After the preflight, because it runs the CLI out of the runtime volume.
     await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
     if (resolved.config.postCreateCommand) {
@@ -295,7 +367,7 @@ export async function createEnvironment(input: {
 
     const environment = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     await refreshEnvironmentPorts(id)
-    return (await getDevEnvironment(id)) ?? environment
+    return { ...((await getDevEnvironment(id)) ?? environment), workspaceSeed }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await updateDevEnvironment(id, { status: 'error', lastError: message })

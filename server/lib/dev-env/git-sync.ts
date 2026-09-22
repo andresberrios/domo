@@ -1,27 +1,38 @@
-import type { BranchExport, BranchExportResult, DevEnvironment, EnvironmentBranches } from '../../../shared/types'
+import type {
+  BranchExport,
+  BranchImport,
+  BranchSyncResult,
+  DevEnvironment,
+  EnvironmentBranches,
+  SyncedCommit
+} from '../../../shared/types'
 import { safeEnvironmentName } from '../dev-environments'
 import { getDevEnvironment, getProject } from '../repo'
 import { homeDirectory } from './container'
 import { run } from './docker'
 
 /**
- * Getting a branch out of an environment without going through GitHub.
+ * Moving a branch between the host's checkout and an environment's, in either
+ * direction, without going through GitHub.
  *
  * The checkout lives in a Docker volume, so the host repository cannot see it
  * as a path — but it does not need to. Git's `ext::` transport runs an
  * arbitrary command and speaks the pack protocol over its stdin/stdout, so
  * `docker exec … git-upload-pack <workspace>` is a perfectly ordinary remote:
  * a real fetch, with real negotiation, where only the missing objects cross.
+ * The same command serves a push, because git asks it for `git-receive-pack`
+ * instead — see `environmentTransport()` for the one character that makes that
+ * work.
  *
- * Nothing here ever force-updates, merges or rebases a *local* branch. The
- * worst case is "fetched to the tracking ref and stopped", which the caller
- * reports with the reason.
+ * Nothing here ever force-updates, merges or rebases a branch, at either end.
+ * The worst case is "moved the tracking ref and stopped" going out, and
+ * "sent nothing" coming in; both come back as `not-merged` with the reason.
  */
 
 /** Where an environment's branches land in the host repository. */
 export const TRACKING_NAMESPACE = 'domo-env'
 
-export interface UploadPackTransportInput {
+export interface EnvironmentTransportInput {
   containerId: string
   /** The environment's remote user. Null only for a container that never recorded one. */
   remoteUser: string | null
@@ -50,19 +61,30 @@ function word(value: string, what: string): string {
 }
 
 /**
- * The URL a host `git fetch` uses to read the environment's repository.
+ * The URL a host `git fetch` or `git push` uses to reach the environment's
+ * repository. One URL for both, because git tells the command which service it
+ * wants — and **`%S`, never `%s`, is what asks it to**. `%S` expands to the
+ * long service name (`git-upload-pack` for a fetch, `git-receive-pack` for a
+ * push), which is what an executable is actually called; `%s` expands to the
+ * short one, `docker exec` then reports that there is no `upload-pack` on the
+ * PATH, and what reaches the user is a bare
+ * `fatal: protocol error: bad line length character: OCI` with nothing in it
+ * to suggest where to look.
  *
  * `-u`/`HOME` are not decoration: git refuses a checkout owned by another uid
  * with "dubious ownership", and the `safe.directory` that answers that is in
  * the remote user's generated `~/.gitconfig`.
+ *
+ * `%S` is the only `%` the command may contain, which is why `word()` still
+ * refuses one in any value substituted into it.
  */
-export function uploadPackTransport(input: UploadPackTransportInput): string {
+export function environmentTransport(input: EnvironmentTransportInput): string {
   const command = ['docker', 'exec', '-i']
   if (input.remoteUser) command.push('-u', word(input.remoteUser, 'user'))
   if (input.home) command.push('-e', `HOME=${word(input.home, 'home directory')}`)
   command.push(
     word(input.containerId, 'container id'),
-    'git-upload-pack',
+    '%S',
     word(input.workspacePath, 'workspace path')
   )
   return `ext::${command.join(' ')}`
@@ -101,7 +123,7 @@ function containerReference(environment: DevEnvironment): string {
 }
 
 function defaultTransport(environment: DevEnvironment): string {
-  return uploadPackTransport({
+  return environmentTransport({
     containerId: containerReference(environment),
     remoteUser: environment.remoteUser,
     home: environment.remoteUser ? homeDirectory(environment.remoteUser) : null,
@@ -208,7 +230,7 @@ export async function exportBranch(input: ExportBranchInput): Promise<BranchExpo
     return { sha: commit, subject }
   })
 
-  const done = (result: BranchExportResult, reason?: string): BranchExport =>
+  const done = (result: BranchSyncResult, reason?: string): BranchExport =>
     ({ ref, sha, commits, into, result, ...(reason ? { reason } : {}) })
 
   if (!into) {
@@ -247,4 +269,147 @@ export async function exportBranch(input: ExportBranchInput): Promise<BranchExpo
   if (checkedOut) await git(['merge', '--ff-only', '--quiet', ref])
   else await git(['update-ref', `refs/heads/${into}`, sha, ...(intoSha ? [intoSha] : [''])])
   return done(intoSha ? 'fast-forwarded' : 'created')
+}
+
+/** `from` defaults to the branch's own name on the host; a blank one means the same. */
+export function resolveFromRef(branch: string, from: string | null | undefined): string {
+  return (from ?? '').trim() || branch
+}
+
+interface RemoteState {
+  /** The branch the container has checked out, or null when its HEAD is detached. */
+  head: string | null
+  /** Every branch in the environment, by short name. */
+  branches: Map<string, string>
+}
+
+/**
+ * One `ls-remote --symref` answers both questions an import has to ask: what
+ * the environment already has for this branch, and which branch its working
+ * tree is sitting on. Over the same `ext::` URL as everything else, so the
+ * whole import is testable against a plain directory with no Docker.
+ */
+function parseRemoteState(output: string): RemoteState {
+  const branches = new Map<string, string>()
+  let head: string | null = null
+  for (const line of output.split('\n')) {
+    const symref = /^ref:\s+refs\/heads\/(\S+)\s+HEAD$/.exec(line)
+    if (symref) {
+      head = symref[1]!
+      continue
+    }
+    const [sha = '', ref = ''] = line.split('\t')
+    if (ref.startsWith('refs/heads/') && sha) branches.set(ref.slice('refs/heads/'.length), sha)
+  }
+  return { head, branches }
+}
+
+export interface ImportBranchInput {
+  environmentId: string
+  /** The branch to write in the environment. */
+  branch: string
+  /** The ref in the project's checkout to send. Defaults to the branch's own name. */
+  from?: string | null
+  /** How the host reaches the environment's repository. Injected by the tests. */
+  transport?: (environment: DevEnvironment) => string
+}
+
+/**
+ * Send one branch from the project's own checkout into an environment.
+ *
+ * The inverse of `exportBranch` and held to the same discipline: fast-forward
+ * only, never a force, never a merge, never a rebase. A branch the environment
+ * has moved on its own comes back as `not-merged` with the reason, and nothing
+ * is sent at all — the ancestry is checked here rather than left to
+ * `git-receive-pack` to reject, so the answer is a sentence instead of a push
+ * error.
+ *
+ * The branch the container has **checked out** is refused outright. Git's own
+ * `receive.denyCurrentBranch` would catch it, but that is a default somebody
+ * can change, and what it protects is an agent's live working tree: moving the
+ * ref under it is how uncommitted work that was never anywhere else disappears.
+ */
+export async function importBranch(input: ImportBranchInput): Promise<BranchImport> {
+  const branch = safeRefComponent(input.branch.trim(), 'branch')
+  const from = safeRefComponent(resolveFromRef(branch, input.from), 'branch')
+  const { environment, project } = await environmentAndProject(input.environmentId)
+  const url = (input.transport ?? defaultTransport)(environment)
+
+  const git = (args: string[], options: { allowFailure?: boolean } = {}) =>
+    run('git', args, { cwd: project.repoPath, ...options })
+  const revision = async (name: string): Promise<string | null> =>
+    (await git(['rev-parse', '--verify', '--quiet', `${name}^{commit}`], { allowFailure: true })
+      .catch(() => ({ stdout: '' }))).stdout.trim() || null
+
+  const sha = await revision(from)
+  if (!sha) throw new Error(`The project's checkout has nothing called "${from}" to send.`)
+
+  // `protocol.ext.allow` is passed per invocation and written to no config, on
+  // this call and on the push below — the transport runs an arbitrary command,
+  // and a `git config --global` would hand every repository on this machine one.
+  const listed = await git([
+    '-c', 'protocol.ext.allow=always', 'ls-remote', '--symref', url
+  ]).catch((error) => {
+    const message = commandMessage(error)
+    if (/is not running|No such container/i.test(message)) {
+      throw new Error(`${environment.name} is not running. Start it and try the import again.`)
+    }
+    throw new Error(`Could not reach ${environment.name}'s repository: ${message}`)
+  })
+  const remote = parseRemoteState(listed.stdout)
+  const remoteSha = remote.branches.get(branch) ?? null
+
+  const done = (result: BranchSyncResult, commits: SyncedCommit[], reason?: string): BranchImport =>
+    ({ branch, from, sha: result === 'not-merged' ? remoteSha ?? sha : sha, commits, result, ...(reason ? { reason } : {}) })
+
+  if (remote.head === branch) {
+    return done('not-merged', [], `${environment.name} has "${branch}" checked out. Its working tree and index `
+      + 'belong to that branch and may hold work that is not committed anywhere else, so it is never written '
+      + `to from outside. Check out another branch in ${environment.name}, or import into a different one.`)
+  }
+  if (remoteSha === sha) return done('up-to-date', [])
+  if (remoteSha) {
+    // No `allowFailure`: the exit code *is* the answer, so the rejection is read.
+    const fastForward = await git(['merge-base', '--is-ancestor', remoteSha, sha]).then(() => true, () => false)
+    if (!fastForward) {
+      return done('not-merged', [], `${environment.name}'s "${branch}" has commits that "${from}" does not, `
+        + 'so it cannot be fast-forwarded. Export it and merge it here, or import into a new branch name.')
+    }
+  }
+
+  // What will cross: measured against the environment's own branch when it has
+  // one, else against everything else the environment already holds — which is
+  // more honest than "the whole history" for a branch cut from one it has.
+  const excluded: string[] = []
+  if (!remoteSha) {
+    for (const [name, other] of remote.branches) {
+      if (name !== branch && await revision(other)) excluded.push(other)
+    }
+  }
+  const range = remoteSha
+    ? [`${remoteSha}..${sha}`]
+    : [sha, ...(excluded.length ? ['--not', ...excluded] : [])]
+  const log = await git([
+    'log', `--max-count=${MAX_LISTED_COMMITS}`, `--format=%H${FIELD}%s`, ...range
+  ], { allowFailure: true }).catch(() => ({ stdout: '' }))
+  const commits = log.stdout.split('\n').filter(Boolean).map((line) => {
+    const [commit = '', subject = ''] = line.split(FIELD)
+    return { sha: commit, subject }
+  })
+
+  // No `--force` and no `+` in the refspec: receive-pack re-checks the
+  // fast-forward the ancestry test above already made, and a surprise is a
+  // failure rather than a rewrite.
+  await git([
+    '-c', 'protocol.ext.allow=always',
+    'push', '--quiet', url, `${sha}:refs/heads/${branch}`
+  ]).catch((error) => {
+    const message = commandMessage(error)
+    if (/currently checked out|denyCurrentBranch/i.test(message)) {
+      throw new Error(`${environment.name} has "${branch}" checked out, so it cannot be written from outside.`)
+    }
+    throw new Error(`Could not send "${from}" to ${environment.name}: ${message}`)
+  })
+
+  return done(remoteSha ? 'fast-forwarded' : 'created', commits)
 }

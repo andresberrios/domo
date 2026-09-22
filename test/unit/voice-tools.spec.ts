@@ -46,10 +46,11 @@ const devEnvironments = {
   startEnvironment: vi.fn(),
   stopEnvironment: vi.fn()
 }
-// The export itself is `test/server/git-sync.spec.ts`, against real git; what
+// The sync itself is `test/server/git-sync.spec.ts`, against real git; what
 // matters here is which environment and which branch the spoken call picks.
 const gitSync = {
   exportBranch: vi.fn(),
+  importBranch: vi.fn(),
   listEnvironmentBranches: vi.fn()
 }
 const projects = {
@@ -621,12 +622,40 @@ describe('delete_project', () => {
 describe('create_dev_environment', () => {
   it('creates an environment for the named project', async () => {
     repo.listProjects.mockResolvedValue([project()])
-    devEnvironments.createEnvironment.mockResolvedValue(environment())
+    devEnvironments.createEnvironment.mockResolvedValue({
+      ...environment(),
+      workspaceSeed: { mode: 'discard', paths: ['app/main.css'], total: 1, commit: null }
+    })
 
     const result = await voiceTools.create_dev_environment!.handler({ project: 'domo', name: 'feature-auth' }, ctx)
 
-    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({ projectId: 'prj_1', name: 'feature-auth' })
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: 'prj_1',
+      name: 'feature-auth',
+      workingTree: 'discard'
+    })
     expect(result).toMatchObject({ id: 'env_1', name: 'feature-auth', status: 'running' })
+    // The voice agent is told what happened to the host's uncommitted work, so it can say so.
+    expect(result).toMatchObject({ workingTree: expect.stringContaining('1 uncommitted path') })
+  })
+
+  it('carries the host working tree only when asked', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+    devEnvironments.createEnvironment.mockResolvedValue({
+      ...environment(),
+      workspaceSeed: { mode: 'carry', paths: [], total: 2, commit: 'abcdef1234567890' }
+    })
+
+    await voiceTools.create_dev_environment!.handler(
+      { project: 'domo', name: 'feature-auth', workingTree: 'carry' },
+      ctx
+    )
+
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: 'prj_1',
+      name: 'feature-auth',
+      workingTree: 'carry'
+    })
   })
 
   it('refuses an empty name', async () => {
@@ -834,5 +863,48 @@ describe('export_branch', () => {
   it('tells the model to list environments when nothing matches', async () => {
     await expect(voiceTools.export_branch!.handler({ environment: 'billing' }, ctx))
       .rejects.toThrow(/No development environment matches "billing"/)
+  })
+
+  describe('the other direction', () => {
+    beforeEach(() => {
+      gitSync.importBranch.mockResolvedValue({
+        branch: 'main',
+        from: 'main',
+        sha: 'f00dcafe',
+        commits: [],
+        result: 'fast-forwarded'
+      })
+    })
+
+    it('sends a branch from this machine into the named environment', async () => {
+      const result = await voiceTools.import_branch!.handler({ environment: 'auth', branch: 'main' }, ctx)
+
+      expect(gitSync.importBranch).toHaveBeenCalledWith({
+        environmentId: 'env_1',
+        branch: 'main',
+        from: 'main'
+      })
+      expect(result).toMatchObject({ environment: 'feature-auth', branch: 'main', result: 'fast-forwarded' })
+    })
+
+    it('takes a differently named branch on this machine', async () => {
+      await voiceTools.import_branch!.handler(
+        { environment: 'auth', branch: 'staging', from: 'main' },
+        ctx
+      )
+
+      expect(gitSync.importBranch).toHaveBeenCalledWith(expect.objectContaining({
+        branch: 'staging',
+        from: 'main'
+      }))
+    })
+
+    // There is no "the one checked out there" fallback the way an export has:
+    // that branch is precisely the one an import refuses.
+    it('needs a branch named', async () => {
+      await expect(voiceTools.import_branch!.handler({ environment: 'auth', branch: ' ' }, ctx))
+        .rejects.toThrow(/Name the branch/)
+      expect(gitSync.importBranch).not.toHaveBeenCalled()
+    })
   })
 })

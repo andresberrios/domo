@@ -75,6 +75,7 @@ async function remove() {
 }
 
 const exportOpen = ref(false)
+const importOpen = ref(false)
 </script>
 
 <template>
@@ -114,7 +115,8 @@ const exportOpen = ref(false)
             v-if="environment && !deleted"
             :items="[[
               { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } },
-              { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running, onSelect: () => { exportOpen = true } }
+              { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running, onSelect: () => { exportOpen = true } },
+              { label: 'Import branch', icon: 'i-lucide-git-branch-plus', disabled: !running, onSelect: () => { importOpen = true } }
             ], [
               { label: 'Delete', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingDelete = true } }
             ]]"
@@ -237,6 +239,7 @@ const exportOpen = ref(false)
         <section v-if="!deleted" class="flex flex-wrap gap-2">
           <OpenInVsCode :environment="environment" />
           <ExportBranchModal v-model:open="exportOpen" :environment="environment" />
+          <ImportBranchModal v-model:open="importOpen" :environment="environment" />
         </section>
       </div>
 

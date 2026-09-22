@@ -3,7 +3,14 @@ import { listAdapterCatalog } from '../acp/models'
 import { assertSessionLive } from '../acp/retirement'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
-import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
+import {
+  exportBranch,
+  importBranch,
+  listEnvironmentBranches,
+  resolveFromRef,
+  resolveIntoBranch
+} from '../dev-env/git-sync'
+import { describeSeed } from '../dev-env/workspace-seed'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
@@ -272,7 +279,15 @@ export const MESH_TOOLS = [
       type: 'object',
       properties: {
         projectId: { type: 'string', description: 'Project id, from list_projects.' },
-        name: { type: 'string', description: 'Short name for the environment, e.g. "feature-auth".' }
+        name: { type: 'string', description: 'Short name for the environment, e.g. "feature-auth".' },
+        workingTree: {
+          type: 'string',
+          enum: ['discard', 'carry'],
+          description:
+            'What to do with work that is uncommitted on the host. "discard" (the default) starts the '
+            + 'environment from the project\'s last commit. "carry" brings the uncommitted changes over and '
+            + 'commits them there, so they are visible rather than mixed into your own work later.'
+        }
       },
       required: ['projectId', 'name'],
       additionalProperties: false
@@ -322,6 +337,27 @@ export const MESH_TOOLS = [
           description: 'Environment to export from, from list_projects. Defaults to this agent\'s own environment.'
         }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'import_branch',
+    description:
+      'Copy a branch the other way: from the project\'s own checkout on the host *into* a development environment, by pushing it straight to the container. Use it to bring an environment up to date with work that has landed on the host, or to seed one with a branch to continue. Fast-forward only, and it refuses the branch the environment currently has checked out.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        branch: { type: 'string', description: 'Branch to write in the environment.' },
+        from: {
+          type: 'string',
+          description: 'Ref in the project\'s checkout on the host to send. Defaults to the same name.'
+        },
+        devEnvironmentId: {
+          type: 'string',
+          description: 'Environment to import into, from list_projects. Defaults to this agent\'s own environment.'
+        }
+      },
+      required: ['branch'],
       additionalProperties: false
     }
   },
@@ -581,8 +617,18 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'create_dev_environment': {
-      const environment = await createEnvironment({ projectId: args.projectId, name: args.name })
-      return { id: environment.id, name: environment.name, status: environment.status, workspace: environment.workspacePath }
+      const environment = await createEnvironment({
+        projectId: args.projectId,
+        name: args.name,
+        workingTree: args.workingTree === 'carry' ? 'carry' : 'discard'
+      })
+      return {
+        id: environment.id,
+        name: environment.name,
+        status: environment.status,
+        workspace: environment.workspacePath,
+        workingTree: describeSeed(environment.workspaceSeed)
+      }
     }
 
     case 'update_dev_environment': {
@@ -613,6 +659,16 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         throw new Error('That environment has no branch checked out; name the branch to export.')
       }
       return exportBranch({ environmentId, branch, into: resolveIntoBranch(branch, args.into) })
+    }
+
+    case 'import_branch': {
+      const environmentId = String(args.devEnvironmentId ?? caller.devEnvironmentId ?? '')
+      if (!environmentId) {
+        throw new Error('This agent is not running in a development environment; pass devEnvironmentId (from list_projects).')
+      }
+      const branch = String(args.branch ?? '').trim()
+      if (!branch) throw new Error('Name the branch to write in the environment.')
+      return importBranch({ environmentId, branch, from: resolveFromRef(branch, args.from) })
     }
 
     case 'schedule_task': {

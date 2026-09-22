@@ -367,6 +367,10 @@ describe('createEnvironment', () => {
       stepAt('chown'),
       // The container's own git config, which replaced `git config --global`.
       stepAt('cat > "$1"', '/home/vscode/.gitconfig'),
+      // The copied working tree is reconciled with the HEAD copied beside it before
+      // anything else can look at the checkout — and after the git config, which is
+      // where the identity a carried commit needs comes from.
+      stepAt('git reset --hard --quiet'),
       // The seed runs the CLI out of the runtime volume, so it belongs after the
       // preflight that proves the runtime volume can run at all.
       stepAt('claude', '--version'),
@@ -539,6 +543,87 @@ describe('createEnvironment', () => {
       configPath: '.domo.json',
       remoteUser: 'vscode'
     }))
+  })
+
+  /**
+   * The tar copies the host's *working tree*, so until this runs the environment's
+   * files and the HEAD beside them disagree — and the agent's first `git add -A`
+   * sweeps the host's uncommitted work into a branch that is exported back as if
+   * the agent had written it. That is the bug; these are its terms.
+   */
+  describe('the copied working tree', () => {
+    /** The reconcile script, as the one `docker exec` that carries it. */
+    function reconcileCall(): string[] | undefined {
+      return dockerCalls().find(args => args.some(arg => arg.includes('git rev-parse --verify --quiet HEAD')))
+    }
+
+    it('is reset to HEAD as the environment\'s own user, with a HOME git can read', async () => {
+      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+      const call = reconcileCall()!
+      expect(call.slice(0, 8)).toEqual([
+        'exec', '--user', 'vscode', '--workdir', '/workspaces/api-work', '--env', 'HOME=/home/vscode', 'container-sha'
+      ])
+      // The mode and the workspace are argv, never spliced into the script.
+      expect(call.slice(-3)).toEqual(['discard', '/workspaces/api-work', expect.stringContaining('chore: carry')])
+      expect(call.join('\n')).toContain('git clean -fdq')
+    })
+
+    it('commits instead of resetting when the caller asks for the host\'s work', async () => {
+      await createEnvironment({ projectId: 'prj_1', name: 'API work', workingTree: 'carry' })
+
+      expect(reconcileCall()!.slice(-3)[0]).toBe('carry')
+    })
+
+    it('reports what the host had uncommitted, so an absent change is never a silent one', async () => {
+      run.mockImplementation(async (program, args) => {
+        if (program === 'git' && args.includes('status')) {
+          return { stdout: ' M app/assets/css/main.css\0?? scratch.md\0', stderr: '' }
+        }
+        return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+      })
+
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+      expect(run).toHaveBeenCalledWith('git', ['-C', repoPath, 'status', '--porcelain', '-z'], expect.anything())
+      expect(created.workspaceSeed).toEqual({
+        mode: 'discard',
+        paths: ['app/assets/css/main.css', 'scratch.md'],
+        total: 2,
+        commit: null
+      })
+    })
+
+    it('reports the commit a carried tree landed on', async () => {
+      run.mockImplementation(async (program, args) => {
+        if (program === 'git' && args.includes('status')) return { stdout: ' M a.ts\0', stderr: '' }
+        if (args.some(arg => typeof arg === 'string' && arg.includes('git rev-parse --verify'))) {
+          return { stdout: 'c0ffee1234567890', stderr: '' }
+        }
+        return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+      })
+
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work', workingTree: 'carry' })
+
+      expect(created.workspaceSeed).toMatchObject({ mode: 'carry', total: 1, commit: 'c0ffee1234567890' })
+    })
+
+    // Better no environment than one whose files its own git does not describe:
+    // that is exactly the state the export cannot be trusted from.
+    it('fails creation, and cleans up, when the reconcile cannot run', async () => {
+      run.mockImplementation(async (_program, args) => {
+        if (args.some(arg => typeof arg === 'string' && arg.includes('git reset --hard'))) {
+          throw new Error('docker exec failed: fatal: detected dubious ownership')
+        }
+        return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+      })
+
+      await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' }))
+        .rejects.toThrow(/reconcile the copied checkout/)
+
+      const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+      expect(dockerCalls()).toContainEqual(['volume', 'rm', `domo-dev-${id}-workspace`])
+    })
   })
 
   it('mounts the shared runtime volume read-only, and the checkout at the workspace', async () => {

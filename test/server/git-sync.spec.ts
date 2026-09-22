@@ -5,17 +5,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { DevEnvironment } from '../../shared/types'
 import { run } from '../../server/lib/dev-env/docker'
-import { exportBranch } from '../../server/lib/dev-env/git-sync'
+import { exportBranch, importBranch } from '../../server/lib/dev-env/git-sync'
 import { createDevEnvironmentRow, createProject } from '../../server/lib/repo'
 
 /**
- * The whole export, with real git on both ends and no Docker.
+ * The whole export *and* the whole import, with real git on both ends and no
+ * Docker.
  *
  * The transport is the only injected part: in production it is
- * `ext::docker exec … git-upload-pack <workspace>`, here it is
- * `ext::git-upload-pack <directory>` against a second checkout. Everything
- * else — the fetch, the negotiation, the tracking ref, the fast-forward rules
- * and the environment/project lookup in Postgres — is the real thing.
+ * `ext::docker exec … %S <workspace>`, here it is `ext::%S <directory>`
+ * against a second checkout. `%S` is doing the same job in both — it is what
+ * lets one URL serve `git-upload-pack` for the fetch and `git-receive-pack`
+ * for the push. Everything else — the negotiation, the tracking ref, the
+ * fast-forward rules, the checked-out-branch refusal and the
+ * environment/project lookup in Postgres — is the real thing.
  */
 
 const scratch: string[] = []
@@ -24,8 +27,8 @@ let host: string
 let container: string
 let environment: DevEnvironment
 
-/** `git-upload-pack` straight against a directory: the same transport, without a container. */
-const transport = () => `ext::git-upload-pack ${container}`
+/** The service git asks for, straight against a directory: the same transport, without a container. */
+const transport = () => `ext::%S ${container}`
 
 async function git(repo: string, ...args: string[]) {
   return run('git', [
@@ -216,5 +219,134 @@ describe('exporting a branch from an environment', () => {
   it('fails readably when the environment or its project is gone', async () => {
     await expect(exportBranch({ environmentId: 'env_missing', branch: 'main', transport }))
       .rejects.toThrow(/Development environment not found/)
+  })
+})
+
+/**
+ * `from` defaults to the branch's own name (`resolveFromRef`), which is the
+ * common case; the tests below name it only where they mean something else.
+ */
+const importIt = (branch: string, from?: string) =>
+  importBranch({ environmentId: environment.id, branch, from, transport })
+
+describe('importing a branch into an environment', () => {
+  it('creates a branch the environment does not have yet, and lists what crossed', async () => {
+    await git(host, 'checkout', '--quiet', '-b', 'release')
+    const sha = await commit(host, 'release.txt', 'cut the release')
+
+    const result = await importIt('release')
+
+    expect(result).toMatchObject({ branch: 'release', from: 'release', sha, result: 'created' })
+    expect(subjects(result)).toEqual(['cut the release'])
+    await expect(revision(container, 'refs/heads/release')).resolves.toBe(sha)
+  })
+
+  // The case this was built for: work lands on the host and four environments
+  // are left sitting on a stale main.
+  it('fast-forwards a branch the environment is behind on', async () => {
+    const sha = await commit(host, 'landed.txt', 'landed on the host')
+
+    const result = await importIt('main')
+
+    expect(result).toMatchObject({ result: 'fast-forwarded', sha })
+    expect(subjects(result)).toEqual(['landed on the host'])
+    await expect(revision(container, 'refs/heads/main')).resolves.toBe(sha)
+  })
+
+  it('says up-to-date, with nothing to list, when the import is a repeat', async () => {
+    await commit(host, 'landed.txt', 'landed on the host')
+    await importIt('main')
+
+    const result = await importIt('main')
+
+    expect(result).toMatchObject({ result: 'up-to-date', commits: [] })
+  })
+
+  it('sends a differently named host ref into a branch of its own', async () => {
+    const sha = await commit(host, 'staged.txt', 'for review')
+
+    const result = await importIt('staging', 'main')
+
+    expect(result).toMatchObject({ branch: 'staging', from: 'main', result: 'created', sha })
+    await expect(revision(container, 'refs/heads/staging')).resolves.toBe(sha)
+    // The environment's own main was not the target and did not move.
+    await expect(revision(container, 'refs/heads/main')).resolves.not.toBe(sha)
+  })
+
+  /**
+   * The one that destroys work rather than merely annoying someone. The
+   * environment's working tree and index belong to its checked-out branch and
+   * may hold an agent's uncommitted changes; moving the ref under it strands
+   * them. `receive.denyCurrentBranch` would refuse too, but it is a default
+   * somebody can turn off, so this is checked before anything is sent.
+   */
+  it('refuses the branch the environment has checked out, and sends nothing', async () => {
+    const before = await revision(container, 'refs/heads/feature')
+    await git(host, 'checkout', '--quiet', '-b', 'feature')
+    await commit(host, 'feature.txt', 'on the host')
+
+    const result = await importIt('feature')
+
+    expect(result.result).toBe('not-merged')
+    expect(result.reason).toMatch(/has "feature" checked out/)
+    expect(result.commits).toEqual([])
+    await expect(revision(container, 'refs/heads/feature')).resolves.toBe(before)
+  })
+
+  it('refuses a branch the environment has moved on its own, and says where to look', async () => {
+    await git(container, 'checkout', '--quiet', 'main')
+    const inTheEnvironment = await commit(container, 'agent.txt', 'the agent\'s own commit')
+    await git(container, 'checkout', '--quiet', 'feature')
+    await commit(host, 'landed.txt', 'landed on the host')
+
+    const result = await importIt('main')
+
+    expect(result.result).toBe('not-merged')
+    expect(result.reason).toMatch(/cannot be fast-forwarded/)
+    // Never force, never merge, never rebase: the agent's commit survives.
+    await expect(revision(container, 'refs/heads/main')).resolves.toBe(inTheEnvironment)
+    expect(result.sha).toBe(inTheEnvironment)
+  })
+
+  it('names what it could not find in the project\'s checkout', async () => {
+    await expect(importIt('main', 'nope')).rejects.toThrow(/nothing called "nope" to send/)
+  })
+
+  it('refuses a branch name git would read as something else', async () => {
+    await expect(importIt('--receive-pack=touch')).rejects.toThrow(/not a valid branch name/)
+    await expect(importIt('main', 'a b')).rejects.toThrow(/not a valid branch name/)
+  })
+
+  it('fails readably when the environment or its project is gone', async () => {
+    await expect(importBranch({ environmentId: 'env_missing', branch: 'main', transport }))
+      .rejects.toThrow(/Development environment not found/)
+  })
+})
+
+/**
+ * The point of `%S`: one URL, both services. If the transport were still
+ * hard-coded to `git-upload-pack` this would fail on the push half with
+ * `bad line length character`, which is the failure the substitution exists to
+ * avoid and the one nobody should have to diagnose twice.
+ */
+describe('one transport, both directions', () => {
+  it('takes a branch out of an environment and back into it', async () => {
+    const sha = await commit(container, 'feature.txt', 'work in the environment')
+
+    await expect(exportIt('feature')).resolves.toMatchObject({ result: 'created' })
+
+    // The host now has it, moves it on, and sends it to a branch the
+    // environment is not sitting on.
+    await git(host, 'checkout', '--quiet', 'feature')
+    const reviewed = await commit(host, 'review.txt', 'reviewed on the host')
+    await git(host, 'checkout', '--quiet', 'main')
+
+    const result = await importIt('feature-reviewed', 'feature')
+
+    expect(result).toMatchObject({ result: 'created', sha: reviewed })
+    expect(subjects(result)).toEqual(['reviewed on the host'])
+    await expect(revision(container, 'refs/heads/feature-reviewed')).resolves.toBe(reviewed)
+    // The branch the environment is working on was not touched by either leg.
+    await expect(revision(container, 'refs/heads/feature')).resolves.toBe(sha)
   })
 })

@@ -48,7 +48,8 @@ const devEnvironments = vi.hoisted(() => ({
     projectId: input.projectId,
     name: input.name,
     status: 'running',
-    workspacePath: '/workspaces/env_new'
+    workspacePath: '/workspaces/env_new',
+    workspaceSeed: { mode: input.workingTree ?? 'discard', paths: [], total: 0, commit: null }
   })),
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
@@ -57,9 +58,9 @@ const devEnvironments = vi.hoisted(() => ({
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
 
-// The export itself is `git-sync.spec.ts`, with real git on both ends; here it
-// is only what the mesh decides before calling it. `resolveIntoBranch` stays
-// real, because that decision is the point.
+// The sync itself is `git-sync.spec.ts`, with real git on both ends; here it
+// is only what the mesh decides before calling it. `resolveIntoBranch` /
+// `resolveFromRef` stay real, because those decisions are the point.
 const gitSync = vi.hoisted(() => ({
   exportBranch: vi.fn(async (input: any) => ({
     ref: `refs/remotes/domo-env/env/${input.branch}`,
@@ -67,6 +68,13 @@ const gitSync = vi.hoisted(() => ({
     commits: [],
     into: input.into,
     result: input.into ? 'fast-forwarded' : 'not-merged'
+  })),
+  importBranch: vi.fn(async (input: any) => ({
+    branch: input.branch,
+    from: input.from,
+    sha: 'f00d',
+    commits: [],
+    result: 'fast-forwarded'
   })),
   listEnvironmentBranches: vi.fn(async () => ({ current: 'work-in-here', branches: [] }))
 }))
@@ -146,6 +154,7 @@ beforeEach(async () => {
   devEnvironments.stopEnvironment.mockClear()
   devEnvironments.removeEnvironment.mockClear()
   gitSync.exportBranch.mockClear()
+  gitSync.importBranch.mockClear()
   gitSync.listEnvironmentBranches.mockClear()
 })
 
@@ -198,6 +207,7 @@ describe('the agent-mesh MCP endpoint', () => {
       'update_dev_environment',
       'delete_dev_environment',
       'export_branch',
+      'import_branch',
       'schedule_task',
       'list_scheduled_tasks',
       'update_scheduled_task',
@@ -637,8 +647,31 @@ describe('projects and dev environments', () => {
       name: 'feature-x'
     })).body)
 
-    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({ projectId: project.id, name: 'feature-x' })
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: project.id,
+      name: 'feature-x',
+      workingTree: 'discard'
+    })
     expect(body).toMatchObject({ id: 'env_new', name: 'feature-x', status: 'running' })
+  })
+
+  // The host's uncommitted work is left behind unless the caller says otherwise:
+  // an agent asking for an environment has no idea what its human left in the tree.
+  it('carries the host working tree only when the caller asks for it', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+
+    await callTool(mintMeshToken(caller.id), 'create_dev_environment', {
+      projectId: project.id,
+      name: 'feature-y',
+      workingTree: 'carry'
+    })
+
+    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
+      projectId: project.id,
+      name: 'feature-y',
+      workingTree: 'carry'
+    })
   })
 
   it('starts, stops and renames a development environment', async () => {
@@ -773,5 +806,49 @@ describe('export_branch', () => {
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toMatch(/pass devEnvironmentId/)
     expect(gitSync.exportBranch).not.toHaveBeenCalled()
+  })
+
+  it('imports into the caller\'s own environment, from the same name on the host', async () => {
+    const environment = await environmentFor()
+    const caller = await session('caller', { devEnvironmentId: environment.id })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'import_branch', { branch: 'main' })).body)
+
+    expect(gitSync.importBranch).toHaveBeenCalledWith({
+      environmentId: environment.id,
+      branch: 'main',
+      from: 'main'
+    })
+    expect(body).toMatchObject({ branch: 'main', result: 'fast-forwarded' })
+  })
+
+  it('takes another environment and a differently named host ref for an import', async () => {
+    const environment = await environmentFor('other')
+    const caller = await session('caller')
+
+    await callTool(mintMeshToken(caller.id), 'import_branch', {
+      devEnvironmentId: environment.id,
+      branch: 'staging',
+      from: 'main'
+    })
+
+    expect(gitSync.importBranch).toHaveBeenCalledWith({
+      environmentId: environment.id,
+      branch: 'staging',
+      from: 'main'
+    })
+  })
+
+  // Unlike an export there is nothing to fall back to: an import with no target
+  // branch has nowhere to put anything.
+  it('refuses an import with no branch named', async () => {
+    const environment = await environmentFor()
+    const caller = await session('caller', { devEnvironmentId: environment.id })
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'import_branch', { branch: '  ' })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toMatch(/Name the branch/)
+    expect(gitSync.importBranch).not.toHaveBeenCalled()
   })
 })

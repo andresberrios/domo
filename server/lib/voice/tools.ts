@@ -6,7 +6,14 @@ import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
-import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
+import {
+  exportBranch,
+  importBranch,
+  listEnvironmentBranches,
+  resolveFromRef,
+  resolveIntoBranch
+} from '../dev-env/git-sync'
+import { describeSeed } from '../dev-env/workspace-seed'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
@@ -466,7 +473,15 @@ export const voiceTools: Record<string, VoiceTool> = {
         type: Type.OBJECT,
         properties: {
           project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' },
-          name: { type: Type.STRING, description: 'Short name for the environment, e.g. "feature-auth".' }
+          name: { type: Type.STRING, description: 'Short name for the environment, e.g. "feature-auth".' },
+          workingTree: {
+            type: Type.STRING,
+            enum: ['discard', 'carry'],
+            description:
+              'What to do with work the user has left uncommitted on the host. "discard" (the default) '
+              + 'starts the environment from the last commit. Pass "carry" only if the user asks to '
+              + 'continue their uncommitted work in it; it is committed there so it stays visible.'
+          }
         },
         required: ['project', 'name']
       }
@@ -475,8 +490,18 @@ export const voiceTools: Record<string, VoiceTool> = {
       const project = await resolveProject(args.project)
       const name = String(args.name ?? '').trim()
       if (!name) throw new Error('A name is required.')
-      const environment = await createEnvironment({ projectId: project.id, name })
-      return { id: environment.id, name: environment.name, status: environment.status, workspace: environment.workspacePath }
+      const environment = await createEnvironment({
+        projectId: project.id,
+        name,
+        workingTree: args.workingTree === 'carry' ? 'carry' : 'discard'
+      })
+      return {
+        id: environment.id,
+        name: environment.name,
+        status: environment.status,
+        workspace: environment.workspacePath,
+        workingTree: describeSeed(environment.workspaceSeed)
+      }
     }
   },
 
@@ -549,6 +574,34 @@ export const voiceTools: Record<string, VoiceTool> = {
         into: resolveIntoBranch(branch, args.into)
       })
       return { environment: environment.name, branch, ...exported }
+    }
+  },
+
+  import_branch: {
+    declaration: {
+      name: 'import_branch',
+      description:
+        'Copy a branch the other way: from the project’s checkout on this machine *into* a development environment. Use it to bring an environment up to date with work that has landed here, or to give it a branch to carry on from. Fast-forward only, and it refuses the branch the environment has checked out.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' },
+          branch: { type: Type.STRING, description: 'Branch to write in the environment.' },
+          from: { type: Type.STRING, description: 'Branch on this machine to send. Omit for the same name.' }
+        },
+        required: ['environment', 'branch']
+      }
+    },
+    handler: async (args) => {
+      const environment = await resolveEnvironment(args.environment)
+      const branch = String(args.branch ?? '').trim()
+      if (!branch) throw new Error('Name the branch to write in the environment.')
+      const imported = await importBranch({
+        environmentId: environment.id,
+        branch,
+        from: resolveFromRef(branch, args.from)
+      })
+      return { environment: environment.name, ...imported }
     }
   },
 
