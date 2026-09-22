@@ -1,20 +1,22 @@
 import { flattenOptions } from './config-options'
-import type { AgentAdapter } from '../../../shared/types'
+import type { AgentAdapter, AppSettings } from '../../../shared/types'
 
 /**
- * Which model an adapter's sessions should run on, if the operator pinned one.
+ * What a session of this adapter runs on when its own row names no model.
  *
- * Environment only, and deliberately so: it is an install-wide default, not a
- * per-session input, so it needs no column and no UI.
+ * The setting, and nothing else. This used to fall through to a
+ * `NUXT_*_MODEL` environment variable per adapter, which was a second,
+ * invisible way of saying the same thing: nothing in the UI could show it and
+ * nobody could change it without editing a file and restarting the server. A
+ * default model for new sessions is a preference, and a preference belongs
+ * where the user can see it.
+ *
+ * Not consulted at all for a session that asked for a model itself: that is
+ * `applyRequestedModel`'s first choice, and two agents on different models at
+ * once is the case the column exists for.
  */
-export function pinnedModel(adapter: AgentAdapter): string | null {
-  const raw = adapter === 'claude-code'
-    ? process.env.NUXT_CLAUDE_MODEL
-    : adapter === 'codex'
-      ? process.env.NUXT_CODEX_MODEL
-      : process.env.NUXT_OPENCODE_MODEL
-  const trimmed = (raw ?? '').trim()
-  return trimmed || null
+export function defaultModel(adapter: AgentAdapter, settings: AppSettings): string | null {
+  return (settings.defaultAgentModels?.[adapter] ?? '').trim() || null
 }
 
 export interface ModelChoice {

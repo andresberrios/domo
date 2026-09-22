@@ -25,10 +25,12 @@ const { data: probe, status: probeStatus, error: probeError, refresh: refreshPro
 const mode = ref('')
 const typedModes = ref<string[]>([])
 const config = ref<Record<string, string>>({})
+const model = ref('')
 
 watch([settings, adapterId], () => {
   if (!settings.value || !isAgentAdapter(adapterId.value)) return
   mode.value = settings.value.defaultAgentModes[adapterId.value] ?? adapter.value.defaultMode
+  model.value = settings.value.defaultAgentModels?.[adapterId.value] ?? ''
   config.value = { ...(settings.value.defaultAgentConfig?.[adapterId.value] ?? {}) }
   typedModes.value = []
 }, { immediate: true })
@@ -41,7 +43,36 @@ const modeItems = computed(() => {
   return items
 })
 
+/**
+ * "Leave it to the adapter" is stored as an empty string, and a Reka select
+ * item may not have `value: ''` — it throws when the menu opens. So the menu
+ * carries a named sentinel and the empty string never reaches it, the same way
+ * `NewAgentModal` does it.
+ */
 const ADAPTER_DEFAULT = 'adapter-default'
+
+/**
+ * The models this adapter really offers, from the probe this page already
+ * makes. A model the setting names but the probe did not list is kept in the
+ * menu rather than dropped — the account may have changed, and a picker that
+ * silently loses the saved value looks like it saved nothing.
+ */
+const modelItems = computed(() => {
+  const items = [
+    { label: 'Adapter default', value: ADAPTER_DEFAULT },
+    ...(probe.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id }))
+  ]
+  if (model.value && !items.some(item => item.value === model.value)) {
+    items.push({ label: model.value, value: model.value })
+  }
+  return items
+})
+
+const modelValue = computed({
+  get: () => model.value || ADAPTER_DEFAULT,
+  set: (value: string) => { model.value = value === ADAPTER_DEFAULT ? '' : value }
+})
+
 function configItems(option: SessionConfigOptionInfo) {
   return [
     { label: 'Adapter default', value: ADAPTER_DEFAULT },
@@ -66,6 +97,7 @@ async function save() {
       method: 'PATCH',
       body: {
         defaultAgentModes: { ...settings.value.defaultAgentModes, [adapterId.value]: mode.value },
+        defaultAgentModels: { ...settings.value.defaultAgentModels, [adapterId.value]: model.value },
         defaultAgentConfig: { ...settings.value.defaultAgentConfig, [adapterId.value]: config.value }
       }
     })
@@ -118,6 +150,19 @@ function addMode(id: string) {
         create-item
         class="w-full"
         @create="addMode"
+      />
+    </UFormField>
+
+    <UFormField
+      label="Default model"
+      help="What a new session of this adapter starts on. A session that asks for its own model keeps it."
+    >
+      <USelectMenu
+        v-model="modelValue"
+        :items="modelItems"
+        value-key="value"
+        :loading="probeStatus === 'pending'"
+        class="w-full"
       />
     </UFormField>
 

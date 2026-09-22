@@ -42,9 +42,15 @@ function settings() {
     liveModel: 'gemini-live', voiceName: 'Puck', systemInstruction: '', defaultCwd: '/work',
     proactiveNotifications: true, autoApprovePermissions: false,
     defaultAgentModes: { 'claude-code': 'plan', codex: 'agent', opencode: 'build' },
+    defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' },
     defaultAgentConfig: { 'claude-code': {}, codex: {}, opencode: {} },
     language: 'en-US', autoTitle: true, vscodeSshHost: '', homeMounts: []
   }
+}
+
+function option(label: string) {
+  return [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find(element => element.textContent?.trim() === label)
 }
 
 function button(label: string) {
@@ -90,6 +96,29 @@ describe('adapter settings page', () => {
       expect(button('Build')).toBeTruthy()
       expect(document.body.textContent).not.toContain('Check OpenCode Go limits')
     })
+    wrapper.unmount()
+  })
+
+  it('offers the models the adapter reported, plus leaving it to the adapter', async () => {
+    // The ids are the adapter's own and are not guessable, so the picker is fed
+    // from the same probe this page already makes rather than typed.
+    const wrapper = await mountSuspended(AdapterSettingsPage, {
+      route: '/settings/adapters/claude-code', attachTo: document.body
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Default model')
+      // "Adapter default" is a named sentinel: Reka throws on `value: ''`.
+      expect(button('Adapter default')).toBeTruthy()
+    })
+    button('Adapter default')!.click()
+    await vi.waitFor(() => expect(option('Sonnet')).toBeTruthy())
+    option('Sonnet')!.click()
+    button('Save')!.click()
+
+    await vi.waitFor(() => expect(patched).toHaveLength(1))
+    expect(patched[0].defaultAgentModels)
+      .toEqual({ 'claude-code': 'sonnet', codex: '', opencode: '' })
     wrapper.unmount()
   })
 

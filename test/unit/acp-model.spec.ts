@@ -1,16 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import {
   availableModelIds,
   currentModel,
+  defaultModel,
   modelConfigOption,
-  pinnedModel,
   resolveModel
 } from '../../server/lib/acp/model'
 
 /**
- * The model pin, at the one boundary that can be tested without an account: what
- * Domo makes of the `configOptions` an adapter answers `session/new` with.
+ * The model choice, at the one boundary that can be tested without an account:
+ * what Domo makes of the `configOptions` an adapter answers `session/new` with.
  *
  * Both installed adapters surface the model as an ACP select in the category
  * `model` and take `session/set_config_option`, which is why there is one
@@ -42,22 +42,19 @@ const groupedOption = {
   ]
 }
 
-afterEach(() => {
-  delete process.env.NUXT_CLAUDE_MODEL
-  delete process.env.NUXT_CODEX_MODEL
-})
+describe('defaultModel', () => {
+  const settings = (models: Record<string, string>) => ({ defaultAgentModels: models }) as any
 
-describe('pinnedModel', () => {
-  it('reads the adapter\'s own variable, and treats blank as unset', () => {
-    process.env.NUXT_CLAUDE_MODEL = ' claude-haiku-4-5 '
-    process.env.NUXT_CODEX_MODEL = '   '
+  it('reads the adapter\'s own setting, and treats blank as unset', () => {
+    const chosen = settings({ 'claude-code': ' claude-haiku-4-5 ', codex: '   ' })
 
-    expect(pinnedModel('claude-code')).toBe('claude-haiku-4-5')
-    expect(pinnedModel('codex')).toBeNull()
+    expect(defaultModel('claude-code', chosen)).toBe('claude-haiku-4-5')
+    expect(defaultModel('codex', chosen)).toBeNull()
   })
 
-  it('is null when nothing is pinned', () => {
-    expect(pinnedModel('claude-code')).toBeNull()
+  it('is null when nothing is set, which leaves the choice to the adapter', () => {
+    expect(defaultModel('claude-code', settings({}))).toBeNull()
+    expect(defaultModel('claude-code', {} as any)).toBeNull()
   })
 })
 

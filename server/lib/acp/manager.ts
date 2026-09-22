@@ -26,7 +26,7 @@ import {
   resolveConfigValue,
   sameConfigOptions
 } from './config-options'
-import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
+import { availableModelIds, currentModel, defaultModel, modelConfigOption, resolveModel } from './model'
 import { availableModes, currentModeId, modeConfigOption } from './mode'
 import {
   appendAgentEvent,
@@ -736,7 +736,7 @@ class AgentRuntime {
     // one re-streams the whole row to every browser.
     if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
 
-    const described = await this.applyRequestedModel(session, sessionResponse)
+    const described = await this.applyRequestedModel(session, sessionResponse, settings)
     await this.applyAdapterConfig(session, described, settings)
     await this.setStatus('idle', { touch: true })
 
@@ -812,26 +812,37 @@ class AgentRuntime {
    * on either way.
    *
    * The model is per session — two agents may be on different ones at the same
-   * time — so the row is what is consulted; `NUXT_CLAUDE_MODEL` /
-   * `NUXT_CODEX_MODEL` are only the install-wide default for a row that names
-   * none. Both adapters expose the choice as an ACP `configOptions` select in
-   * the category `model` and take `session/set_config_option`, so there is one
-   * mechanism rather than one per adapter.
+   * time — so the row is what is consulted first, and `defaultModel` (the
+   * adapter's own setting, then its environment pin) only answers for a row
+   * that names none. Every adapter exposes the choice as an ACP
+   * `configOptions` select in the category `model` and takes
+   * `session/set_config_option`, so there is one mechanism rather than one per
+   * adapter.
    *
    * What the adapter says it landed on is written back, so the row is a record
    * of the truth rather than of the request.
    *
-   * A preference this adapter cannot honour means two different things
-   * depending on where it came from, and is treated as two different things.
-   * The env pin is operator config, install-wide, and nothing in the app can
-   * correct it, so it fails the start loudly, as it always has. The *row* is a
-   * request, and since a setting can now be recorded with no adapter to check
-   * it against (`setModel`), a typo through the voice agent or the API would
-   * otherwise leave a session that can never start again: it is reported in
-   * the transcript and the row is corrected to the model the adapter is really
-   * on, so the picker stops claiming a model the session is not running.
+   * A preference this adapter cannot honour never fails the start. It is
+   * reported as an `error` event — in the transcript, where the user is
+   * reading, naming which of the two sources to go and fix — and the row is
+   * corrected to the model the adapter is really on, so nothing goes on
+   * claiming a model the session is not running.
+   *
+   * This used to throw, on the reasoning that running on a model nobody asked
+   * for is worse than not running. Two things took that apart. A model can now
+   * be recorded with no adapter to check it against (`setModel`), so a typo
+   * through the voice agent or the API would leave a session that could never
+   * start again; and both remaining sources are visible and fixable in the UI,
+   * where the environment pin this once protected was neither. A stale default
+   * must not brick every new session on an adapter, and "silently" was the
+   * load-bearing word in the old argument — an error in the transcript is not
+   * silent.
    */
-  private async applyRequestedModel(session: AgentSession, sessionResponse: any): Promise<any> {
+  private async applyRequestedModel(
+    session: AgentSession,
+    sessionResponse: any,
+    settings: AppSettings
+  ): Promise<any> {
     const option = modelConfigOption(sessionResponse)
     this.modelOption = option
     // The response that last described this session, which a model change
@@ -841,23 +852,23 @@ class AgentRuntime {
     let latest = sessionResponse
     if (!option) return latest
 
-    const preference = session.model || pinnedModel(session.adapter)
+    const preference = session.model || defaultModel(session.adapter, settings)
     let chosen = currentModel(option)
 
     if (preference) {
       const wanted = resolveModel(option, preference)
       if (!wanted) {
-        const message = `The ${session.adapter} adapter does not offer a model matching "${preference}". `
-          + `It offers: ${availableModelIds(option).join(', ') || '(none)'}.`
-        // An install-wide pin: the operator has to fix it, and a session quietly
-        // running on something else is exactly what pinning asked us not to do.
-        if (!session.model) throw new Error(message)
-        // The row's own request: say so where the user is reading, and let
-        // `chosen` stay what the adapter reports so the row is corrected below.
+        // Said where the user is reading, and named by source so they know
+        // which of the two to go and fix. `chosen` stays what the adapter
+        // reports, so the row is corrected below rather than left claiming it.
+        const from = session.model
+          ? 'This session asked for'
+          : `The default model for ${session.adapter} is`
+        const message = `${from} "${preference}", which the adapter does not offer. `
+          + `It offers: ${availableModelIds(option).join(', ') || '(none)'}. `
+          + `The session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
         console.error(`[acp:${this.agentSessionId}] ${message}`)
-        await appendAgentEvent(this.agentSessionId, 'error', {
-          message: `${message} This session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
-        })
+        await appendAgentEvent(this.agentSessionId, 'error', { message })
       } else if (wanted.value !== chosen?.value) {
         const response = (await this.connection!.agent.request(acp.methods.agent.session.setConfigOption, {
           sessionId: this.acpSessionId,

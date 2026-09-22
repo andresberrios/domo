@@ -68,6 +68,10 @@ export const DEFAULTS: AppSettings = {
   // `agent` ("Approve for me"). The ids are not interchangeable — see
   // `AppSettings.defaultAgentModes`.
   defaultAgentModes: Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, adapter.defaultMode])) as AppSettings['defaultAgentModes'],
+  // Empty, meaning "whatever the adapter starts on": there is no model id Domo
+  // could name here that is right for every account, and the env pin beneath
+  // this is what an install configured before the setting existed still uses.
+  defaultAgentModels: Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, ''])) as AppSettings['defaultAgentModels'],
   // Empty, because an adapter's own defaults are the only sensible starting
   // point for settings Domo does not know the names of. See
   // `AppSettings.defaultAgentConfig`.
@@ -86,8 +90,30 @@ export async function getSettings(): Promise<AppSettings> {
     ...DEFAULTS,
     ...stored,
     defaultAgentModes: storedAgentModes(stored),
+    defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored)
   } as AppSettings
+}
+
+/**
+ * The per-adapter default model, reading the install's own row.
+ *
+ * Read the same defensive way as the modes and the config beside it — an
+ * adapter missing from a stored object keeps the empty default rather than
+ * becoming undefined, and a non-string is dropped rather than reaching a
+ * `session/set_config_option`. There is no older single-value form to migrate:
+ * the pre-setting way of saying this was an environment variable, and that
+ * still works underneath (see `defaultModel`).
+ */
+function storedAgentModels(stored: Record<string, any>): AppSettings['defaultAgentModels'] {
+  const models = { ...DEFAULTS.defaultAgentModels }
+  const current = stored.defaultAgentModels
+  if (current && typeof current === 'object') {
+    for (const adapter of Object.keys(models) as Array<keyof typeof models>) {
+      if (typeof current[adapter] === 'string') models[adapter] = current[adapter].trim()
+    }
+  }
+  return models
 }
 
 /**

@@ -108,6 +108,27 @@ describe('getSettings', () => {
     })
   })
 
+  /**
+   * The default model is per adapter for the same reason the mode is: the ids
+   * are the adapter's own, and there is none Domo could name that is right for
+   * every account — so the empty default means "whatever the adapter starts
+   * on", and the environment pin still answers underneath it.
+   */
+  it('leaves every adapter\'s default model empty until one is chosen', async () => {
+    expect(DEFAULTS.defaultAgentModels).toEqual({ 'claude-code': '', codex: '', opencode: '' })
+    await expect(getSettings()).resolves.toMatchObject({
+      defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' }
+    })
+  })
+
+  it('keeps a stored default model, and only for the adapter it was stored against', async () => {
+    stored({ defaultAgentModels: { 'claude-code': 'haiku', codex: 7 } })
+
+    await expect(getSettings()).resolves.toMatchObject({
+      defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '' }
+    })
+  })
+
   it('reads values that were stored unwrapped', async () => {
     // Older rows hold the bare value instead of `{ v: … }`.
     query.mockResolvedValue([{ key: 'voiceName', value: 'Kore' }])

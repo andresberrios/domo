@@ -437,6 +437,20 @@ export interface AppSettings {
    */
   defaultAgentModes: Record<AgentAdapter, string>
   /**
+   * The model a new session of each adapter starts on, when the session itself
+   * names none. Empty means "whatever the adapter starts on".
+   *
+   * A session's own `model` column always wins: this is only consulted for a
+   * row that asked for nothing, and if this names a model the adapter does not
+   * offer, the session still starts — on whatever the adapter reports, with an
+   * `error` event in its transcript saying so.
+   *
+   * The ids are the adapter's own and are not guessable (Claude Code lists
+   * `haiku`, not `claude-haiku-4-5`), which is why the picker is fed from the
+   * adapter's own probe rather than typed.
+   */
+  defaultAgentModels: Record<AgentAdapter, string>
+  /**
    * Per-adapter defaults for the adapter's *own* settings, by config option id
    * — `{ 'claude-code': { effort: 'high' }, codex: { reasoning_effort: 'high' } }`.
    *

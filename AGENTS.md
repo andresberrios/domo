@@ -798,8 +798,9 @@ things that are easy to get wrong.
 
 - **The model is per session, and the adapter is the authority on it.** It is a
   column on `agent_sessions`, not a setting, because two agents may run on
-  different models at once; `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` are only
-  the default for a row that names none. There is **no `session/set_model`** in
+  different models at once; the per-adapter `defaultAgentModels` setting is
+  only the default for a row that names none, and a value neither can honour
+  is an `error` event and a corrected row, never a failed start. There is **no `session/set_model`** in
   `@agentclientprotocol/sdk` ^1.4 — the mechanism is `session/set_config_option`
   against the `configOptions` entry whose `category` is `model`, and both
   adapters speak it (codex-acp keeps `session/set_model` only as a legacy

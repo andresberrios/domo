@@ -398,7 +398,6 @@ configured providers are kept current automatically (see
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
 | `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts are read from (defaults to `$HOME`) |
 | `NUXT_GH_TOKEN` | GitHub token given to environment sessions; falls back to `gh auth token` on this machine |
-| `NUXT_CLAUDE_MODEL` / `NUXT_CODEX_MODEL` / `NUXT_OPENCODE_MODEL` | Default model for new sessions of that adapter, when the session names none |
 | `NUXT_ANTHROPIC_API_BASE` | Where plan-limit requests go (default `https://api.anthropic.com`); set it to point the usage poller somewhere else |
 | `NUXT_CODEX_ENTRY` | Path to the Codex CLI the usage poller runs as `codex app-server` (defaults to the bundled `@openai/codex`) |
 

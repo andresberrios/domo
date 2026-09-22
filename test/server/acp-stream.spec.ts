@@ -601,9 +601,13 @@ describe('the model a session runs on', () => {
       model
     })
     const asked: any[] = []
+    // The *next* adapter, not the first: a test that boots twice would
+    // otherwise script the process it has already finished with and wait
+    // forever for the one it just started.
+    const index = state.adapters.length
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
-    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
-    serve(state.adapters[0]!, async () => {}, { models, onSetConfigOption: params => asked.push(params) })
+    await vi.waitFor(() => expect(state.adapters.length).toBeGreaterThan(index))
+    serve(state.adapters[index]!, async () => {}, { models, onSetConfigOption: params => asked.push(params) })
     await started
     return { agent, asked }
   }
@@ -640,14 +644,21 @@ describe('the model a session runs on', () => {
     await expect(getAgentSession(agent.id).then(row => row!.model)).resolves.toBe('sonnet')
   })
 
-  it('falls back to the install-wide default for a row with no model', async () => {
-    process.env.NUXT_CLAUDE_MODEL = 'haiku'
+  it('falls back to the adapter\'s own default-model setting, and the row wins over it', async () => {
+    // The only install-wide source there is now: the environment pins this
+    // used to read were a second, invisible way of saying the same thing.
+    const { patchSettings } = await import('../../server/lib/settings')
     try {
-      const { asked } = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku'] })
+      await patchSettings({ defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '' } })
+      const fromSetting = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku', 'opus'] })
+      expect(fromSetting.asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
 
-      expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
+      const fromRow = await boot('opus', { current: 'sonnet', ids: ['sonnet', 'haiku', 'opus'] })
+      expect(fromRow.asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'opus' }])
     } finally {
-      delete process.env.NUXT_CLAUDE_MODEL
+      // The settings table survives the per-test truncate, so this one has to
+      // put it back or every later test in the file boots on `haiku`.
+      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' } })
     }
   })
 
@@ -658,29 +669,22 @@ describe('the model a session runs on', () => {
     await expect(getAgentSession(agent.id).then(row => row!.model)).resolves.toBe('haiku')
   })
 
-  it('fails the session rather than silently running on the wrong install-wide pin', async () => {
-    // The operator's own `NUXT_CLAUDE_MODEL`: nothing in the app can correct
-    // it, and a session quietly running on something else is exactly what
-    // pinning a model asked us not to do.
-    process.env.NUXT_CLAUDE_MODEL = 'gemini-3-pro'
+  it('starts anyway on a stale default-model setting, and says which one to fix', async () => {
+    // A default the account has since lost access to must not brick every new
+    // session on that adapter — and unlike the environment pin this replaced,
+    // the user can see it and change it. The notice names the source.
+    const { patchSettings } = await import('../../server/lib/settings')
     try {
-      const { acpManager } = await import('../../server/lib/acp/manager')
-      const agent = await createAgentSession({
-        adapter: 'claude-code',
-        title: 'Model',
-        cwd: join(tmpdir(), 'domo-test', 'acp-stream')
-      })
-      const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
-      await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
-      serve(state.adapters[0]!, async () => {}, { models: { current: 'sonnet', ids: ['sonnet', 'haiku'] } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': 'gemini-3-pro', codex: '', opencode: '' } })
+      const { agent } = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku'] })
 
-      await expect(started).rejects.toThrow(/does not offer a model matching "gemini-3-pro"/)
-      // The message names what was on offer, so the operator can fix it.
       const row = await getAgentSession(agent.id)
-      expect(row!.status).toBe('error')
-      expect(row!.lastError).toContain('sonnet, haiku')
+      expect(row!.status).not.toBe('error')
+      expect(row!.model).toBe('sonnet')
+      const notice = (await listAgentEvents(agent.id)).find(event => event.type === 'error')
+      expect(notice?.payload.message).toMatch(/default model for claude-code.*"gemini-3-pro".*sonnet, haiku/s)
     } finally {
-      delete process.env.NUXT_CLAUDE_MODEL
+      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' } })
     }
   })
 
@@ -706,7 +710,7 @@ describe('the model a session runs on', () => {
     expect(row!.model).toBe('sonnet')
     // Said where the user is reading, not only in the server log.
     const notice = (await listAgentEvents(agent.id)).find(event => event.type === 'error')
-    expect(notice?.payload.message).toMatch(/"gemini-3-pro".*sonnet, haiku.*running on sonnet/s)
+    expect(notice?.payload.message).toMatch(/This session asked for "gemini-3-pro".*sonnet, haiku.*running on sonnet/s)
   })
 
   it('asks for nothing when a live session is already on the model, or the row alone is behind', async () => {
