@@ -73,7 +73,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
 
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <UPageCard
-            icon="i-lucide-container"
+            icon="i-lucide-monitor"
             :title="String(environments.filter(environment => environment.status === 'running').length)"
             description="dev environments"
             variant="subtle"

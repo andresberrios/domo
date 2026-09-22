@@ -74,7 +74,7 @@ const exportOpen = ref(false)
 <template>
   <UDashboardPanel id="environment">
     <template #header>
-      <UDashboardNavbar icon="i-lucide-container">
+      <UDashboardNavbar icon="i-lucide-monitor">
         <template #title>
           <span class="truncate">{{ environment?.name ?? 'Environment' }}</span>
         </template>
@@ -120,7 +120,7 @@ const exportOpen = ref(false)
 
     <template #body>
       <div v-if="!environment" class="mx-auto w-full max-w-4xl py-8 text-center">
-        <UIcon name="i-lucide-container" class="mx-auto size-8 text-dimmed" />
+        <UIcon name="i-lucide-monitor" class="mx-auto size-8 text-dimmed" />
         <p class="mt-2 text-sm text-muted">
           {{ isReady ? 'This environment no longer exists.' : 'Loading…' }}
         </p>

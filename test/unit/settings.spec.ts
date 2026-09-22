@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto'
-
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const query = vi.fn()
@@ -8,16 +6,12 @@ vi.mock('../../server/lib/db', () => ({ query }))
 const {
   DEFAULTS,
   DEFAULT_SYSTEM_INSTRUCTION,
-  PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS,
-  getSettings
+  getSettings,
+  patchSettings
 } = await import('../../server/lib/settings')
 
 function stored(rows: Record<string, unknown>) {
   query.mockResolvedValue(Object.entries(rows).map(([key, value]) => ({ key, value: { v: value } })))
-}
-
-function sha(value: string): string {
-  return createHash('sha256').update(value).digest('hex')
 }
 
 describe('getSettings', () => {
@@ -132,51 +126,42 @@ describe('getSettings', () => {
 
     await expect(getSettings()).resolves.toMatchObject({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
   })
-
-  /**
-   * The settings page saves the whole form, so most installs have a past
-   * default stored verbatim. Each one has to be recognised or that install
-   * would be stuck on a prompt nobody chose.
-   */
-  it.each(PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS.map((value, index) => [index, value]))(
-    'upgrades an install still carrying past default #%i',
-    async (_index, previous) => {
-      stored({ systemInstruction: previous })
-
-      await expect(getSettings()).resolves.toMatchObject({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
-    }
-  )
-
-  it('does not recognise a past default that was edited', async () => {
-    stored({ systemInstruction: `${PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS[0]!}\n- And always say please.` })
-
-    await expect(getSettings()).resolves.not.toMatchObject({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
-  })
 })
 
 /**
- * Every default that ever shipped has to stay in the list byte for byte.
- * Hashes, not copies of the text: an in-place edit of a past default (the
- * mistake CLAUDE.md warns about) changes one, and appending a new one only
- * appends. When you change `DEFAULT_SYSTEM_INSTRUCTION`, append the old text to
- * `PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS` and update these hashes.
+ * The settings page saves the whole form on every submit, so a naive patch
+ * would write `systemInstruction` back on every save — including ones where
+ * the user never touched it — and freeze the row at whatever the default
+ * happened to be that day. A value equal to the current default must never be
+ * written, or a fresh install could never follow a change to
+ * `DEFAULT_SYSTEM_INSTRUCTION` again.
  */
-describe('system instruction history', () => {
-  it('still contains every default that ever shipped, unedited', () => {
-    expect(PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS.map(sha)).toEqual([
-      'a8d75c79202f41d480a57607df8ab3f6722305440e2728bfa17f912c8593250f',
-      '2b53d4bc3ffd9fd562102c081050debcc1ef55cb7696e1c6ab77467cdbc3c170'
-    ])
+describe('patchSettings systemInstruction', () => {
+  beforeEach(() => {
+    query.mockReset()
+    query.mockResolvedValue([])
   })
 
-  it('has appended the outgoing default whenever the current one changed', () => {
-    expect(sha(DEFAULT_SYSTEM_INSTRUCTION)).toBe(
-      '8e8fd2cfe8d30c377100dfb6a4aad366265f01c08bd697d4d6ef9ecfc9cc3d4c'
-    )
+  function writes(key: string) {
+    return query.mock.calls.filter(([, params]) => params?.[0] === key)
+  }
+
+  it('never persists a system instruction equal to the current default', async () => {
+    await patchSettings({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION, voiceName: 'Kore' })
+
+    expect(writes('systemInstruction').some(([sql]) => /insert into settings/.test(sql))).toBe(false)
+    expect(writes('voiceName').some(([sql]) => /insert into settings/.test(sql))).toBe(true)
   })
 
-  it('never lists the current default as a past one', () => {
-    expect(PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS).not.toContain(DEFAULT_SYSTEM_INSTRUCTION)
-    expect(new Set(PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS).size).toBe(PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS.length)
+  it('deletes a stored customisation edited back to match the current default', async () => {
+    await patchSettings({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
+
+    expect(writes('systemInstruction').some(([sql]) => /delete from settings/.test(sql))).toBe(true)
+  })
+
+  it('persists a system instruction that differs from the default', async () => {
+    await patchSettings({ systemInstruction: 'Be terse. Speak Spanish.' })
+
+    expect(writes('systemInstruction').some(([sql]) => /insert into settings/.test(sql))).toBe(true)
   })
 })

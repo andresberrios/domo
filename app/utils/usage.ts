@@ -135,3 +135,24 @@ export function worstLimit(limits: UsageLimit[]): UsageLimit | null {
   }
   return worst
 }
+
+/**
+ * The two windows every provider reports: the 5-hour limit that actually
+ * stops work today, and the weekly one behind it. `five_hour` and Codex's
+ * `<id>:primary` both report a ~300-minute window; anything past half a day
+ * is the weekly side, whatever the provider calls it (`seven_day`, `<id>:secondary`).
+ */
+export function fiveHourLimit(limits: UsageLimit[]): UsageLimit | null {
+  return limits.find(l => l.windowMinutes !== null && l.windowMinutes <= 360) ?? null
+}
+
+/**
+ * The weekly window. Claude reports several 10080-minute rows (the overall
+ * figure plus a per-model breakdown); `seven_day` is the aggregate one and is
+ * preferred, falling back to the worst of whatever weekly rows exist.
+ */
+export function weeklyLimit(limits: UsageLimit[]): UsageLimit | null {
+  const candidates = limits.filter(l => l.windowMinutes !== null && l.windowMinutes! > 360)
+  if (!candidates.length) return null
+  return candidates.find(l => l.limitId === 'seven_day') ?? worstLimit(candidates)
+}

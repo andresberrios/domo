@@ -19,10 +19,15 @@ import type { UsageLimitSource } from '~~/shared/types'
 /**
  * The usage rows against a real Postgres.
  *
- * Both tables are streamed to the browser with `REPLICA IDENTITY FULL`, so an
- * update that changes nothing still costs a full row over the wire. Write-on-
- * change is therefore a property of the repo layer and not an optimisation the
- * callers are trusted to remember.
+ * Both tables are streamed to the browser with `REPLICA IDENTITY FULL`, so
+ * every write costs a full row over the wire regardless of how much of it
+ * moved. `usage_limits.updated_at` and `usage_providers.checked_at` are
+ * written on every successful check even so — they are what an "as of X ago"
+ * caption reads, and skipping the write when a poll repeated its last answer
+ * left that caption stuck on the *previous* different reading, sometimes hours
+ * old, right after a refresh had just confirmed the number. The
+ * `usage-limits-changed` bus event is the one thing still gated on a genuine
+ * value change, because it means "something moved" to whoever is listening.
  */
 
 const limit = (patch: Partial<Parameters<typeof writeUsageLimits>[1][number]> = {}) => ({
@@ -108,15 +113,29 @@ describe('writing plan limits', () => {
     })])
   })
 
-  it('leaves an unchanged row completely alone, timestamp included', async () => {
+  it('still bumps the timestamp on an unchanged row, so a refresh reads as one', async () => {
     await writeUsageLimits('claude', [limit()], { replace: true })
     const first = (await listUsageLimits('claude'))[0]!
 
     await new Promise(resolve => setTimeout(resolve, 5))
     await writeUsageLimits('claude', [limit()], { replace: true })
 
-    // Not even `updated_at` moves: an identical row rewritten is a whole row
-    // streamed to every browser to say nothing.
+    // The value repeated, but the check itself happened — `updated_at` is
+    // what "as of" reads, and a poll that landed the same number is still a
+    // poll that just landed.
+    expect((await listUsageLimits('claude'))[0]!.updatedAt > first.updatedAt).toBe(true)
+  })
+
+  it('leaves an unchanged row completely alone when told not to touch it', async () => {
+    // `AgentRuntime.noteUsage` passes `touchUnchanged: false`: it can fire
+    // several times a second on a long answer, and the poller's own honesty
+    // guarantee would turn that into a full-row rewrite on every delta.
+    await writeUsageLimits('claude', [limit()], { replace: false, touchUnchanged: false })
+    const first = (await listUsageLimits('claude'))[0]!
+
+    await new Promise(resolve => setTimeout(resolve, 5))
+    await writeUsageLimits('claude', [limit()], { replace: false, touchUnchanged: false })
+
     expect((await listUsageLimits('claude'))[0]!.updatedAt).toBe(first.updatedAt)
   })
 
@@ -206,15 +225,32 @@ describe('provider health', () => {
     })])
   })
 
-  it('does not rewrite the row when nothing about it changed', async () => {
+  it('still bumps checked_at when nothing about the state changed', async () => {
     await setUsageProviderState('claude', 'ok', null)
     const first = (await listUsageProviders())[0]!
 
     await new Promise(resolve => setTimeout(resolve, 5))
     await setUsageProviderState('claude', 'ok', null)
 
-    // The same `ok` every hour is not news, and this row is synced too.
-    expect((await listUsageProviders())[0]!.checkedAt).toBe(first.checkedAt)
+    // The same `ok` every hour is not news to the bus, but the row is still
+    // written — `checked_at` is what "as of" reads, and the check happened.
+    expect((await listUsageProviders())[0]!.checkedAt > first.checkedAt).toBe(true)
+  })
+
+  it('tells the bus when the state changed, and only then', async () => {
+    const seen = captureBus()
+    try {
+      await setUsageProviderState('claude', 'ok', null)
+      expect(seen.events.filter(event => event.type === 'usage-limits-changed')).toHaveLength(1)
+
+      await setUsageProviderState('claude', 'ok', null)
+      expect(seen.events.filter(event => event.type === 'usage-limits-changed')).toHaveLength(1)
+
+      await setUsageProviderState('claude', 'error', 'HTTP 401')
+      expect(seen.events.filter(event => event.type === 'usage-limits-changed')).toHaveLength(2)
+    } finally {
+      seen.stop()
+    }
   })
 
   it('moves to the new state, and back again', async () => {

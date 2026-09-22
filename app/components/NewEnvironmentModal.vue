@@ -71,7 +71,7 @@ async function submit() {
         <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />
         <UButton
           label="Create environment"
-          icon="i-lucide-container"
+          icon="i-lucide-monitor"
           :loading="submitting"
           :disabled="!name.trim() || !project"
           @click="submit"

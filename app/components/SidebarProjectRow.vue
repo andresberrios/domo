@@ -52,7 +52,7 @@ const cascade = computed(() => {
 
 const items = computed(() => [
   [
-    { label: 'New environment', icon: 'i-lucide-container', onSelect: () => emit('newEnvironment') },
+    { label: 'New environment', icon: 'i-lucide-monitor', onSelect: () => emit('newEnvironment') },
     { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }
   ],
   [

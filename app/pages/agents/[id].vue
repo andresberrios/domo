@@ -170,7 +170,7 @@ const menuItems = computed(() => [
             size="sm"
             :label="environment.name"
           >
-            <template #leading><UIcon name="i-lucide-container" class="size-3" /></template>
+            <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
           </UBadge>
         </template>
         <template #right>

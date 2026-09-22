@@ -867,22 +867,35 @@ const SOURCE_RANK: Record<UsageLimitSource, number> = {
 const SOURCE_PREFERENCE_MS = 15 * 60_000
 
 /**
- * Write a provider's limits, touching only the rows that actually changed.
+ * Write a provider's limits.
  *
  * `replace` is the difference between a poll and a session event. A poll
  * describes the whole account, so a window it no longer reports is gone and its
  * row goes with it. A session event names one or two windows and knows nothing
  * about the rest, so it must never remove anything.
  *
- * Every row here is streamed to the browser with `REPLICA IDENTITY FULL`, so an
- * unchanged row that is rewritten anyway costs a full round trip for nothing —
- * hence the comparison before the update rather than a blind upsert.
+ * `touchUnchanged` (default on) writes `updated_at` even when a check repeats
+ * the same reading — it is what an "as of X ago" caption reads, and skipping
+ * the write when nothing moved left the caption stuck on the *previous*
+ * different reading, sometimes hours old, right after a refresh had just
+ * confirmed the number. That is safe at the poller's own floor (once a minute
+ * at most per provider, and every row here is streamed with `REPLICA IDENTITY
+ * FULL` regardless of how many columns moved, so there is no cheaper write to
+ * fall back to anyway) — but it is not safe on the session-event path in
+ * `AgentRuntime.noteUsage`, which rides in on every `usage_update` and can fire
+ * several times a second while an agent is writing. That caller passes
+ * `touchUnchanged: false` to keep the original no-op-when-identical guard, or
+ * a long answer would re-stream this row to every browser on every delta.
+ * `changed` always tracks only genuine value changes regardless: the
+ * `usage-limits-changed` bus event means "something moved", never "something
+ * was checked".
  */
 export async function writeUsageLimits(
   provider: UsageProviderId,
   limits: UsageLimitValue[],
-  options: { replace: boolean } = { replace: true }
+  options: { replace: boolean, touchUnchanged?: boolean } = { replace: true }
 ): Promise<void> {
+  const touchUnchanged = options.touchUnchanged ?? true
   const now = nowIso()
   const existing = new Map((await listUsageLimits(provider)).map(row => [row.limitId, row]))
   let changed = false
@@ -890,12 +903,15 @@ export async function writeUsageLimits(
   for (const limit of limits) {
     const current = existing.get(limit.limitId)
     if (current) {
-      if (sameLimit(current, limit)) continue
       // A sparser source only wins once the better one has gone stale.
       if (SOURCE_RANK[limit.source] < SOURCE_RANK[current.source]
         && Date.now() - Date.parse(current.updatedAt) < SOURCE_PREFERENCE_MS) continue
+      const same = sameLimit(current, limit)
+      if (same && !touchUnchanged) continue
+      if (!same) changed = true
+    } else {
+      changed = true
     }
-    changed = true
     await query(
       `insert into usage_limits
          (provider, limit_id, label, used_percent, resets_at, window_minutes, status,
@@ -935,9 +951,11 @@ export async function writeUsageLimits(
 /**
  * Record whether a provider's poll worked.
  *
- * Written on every attempt so "as of" is honest, but only when something about
- * it changed — the same `ok` reported every hour is not news, and this row is
- * synced like all the others.
+ * `checked_at` is written on every attempt, successful or not, so "as of" is
+ * honest — a poll that confirms the same `ok` it reported last time is still a
+ * poll that happened. The `usage-limits-changed` bus event fires only when the
+ * state or message actually moved: the same `ok` every hour is not news to
+ * anything downstream, even though the row itself is written regardless.
  */
 export async function setUsageProviderState(
   provider: UsageProviderId,
@@ -948,7 +966,7 @@ export async function setUsageProviderState(
     'select state, message from usage_providers where provider = $1',
     [provider]
   )
-  if (current && current.state === state && (current.message ?? null) === message) return
+  const changed = !current || current.state !== state || (current.message ?? null) !== message
   await query(
     `insert into usage_providers (provider, state, message, checked_at)
      values ($1, $2, $3, $4)
@@ -956,7 +974,7 @@ export async function setUsageProviderState(
        state = excluded.state, message = excluded.message, checked_at = excluded.checked_at`,
     [provider, state, message, nowIso()]
   )
-  bus.publish({ type: 'usage-limits-changed', provider })
+  if (changed) bus.publish({ type: 'usage-limits-changed', provider })
 }
 
 /* ------------------------------------------------------------------ */

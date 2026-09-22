@@ -15,6 +15,11 @@ const props = defineProps<{
   provider?: UsageProvider | null
   /** Rendered smaller inside a popover than on the home page. */
   compact?: boolean
+  /**
+   * Suppress the built-in "as of" line for a caller that shows its own,
+   * scoped to fewer rows than the oldest-of-everything reading below assumes.
+   */
+  hideStaleness?: boolean
 }>()
 
 // Recomputed on a timer so "Resets in 3 hr 41 min" and "as of 12 min ago" stay
@@ -99,7 +104,7 @@ const staleness = computed(() => {
       </p>
     </div>
 
-    <p v-if="rows.length && staleness" class="text-[11px] text-dimmed">
+    <p v-if="rows.length && staleness && !hideStaleness" class="text-[11px] text-dimmed">
       {{ staleness }}
     </p>
     <p

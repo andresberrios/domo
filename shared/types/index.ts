@@ -436,6 +436,11 @@ export type StreamEvent =
   | { type: 'voice-list-changed' }
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
   | { type: 'agent-inbox-changed', agentSessionId: string, message: AgentInboxMessage }
+  // TODO: published by writeUsageLimits/setUsageProviderState in repo.ts, but
+  // nothing currently subscribes to it (checked every bus.subscribe call site)
+  // — it reaches the browser through Electric instead. Either wire up a real
+  // consumer or remove it. The `/api/stream` SSE channel this file claims to
+  // feed doesn't exist anywhere in the codebase either; see bus.ts.
   | { type: 'usage-limits-changed', provider: UsageProviderId }
   | { type: 'cron-job-changed', cronJobId: string }
   | { type: 'settings-changed' }

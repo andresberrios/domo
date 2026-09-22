@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * A dev environment, as a glyph. `i-lucide-container` rather than
- * `i-lucide-box`: beside the project's `i-lucide-folder-git-2` the stacked
- * shipping-container outline reads as "a machine of its own", where a plain box
- * reads as another folder.
+ * A dev environment, as a glyph. `i-lucide-monitor` rather than
+ * `i-lucide-container`: an environment is a sandboxed machine a session
+ * runs on, and a monitor reads as "a computer" at a glance — a shipping
+ * container reads as infrastructure, which is the implementation, not what
+ * the user is looking at.
  */
 const props = withDefaults(defineProps<{ status: string, size?: string }>(), {
   size: 'size-4'
@@ -14,7 +15,7 @@ const meta = computed(() => ENVIRONMENT_STATUS_META[props.status] ?? ENVIRONMENT
 
 <template>
   <span class="inline-flex shrink-0 items-center">
-    <UIcon name="i-lucide-container" :class="[size, meta.icon]" />
+    <UIcon name="i-lucide-monitor" :class="[size, meta.icon]" />
     <slot :label="meta.label">
       <span class="sr-only">{{ meta.label }}</span>
     </slot>

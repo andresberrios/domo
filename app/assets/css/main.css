@@ -2,48 +2,76 @@
 @import "@nuxt/ui";
 
 @theme static {
-  /* Figtree: a humanist geometric sans that stays legible at the 11–13px this
-   * dashboard is mostly made of, with a warmer, rounder skeleton than Inter.
-   * Self-hosted by @nuxt/fonts — the app has to work offline and the production
-   * CSP allows `font-src 'self'` only. */
-  --font-sans: 'Figtree', ui-sans-serif, system-ui, sans-serif;
+  /* Schibsted Grotesk: wider apertures and more distinctive letterforms than
+   * Figtree (whose tight, geometric skeleton read as condensed at the
+   * 11–13px this dashboard is mostly made of), while staying a plain
+   * grotesque at body sizes — no display quirks to fight in a dense table.
+   * Self-hosted by @nuxt/fonts — the app has to work offline and the
+   * production CSP allows `font-src 'self'` only. */
+  --font-sans: 'Schibsted Grotesk', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
 
-  /* Domo accent: forest green. Grown rather than lit — the old scale was
-   * emerald, which at 400/500 is a signal colour and read as neon against a
-   * dark background. 500 (#3d7d4e) carries white text at 4.95:1 and 600
-   * (#2f6b45) at 6.3:1; 400 (#5fa472) is what dark mode puts dark text on,
-   * at 7.0:1. */
-  --color-domo-50: #f1f8f2;
-  --color-domo-100: #ddefe1;
-  --color-domo-200: #bcdfc5;
-  --color-domo-300: #91c8a1;
-  --color-domo-400: #5fa472;
-  --color-domo-500: #3d7d4e;
-  --color-domo-600: #2f6b45;
-  --color-domo-700: #275a3a;
-  --color-domo-800: #224830;
-  --color-domo-900: #1d3b29;
-  --color-domo-950: #0e2116;
+  /* Domo accent: a deep pine green that drifts warmer as it lightens. A flat
+   * hue across the whole ramp is what read as washed out at the light end —
+   * a tint is "diluted" by moving toward white, and unless the hue itself
+   * moves too, the eye reads that dilution as greyness rather than as light
+   * hitting a leaf. So the ramp is two hue families, not one: 500 and darker
+   * hold the cool, deep pine (H~155→163, toward teal) that gives 600
+   * (`#0a6141`, white text at 7.50:1) its depth; 400 and lighter carry a
+   * yellow-green cast instead (H~129→145) so a tint reads as sunlit growth,
+   * not a paler version of the same swatch.
+   *
+   * 500 and 400 are the *only* two stops that ever render as `--ui-primary`
+   * — Nuxt UI's own light/dark mapping picks 500 under `:root` and 400 under
+   * `.dark`, on every solid button, icon, link and progress fill at once, so
+   * this pair is the single place to change "the green" for each mode. There
+   * is deliberately no per-component override anywhere in the app (`grep -rn
+   * "domo-[0-9]" app server` returns nothing outside this file) — a button
+   * that looks wrong belongs to one of these two lines, not to a one-off
+   * class on that button.
+   *
+   * 500 carries white text (light mode) and must stay under L~30% (HSL) or
+   * white drops below 4.5:1 — it sits at L29.5%, 4.60:1 with white, as light
+   * as it gets before failing. It sits on the cool side of the hue split, so
+   * it was left alone here.
+   *
+   * 400 (dark mode) is `#02ab49` — H145° S98% L34% — a colour the user
+   * dialled in by hand for how it reads in dark mode, on the yellow-green
+   * side of the split by design: it is the lightest of the two working
+   * stops, and the one meant to feel alive rather than deep. It carries
+   * `text-inverted`, `bark-900` `#261e18` (not pure black), on top —
+   * checked rather than assumed: 5.57:1 against that exact text colour, more
+   * margin than the `#28a873` (H155° S76% V66%, 5.41:1) it replaced, so no
+   * further darkening or lightening was needed. */
+  --color-domo-50: #e2f8e5;
+  --color-domo-100: #c5f1cf;
+  --color-domo-200: #9be9b1;
+  --color-domo-300: #5ce08a;
+  --color-domo-400: #02ab49;
+  --color-domo-500: #118657;
+  --color-domo-600: #0a6141;
+  --color-domo-700: #094e36;
+  --color-domo-800: #093f2d;
+  --color-domo-900: #083023;
+  --color-domo-950: #061d17;
 
-  /* Bark: the neutral, tinted warm-olive instead of zinc's blue. Every surface
-   * in the app is one of these, so a blue-grey next to a green primary is the
-   * one thing that makes the accent look artificial. Kept at very low chroma —
-   * it has to read as grey, not as a second colour. Checked against the tokens
-   * Nuxt UI derives from it: text-muted (500) is 4.7:1 on white and text-muted
-   * in dark (400) is 6.0:1 on the 900 background; the 800 border sits 1.27:1
-   * off the 900 background, the same separation zinc gave. */
-  --color-bark-50: #f7f8f5;
-  --color-bark-100: #eff1ec;
-  --color-bark-200: #dfe2da;
-  --color-bark-300: #c5cabe;
-  --color-bark-400: #99a191;
-  --color-bark-500: #6e7666;
-  --color-bark-600: #565d50;
-  --color-bark-700: #434940;
-  --color-bark-800: #2f342c;
-  --color-bark-900: #1e221c;
-  --color-bark-950: #131610;
+  /* Bark: a wood-toned neutral — warm brown rather than olive-grey, so a
+   * surface reads like timber instead of stone next to the forest-green
+   * primary. Checked against the tokens Nuxt UI derives from it: text-muted
+   * (500) is 5.85:1 on white and text-muted in dark (400) is 4.74:1 on the
+   * 900 background; the 800 border sits 1.17:1 off the 900 background, the
+   * same subtle separation zinc gave. */
+  --color-bark-50: #faf7f2;
+  --color-bark-100: #f0e9df;
+  --color-bark-200: #e0d3c0;
+  --color-bark-300: #c9b499;
+  --color-bark-400: #a3855f;
+  --color-bark-500: #7d5f42;
+  --color-bark-600: #5f4830;
+  --color-bark-700: #493725;
+  --color-bark-800: #362920;
+  --color-bark-900: #261e18;
+  --color-bark-950: #17110d;
 }
 
 /* Markdown rendered by MarkdownView — scoped, minimal, theme-aware. */

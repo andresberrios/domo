@@ -492,6 +492,25 @@ things that are easy to get wrong.
   shape as `setStatus`. A usage write must not touch `last_activity_at`: the
   voice agent picks "the most recently active agent" off that column, and a
   reading is not activity.
+- **`usage_limits.updated_at` and `usage_providers.checked_at` are the opposite
+  of the rule above: they are written on every successful check even when the
+  reading repeats, because they are what an "as of X ago" caption reads.**
+  `writeUsageLimits` and `setUsageProviderState` used to skip the write when
+  nothing about the value had moved, on the same `REPLICA IDENTITY FULL`
+  reasoning as `agent_sessions.usage` — but a poll that lands a fresh, unchanged
+  52% is still a poll that just happened, and skipping the write left the
+  caption stuck on whenever the *previous different* reading arrived, sometimes
+  hours earlier, right after a manual refresh had just confirmed the number.
+  The difference from the rule above is frequency: a poll is floor-limited to
+  once a minute per provider, so the round trip that write costs is not one
+  worth trading the timestamp's honesty for. `writeUsageLimits`'s
+  `touchUnchanged` option (default on) is the escape hatch for the one caller
+  where frequency does matter — `AgentRuntime.noteUsage` rides `_claude/rateLimit`
+  in on every `usage_update`, several times a second on a long answer, and
+  passes `touchUnchanged: false` to keep the original skip. Both functions still
+  gate their own change-notification (the `usage-limits-changed` bus event, the
+  row's other columns) on a genuine value change; only the timestamp write is
+  unconditional.
 - **Every source counts usage in its own units, and one of them is a trap.**
   Claude's usage endpoint answers percentages (0-100) and ISO timestamps; its
   `anthropic-ratelimit-unified-*` headers and its `rate_limit_event` both answer
@@ -878,12 +897,22 @@ things that are easy to get wrong.
   an environment `localhost` is the container itself. An operator-set
   `NUXT_INTERNAL_URL` still wins, but a loopback host in it is rewritten to
   `host.docker.internal` for container sessions.
-
-- **Changing `DEFAULT_SYSTEM_INSTRUCTION`? Append the old text to
-  `PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS`.** The settings page saves the whole
-  form, so most installs store the default verbatim and would never see the new
-  one. Every default that ever shipped belongs in the list, byte for byte —
-  editing one in place (as the Codex change did) creates another variant.
+- **A settings value equal to its code default is never written to the
+  `settings` table**, for `systemInstruction` specifically
+  (`patchSettings` in `server/lib/settings.ts`). The Settings page saves the
+  whole form on every submit, so `systemInstruction` arrives back pre-filled
+  from whatever `getSettings()` last answered even when the user only touched
+  the voice or a switch; writing it unconditionally would freeze a fresh
+  install's prompt at whatever `DEFAULT_SYSTEM_INSTRUCTION` happened to read on
+  the day of that save, and every later improvement to it would reach nobody
+  who hadn't explicitly customised it. So a submitted value equal to the
+  current default is skipped, and an existing row is `delete`d rather than
+  overwritten if it now matches — the only way a past customisation can start
+  tracking the default again. This used to be patched over with
+  `PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS`, a list of every default that had ever
+  shipped that `getSettings()` treated as "not customised"; that was removing
+  the symptom on every release instead of fixing the write that caused it, and
+  is gone.
 
 - **The CSP is nonce-based, and Nuxt's own inline scripts depend on it.**
   `server/plugins/csp.ts` sets the header on every response and stamps a
@@ -943,28 +972,76 @@ things that are easy to get wrong.
 
 ## Theme
 
-- **`domo` is a forest green, `bark` is the neutral, and both are full 50–950
-  scales in `app/assets/css/main.css`.** The palette name `domo` was kept so
-  nothing else had to change; `ui.colors.neutral` is `bark` rather than `zinc`.
-  Mid-tones: primary **500 `#3d7d4e`** and **600 `#2f6b45`** (white text at
-  4.95:1 and 6.3:1), **400 `#5fa472`** for dark mode, where Nuxt UI puts dark
-  text on it (7.0:1). The old scale was emerald, which reads as a signal colour
-  rather than an organic one. `bark` leans warm olive at very low chroma —
-  every surface in the app is a neutral, so a blue-grey beside a green primary
-  is the one thing that makes the accent look artificial. Its derived tokens
-  were checked by hand: `text-muted` is 4.7:1 on white (500 `#6e7666`) and
-  6.0:1 on the dark background (400 `#99a191` on 900 `#1e221c`), and the 800
-  border sits 1.27:1 off the 900 background — the same separation zinc gave.
-- **The font is Figtree, self-hosted, and `@nuxt/fonts` is already there.**
-  Nuxt UI lists it as a `moduleDependency` and registers it with weights
-  400–700, so it must **not** be added to `modules` or to `package.json` — it is
-  active already, and Inter was being self-hosted the same way. Figtree over
-  Inter for a warmer, rounder skeleton that still holds up at the 11–13px this
-  dashboard is mostly made of. The module picks the family up straight out of
-  the Tailwind `@theme` block, which is worth knowing because it is not a
-  `font-family` declaration. Verified on a production build: 16 `.woff2` under
-  `.output/public/_fonts/`, 64 `/_fonts/` references in the entry CSS, both
-  Figtree and JetBrains Mono, and **no `fonts.gstatic.com` or
+- **`domo` is a deep pine green that drifts warmer as it lightens, `bark` is
+  the neutral, and both are full 50–950 scales in `app/assets/css/main.css`.**
+  The palette name `domo` was kept so nothing else had to change;
+  `ui.colors.neutral` is `bark` rather than `zinc`. 600 (`#0a6141`) carries
+  white text at 7.50:1 and is otherwise unused by the app chrome. The scale
+  went through several passes before the two working stops (below) settled:
+  an earlier, greyer green (500 `#3d7d4e`) read as desaturated, so it was
+  pushed for chroma (500 `#1c8049`) — but that read as *pastel*, not deep,
+  because the extra saturation landed at too high a lightness.
+  500-and-darker keeps the hue cooler (toward teal, H~150→163 across
+  600–950, pine/spruce rather than lawn) with lightness kept low, so the
+  high saturation (S~55–82% through 500–700) reads as depth instead of a
+  fluorescent highlighter. **400-and-lighter carries a separate, warmer hue
+  instead (H~129→145, a yellow-green cast)** — a flat hue across the whole
+  ramp is what made the light end read as washed out even after 400 was
+  fixed for lightness: a tint is a colour diluted toward white, and unless
+  the hue itself moves too, the eye reads that dilution as greyness rather
+  than as light on a leaf. The two families meet at the 400/500 boundary on
+  purpose, because that boundary is also where the two rendered modes split
+  (below) — light mode's deep and dark mode's alive are two different moods,
+  not two lightness steps of one hue.
+- **500 and 400 are the only two stops that ever render as `--ui-primary`,
+  which makes this one pair of lines the single place "the green" is
+  configured for each mode — there is no per-component override anywhere in
+  the app.** Nuxt UI's own light/dark mapping picks 500 (`--color-domo-500`)
+  under `:root` and 400 under `.dark`, on every solid button, icon, link and
+  progress fill at once — light mode's text on top of it is white,
+  dark mode's is `text-inverted`, which resolves to `bark-900` (`#261e18`,
+  not pure black). `grep -rnE "domo-[0-9]" app server shared` (outside this
+  file) returns nothing: a button that looks wrong belongs to one of these
+  two lines, not to a class added on that button.
+
+  500's floor is in HSL: white text on top means it must stay **under** ~L30%
+  or drops below 4.5:1, and it sits right at that edge, `#118657` (L29.5%,
+  4.60:1 with white).
+
+  400's floor pulls the other way — `bark-900` text on top means *it* must
+  stay light enough. Two passes tuned it within the cool pine hue family
+  (raising HSL lightness, then HSV brightness) and both still read as washed
+  rather than vivid, because the hue itself was the problem, not the
+  lightness curve — see above. 400 is now `#02ab49` (H145° S98% L34%),
+  a colour dialled in by hand and pasted in directly rather than derived: on
+  the warm side of the hue split, at much higher saturation than the cool
+  family ever used. Checked rather than assumed: 5.57:1 against `bark-900`
+  text, more margin than the `#28a873` (H155° S76% V66%, 5.41:1) it
+  replaced, so no darkening or lightening was needed on top of the hue
+  change. 300 and lighter were re-hued the same direction (H141→129 down to
+  50) for a ramp that's coherent even though nothing outside 400 currently
+  renders them — `grep -rnE "domo-[0-9]" app server shared` (outside this
+  file) still returns nothing. Recompute the contrast pair by hand before
+  moving 400 again, and keep it in the warm family — sliding it back toward
+  H155+ reintroduces the washed-out problem this was written to avoid.
+  `bark` was olive-grey and is now
+  a wood-toned brown (500 `#7d5f42`, hue ~30° instead of ~110°) — timber next
+  to the forest green rather than stone. Its derived tokens were checked by
+  hand: `text-muted` is 5.85:1 on white (500 `#7d5f42`) and 4.74:1 on the dark
+  background (400 `#a3855f` on 900 `#261e18`), and the 800 border sits 1.17:1
+  off the 900 background — close to the subtle separation zinc gave.
+- **The font is Schibsted Grotesk, self-hosted, and `@nuxt/fonts` is already
+  there.** Nuxt UI lists it as a `moduleDependency` and registers it with
+  weights 400–700, so it must **not** be added to `modules` or to
+  `package.json` — it is active already, and Figtree (then Inter) were
+  self-hosted the same way before it. Schibsted Grotesk over Figtree for
+  wider apertures and more distinctive letterforms — Figtree's tight,
+  geometric skeleton read as condensed at the 11–13px this dashboard is
+  mostly made of. The module picks the family up straight out of the
+  Tailwind `@theme` block, which is worth knowing because it is not a
+  `font-family` declaration. Verified on a production build: 16 `.woff2`
+  under `.output/public/_fonts/`, 64 `/_fonts/` references in the entry CSS,
+  both Schibsted Grotesk and JetBrains Mono, and **no `fonts.gstatic.com` or
   `fonts.googleapis.com` anywhere in the output**. `font-src 'self'` in
   `server/lib/csp.ts` already covered it, so the CSP was not touched.
 

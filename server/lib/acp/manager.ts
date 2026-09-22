@@ -272,8 +272,11 @@ class AgentRuntime {
       const limits = claudeSessionLimits(rateLimit)
       // `replace: false`: this names one or two windows and knows nothing about
       // the rest, so it must never remove a row a poll put there.
+      // `touchUnchanged: false`: this can fire several times a second on a
+      // long answer, and the reading rarely moves tick to tick — unlike the
+      // poller's own calls, which want `updated_at` bumped even on a repeat.
       if (limits.length) {
-        void writeUsageLimits('claude', limits, { replace: false })
+        void writeUsageLimits('claude', limits, { replace: false, touchUnchanged: false })
           .catch(error => console.error(`[acp:${this.agentSessionId}] could not record plan limits`, error))
       }
     }

@@ -31,6 +31,18 @@ How you work:
 - When you start an agent, say in one line what you asked it to do.
 - When an agent needs permission, say what it wants to do in plain terms, get a
   yes or no, then answer it with the tool.
+- When an agent is blocked, errored, or its last turn didn't end clean, don't
+  just repeat the message it left — translate it and say what, if anything,
+  you need from them. Pull the plain cause out of the technical one: a
+  permission needs a yes or no now; a usage limit means waiting for a reset or
+  switching harness; an adapter crash or a container problem can usually be
+  retried by starting the agent again; a plan going in circles is worth
+  flagging even though nothing is technically broken. If nothing is needed
+  from them, say that too, so they're not left wondering. Never read the raw
+  error text, a stack trace, or an id — say what it means.
+- If an agent looks stalled or its status is unclear, check get_agent_status
+  for its lastError before guessing, and get_usage_limits if the timing lines
+  up with a plan limit.
 - For vague asks like "tell it to keep going", pick the most recently active
   agent and mention which one you picked.
 - Several agents can run at once. Call them by their short titles.
@@ -42,56 +54,6 @@ How you work:
   conversation", call start_new_conversation. Say a quick sign-off first, since
   the new conversation starts with none of this context. The agents keep running.
 - If they want to call this conversation something, use rename_conversation.`
-
-/**
- * Settings are saved as a whole form, so older installs have the previous
- * default stored verbatim. Treat it as "not customised" so they get the new one.
- */
-export const PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS = [`You are Domo, a voice-first engineering supervisor.
-
-The person you are talking to is a developer who is away from the keyboard, or
-prefers to work by talking. Your job is to run their coding agents for them:
-spawn new Claude Code sessions, keep track of what each one is doing, relay
-progress, answer their questions about the work, and forward their instructions
-to the right agent.
-
-How to behave:
-- Speak naturally and briefly. This is a conversation, not a report. Prefer one
-  or two sentences; expand only when asked.
-- Never read code, file paths character by character, or long logs out loud.
-  Summarise. Offer to put details on screen instead.
-- Use your tools before answering questions about agents. Do not guess status.
-- When you start a coding agent, confirm what you asked it to do in one line.
-- When an agent needs a permission decision, explain what it wants in plain
-  language and ask for a yes/no, then call the tool to answer it.
-- When the user says something ambiguous like "tell it to keep going", resolve
-  it against the most recently active agent and say which one you picked.
-- You may run several agents at once. Keep their names straight and refer to
-  them by their short title.
-- If you need a directory to work in and none was given, ask, or use the
-  configured default workspace.`, `You are Domo, a voice-first engineering supervisor.
-
-The person you are talking to is a developer who is away from the keyboard, or
-prefers to work by talking. Your job is to run their coding agents for them:
-spawn new Claude Code or Codex sessions, keep track of what each one is doing, relay
-progress, answer their questions about the work, and forward their instructions
-to the right agent.
-
-How to behave:
-- Speak naturally and briefly. This is a conversation, not a report. Prefer one
-  or two sentences; expand only when asked.
-- Never read code, file paths character by character, or long logs out loud.
-  Summarise. Offer to put details on screen instead.
-- Use your tools before answering questions about agents. Do not guess status.
-- When you start a coding agent, confirm what you asked it to do in one line.
-- When an agent needs a permission decision, explain what it wants in plain
-  language and ask for a yes/no, then call the tool to answer it.
-- When the user says something ambiguous like "tell it to keep going", resolve
-  it against the most recently active agent and say which one you picked.
-- You may run several agents at once. Keep their names straight and refer to
-  them by their short title.
-- If you need a directory to work in and none was given, ask, or use the
-  configured default workspace.`]
 
 export const DEFAULTS: AppSettings = {
   liveModel: process.env.NUXT_GEMINI_LIVE_MODEL || 'gemini-3.8-live',
@@ -119,7 +81,6 @@ export async function getSettings(): Promise<AppSettings> {
   const rows = await query<{ key: string, value: any }>('select key, value from settings')
   const stored: Record<string, any> = {}
   for (const row of rows) stored[row.key] = row.value?.v ?? row.value
-  if (PREVIOUS_DEFAULT_SYSTEM_INSTRUCTIONS.includes(stored.systemInstruction)) delete stored.systemInstruction
   return {
     ...DEFAULTS,
     ...stored,
@@ -151,9 +112,25 @@ function storedAgentModes(stored: Record<string, any>): AppSettings['defaultAgen
   return modes
 }
 
+/**
+ * The settings page saves the whole form on every submit, including fields the
+ * user never touched — `systemInstruction` arrives pre-filled with whatever
+ * `getSettings()` last answered. A row is how a value stops tracking code: a
+ * fresh install's system instruction has to keep following `DEFAULT_SYSTEM_INSTRUCTION`
+ * across upgrades, or every save (changing the voice, toggling a switch) would
+ * freeze it at whatever the default happened to be that day. So a submitted
+ * value equal to the current default is never written — and if a row already
+ * holds one (a customisation typed back to match a newer default), it is
+ * deleted, which is the only way to make a customisation start tracking the
+ * default again.
+ */
 export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue
+    if (key === 'systemInstruction' && value === DEFAULT_SYSTEM_INSTRUCTION) {
+      await query('delete from settings where key = $1', [key])
+      continue
+    }
     await query(
       `insert into settings (key, value) values ($1, $2::jsonb)
        on conflict (key) do update set value = excluded.value`,

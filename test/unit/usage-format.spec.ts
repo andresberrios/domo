@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  fiveHourLimit,
   formatAmount,
   formatPercent,
   formatReset,
@@ -9,6 +10,7 @@ import {
   limitLabel,
   percentOf,
   usageTone,
+  weeklyLimit,
   worstLimit
 } from '../../app/utils/usage'
 import type { UsageLimit } from '~~/shared/types'
@@ -167,5 +169,48 @@ describe('worstLimit', () => {
 
   it('ignores windows with no reading rather than treating them as zero', () => {
     expect(worstLimit([limit({ usedPercent: null })])).toBeNull()
+  })
+})
+
+describe('fiveHourLimit', () => {
+  it('picks the short window, whatever the provider calls it', () => {
+    const rows = [
+      limit({ limitId: 'seven_day', windowMinutes: 10080, usedPercent: 67 }),
+      limit({ limitId: 'five_hour', windowMinutes: 300, usedPercent: 50 })
+    ]
+    expect(fiveHourLimit(rows)?.limitId).toBe('five_hour')
+
+    const codex = [
+      limit({ provider: 'codex', limitId: 'codex:secondary', windowMinutes: 10080, usedPercent: 24 }),
+      limit({ provider: 'codex', limitId: 'codex:primary', windowMinutes: 300, usedPercent: 49 })
+    ]
+    expect(fiveHourLimit(codex)?.limitId).toBe('codex:primary')
+  })
+
+  it('ignores rows with no window, such as credits or a spend cap', () => {
+    expect(fiveHourLimit([limit({ limitId: 'extra_usage', windowMinutes: null, usedPercent: null })])).toBeNull()
+  })
+})
+
+describe('weeklyLimit', () => {
+  it('prefers the aggregate weekly row over a per-model breakdown', () => {
+    const rows = [
+      limit({ limitId: 'seven_day_opus', windowMinutes: 10080, usedPercent: 91 }),
+      limit({ limitId: 'seven_day', windowMinutes: 10080, usedPercent: 67 }),
+      limit({ limitId: 'five_hour', windowMinutes: 300, usedPercent: 50 })
+    ]
+    expect(weeklyLimit(rows)?.limitId).toBe('seven_day')
+  })
+
+  it('falls back to the worst weekly-ish row when there is no aggregate one', () => {
+    const codex = [
+      limit({ provider: 'codex', limitId: 'codex:primary', windowMinutes: 300, usedPercent: 49 }),
+      limit({ provider: 'codex', limitId: 'codex:secondary', windowMinutes: 10080, usedPercent: 24 })
+    ]
+    expect(weeklyLimit(codex)?.limitId).toBe('codex:secondary')
+  })
+
+  it('returns null when nothing has a window past the 5-hour range', () => {
+    expect(weeklyLimit([limit({ limitId: 'five_hour', windowMinutes: 300 })])).toBeNull()
   })
 })
