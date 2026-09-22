@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai'
 
-import { geminiApiKey } from '../lib/gemini'
+import { geminiApiKey, learnLiveContextWindows } from '../lib/gemini'
 
 /**
  * Ask the Gemini API what models this key can see, so the model picker shows
@@ -14,13 +14,19 @@ export default defineEventHandler(async () => {
     const ai = new GoogleGenAI({ apiKey })
     const pager = await ai.models.list()
     const models: Array<{ name: string, displayName?: string, description?: string, live: boolean }> = []
+    const raw: Array<{ name?: string | null, inputTokenLimit?: number | null }> = []
     for await (const model of pager as any) {
+      raw.push(model)
       const name = (model.name ?? '').replace(/^models\//, '')
       if (!name) continue
       const actions: string[] = model.supportedActions ?? model.supportedGenerationMethods ?? []
       const live = /live/i.test(name) || actions.some((action: string) => /bidi|live/i.test(action))
       models.push({ name, displayName: model.displayName, description: model.description, live })
     }
+    // Every model here carries its own `inputTokenLimit`, which is the
+    // denominator a conversation's context bar needs and the Live session
+    // itself never reports. Free while we are already holding the listing.
+    learnLiveContextWindows(raw)
     models.sort((a, b) => Number(b.live) - Number(a.live) || a.name.localeCompare(b.name))
     return { models }
   } catch (error) {

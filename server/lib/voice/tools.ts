@@ -16,6 +16,8 @@ import {
   listDevEnvironments,
   listPermissions,
   listProjects,
+  listUsageLimits,
+  listUsageProviders,
   setAutoTitle,
   updateAgentSession,
   updateDevEnvironment,
@@ -23,7 +25,7 @@ import {
   updateVoiceSession
 } from '../repo'
 import { getSettings } from '../settings'
-import type { MessageDelivery } from '../../../shared/types'
+import type { AgentSession, MessageDelivery } from '../../../shared/types'
 
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 
@@ -85,6 +87,12 @@ export function cleanTitle(raw: unknown): string {
     .replace(/[.!]+$/, '')
     .trim()
   return title.length > 60 ? `${title.slice(0, 59).trimEnd()}…` : title
+}
+
+/** How full a session's context window is, as a whole percent, or null. */
+function contextUsedPercent(usage: AgentSession['usage']): number | null {
+  if (!usage || !usage.context.size) return null
+  return Math.round((usage.context.used / usage.context.size) * 100)
 }
 
 function summarise(text: string | null, max = 400): string {
@@ -236,7 +244,13 @@ export const voiceTools: Record<string, VoiceTool> = {
           mode: session.modeId,
           lastActivityAt: session.lastActivityAt,
           summary: summarise(session.summary, 300),
-          awaitingPermission: pending.filter(p => p.agentSessionId === session.id).length
+          awaitingPermission: pending.filter(p => p.agentSessionId === session.id).length,
+          // Only when it is known: an absent field is "no reading yet", which
+          // the model can say, while a zero would be a claim that the context
+          // is empty.
+          ...contextUsedPercent(session.usage) === null
+            ? {}
+            : { contextUsedPercent: contextUsedPercent(session.usage) }
         }))
       }
     }
@@ -708,6 +722,54 @@ export const voiceTools: Record<string, VoiceTool> = {
         if (dirs.length >= 60) break
       }
       return { path: base, directories: dirs }
+    }
+  },
+
+  get_usage_limits: {
+    declaration: {
+      name: 'get_usage_limits',
+      description:
+        'Report how much of the Claude and Codex plan limits are used up, when each window resets, '
+        + 'and any usage credits. Call this before answering anything about quota, limits, '
+        + '"how much is left", or why an agent was cut off. Percentages are 0-100 of the window used.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          provider: {
+            type: Type.STRING,
+            enum: ['claude', 'codex'],
+            description: 'Only this account. Omit for both.'
+          }
+        }
+      }
+    },
+    handler: async (args) => {
+      const wanted = args.provider === 'claude' || args.provider === 'codex' ? args.provider : undefined
+      const [limits, providers] = await Promise.all([listUsageLimits(wanted), listUsageProviders()])
+      return {
+        providers: providers
+          .filter(provider => !wanted || provider.provider === wanted)
+          .map(provider => ({
+            provider: provider.provider,
+            // `unconfigured` and `error` are both "there is nothing to report
+            // and here is why" — say the reason rather than inventing a number.
+            state: provider.state,
+            note: provider.message,
+            checkedAt: provider.checkedAt
+          })),
+        limits: limits.map(limit => ({
+          provider: limit.provider,
+          limit: limit.label,
+          usedPercent: limit.usedPercent,
+          resetsAt: limit.resetsAt,
+          status: limit.status,
+          ...(limit.amountLimit === null && limit.amountUsed === null
+            ? {}
+            : { used: limit.amountUsed, of: limit.amountLimit, currency: limit.currency }),
+          // A reading is only as good as its age, and the polls are far apart.
+          asOf: limit.updatedAt
+        }))
+      }
     }
   },
 
