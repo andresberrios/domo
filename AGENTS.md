@@ -130,6 +130,14 @@ things that are easy to get wrong.
   second probe. It resolves a preference the same fuzzy way boot does — an
   adapter id, a display name, or a substring either way — and, like `setMode`,
   believes what the adapter answers rather than what was asked for.
+  **None of the three setters may start an adapter** (`liveConnection`, never
+  `ensureStarted`): the pickers are always visible, so an `await
+  this.ensureStarted()` at the top of one turns choosing a reasoning effort on
+  a stopped session into a container starting work. With nothing running they
+  write the row and stop — every one of them is re-applied from it on the next
+  attach anyway — and the event they append is marked `pending`. The skip when
+  the value is already the current one reads the *adapter's* report, never the
+  row, or a drifted session could never be corrected.
 - **Everything else an adapter can be configured with is a list, not a field.**
   ACP lets an agent publish its own `configOptions`, and the two installed
   adapters use it for things they do not agree on at all. Reasoning effort is
@@ -178,8 +186,8 @@ things that are easy to get wrong.
   lands alongside a title/archived write it never asked to guarantee. That
   four-field mutation — `applyAgentSessionPatch` in
   `server/lib/acp/session-settings.ts` — is the one piece actually shared
-  between the voice and mesh handlers; each tool only does its own target
-  resolution and hands the result to the same function. They stay separate on
+  between all three; each surface only does its own target resolution and
+  hands the result to the same function. They stay separate on
   purpose: voice's `resolveAgent` takes an id or a fuzzy title match and
   defaults to the most recently active session, for an unrestricted
   human-facing surface with no caller identity, while the mesh handler

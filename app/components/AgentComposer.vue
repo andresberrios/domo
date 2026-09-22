@@ -24,7 +24,10 @@ const adapterInfo = computed(() => agentAdapterInfo(props.session.adapter))
  * being written — "plan this one", "switch to Opus for this bit", "think
  * harder about this" — and the composer is where that decision is made and
  * where the answer is about to be sent. All of them go through the one
- * `PATCH /api/agents/[id]`, which reaches the running adapter.
+ * `PATCH /api/agents/[id]`, which reaches the adapter when one is running and
+ * records the choice on the row when none is — picking a model here never
+ * starts a session, which matters most for the environment-backed ones, where
+ * starting a session means starting work in a container.
  *
  * Nothing here holds the chosen value: every picker reads the session row, so
  * a change that the adapter refuses reverts on its own, and a change made from
