@@ -845,12 +845,54 @@ describe('delivering a message to an agent that is already working', () => {
     await running
 
     await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    // One row is handed over exactly as it was written: nothing prefixed, no
+    // divider, the same content the caller queued.
     expect(promptText(prompts[1])).toBe('then push it')
+    expect(prompts[1]!.prompt).toEqual([{ type: 'text', text: 'then push it' }])
     // Nothing waiting, and the row records when it went out.
     await expect(listInboxMessages(agent.id)).resolves.toEqual([])
     await expect(listInboxMessages(agent.id, false)).resolves.toMatchObject([
       { deliveredAt: expect.any(String) }
     ])
+  })
+
+  /**
+   * Two notes that arrived during one turn are one thing to answer. A turn each
+   * meant the second one arrived after the agent had already answered the
+   * first, reading that answer as context nobody asked for — and cost two
+   * round trips to say so.
+   */
+  it('drains everything that piled up as one turn, each message named', async () => {
+    const { acpManager, agent, prompts, running, release } = await working()
+
+    for (const [text, origin] of [
+      ['the deploy finished', 'system'],
+      ['take a look when you can', 'agent:ag_peer']
+    ] as const) {
+      await acpManager.deliver(agent.id, { content: [{ type: 'text', text }], delivery: 'queue', origin })
+    }
+    await expect(listInboxMessages(agent.id)).resolves.toHaveLength(2)
+
+    release()
+    await running
+
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    // Two messages, one prompt — and a divider so the agent can tell that it is
+    // being handed two of them rather than one run-on sentence.
+    expect(promptText(prompts[1])).toBe(
+      '[From Domo]\nthe deploy finished\n[Message from agent ag_peer]\ntake a look when you can'
+    )
+    // Both rows went out in the same claim, in `seq` order.
+    await expect(listInboxMessages(agent.id)).resolves.toEqual([])
+    await expect(listInboxMessages(agent.id, false)).resolves.toMatchObject([
+      { origin: 'system', deliveredAt: expect.any(String) },
+      { origin: 'agent:ag_peer', deliveredAt: expect.any(String) }
+    ])
+
+    // One turn means one `user_message`, and it carries the whole batch.
+    const user = (await listAgentEvents(agent.id)).filter(event => event.type === 'user_message')
+    expect(user).toHaveLength(2)
+    expect(user[1]!.payload.content).toEqual(prompts[1]!.prompt)
   })
 
   it('cancels the running turn first when told to interrupt', async () => {

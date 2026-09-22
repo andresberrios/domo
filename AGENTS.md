@@ -109,11 +109,19 @@ things that are easy to get wrong.
   Domo *now*, while a peer has no idea what it is cutting across. **`steer` on
   an adapter that does not advertise steering falls back to `interrupt`**, never
   to `queue` — the intent is "change course now", and waiting is the one thing
-  it definitely does not mean. The queue drains one row at a time in `seq`
-  order, when a turn ends (however it ends) and when an adapter attaches idle,
-  so **a queued message survives a restart**. That is the point of Domo owning
-  the queue rather than the adapter (see the gotcha below), and it is why the
-  agent page can show what is waiting and take it back.
+  it definitely does not mean. **The queue drains as one turn**: one
+  `claimInboxMessages` takes every waiting row in `seq` order and marks them all
+  delivered in the same statement, and `combineInboxContent`
+  (`server/lib/acp/inbox.ts`) hands them over as a single prompt — each message
+  introduced by a line naming its origin (`[From Domo]`, `[From you]`,
+  `[Message from agent <id>]`), a single row untouched. Everything that piled up
+  during a turn is one thing to answer; a turn per row meant the second message
+  arrived after the agent had already answered the first and read that answer as
+  context nobody asked for. It drains when a turn ends (however it ends) and
+  when an adapter attaches idle, so **a queued message survives a restart**.
+  That is the point of Domo owning the queue rather than the adapter (see the
+  gotcha below), and it is why the agent page can show what is waiting and take
+  it back.
 - **Subscriptions are how one agent hears about another.** An agent cannot wait
   for a peer — its own turn ends long before the peer's does — so
   `agent_subscriptions(subscriber_id, target_id)` records who wants to be told,

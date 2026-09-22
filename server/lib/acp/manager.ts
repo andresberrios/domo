@@ -17,10 +17,11 @@ import { mintMeshToken } from '../mesh/token'
 import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEntry, adapterEnv } from './adapter-process'
+import { combineInboxContent } from './inbox'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
 import {
   appendAgentEvent,
-  claimNextInboxMessage,
+  claimInboxMessages,
   createAgentSession,
   createPermission,
   enqueueInboxMessage,
@@ -927,7 +928,12 @@ class AgentRuntime {
   }
 
   /**
-   * Hand over the oldest waiting message, if the agent is free to take it.
+   * Hand over everything that is waiting, if the agent is free to take it.
+   *
+   * One turn for the whole queue: two notes that arrived while the last turn
+   * ran are one thing to answer, and a turn each meant the second one read the
+   * first one's answer as context it never asked about. `combineInboxContent`
+   * keeps them legible as separate messages.
    *
    * Fire-and-forget on purpose: the callers are a turn that has just ended and
    * an adapter that has just attached, and neither should wait on a whole turn.
@@ -935,10 +941,10 @@ class AgentRuntime {
   drainInbox(): void {
     void this.serialDeliver(async () => {
       if (this.turn || !this.alive || !this.acpSessionId) return
-      const next = await claimNextInboxMessage(this.agentSessionId)
-      if (!next) return
-      const turn = this.prompt(next.content)
-      // The turn drains again when it ends, so one claim per step is enough.
+      const waiting = await claimInboxMessages(this.agentSessionId)
+      if (!waiting.length) return
+      const turn = this.prompt(combineInboxContent(waiting))
+      // Anything that arrives *during* this turn is drained when it ends.
       turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
     }).catch(error => console.error(`[acp:${this.agentSessionId}] could not drain the inbox`, error))
   }

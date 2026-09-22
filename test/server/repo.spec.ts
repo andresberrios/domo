@@ -5,7 +5,7 @@ import {
   addAgentSubscription,
   appendAgentEvent,
   appendVoiceMessage,
-  claimNextInboxMessage,
+  claimInboxMessages,
   createAgentSession,
   createDevEnvironmentRow,
   createMcpServer,
@@ -671,21 +671,28 @@ describe('the agent inbox', () => {
     await expect(listInboxMessages(session.id)).resolves.toHaveLength(1)
   })
 
-  it('hands messages over oldest first, one at a time', async () => {
+  /**
+   * Everything at once, in `seq` order: the drain answers the whole queue in
+   * one turn, so a claim that handed over the oldest row and left the rest
+   * would be a turn per message again.
+   */
+  it('hands over everything that is waiting, oldest first', async () => {
     const session = await agent()
     await queued(session.id, 'first')
     await queued(session.id, 'second')
 
-    await expect(claimNextInboxMessage(session.id)).resolves.toMatchObject({ content: said('first') })
-    await expect(claimNextInboxMessage(session.id)).resolves.toMatchObject({ content: said('second') })
-    await expect(claimNextInboxMessage(session.id)).resolves.toBeNull()
+    await expect(claimInboxMessages(session.id)).resolves.toMatchObject([
+      { content: said('first') },
+      { content: said('second') }
+    ])
+    await expect(claimInboxMessages(session.id)).resolves.toEqual([])
   })
 
   it('marks a claimed message delivered, so no drain can hand it over twice', async () => {
     const session = await agent()
     await queued(session.id, 'only once')
 
-    const claimed = await claimNextInboxMessage(session.id)
+    const [claimed] = await claimInboxMessages(session.id)
 
     expect(claimed!.deliveredAt).toEqual(expect.any(String))
     await expect(listInboxMessages(session.id)).resolves.toEqual([])
@@ -697,7 +704,7 @@ describe('the agent inbox', () => {
     const second = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
     await queued(first.id, 'for the first')
 
-    await expect(claimNextInboxMessage(second.id)).resolves.toBeNull()
+    await expect(claimInboxMessages(second.id)).resolves.toEqual([])
     await expect(listInboxMessages(first.id)).resolves.toHaveLength(1)
   })
 
@@ -709,7 +716,7 @@ describe('the agent inbox', () => {
     await expect(deleteInboxMessage(message.id)).resolves.toBeNull()
 
     const delivered = await queued(session.id, 'too late')
-    await claimNextInboxMessage(session.id)
+    await claimInboxMessages(session.id)
     await expect(deleteInboxMessage(delivered.id)).resolves.toBeNull()
   })
 
@@ -717,7 +724,7 @@ describe('the agent inbox', () => {
     const session = await agent()
     seen.clear()
     const message = await queued(session.id, 'watch this')
-    await claimNextInboxMessage(session.id)
+    await claimInboxMessages(session.id)
     await queued(session.id, 'and this')
     await deleteInboxMessage(message.id)
 
