@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import type { BranchExport, DevEnvironment, EnvironmentBranches } from '~~/shared/types'
 
-const props = defineProps<{ environment: DevEnvironment }>()
+const props = withDefaults(defineProps<{ environment: DevEnvironment, trigger?: boolean }>(), {
+  trigger: true
+})
 
-const open = ref(false)
+/**
+ * Exposed so the sidebar's action menu can open this without the button: a
+ * `UDropdownMenu` item is not allowed to contain one.
+ */
+const open = defineModel<boolean>('open', { default: false })
 const branches = ref<EnvironmentBranches>({ current: null, branches: [] })
 const branch = ref('')
 const into = ref('')
@@ -83,7 +89,7 @@ async function submit() {
 </script>
 
 <template>
-  <UTooltip :text="running ? 'Bring a branch from this environment into the project checkout.' : 'Start the environment first — the export reads its container.'">
+  <UTooltip v-if="trigger" :text="running ? 'Bring a branch from this environment into the project checkout.' : 'Start the environment first — the export reads its container.'">
     <UButton
       label="Export branch"
       icon="i-lucide-git-branch"
