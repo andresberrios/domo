@@ -19,6 +19,7 @@ import { startElectricStub } from '../helpers/electric-stub'
 import type {
   AgentEvent,
   AgentInboxMessage,
+  AgentSession,
   AppSettings,
   PendingPermission,
   Project,
@@ -354,6 +355,70 @@ describe('a coding agent as the UI sees it', () => {
 
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({ statusMessage: 'Unknown delivery: shout' })
+  })
+
+  it('retires on DELETE and keeps the transcript', async () => {
+    // DELETE used to delete, and the transcript went with it. It tombstones
+    // now: the row and its events stay, and the session is read-only.
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Retiring', cwd: checkout })
+    await appendAgentEvent(session.id, 'agent_message', { text: 'what I did', streaming: false })
+
+    await expect($fetch(`/api/agents/${session.id}`, { method: 'DELETE' }))
+      .resolves.toMatchObject({ ok: true, retired: true })
+
+    await expect(getAgentSession(session.id)).resolves.toMatchObject({ retiredReason: 'user', archived: true })
+    const events = await $fetch<AgentEvent[]>(`/api/agents/${session.id}/events`)
+    expect(events.map(event => event.type)).toEqual(['agent_message', 'retired'])
+    // Off the live list, still reachable by id and through ?retired=true.
+    const live = await $fetch<AgentSession[]>('/api/agents')
+    expect(live.map(row => row.id)).not.toContain(session.id)
+    const retired = await $fetch<AgentSession[]>('/api/agents', { query: { retired: 'true' } })
+    expect(retired.map(row => row.id)).toContain(session.id)
+  })
+
+  it('answers 409 on every write to a retired session', async () => {
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Closed', cwd: checkout })
+    await $fetch(`/api/agents/${session.id}`, { method: 'DELETE' })
+
+    for (const [path, init] of [
+      [`/api/agents/${session.id}/prompt`, { method: 'POST', body: JSON.stringify({ text: 'go' }) }],
+      [`/api/agents/${session.id}/start`, { method: 'POST' }],
+      [`/api/agents/${session.id}`, { method: 'PATCH', body: JSON.stringify({ modeId: 'plan' }) }],
+      [`/api/agents/${session.id}`, { method: 'PATCH', body: JSON.stringify({ archived: false }) }]
+    ] as const) {
+      const response = await fetch(path, {
+        ...init,
+        headers: { 'content-type': 'application/json' }
+      } as RequestInit)
+
+      expect.soft(`${init.method} ${path} -> ${response.status}`).toContain('409')
+      await expect.soft(response.json()).resolves.toMatchObject({ statusMessage: 'Agent session is retired' })
+    }
+  })
+
+  it('revives a host session, stopped, and refuses a second revival', async () => {
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Back', cwd: checkout })
+    await $fetch(`/api/agents/${session.id}`, { method: 'DELETE' })
+
+    await expect($fetch<AgentSession>(`/api/agents/${session.id}/revive`, { method: 'POST' }))
+      .resolves.toMatchObject({ retiredAt: null, archived: false, status: 'stopped' })
+
+    const again = await fetch(`/api/agents/${session.id}/revive`, { method: 'POST' })
+    expect(again.status).toBe(409)
+  })
+
+  it('purges only after retirement', async () => {
+    const session = await createAgentSession({ adapter: 'claude-code', title: 'Gone', cwd: checkout })
+
+    // The tombstone cannot be skipped by accident.
+    const early = await fetch(`/api/agents/${session.id}?purge=true`, { method: 'DELETE' })
+    expect(early.status).toBe(409)
+    await expect(getAgentSession(session.id)).resolves.toBeTruthy()
+
+    await $fetch(`/api/agents/${session.id}`, { method: 'DELETE' })
+    await expect($fetch(`/api/agents/${session.id}?purge=true`, { method: 'DELETE' }))
+      .resolves.toMatchObject({ ok: true, purged: true })
+    await expect(getAgentSession(session.id)).resolves.toBeNull()
   })
 })
 
