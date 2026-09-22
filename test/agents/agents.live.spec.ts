@@ -34,7 +34,8 @@ const MODELS: Record<AgentAdapter, string> = {
   'claude-code': 'haiku',
   // "Fast and affordable agentic coding model" — codex-acp lists no *-mini or
   // *-nano id at all, and luna is the cheap end of the 5.6 family.
-  codex: 'gpt-5.6-luna'
+  codex: 'gpt-5.6-luna',
+  opencode: 'opencode-go/kimi-k3'
 }
 
 let mesh: MeshHarness
@@ -112,6 +113,10 @@ const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
   },
   codex: {
     modeId: 'read-only',
+    prompt: 'Create a file named permission-probe.txt containing the word ok.'
+  },
+  opencode: {
+    modeId: 'plan',
     prompt: 'Create a file named permission-probe.txt containing the word ok.'
   }
 }

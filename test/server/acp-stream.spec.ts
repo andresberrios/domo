@@ -86,6 +86,8 @@ interface ServeOptions {
   models?: { current: string, ids: string[] }
   /** The reasoning-effort select this adapter offers, if any. */
   effort?: { current: string, ids: string[] }
+  /** OpenCode's config-option representation of its visible-agent mode. */
+  configMode?: { current: string, ids: string[] }
   /** Every `session/set_config_option` the adapter is asked for. */
   onSetConfigOption?: (params: any) => void
   /** The mode state `session/new` and `session/load` report, if any. */
@@ -140,6 +142,17 @@ function effortOption(effort: { current: string, ids: string[] }) {
   }
 }
 
+function configModeOption(mode: { current: string, ids: string[] }) {
+  return {
+    id: 'mode',
+    name: 'Mode',
+    category: 'mode',
+    type: 'select' as const,
+    currentValue: mode.current,
+    options: mode.ids.map(id => ({ value: id, name: id.toUpperCase() }))
+  }
+}
+
 /** Serve one turn, scripted by the test, then answer `session/prompt`. */
 function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
   // What makes the steering answer meaningful: the real adapters inject into a
@@ -147,10 +160,11 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
   let running = 0
   let cancelled = false
   // What this adapter is on right now, so a set is reflected in the next answer.
-  const current = { model: options.models?.current, effort: options.effort?.current }
+  const current = { model: options.models?.current, effort: options.effort?.current, mode: options.configMode?.current }
   const configOptions = () => [
     ...(options.models ? [modelOption({ ...options.models, current: current.model! })] : []),
-    ...(options.effort ? [effortOption({ ...options.effort, current: current.effort! })] : [])
+    ...(options.effort ? [effortOption({ ...options.effort, current: current.effort! })] : []),
+    ...(options.configMode ? [configModeOption({ ...options.configMode, current: current.mode! })] : [])
   ]
 
   return acp
@@ -187,6 +201,7 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
       // one option's change is also how a client learns the rest still stand.
       if (ctx.params.configId === 'model') current.model = ctx.params.value
       if (ctx.params.configId === 'effort') current.effort = ctx.params.value
+      if (ctx.params.configId === 'mode') current.mode = ctx.params.value
       return { configOptions: configOptions() }
     })
     .onRequest(acp.methods.agent.session.prompt, async (ctx: any) => {
@@ -1033,6 +1048,35 @@ describe('the mode a session runs in', () => {
     expect(row!.modeId).toBe('plan')
     // The list is what the picker offers; it comes from the adapter, once.
     expect(row!.modes).toEqual(MODES.map(id => ({ id, name: id, description: null })))
+  })
+
+  it('changes an OpenCode agent through its mode config option', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'opencode',
+      title: 'OpenCode mode',
+      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      modeId: 'build'
+    })
+    const asked: any[] = []
+    // Running, because a stopped session records the mode and asks nobody; the
+    // wire representation is what this one is about.
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, {
+      configMode: { current: 'build', ids: ['build', 'plan'] },
+      onSetConfigOption: params => asked.push(params)
+    })
+    await started
+    await acpManager.setMode(agent.id, 'plan')
+
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'mode', value: 'plan' }])
+    const row = await getAgentSession(agent.id)
+    expect(row!.modeId).toBe('plan')
+    expect(row!.modes).toEqual([
+      { id: 'build', name: 'BUILD', description: null },
+      { id: 'plan', name: 'PLAN', description: null }
+    ])
   })
 })
 

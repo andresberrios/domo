@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AgentSession, MessageDelivery, SessionConfigOptionInfo } from '~~/shared/types'
+import { agentAdapterInfo } from '~~/shared/agent-adapters'
 
 const props = defineProps<{ session: AgentSession }>()
 
@@ -13,11 +14,12 @@ const sending = ref(false)
  * and Shift+Enter to break, which is what `UChatPrompt` does by default.
  */
 const isTouch = useIsTouch()
+const adapterInfo = computed(() => agentAdapterInfo(props.session.adapter))
 
 /* ---------------- what this session is running on ---------------- */
 
 /**
- * The permission mode, the model and whatever else the adapter offers all live
+ * The session mode, the model and whatever else the adapter offers all live
  * here rather than in the page header. They are decisions about the message
  * being written — "plan this one", "switch to Opus for this bit", "think
  * harder about this" — and the composer is where that decision is made and
@@ -208,6 +210,11 @@ function attachmentOnly() {
   return !text.value.trim() && (attachments.value.length > 0 || uploading.value)
 }
 
+/** Whether there is anything to send — text, an attachment, or one arriving. */
+const canSend = computed(() =>
+  Boolean(text.value.trim()) || attachments.value.length > 0 || uploading.value
+)
+
 function onSubmitCapture(event: Event) {
   if (!attachmentOnly()) return
   event.preventDefault()
@@ -350,14 +357,14 @@ async function stop() {
               @change="onFiles"
             >
 
-            <UTooltip v-if="modeItems.length" text="Permission mode">
+            <UTooltip v-if="modeItems.length" :text="adapterInfo.modeLabel">
               <USelectMenu
                 v-model="currentMode"
                 :items="modeItems"
                 value-key="value"
                 size="xs"
                 variant="ghost"
-                icon="i-lucide-shield"
+                :icon="session.adapter === 'opencode' ? 'i-lucide-bot' : 'i-lucide-shield'"
                 :loading="applying === 'mode'"
                 class="w-32"
               />
@@ -412,12 +419,32 @@ async function stop() {
             />
           </div>
 
-          <UChatPromptSubmit
-            :status="status"
-            :loading="sending"
-            @stop="stop"
-            @reload="submit"
-          />
+          <div class="flex items-center gap-1">
+            <!--
+              While the agent works, `UChatPromptSubmit` is a stop button and
+              nothing else, so on a touch screen — where Enter deliberately
+              types a line break — there was no way to send at all. Steering a
+              running turn is the normal thing to do here, so it gets its own
+              button rather than a rule about which key to press.
+            -->
+            <UTooltip v-if="busy" text="Send">
+              <UButton
+                icon="i-lucide-arrow-up"
+                color="neutral"
+                size="md"
+                aria-label="Send"
+                :loading="sending"
+                :disabled="!canSend"
+                @click="submit"
+              />
+            </UTooltip>
+            <UChatPromptSubmit
+              :status="status"
+              :loading="sending"
+              @stop="stop"
+              @reload="submit"
+            />
+          </div>
         </div>
       </template>
     </UChatPrompt>

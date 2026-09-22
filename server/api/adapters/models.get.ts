@@ -1,4 +1,5 @@
 import { listAdapterModels } from '../../lib/acp/models'
+import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 /**
  * The models *and permission modes* an adapter offers, for the pickers in the
@@ -17,7 +18,8 @@ import { listAdapterModels } from '../../lib/acp/models'
  * and the modal says so.
  */
 export default defineEventHandler(async (event) => {
-  const adapter = getQuery(event).adapter === 'codex' ? 'codex' : 'claude-code'
+  const asked = getQuery(event).adapter
+  const adapter = isAgentAdapter(asked) ? asked : 'claude-code'
   try {
     return await listAdapterModels(adapter)
   } catch (error) {

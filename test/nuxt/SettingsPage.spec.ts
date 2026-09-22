@@ -1,23 +1,11 @@
-import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { readBody } from 'h3'
-import { computed, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import SettingsPage from '~/pages/settings.vue'
+import AdapterSettingsPage from '~/pages/settings/adapters/[adapter].vue'
+import SettingsShell from '~/components/SettingsShell.vue'
 
-/**
- * The settings page draws its permission-mode pickers from the adapters'
- * own probe, one per adapter, and saves a per-adapter default. Mounted here
- * as a page, with the one Electric-backed composable it uses stubbed out:
- * everything else it reads is a plain endpoint.
- */
-
-mockNuxtImport('useMcpServers', () => () => ({
-  servers: computed(() => []),
-  isReady: ref(true)
-}))
-
-let stored: Record<string, unknown> = {}
+let stored: any
 const patched: any[] = []
 
 registerEndpoint('/api/settings', () => stored)
@@ -28,97 +16,91 @@ registerEndpoint('/api/settings', {
     return stored
   }
 })
-registerEndpoint('/api/models', () => ({ models: [{ name: 'models/gemini-live', displayName: 'Gemini Live', live: true }] }))
 registerEndpoint('/api/adapters/models', (event) => {
   const adapter = new URL(event.node.req.url ?? '/', 'http://x').searchParams.get('adapter')
-  return adapter === 'codex'
-    ? {
-        models: [{ id: 'gpt-5.5', name: 'GPT-5.5' }],
-        current: 'gpt-5.5',
-        modes: [
-          { id: 'read-only', name: 'Read only', description: null },
-          { id: 'agent', name: 'Agent', description: null }
-        ],
-        currentMode: 'agent'
-      }
-    : {
-        models: [{ id: 'sonnet', name: 'Sonnet 5' }],
-        current: 'sonnet',
-        modes: [
-          { id: 'default', name: 'Manual', description: null },
-          { id: 'plan', name: 'Plan first', description: null }
-        ],
-        currentMode: 'default'
-      }
+  if (adapter === 'opencode') {
+    return {
+      models: [{ id: 'opencode-go/kimi-k3', name: 'Kimi K3' }],
+      current: 'opencode-go/kimi-k3',
+      modes: [{ id: 'build', name: 'Build' }, { id: 'plan', name: 'Plan' }],
+      currentMode: 'build',
+      configOptions: [{
+        id: 'effort', name: 'Effort', category: 'thought_level', currentValue: 'medium',
+        options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }]
+      }]
+    }
+  }
+  return {
+    models: [{ id: 'sonnet', name: 'Sonnet' }], current: 'sonnet',
+    modes: [{ id: 'default', name: 'Manual' }, { id: 'plan', name: 'Plan first' }],
+    currentMode: 'default', configOptions: []
+  }
 })
 
-function settings(overrides: Record<string, unknown> = {}) {
+function settings() {
   return {
-    liveModel: 'models/gemini-live',
-    voiceName: 'Puck',
-    systemInstruction: 'Be brief.',
-    defaultCwd: '/work',
-    proactiveNotifications: true,
-    autoApprovePermissions: false,
-    defaultAgentModes: { 'claude-code': 'plan', codex: 'agent' },
-    language: 'en-US',
-    autoTitle: true,
-    vscodeSshHost: '',
-    homeMounts: ['.ssh', '.gitconfig'],
-    hasGeminiKey: true,
-    hasAnthropicKey: false,
-    hasOpenAiKey: false,
-    ...overrides
+    liveModel: 'gemini-live', voiceName: 'Puck', systemInstruction: '', defaultCwd: '/work',
+    proactiveNotifications: true, autoApprovePermissions: false,
+    defaultAgentModes: { 'claude-code': 'plan', codex: 'agent', opencode: 'build' },
+    defaultAgentConfig: { 'claude-code': {}, codex: {}, opencode: {} },
+    language: 'en-US', autoTitle: true, vscodeSshHost: '', homeMounts: []
   }
 }
 
-/** The select-menu trigger showing this label, as the user would find it. */
-function trigger(label: string): HTMLElement | undefined {
-  return [...document.body.querySelectorAll<HTMLElement>('button')]
+function button(label: string) {
+  return [...document.body.querySelectorAll<HTMLButtonElement>('button')]
     .find(element => element.textContent?.trim() === label)
 }
 
-async function mount() {
-  return mountSuspended(SettingsPage, { attachTo: document.body })
-}
-
 beforeEach(() => {
-  patched.length = 0
   stored = settings()
+  patched.length = 0
   document.body.innerHTML = ''
 })
 
-describe('settings page', () => {
-  it('fills each adapter\'s mode picker from its own probe, showing the stored default by name', async () => {
-    const wrapper = await mount()
-
-    await vi.waitFor(() => {
-      expect(trigger('Plan first'), 'the Claude Code picker shows the stored plan mode').toBeTruthy()
-      expect(trigger('Agent'), 'the Codex picker shows the stored agent mode').toBeTruthy()
+describe('adapter settings page', () => {
+  it('renders a settings sidebar with one nested link per adapter', async () => {
+    const wrapper = await mountSuspended(SettingsShell, {
+      route: '/settings/adapters/opencode',
+      props: { title: 'OpenCode' },
+      attachTo: document.body
     })
-    expect(document.body.textContent).not.toContain('Bypass permissions')
+    const links = [...document.body.querySelectorAll<HTMLAnchorElement>('nav a')]
+      .map(link => ({ text: link.textContent?.trim(), href: link.getAttribute('href') }))
+
+    expect(links).toEqual(expect.arrayContaining([
+      { text: 'General', href: '/settings' },
+      { text: 'Coding agents', href: '/settings/agents' },
+      { text: 'Claude Code', href: '/settings/adapters/claude-code' },
+      { text: 'Codex', href: '/settings/adapters/codex' },
+      { text: 'OpenCode', href: '/settings/adapters/opencode' },
+      { text: 'Development environments', href: '/settings/environments' },
+      { text: 'MCP servers', href: '/settings/mcp' }
+    ]))
     wrapper.unmount()
   })
 
-  it('keeps a stored mode the adapter no longer lists, rather than rendering a blank picker', async () => {
-    stored = settings({ defaultAgentModes: { 'claude-code': 'bypassPermissions', codex: 'agent' } })
-    const wrapper = await mount()
-
+  it('gives OpenCode its own page and calls its ACP modes agents', async () => {
+    const wrapper = await mountSuspended(AdapterSettingsPage, {
+      route: '/settings/adapters/opencode', attachTo: document.body
+    })
     await vi.waitFor(() => {
-      expect(trigger('bypassPermissions')).toBeTruthy()
+      expect(document.body.textContent).toContain('OpenCode')
+      expect(document.body.textContent).toContain('Default agent')
+      expect(button('Build')).toBeTruthy()
+      expect(document.body.textContent).not.toContain('Check OpenCode Go limits')
     })
     wrapper.unmount()
   })
 
-  it('saves the per-adapter defaults and the mount list as an array', async () => {
-    const wrapper = await mount()
-    await vi.waitFor(() => expect(trigger('Plan first')).toBeTruthy())
-
-    trigger('Save')!.click()
-
+  it('saves this adapter while preserving the other adapter defaults', async () => {
+    const wrapper = await mountSuspended(AdapterSettingsPage, {
+      route: '/settings/adapters/claude-code', attachTo: document.body
+    })
+    await vi.waitFor(() => expect(button('Plan first')).toBeTruthy())
+    button('Save')!.click()
     await vi.waitFor(() => expect(patched).toHaveLength(1))
-    expect(patched[0].defaultAgentModes).toEqual({ 'claude-code': 'plan', codex: 'agent' })
-    expect(patched[0].homeMounts).toEqual(['.ssh', '.gitconfig'])
+    expect(patched[0].defaultAgentModes).toEqual({ 'claude-code': 'plan', codex: 'agent', opencode: 'build' })
     wrapper.unmount()
   })
 })

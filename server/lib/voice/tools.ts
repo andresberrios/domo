@@ -31,6 +31,7 @@ import {
 } from '../repo'
 import { getSettings } from '../settings'
 import type { AgentSession, MessageDelivery } from '../../../shared/types'
+import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 
@@ -300,7 +301,7 @@ export const voiceTools: Record<string, VoiceTool> = {
         properties: {
           adapter: {
             type: Type.STRING,
-            enum: ['claude-code', 'codex'],
+            enum: ['claude-code', 'codex', 'opencode'],
             description: 'Only this harness. Omit for all of them.'
           }
         }
@@ -308,7 +309,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     },
     // The same cached probe the picker uses; there is no second spawn path.
     handler: async args => listAdapterCatalog(
-      args.adapter === 'codex' || args.adapter === 'claude-code' ? args.adapter : undefined
+      isAgentAdapter(args.adapter) ? args.adapter : undefined
     )
   },
 
@@ -316,14 +317,14 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_agent_session',
       description:
-        'Start a new Claude Code or Codex agent session and optionally give it its first task. Use this when the user wants new work done in parallel.',
+        'Start a new Claude Code, Codex or OpenCode agent session and optionally give it its first task. Use this when the user wants new work done in parallel.',
       parameters: {
         type: Type.OBJECT,
         properties: {
           title: { type: Type.STRING, description: 'Short human name for the session, e.g. "auth refactor".' },
           adapter: {
             type: Type.STRING,
-            enum: ['claude-code', 'codex'],
+            enum: ['claude-code', 'codex', 'opencode'],
             description: 'Coding agent to run. Defaults to Claude Code.'
           },
           task: { type: Type.STRING, description: 'The first instruction for the agent.' },
@@ -345,7 +346,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     },
     handler: async (args, ctx) => {
       const session = await acpManager.create({
-        adapter: args.adapter === 'codex' ? 'codex' : 'claude-code',
+        adapter: isAgentAdapter(args.adapter) ? args.adapter : 'claude-code',
         title: args.title,
         cwd: args.cwd,
         devEnvironmentId: args.devEnvironmentId,
@@ -686,7 +687,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'manage_agent_session',
       description:
-        'Update a coding agent session: rename it, change its permission mode, switch its model, and/or '
+        'Update a coding agent session: rename it, change its mode, switch its model, and/or '
         + 'archive it, and change any setting the adapter itself offers (reasoning effort, for one). '
         + 'Pass only the fields you want to change — everything but agentId is optional. '
         + 'Call list_models first if you are not sure what model id the agent\'s adapter offers.',
@@ -697,7 +698,7 @@ export const voiceTools: Record<string, VoiceTool> = {
           title: { type: Type.STRING, description: 'New title.' },
           modeId: {
             type: Type.STRING,
-            description: 'Permission mode id to switch to, e.g. "default" (ask every time), "acceptEdits", "plan", or "bypassPermissions".'
+            description: 'Mode id from list_models. This is a permission policy for Claude/Codex and a visible agent for OpenCode.'
           },
           model: { type: Type.STRING, description: 'Model id or name to switch the session to.' },
           setting: {
@@ -752,7 +753,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'get_usage_limits',
       description:
-        'Report how much of the Claude and Codex plan limits are used up, when each window resets, '
+        'Report how much of the Claude, Codex and OpenCode Go plan limits are used up, when each window resets, '
         + 'and any usage credits. Call this before answering anything about quota, limits, '
         + '"how much is left", or why an agent was cut off. Percentages are 0-100 of the window used.',
       parameters: {
@@ -760,14 +761,16 @@ export const voiceTools: Record<string, VoiceTool> = {
         properties: {
           provider: {
             type: Type.STRING,
-            enum: ['claude', 'codex'],
-            description: 'Only this account. Omit for both.'
+            enum: ['claude', 'codex', 'opencode'],
+            description: 'Only this account. Omit for all providers.'
           }
         }
       }
     },
     handler: async (args) => {
-      const wanted = args.provider === 'claude' || args.provider === 'codex' ? args.provider : undefined
+      const wanted = args.provider === 'claude' || args.provider === 'codex' || args.provider === 'opencode'
+        ? args.provider
+        : undefined
       const [limits, providers] = await Promise.all([listUsageLimits(wanted), listUsageProviders()])
       return {
         providers: providers

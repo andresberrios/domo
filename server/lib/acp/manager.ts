@@ -16,7 +16,7 @@ import { internalBaseUrl } from '../internal-url'
 import { mintMeshToken } from '../mesh/token'
 import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
-import { adapterEntry, adapterEnv } from './adapter-process'
+import { adapterEnv, adapterLaunch } from './adapter-process'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
 import {
@@ -27,6 +27,7 @@ import {
   sameConfigOptions
 } from './config-options'
 import { availableModelIds, currentModel, modelConfigOption, pinnedModel, resolveModel } from './model'
+import { availableModes, currentModeId, modeConfigOption } from './mode'
 import {
   appendAgentEvent,
   claimInboxMessages,
@@ -244,6 +245,11 @@ class AgentRuntime {
    * does, without a second probe.
    */
   private modelOption: any = null
+  /**
+   * OpenCode exposes its agent/mode selector as a config option rather than
+   * ACP's dedicated modes object. Null means the dedicated `set_mode` method.
+   */
+  private modeOption: any = null
   /**
    * The adapter's own settings as it last reported them, so a live change can
    * resolve a value without asking again. Kept beside the row's copy rather
@@ -608,7 +614,8 @@ class AgentRuntime {
       ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
     } else {
       await mkdir(session.cwd, { recursive: true }).catch(() => {})
-      proc = spawn(process.execPath, [adapterEntry(session.adapter)], {
+      const launch = adapterLaunch(session.adapter)
+      proc = spawn(launch.command, launch.args, {
         cwd: session.cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -768,20 +775,16 @@ class AgentRuntime {
   }): Promise<{ modes?: any, modeId?: string }> {
     const { session, settings } = input
     const state = input.response?.modes ?? null
-    const available = state
-      ? (state.availableModes ?? []).map((mode: any) => ({
-          id: mode.id,
-          name: mode.name,
-          description: mode.description ?? null
-        }))
-      : null
-    const reported: string | null = state?.currentModeId ?? null
+    this.modeOption = modeConfigOption(input.response)
+    const hasReportedState = !!state || !!this.modeOption
+    const available = hasReportedState ? availableModes(input.response) : null
+    const reported = currentModeId(input.response)
     // The default is per adapter: the two share no mode ids at all.
     const fallback = settings.defaultAgentModes[session.adapter]
     const desired = session.modeId || fallback
     // A `session/load` may answer with no mode state even for an adapter that
     // has modes, so the row's own list is the other half of the question.
-    const hasModes = !!state || !!session.modes?.length
+    const hasModes = hasReportedState || !!session.modes?.length
     let effective = reported ?? session.modeId ?? fallback
     // What the adapter says it is in, which is what a later `setMode` decides
     // against — never the row, or a drifted session could not be corrected.
@@ -789,12 +792,8 @@ class AgentRuntime {
 
     if (desired && hasModes && desired !== reported) {
       try {
-        await this.connection!.agent.request(acp.methods.agent.session.setMode, {
-          sessionId: this.acpSessionId,
-          modeId: desired
-        } as any)
-        effective = desired
-        this.reportedModeId = desired
+        effective = await this.requestMode(desired)
+        this.reportedModeId = effective
       } catch (error) {
         // A mode that will not take is not a reason to fail the start: the
         // session still works, it just asks more often than it was told to.
@@ -1349,13 +1348,11 @@ class AgentRuntime {
     const connection = await this.liveConnection()
     const session = await getAgentSession(this.agentSessionId)
 
+    let effective = modeId
     if (connection) {
       if (this.reportedModeId !== modeId) {
-        await connection.agent.request(acp.methods.agent.session.setMode, {
-          sessionId: this.acpSessionId,
-          modeId
-        } as any)
-        this.reportedModeId = modeId
+        effective = await this.requestMode(modeId)
+        this.reportedModeId = effective
       } else if (session?.modeId === modeId) {
         // The adapter is in it and the row says so: nothing changed, and a
         // "Mode set to …" line for a change nobody made is noise.
@@ -1372,11 +1369,39 @@ class AgentRuntime {
       if (session?.modeId === modeId) return
     }
 
-    await updateAgentSession(this.agentSessionId, { modeId })
+    await updateAgentSession(this.agentSessionId, { modeId: effective })
     await appendAgentEvent(this.agentSessionId, 'mode_changed', {
-      modeId,
+      modeId: effective,
       ...pendingMark(!!connection)
     })
+  }
+
+  /**
+   * Ask the adapter for a mode, whichever way this one publishes them, and
+   * answer with what it says it is in now.
+   *
+   * Two wire representations, one concept: most adapters take ACP's own
+   * `session/set_mode` against the `modes` object, while OpenCode publishes
+   * the choice as a `mode` config option and takes
+   * `session/set_config_option`. `modeOption` is which of the two this session
+   * is, learned from the last `session/new` / `session/load`, and it is
+   * refreshed here because a set answers with the whole option again.
+   */
+  private async requestMode(modeId: string): Promise<string> {
+    if (this.modeOption) {
+      const response = (await this.connection!.agent.request(acp.methods.agent.session.setConfigOption, {
+        sessionId: this.acpSessionId,
+        configId: this.modeOption.id,
+        value: modeId
+      } as any)) as any
+      this.modeOption = modeConfigOption(response) ?? this.modeOption
+      return currentModeId(response) ?? modeId
+    }
+    await this.connection!.agent.request(acp.methods.agent.session.setMode, {
+      sessionId: this.acpSessionId,
+      modeId
+    } as any)
+    return modeId
   }
 
   /**

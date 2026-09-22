@@ -9,14 +9,29 @@ import { dockerServerArch, resourcePrefix, run } from './docker'
  * next environment created builds the new one.
  */
 export const RUNTIME_IMAGE = process.env.NUXT_DEV_ENV_RUNTIME_IMAGE || 'node:22-bookworm-slim'
-export const ADAPTER_PACKAGES: Record<AgentAdapter, { command: string, spec: string }> = {
+export const ADAPTER_PACKAGES: Record<AgentAdapter, {
+  command: string
+  spec: string
+  entry: string
+  args?: string[]
+  native?: boolean
+}> = {
   'claude-code': {
     command: 'claude-agent-acp',
-    spec: '@agentclientprotocol/claude-agent-acp@0.78.0'
+    spec: '@agentclientprotocol/claude-agent-acp@0.78.0',
+    entry: 'dist/index.js'
   },
   codex: {
     command: 'codex-acp',
-    spec: '@agentclientprotocol/codex-acp@1.12.0'
+    spec: '@agentclientprotocol/codex-acp@1.12.0',
+    entry: 'dist/index.js'
+  },
+  opencode: {
+    command: 'opencode-acp',
+    spec: 'opencode-ai@1.18.28',
+    entry: 'bin/opencode.exe',
+    args: ['acp'],
+    native: true
   }
 }
 
@@ -43,11 +58,15 @@ export function runtimeVolumeName(arch: string): string {
  * chmodded by name, and `.ready` is written last so an interrupted build is redone.
  */
 function populateScript(): string {
-  const wrappers = Object.values(ADAPTER_PACKAGES).map(({ command, spec }) => {
+  const wrappers = Object.values(ADAPTER_PACKAGES).map(({ command, spec, entry, args = [], native }) => {
     const packageName = spec.slice(0, spec.lastIndexOf('@'))
+    const executable = `${RUNTIME_ROOT}/adapters/node_modules/${packageName}/${entry}`
+    const invocation = native
+      ? [executable, ...args].join(' ')
+      : [`${RUNTIME_ROOT}/node/bin/node`, executable, ...args].join(' ')
     return [
       `printf '%s\\n' '#!/bin/sh' `
-      + `'exec ${RUNTIME_ROOT}/node/bin/node ${RUNTIME_ROOT}/adapters/node_modules/${packageName}/dist/index.js "$@"' `
+      + `'exec ${invocation} "$@"' `
       + `> ${RUNTIME_ROOT}/bin/${command}`,
       `chmod 0755 ${RUNTIME_ROOT}/bin/${command}`
     ].join('\n')
@@ -68,7 +87,7 @@ function populateScript(): string {
 let pending: Promise<string> | null = null
 
 /**
- * The shared runtime volume: Node plus both ACP adapters, mounted read-only into every
+ * The shared runtime volume: Node plus the ACP adapters, mounted read-only into every
  * environment. Memoised for the process, so two environments created at once share one
  * build instead of racing each other through the same volume.
  */

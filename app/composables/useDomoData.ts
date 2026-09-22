@@ -28,6 +28,7 @@ import type {
   VoiceMessage,
   VoiceSession
 } from '~~/shared/types'
+import { isAgentAdapter } from '~~/shared/agent-adapters'
 
 /* Electric hands rows back exactly as Postgres stores them (snake_case), so
  * each hook maps once, here, and the rest of the app sees domain objects. */
@@ -76,7 +77,7 @@ export function useAgentSessions() {
       .map((row: any) => ({
         id: row.id,
         voiceSessionId: row.voice_session_id ?? null,
-        adapter: row.adapter === 'codex' ? 'codex' as const : 'claude-code' as const,
+        adapter: isAgentAdapter(row.adapter) ? row.adapter : 'claude-code',
         acpSessionId: row.acp_session_id ?? null,
         title: row.title,
         cwd: row.cwd,

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
-import { adapterEntry, adapterEnv } from './adapter-process'
+import { adapterEnv, adapterLaunch } from './adapter-process'
 import { adapterConfigOptions } from './config-options'
 import { availableModelOptions, currentModel, modelConfigOption } from './model'
 import { availableModes, currentModeId } from './mode'
@@ -24,7 +24,7 @@ export interface AdapterModels {
   /**
    * The adapter's own settings, as offered to a session on its *default*
    * model. That caveat is the whole reason this is not simply "the adapter's
-   * options": both adapters publish reasoning effort per model, so a model
+   * options": adapters may publish reasoning effort per model, so a model
    * with no effort levels has no effort option at all, and the levels
    * themselves differ. Good enough for the Settings page, which is choosing a
    * default rather than describing a session — a live session reads its own
@@ -84,7 +84,8 @@ export function clearAdapterModelCache(): void {
 
 const ADAPTER_NAMES: Record<AgentAdapter, string> = {
   'claude-code': 'Claude Code',
-  codex: 'Codex'
+  codex: 'Codex',
+  opencode: 'OpenCode'
 }
 
 export interface AdapterCatalogEntry {
@@ -93,7 +94,7 @@ export interface AdapterCatalogEntry {
   models: Array<{ id: string, name: string }>
   /** What a session gets when it asks for no model in particular. */
   default: string | null
-  /** The permission modes this adapter offers; the two adapters share none. */
+  /** The session modes this adapter offers, with adapter-specific semantics. */
   modes: SessionModeInfo[]
   /** The mode a session starts in when it asks for none. */
   defaultMode: string | null
@@ -104,17 +105,17 @@ export interface AdapterCatalogEntry {
 }
 
 /**
- * Every harness Domo can run, with the models and the permission modes each
+ * Every harness Domo can run, with the models and the session modes each
  * offers — for an agent that has to turn "the cheap OpenAI one" into an id that
  * exists, and for the Settings page, which cannot hard-code either list because
- * the two adapters share not one mode id.
+ * their mode ids and semantics are not shared.
  *
  * One adapter failing — not logged in, not installed — is reported on its own
  * entry rather than failing the call: the other adapter's list is still the
  * answer to most of the question.
  */
 export async function listAdapterCatalog(only?: AgentAdapter): Promise<{ adapters: AdapterCatalogEntry[] }> {
-  const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex']
+  const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex', 'opencode']
   const adapters = await Promise.all(wanted.map(async (id): Promise<AdapterCatalogEntry> => {
     try {
       const { models, current, modes, currentMode, configOptions } = await listAdapterModels(id)
@@ -142,7 +143,8 @@ async function probe(adapter: AgentAdapter): Promise<AdapterModels> {
 
   try {
     const env = await adapterEnv(adapter, false)
-    proc = spawn(process.execPath, [adapterEntry(adapter)], {
+    const launch = adapterLaunch(adapter)
+    proc = spawn(launch.command, launch.args, {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe']

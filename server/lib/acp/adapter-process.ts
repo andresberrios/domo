@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { readFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -16,6 +17,10 @@ export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride
   codex: {
     packageName: '@agentclientprotocol/codex-acp',
     entryOverride: 'NUXT_CODEX_ACP_ENTRY'
+  },
+  opencode: {
+    packageName: 'opencode-ai',
+    entryOverride: 'NUXT_OPENCODE_ACP_ENTRY'
   }
 }
 
@@ -52,6 +57,23 @@ export function adapterEntry(adapter: AgentAdapter): string {
     `Could not find ${definition.packageName}. Run \`pnpm install\` in the Domo directory, `
     + `or point ${definition.entryOverride} at the adapter entry file.`
   )
+}
+
+/**
+ * The actual process invocation for an adapter.
+ *
+ * Claude and Codex ship JavaScript ACP adapters, while OpenCode is a native
+ * executable whose `acp` subcommand is the adapter. Keeping that distinction
+ * here prevents every caller from growing its own special case.
+ */
+export function adapterLaunch(adapter: AgentAdapter): { command: string, args: string[] } {
+  const entry = adapterEntry(adapter)
+  if (adapter === 'opencode' && /\.[cm]?js$/.test(entry)) {
+    return { command: process.execPath, args: [entry, 'acp'] }
+  }
+  return adapter === 'opencode'
+    ? { command: entry, args: ['acp'] }
+    : { command: process.execPath, args: [entry] }
 }
 
 /**
@@ -142,6 +164,34 @@ let warnedNoGhToken = false
 
 export type GhTokenLookup = () => Promise<string | null>
 
+/** The auth store written by `opencode auth login`, when this host has one. */
+export async function opencodeAuthContent(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  const explicit = env.NUXT_OPENCODE_AUTH_CONTENT || env.OPENCODE_AUTH_CONTENT
+  if (explicit) return explicit
+  const dataHome = env.XDG_DATA_HOME || (env.HOME ? join(env.HOME, '.local', 'share') : null)
+  if (!dataHome) return null
+  return readFile(join(dataHome, 'opencode', 'auth.json'), 'utf8').catch(() => null)
+}
+
+/**
+ * The global OpenCode config to carry into a managed environment.
+ *
+ * Project-local `opencode.json` files are already in the checkout. This covers
+ * global providers and agents without mounting the whole config directory.
+ * OpenCode accepts JSONC in `OPENCODE_CONFIG_CONTENT`, so preserve it verbatim.
+ */
+export async function opencodeConfigContent(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  const explicit = env.NUXT_OPENCODE_CONFIG_CONTENT || env.OPENCODE_CONFIG_CONTENT
+  if (explicit) return explicit
+  if (env.OPENCODE_CONFIG) return readFile(env.OPENCODE_CONFIG, 'utf8').catch(() => null)
+  const configHome = env.XDG_CONFIG_HOME || (env.HOME ? join(env.HOME, '.config') : null)
+  if (!configHome) return null
+  const base = join(configHome, 'opencode')
+  return readFile(join(base, 'opencode.json'), 'utf8')
+    .catch(() => readFile(join(base, 'opencode.jsonc'), 'utf8'))
+    .catch(() => null)
+}
+
 /**
  * The GitHub token the host's `gh` is logged in with.
  *
@@ -206,13 +256,31 @@ export async function adapterEnv(
     const apiKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
     if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
     else if (apiKey && (inContainer || !await hasClaudeSubscriptionLogin())) env.ANTHROPIC_API_KEY = apiKey
-  } else {
+  } else if (adapter === 'codex') {
     const codexKey = process.env.NUXT_CODEX_API_KEY || process.env.CODEX_API_KEY
     const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
     if (codexKey) env.CODEX_API_KEY = codexKey
     if (openAiKey) env.OPENAI_API_KEY = openAiKey
     if (codexKey || openAiKey) {
       env.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
+    }
+  } else {
+    // OpenCode can use dozens of providers from its own `opencode auth login`
+    // store. These explicit values cover headless installs without turning the
+    // adapter allow-list into "every secret whose name happens to end in KEY".
+    const anthropicKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
+    const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
+    const authContent = await opencodeAuthContent()
+    const configContent = inContainer
+      ? await opencodeConfigContent()
+      : process.env.NUXT_OPENCODE_CONFIG_CONTENT || process.env.OPENCODE_CONFIG_CONTENT
+    if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey
+    if (openAiKey) env.OPENAI_API_KEY = openAiKey
+    if (authContent) env.OPENCODE_AUTH_CONTENT = authContent
+    if (configContent) env.OPENCODE_CONFIG_CONTENT = configContent
+    if (!inContainer) {
+      if (process.env.OPENCODE_CONFIG) env.OPENCODE_CONFIG = process.env.OPENCODE_CONFIG
+      if (process.env.OPENCODE_CONFIG_DIR) env.OPENCODE_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR
     }
   }
   return env

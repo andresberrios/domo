@@ -52,7 +52,7 @@ export type AgentSessionStatus =
   | 'error'
   | 'stopped'
 
-export type AgentAdapter = 'claude-code' | 'codex'
+export type AgentAdapter = 'claude-code' | 'codex' | 'opencode'
 
 export interface AgentSession {
   id: string
@@ -119,7 +119,7 @@ export interface VoiceUsage {
 }
 
 /** Which account a limit belongs to. */
-export type UsageProviderId = 'claude' | 'codex'
+export type UsageProviderId = 'claude' | 'codex' | 'opencode'
 
 /**
  * Where a limit reading came from, best first.
@@ -431,19 +431,9 @@ export interface AppSettings {
   /** Auto-answer coding-agent permission prompts with the first "allow once" option. */
   autoApprovePermissions: boolean
   /**
-   * Poll Claude's and Codex's accounts for plan rate limits in the background.
-   *
-   * Off means the `usage_limits` table is fed only by what rides in on a
-   * running agent's `usage_update` — accurate, free, but only while something
-   * is working and only for the windows that event happens to name.
-   */
-  pollUsageLimits: boolean
-  /**
-   * The permission mode a new session of each adapter starts in. Per adapter,
-   * because the two share no mode ids at all: Claude Code offers `default` /
-   * `acceptEdits` / `plan` / `auto` / `bypassPermissions`, Codex `read-only` /
-   * `agent` / `agent-full-access`. One string could only ever be right for one
-   * of them, and it was — the other silently kept the adapter's own default.
+   * The mode a new session of each adapter starts in. Claude Code and Codex
+   * use it for permission policy; OpenCode uses it to choose a visible agent.
+   * The ids and semantics are adapter-specific.
    */
   defaultAgentModes: Record<AgentAdapter, string>
   /**

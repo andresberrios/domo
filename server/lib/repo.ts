@@ -28,6 +28,7 @@ import type {
   VoiceSession,
   VoiceUsage
 } from '../../shared/types'
+import { isAgentAdapter } from '../../shared/agent-adapters'
 
 /* ------------------------------------------------------------------ */
 /* row mappers                                                         */
@@ -71,7 +72,7 @@ function mapAgentSession(r: any): AgentSession {
   return {
     id: r.id,
     voiceSessionId: r.voice_session_id,
-    adapter: r.adapter === 'codex' ? 'codex' : 'claude-code',
+    adapter: isAgentAdapter(r.adapter) ? r.adapter : 'claude-code',
     acpSessionId: r.acp_session_id,
     title: r.title,
     cwd: r.cwd,
