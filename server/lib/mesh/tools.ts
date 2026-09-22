@@ -14,6 +14,7 @@ import {
   getCronJob,
   getDevEnvironment,
   listAgentSessions,
+  listAgentEvents,
   listAgentSubscriptions,
   listDevEnvironments,
   listProjects,
@@ -82,6 +83,20 @@ export const MESH_TOOLS = [
     description:
       'List the other coding agent sessions running in Domo, with their id, title, working directory, status and a short summary of their latest output.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'read_agent_transcript',
+    description:
+      'Read the recent user and assistant messages from an agent session. Use this when its one-line summary is not enough to review its work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent session id from list_agents.' },
+        limit: { type: 'number', description: 'Number of messages to return. Defaults to 20; maximum 100.' }
+      },
+      required: ['agentId'],
+      additionalProperties: false
+    }
   },
   {
     name: 'message_agent',
@@ -364,6 +379,32 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
             summary: (session.summary ?? '').replace(/\s+/g, ' ').slice(0, 400)
           }))
       }
+    }
+
+    case 'read_agent_transcript': {
+      const target = await getAgentSession(args.agentId)
+      if (!target) throw new Error(`No agent ${args.agentId}`)
+      const requested = Number(args.limit ?? 20)
+      const limit = Number.isFinite(requested) ? Math.max(1, Math.min(100, Math.floor(requested))) : 20
+      const events = await listAgentEvents(target.id, 0, 10_000)
+      const trim = (text: string) => {
+        const clean = text.trim()
+        return clean.length > 4000 ? `${clean.slice(0, 3999)}…` : clean
+      }
+      const messages = events.flatMap((event) => {
+        if (event.type === 'agent_message') {
+          return [{ role: 'assistant', text: trim(String(event.payload?.text ?? '')), at: event.createdAt }]
+        }
+        if (event.type === 'user_message') {
+          const text = (event.payload?.content ?? [])
+            .filter((block: any) => block?.type === 'text')
+            .map((block: any) => block.text)
+            .join('\n')
+          return [{ role: 'user', text: trim(text), at: event.createdAt }]
+        }
+        return []
+      }).filter(message => message.text).slice(-limit)
+      return { agentId: target.id, title: target.title, messages }
     }
 
     case 'message_agent': {

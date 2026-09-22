@@ -168,7 +168,10 @@ things that are easy to get wrong.
   There is no stdio shim to ship or copy into a container, and one code path
   serves host and environment sessions: only the hostname differs
   (`internalBaseUrl`). The caller is whoever their bearer token says they are;
-  nothing in the request body is trusted.
+  nothing in the request body is trusted. A host agent may pass a running
+  `devEnvironmentId` to `spawn_agent`; omission preserves the caller's own
+  environment. `read_agent_transcript` is the bounded detailed view behind
+  `list_agents`' one-line summary.
 - **Project and environment lifecycle has one cascade, not three.** The voice
   agent, the agent mesh and the HTTP API can all create, rename and delete
   projects and dev environments, and deleting either one has to stop and

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { query } from '../../server/lib/db'
 import {
+  appendAgentEvent,
   createAgentSession,
   createDevEnvironmentRow,
   createProject,
@@ -183,6 +184,7 @@ describe('the agent-mesh MCP endpoint', () => {
     expect(listed.body.result.tools.map((tool: any) => tool.name)).toEqual([
       'list_models',
       'list_agents',
+      'read_agent_transcript',
       'message_agent',
       'spawn_agent',
       'subscribe_to_agent',
@@ -211,6 +213,28 @@ describe('the agent-mesh MCP endpoint', () => {
 
     expect(body.agents.map((agent: any) => agent.id)).toEqual([peer.id])
     expect(body.agents[0]).toMatchObject({ title: 'peer', adapter: 'claude-code' })
+  })
+
+  it('reads the useful tail of another agent transcript', async () => {
+    const caller = await session('caller')
+    const peer = await session('peer')
+    await appendAgentEvent(peer.id, 'tool_call', { title: 'ignored' })
+    await appendAgentEvent(peer.id, 'user_message', {
+      content: [{ type: 'text', text: 'Please review the migration.' }]
+    })
+    await appendAgentEvent(peer.id, 'agent_message', { text: 'The migration is safe.' })
+    await appendAgentEvent(peer.id, 'user_message', { content: [{ type: 'text', text: 'Anything else?' }] })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'read_agent_transcript', {
+      agentId: peer.id,
+      limit: 2
+    })).body)
+
+    expect(body).toMatchObject({ agentId: peer.id, title: 'peer' })
+    expect(body.messages).toEqual([
+      { role: 'assistant', text: 'The migration is safe.', at: expect.any(String) },
+      { role: 'user', text: 'Anything else?', at: expect.any(String) }
+    ])
   })
 
   it('returns an unknown tool as an error result, not a transport error', async () => {
