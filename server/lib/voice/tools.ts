@@ -4,6 +4,7 @@ import { Type, type FunctionDeclaration } from '@google/genai'
 
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, removeProjectCascade, removeProjectEnvironment } from '../projects'
@@ -15,7 +16,6 @@ import {
   getAgentSession,
   getCronJob,
   getVoiceSession,
-  listAgentEvents,
   listAgentSessions,
   listCronJobs,
   listDevEnvironments,
@@ -96,67 +96,6 @@ function summarise(text: string | null, max = 400): string {
   if (!text) return ''
   const clean = text.replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max)}…` : clean
-}
-
-/** Condense the durable ACP event log into something speakable. */
-export async function transcriptDigest(agentSessionId: string, limit = 40) {
-  const events = await listAgentEvents(agentSessionId, 0, 4000)
-  const tail = events.slice(-limit * 4)
-  const items: Array<{ kind: string, text: string }> = []
-  let assistant = ''
-
-  const flush = () => {
-    if (assistant.trim()) items.push({ kind: 'agent', text: summarise(assistant, 600) })
-    assistant = ''
-  }
-
-  for (const event of tail) {
-    switch (event.type) {
-      case 'user_message': {
-        flush()
-        const text = (event.payload?.content ?? [])
-          .filter((block: any) => block?.type === 'text')
-          .map((block: any) => block.text)
-          .join(' ')
-        items.push({ kind: 'user', text: summarise(text, 400) })
-        break
-      }
-      case 'agent_message':
-        assistant += event.payload?.text ?? ''
-        break
-      // Older installs logged one row per delta.
-      case 'agent_message_chunk':
-        if (event.payload?.content?.type === 'text') assistant += event.payload.content.text
-        break
-      case 'tool_call':
-        flush()
-        items.push({ kind: 'tool', text: `${event.payload?.title ?? 'tool'} (${event.payload?.status ?? 'pending'})` })
-        break
-      case 'plan':
-        flush()
-        items.push({
-          kind: 'plan',
-          text: (event.payload?.entries ?? [])
-            .map((entry: any) => `${entry.status}: ${entry.content}`)
-            .join('; ')
-        })
-        break
-      case 'permission_request':
-        flush()
-        items.push({ kind: 'permission', text: event.payload?.toolCall?.title ?? 'permission requested' })
-        break
-      case 'turn_end':
-        flush()
-        items.push({ kind: 'status', text: `turn finished (${event.payload?.stopReason ?? 'end_turn'})` })
-        break
-      case 'error':
-        flush()
-        items.push({ kind: 'error', text: summarise(event.payload?.message ?? 'error', 300) })
-        break
-    }
-  }
-  flush()
-  return items.slice(-limit)
 }
 
 export const voiceTools: Record<string, VoiceTool> = {
@@ -634,13 +573,18 @@ export const voiceTools: Record<string, VoiceTool> = {
         type: Type.OBJECT,
         properties: {
           agentId: { type: Type.STRING, description: 'Agent session id or title. Omit for the most recently active one.' },
-          limit: { type: Type.INTEGER, description: 'How many recent items to return (default 20).' }
+          limit: { type: Type.INTEGER, description: 'How many recent items to return (default 20, maximum 100).' },
+          include: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING, enum: [...TRANSCRIPT_DIGEST_KINDS] },
+            description: 'Kinds to include. Defaults to messages, thoughts, tools, plan and notices.'
+          }
         }
       }
     },
     handler: async (args) => {
       const session = await resolveAgent(args.agentId)
-      const items = await transcriptDigest(session.id, Math.min(Number(args.limit) || 20, 60))
+      const items = await transcriptDigest(session.id, { limit: args.limit, include: args.include })
       return { id: session.id, title: session.title, status: session.status, items }
     }
   },

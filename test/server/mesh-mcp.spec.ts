@@ -227,13 +227,14 @@ describe('the agent-mesh MCP endpoint', () => {
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'read_agent_transcript', {
       agentId: peer.id,
-      limit: 2
+      limit: 2,
+      include: ['messages']
     })).body)
 
     expect(body).toMatchObject({ agentId: peer.id, title: 'peer' })
-    expect(body.messages).toEqual([
-      { role: 'assistant', text: 'The migration is safe.', at: expect.any(String) },
-      { role: 'user', text: 'Anything else?', at: expect.any(String) }
+    expect(body.items).toEqual([
+      { kind: 'agent', text: 'The migration is safe.' },
+      { kind: 'user', text: 'Anything else?' }
     ])
   })
 

@@ -1,5 +1,6 @@
 import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
+import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
@@ -14,7 +15,6 @@ import {
   getCronJob,
   getDevEnvironment,
   listAgentSessions,
-  listAgentEvents,
   listAgentSubscriptions,
   listDevEnvironments,
   listProjects,
@@ -92,7 +92,12 @@ export const MESH_TOOLS = [
       type: 'object',
       properties: {
         agentId: { type: 'string', description: 'Agent session id from list_agents.' },
-        limit: { type: 'number', description: 'Number of messages to return. Defaults to 20; maximum 100.' }
+        limit: { type: 'number', description: 'Number of items to return. Defaults to 20; maximum 100.' },
+        include: {
+          type: 'array',
+          items: { type: 'string', enum: [...TRANSCRIPT_DIGEST_KINDS] },
+          description: 'Kinds to include. Defaults to messages, thoughts, tools, plan and notices.'
+        }
       },
       required: ['agentId'],
       additionalProperties: false
@@ -384,27 +389,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'read_agent_transcript': {
       const target = await getAgentSession(args.agentId)
       if (!target) throw new Error(`No agent ${args.agentId}`)
-      const requested = Number(args.limit ?? 20)
-      const limit = Number.isFinite(requested) ? Math.max(1, Math.min(100, Math.floor(requested))) : 20
-      const events = await listAgentEvents(target.id, 0, 10_000)
-      const trim = (text: string) => {
-        const clean = text.trim()
-        return clean.length > 4000 ? `${clean.slice(0, 3999)}…` : clean
-      }
-      const messages = events.flatMap((event) => {
-        if (event.type === 'agent_message') {
-          return [{ role: 'assistant', text: trim(String(event.payload?.text ?? '')), at: event.createdAt }]
-        }
-        if (event.type === 'user_message') {
-          const text = (event.payload?.content ?? [])
-            .filter((block: any) => block?.type === 'text')
-            .map((block: any) => block.text)
-            .join('\n')
-          return [{ role: 'user', text: trim(text), at: event.createdAt }]
-        }
-        return []
-      }).filter(message => message.text).slice(-limit)
-      return { agentId: target.id, title: target.title, messages }
+      const items = await transcriptDigest(target.id, { limit: args.limit, include: args.include })
+      return { agentId: target.id, title: target.title, items }
     }
 
     case 'message_agent': {
