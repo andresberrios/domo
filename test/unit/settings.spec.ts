@@ -66,9 +66,9 @@ describe('getSettings', () => {
    * it was: `defaultAgentMode` was a Claude Code id, silently ignored by Codex.
    */
   it('defaults each adapter to its own starting mode', async () => {
-    expect(DEFAULTS.defaultAgentModes).toEqual({ 'claude-code': 'default', codex: 'agent' })
+    expect(DEFAULTS.defaultAgentModes).toEqual({ 'claude-code': 'default', codex: 'agent', opencode: 'build' })
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'default', codex: 'agent' }
+      defaultAgentModes: { 'claude-code': 'default', codex: 'agent', opencode: 'build' }
     })
   })
 
@@ -76,7 +76,7 @@ describe('getSettings', () => {
     stored({ defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only' } })
 
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only' }
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only', opencode: 'build' }
     })
   })
 
@@ -85,14 +85,14 @@ describe('getSettings', () => {
     stored({ defaultAgentMode: 'acceptEdits' })
 
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'acceptEdits', codex: 'agent' }
+      defaultAgentModes: { 'claude-code': 'acceptEdits', codex: 'agent', opencode: 'build' }
     })
   })
 
   it('lets the new key win over the old one once it has been saved', async () => {
     stored({
       defaultAgentMode: 'acceptEdits',
-      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent-full-access' }
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent-full-access', opencode: 'build' }
     })
 
     await expect(getSettings()).resolves.toMatchObject({
@@ -104,7 +104,7 @@ describe('getSettings', () => {
     stored({ defaultAgentModes: { 'claude-code': 'plan' } })
 
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent' }
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent', opencode: 'build' }
     })
   })
 

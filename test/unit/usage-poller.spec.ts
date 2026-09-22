@@ -4,6 +4,7 @@ import { bus } from '../../server/lib/bus'
 import { UsagePoller, type UsageClients, type UsageSink } from '../../server/lib/usage/poller'
 import type { ClaudeUsageResult } from '../../server/lib/usage/claude'
 import type { CodexUsageResult } from '../../server/lib/usage/codex'
+import type { OpenCodeUsageResult } from '../../server/lib/usage/opencode'
 import type { UsageLimitValue } from '../../server/lib/usage/normalize'
 import type { UsageProviderId, UsageProviderState } from '~~/shared/types'
 
@@ -43,15 +44,16 @@ interface Harness {
   known: Map<UsageProviderId, number>
 }
 
-function harness(overrides: Partial<UsageClients> = {}, enabled = true): Harness {
+function harness(overrides: Partial<UsageClients> = {}): Harness {
   const writes: Harness['writes'] = []
   const states: Harness['states'] = []
-  const known = new Map<UsageProviderId, number>([['claude', 0], ['codex', 0]])
+  const known = new Map<UsageProviderId, number>([['claude', 0], ['codex', 0], ['opencode', 0]])
 
   const clients = {
     claudeEndpoint: vi.fn(async (): Promise<ClaudeUsageResult> => ({ outcome: 'ok', limits: [limit()], message: null })),
     claudeHeaders: vi.fn(async (): Promise<ClaudeUsageResult> => ({ outcome: 'error', limits: [], message: 'no probe' })),
-    codex: vi.fn(async (): Promise<CodexUsageResult> => ({ outcome: 'ok', limits: [limit({ limitId: 'plan:primary', source: 'app-server' })], message: null }))
+    codex: vi.fn(async (): Promise<CodexUsageResult> => ({ outcome: 'ok', limits: [limit({ limitId: 'plan:primary', source: 'app-server' })], message: null })),
+    opencode: vi.fn(async (): Promise<OpenCodeUsageResult> => ({ outcome: 'ok', limits: [limit({ limitId: 'rolling' })], message: null }))
   }
   for (const [key, value] of Object.entries(overrides)) {
     (clients as any)[key] = vi.fn(value as any)
@@ -66,7 +68,7 @@ function harness(overrides: Partial<UsageClients> = {}, enabled = true): Harness
     countLimits: async provider => known.get(provider) ?? 0
   }
 
-  const poller = new UsagePoller({ clients, sink, enabled: async () => enabled })
+  const poller = new UsagePoller({ clients, sink })
   return { poller, clients: clients as Harness['clients'], writes, states, known }
 }
 
@@ -90,7 +92,8 @@ describe('starting up', () => {
 
     expect(h.clients.claudeEndpoint).toHaveBeenCalledTimes(1)
     expect(h.clients.codex).toHaveBeenCalledTimes(1)
-    expect(h.writes.map(write => write.provider).sort()).toEqual(['claude', 'codex'])
+    expect(h.clients.opencode).toHaveBeenCalledTimes(1)
+    expect(h.writes.map(write => write.provider).sort()).toEqual(['claude', 'codex', 'opencode'])
     h.poller.stop()
   })
 
@@ -348,29 +351,6 @@ describe('nothing configured', () => {
 
     await vi.advanceTimersByTimeAsync(61 * 60_000)
     expect(h.clients.claudeEndpoint.mock.calls.length).toBeGreaterThan(1)
-    h.poller.stop()
-  })
-})
-
-describe('the settings switch', () => {
-  it('polls nothing while it is off, but stays on the clock', async () => {
-    const h = harness({}, false)
-    h.poller.start()
-    await settle()
-
-    expect(h.clients.claudeEndpoint).not.toHaveBeenCalled()
-    expect(h.clients.codex).not.toHaveBeenCalled()
-    h.poller.stop()
-  })
-
-  it('still answers the refresh button, which is an explicit ask', async () => {
-    const h = harness({}, false)
-    h.poller.start()
-    await settle()
-
-    await h.poller.request('codex', { force: true })
-
-    expect(h.clients.codex).toHaveBeenCalledTimes(1)
     h.poller.stop()
   })
 })

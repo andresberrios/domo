@@ -1,8 +1,9 @@
 import { query } from './db'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
+import { AGENT_ADAPTERS } from '../../shared/agent-adapters'
 import type { AppSettings } from '../../shared/types'
 
-export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code and Codex — for a developer,
+export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code, Codex and OpenCode — for a developer,
 and you talk with them out loud while they do other things: pacing, cooking,
 away from the desk.
 
@@ -49,7 +50,7 @@ How you work:
 - Agents run in a project's development environment. Check list_dev_environments
   before starting one and pick the environment that fits the work; ask for a
   directory, or fall back to the default workspace, only when there is none.
-- Claude Code is the default agent. Start a Codex one when they ask for it.
+- Claude Code is the default agent. Start Codex or OpenCode when they ask for it.
 - If they want to start over, switch topics cleanly or "start a new
   conversation", call start_new_conversation. Say a quick sign-off first, since
   the new conversation starts with none of this context. The agents keep running.
@@ -62,19 +63,15 @@ export const DEFAULTS: AppSettings = {
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
   proactiveNotifications: true,
   autoApprovePermissions: false,
-  // On by default: the limits are only useful if they are current when nobody
-  // has run an agent today, and the polls are cheap (Claude's endpoint answers
-  // about once an hour, Codex's is a local process).
-  pollUsageLimits: true,
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
   // `agent` ("Approve for me"). The ids are not interchangeable — see
   // `AppSettings.defaultAgentModes`.
-  defaultAgentModes: { 'claude-code': 'default', codex: 'agent' },
+  defaultAgentModes: Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, adapter.defaultMode])) as AppSettings['defaultAgentModes'],
   // Empty, because an adapter's own defaults are the only sensible starting
   // point for settings Domo does not know the names of. See
   // `AppSettings.defaultAgentConfig`.
-  defaultAgentConfig: { 'claude-code': {}, codex: {} },
+  defaultAgentConfig: Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, {}])) as AppSettings['defaultAgentConfig'],
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
@@ -104,7 +101,7 @@ export async function getSettings(): Promise<AppSettings> {
  * is what a fresh install wants.
  */
 function storedAgentConfig(stored: Record<string, any>): AppSettings['defaultAgentConfig'] {
-  const config: AppSettings['defaultAgentConfig'] = { 'claude-code': {}, codex: {} }
+  const config = Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, {}])) as AppSettings['defaultAgentConfig']
   const current = stored.defaultAgentConfig
   if (!current || typeof current !== 'object') return config
   for (const adapter of Object.keys(config) as Array<keyof typeof config>) {

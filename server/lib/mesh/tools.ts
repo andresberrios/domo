@@ -28,6 +28,7 @@ import {
 } from '../repo'
 import { voiceManager } from '../voice/runtime'
 import type { MessageDelivery } from '../../../shared/types'
+import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 
@@ -73,7 +74,7 @@ export const MESH_TOOLS = [
       properties: {
         adapter: {
           type: 'string',
-          enum: ['claude-code', 'codex'],
+          enum: ['claude-code', 'codex', 'opencode'],
           description: 'Only this harness. Omit for all of them.'
         }
       },
@@ -162,7 +163,7 @@ export const MESH_TOOLS = [
   {
     name: 'manage_agent_session',
     description:
-      'Update a coding agent session: rename it, change its permission mode, switch its model, change a setting '
+      'Update a coding agent session: rename it, change its mode, switch its model, change a setting '
       + 'the adapter itself offers (reasoning effort, for one), and/or archive it. Defaults to this agent\'s own '
       + 'session; pass agentId to manage a peer instead. Pass only the fields you want to change.',
     inputSchema: {
@@ -172,7 +173,7 @@ export const MESH_TOOLS = [
         title: { type: 'string', description: 'New title.' },
         modeId: {
           type: 'string',
-          description: 'Permission mode id to switch to, e.g. "default" (ask every time), "acceptEdits", "plan", or "bypassPermissions".'
+          description: 'Mode id from list_models. This is a permission policy for Claude/Codex and a visible agent for OpenCode.'
         },
         model: { type: 'string', description: 'Model id or name to switch to; ids come from list_models.' },
         setting: {
@@ -411,7 +412,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
   switch (tool) {
     case 'list_models':
       // The same cached probe the picker uses; there is no second spawn path.
-      return listAdapterCatalog(args.adapter === 'codex' || args.adapter === 'claude-code' ? args.adapter : undefined)
+      return listAdapterCatalog(isAgentAdapter(args.adapter) ? args.adapter : undefined)
 
     case 'list_agents': {
       const sessions = await listAgentSessions()
