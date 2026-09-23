@@ -21,22 +21,23 @@ import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser'
  * and a bare string is expanded to `{ "*": action }` by the config loader, so
  * `"permission": "allow"` is the whole-agent form.
  *
- * **What actually prompts is neither `bash` nor an edit**, which is measured
- * rather than guessed. A tool touching a path **outside the session's `cwd`**
- * is the trigger:
- * reading `/etc/hosts` with the `read` tool raises one
- * `session/request_permission` titled with the path, while the same file read
- * through `cat` in the `bash` tool raises nothing at all, and an in-`cwd`
- * write raises nothing because OpenCode delegates it to the client as
- * `fs/write_text_file`. A coding agent steps outside its directory constantly
- * — a global config, a sibling checkout, `/tmp`, `/opt/domo` — so this is what
- * "it asks me for permission for everything" is made of.
+ * **What prompts is a path outside the session's `cwd`, not an edit and not a
+ * command**, which is measured rather than guessed. Reading `/etc/hosts` with
+ * the `read` tool raises one `session/request_permission` titled with the path;
+ * an in-`cwd` write raises nothing whatever the policy says, because OpenCode
+ * delegates it to the client as `fs/write_text_file`. A coding agent steps
+ * outside its directory constantly — a global config, a sibling checkout,
+ * `/tmp`, `/opt/domo` — so this is what "it asks me for permission for
+ * everything" is made of.
  *
- * That `bash` bypass is worth knowing before reasoning about the host default:
- * `external_directory` is **not** a boundary an agent cannot cross, because
- * the shell crosses it silently. It is a guardrail against the *accidental*
- * out-of-directory access the tidy tools make, which is the common case and
- * worth keeping — but nobody should defend it as containment.
+ * **But what prompts is inconsistent, and that is the point.** On 2.0.14 the `read`
+ * tool on `/etc/hosts` prompts while ten bash commands did not — including
+ * `cat /etc/hosts`, a `touch` and an `rm` outside `cwd`, a redirect and a
+ * `curl`. On 1.18.28 `cat /etc/hosts` through bash *did* prompt, while
+ * `ls /usr/local` did not. Neither sample is exhaustive and the two versions
+ * disagree, so `external_directory` is a guardrail against the *accidental*
+ * drift the tidy tools make — worth keeping, because an agent is not trying to
+ * evade it — and **must not be documented or relied on as containment**.
  */
 export type OpenCodePermission = 'ask' | 'allow'
 

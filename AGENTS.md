@@ -1620,15 +1620,20 @@ and permissions are end to end because a permission is a row.
   advertises, on 2.0.14. Reading `/etc/hosts` with the `read` tool raises one
   `session/request_permission`, titled with the path and `kind: "read"`;
   `{"permission":"allow"}` and `{"permission":{"external_directory":"allow"}}`
-  each suppress it. **Three things that do *not* ask**: a bash command, an
-  in-`cwd` edit (OpenCode delegates it to the client as `fs/write_text_file`,
-  which raises no permission whatever the policy says — exactly as Claude Code
-  does), and — the one that matters — **`cat /etc/hosts` through the bash
-  tool**, reproduced twice. So `external_directory` is a guardrail against the
-  *accidental* step outside a project that the tidy tools make, not
-  containment: the shell crosses the same line silently. Anyone defending the
-  host default as a security boundary is wrong about what it does. It is worth
-  keeping anyway, because an agent is not trying to evade it.
+  each suppress it. An in-`cwd` edit never asks whatever the policy says,
+  because OpenCode delegates it to the client as `fs/write_text_file` — exactly
+  as Claude Code does.
+  **What prompts is inconsistent, and the two versions disagree.** On 2.0.14
+  ten bash commands raised nothing — `cat /etc/hosts`, `cat /etc/passwd`,
+  `head`, two `ls`, a `touch` and an `rm` *outside* `cwd`, a `>>` redirect and a
+  `curl` — every one of them verified to have actually run, while the `read`
+  tool on the same `/etc/hosts` prompted. On **1.18.28** `cat /etc/hosts`
+  through bash *did* prompt and `ls /usr/local` did not. Ten commands is not
+  exhaustive and neither is two. So the honest statement is that the prompt
+  fires on the tidy file tools and unpredictably on shell commands, which makes
+  `external_directory` a guardrail against *accidental* drift — worth keeping,
+  because an agent is not trying to evade it — and **not something to document
+  or rely on as containment**.
 - **OpenCode is not in `agents-live`, and its entries there are type
   completeness rather than coverage.** `MODELS` and `ASKS` in
   `test/agents/agents.live.spec.ts` have an `opencode` key because they are

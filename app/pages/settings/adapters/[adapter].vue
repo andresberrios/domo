@@ -220,9 +220,10 @@ async function removeKey() {
           <p class="text-xs text-muted">
             OpenCode asks before a tool reads or writes a path outside the session's working directory,
             and an agent does that often — a global config, a sibling checkout, a temp file. It has no
-            permission mode to select, so this is where it is decided. A guardrail against straying
-            rather than a boundary: a shell command crosses it without asking either way, and a
-            <code>permission</code> block in your own OpenCode config wins over both of these.
+            permission mode to select, so this is where it is decided. Treat it as a guardrail against
+            straying rather than a boundary: what it asks about is inconsistent, and shell commands
+            mostly reach the same places without asking. A <code>permission</code> block in your own
+            OpenCode config wins over both of these.
           </p>
         </div>
         <UFormField label="Development environments" help="A disposable checkout in a volume Domo can re-create.">

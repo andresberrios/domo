@@ -617,9 +617,10 @@ for this machine.
 
 Environments default to allowing it — the checkout there is one Domo can
 re-create. This machine defaults to asking, because that is your real tree.
-Treat it as a guardrail against straying rather than a boundary: a shell
-command crosses the same line without asking either way. A `permission` block
-in your own global OpenCode config wins over both.
+Treat it as a guardrail against straying rather than a boundary: what it asks
+about is inconsistent, and shell commands mostly reach the same places without
+asking. A `permission` block in your own global OpenCode config wins over
+both.
 
 ### Agent modes
 

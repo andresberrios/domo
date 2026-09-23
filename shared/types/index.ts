@@ -614,9 +614,10 @@ export interface AppSettings {
    * developer's real tree, where the same prompt does catch an accidental step
    * outside the project.
    *
-   * It is a guardrail and not containment: `bash` crosses the same boundary
-   * silently, measured. A `permission` block in the developer's own OpenCode
-   * config wins over both.
+   * It is a guardrail and not containment: what prompts is inconsistent —
+   * measured, the `read` tool asks about a file that ten bash commands reached
+   * without asking, and the two OpenCode versions disagree about which. A
+   * `permission` block in the developer's own OpenCode config wins over both.
    */
   openCodePermission: { host: OpenCodePermission, environment: OpenCodePermission }
   language: string
