@@ -253,6 +253,19 @@ So the trade is explicit: **`fileParallelism: false` on the `integration`
 project only**. `unit` and `nuxt` stay parallel — they share no state, and that
 is where the time actually is. Do not make it global.
 
+**`fileParallelism: false` serialises files inside one run, and that is all it
+does: two runs on the machine at once still destroy each other.** `domo_test`
+is named by a constant, so a second checkout — another worktree, another agent,
+the `domo-landing` clone — runs its setup against the *same* database and its
+`drop schema public cascade` lands in the middle of the first run. It does not
+fail as a database error. It fails as `agent_events violates foreign key
+constraint` and `Development environment not found` from rows that existed a
+moment earlier, which reads exactly like a bug in whatever the first run was
+testing. Measured the hard way: two `pnpm test:agents` runs attributed 15 and
+then 18 failures to an adapter bump that was fine. Before a long service-backed
+run, check nothing else is testing — `pgrep -f vitest` — and remember that
+every agent sharing this machine shares this one database.
+
 ### The reset is `drop schema public cascade`, not `truncate`
 
 `truncate` would be faster and would leave the schema alone, but it cannot

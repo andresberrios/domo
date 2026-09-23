@@ -79,9 +79,9 @@ describe('ensureRuntimeVolume', () => {
     expect(dockerCalls()[0]).toEqual(['volume', 'create', '--label', 'domo.runtime=true', volume])
     const script = dockerCalls().at(-1)!.at(-1)!
     expect(script).toContain('npm install --prefix /opt/domo/adapters')
-    expect(script).toContain('@agentclientprotocol/claude-agent-acp@0.78.0')
-    expect(script).toContain('@agentclientprotocol/codex-acp@1.12.0')
-    expect(script).toContain('@opencode/cli@2.0.14')
+    expect(script).toContain('@agentclientprotocol/claude-agent-acp@0.81.1')
+    expect(script).toContain('@agentclientprotocol/codex-acp@1.13.1')
+    expect(script).toContain('@opencode/cli@2.0.15')
     // The absolute node: npm's own shims say `#!/usr/bin/env node`, and the environment's
     // image is not required to have a node at all.
     expect(script).toContain('exec /opt/domo/node/bin/node /opt/domo/adapters/node_modules/')

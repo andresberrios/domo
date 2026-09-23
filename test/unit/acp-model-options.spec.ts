@@ -17,7 +17,12 @@ import { availableModes, currentModeId } from '../../server/lib/acp/mode'
  * layer; this is the parsing.
  */
 
-/** Shaped the way claude-agent-acp 0.78.0 really answers. */
+/**
+ * Shaped the way claude-agent-acp 0.81.1 really answers, read off a live
+ * `session/new`. The bracketed 1M-context ids are the point: there is no bare
+ * `opus`, so every row that stored one resolves by containment rather than
+ * exactly — see the test that pins it below.
+ */
 const claudeResponse = {
   sessionId: 'acp_1',
   configOptions: [
@@ -29,6 +34,8 @@ const claudeResponse = {
       currentValue: 'sonnet',
       options: [
         { value: 'default', name: 'Default (recommended)' },
+        { value: 'opus[1m]', name: 'Opus 5.5' },
+        { value: 'claude-fable-5-1[1m]', name: 'Fable 5.1' },
         { value: 'sonnet', name: 'Sonnet 5' },
         { value: 'haiku', name: 'Haiku 4.5' }
       ]
@@ -43,10 +50,24 @@ describe('reading an adapter\'s model list', () => {
 
     expect(availableModelOptions(option)).toEqual([
       { id: 'default', name: 'Default (recommended)' },
+      { id: 'opus[1m]', name: 'Opus 5.5' },
+      { id: 'claude-fable-5-1[1m]', name: 'Fable 5.1' },
       { id: 'sonnet', name: 'Sonnet 5' },
       { id: 'haiku', name: 'Haiku 4.5' }
     ])
     expect(currentModel(option)?.value).toBe('sonnet')
+  })
+
+  it('resolves a stored bare `opus` onto the 1M-context id', () => {
+    // Every session created before the bracketed ids appeared holds `opus`, and
+    // the adapter offers no such value: containment is the only thing that
+    // keeps those rows startable, and it must stay unambiguous.
+    const option = modelConfigOption(claudeResponse)
+
+    expect(resolveModel(option, 'opus')?.value).toBe('opus[1m]')
+    // One entry means it resolved; more than one would be the refusal.
+    expect(ambiguousModelMatches(option, 'opus')).toEqual(['opus[1m]'])
+    expect(resolveModel(option, 'fable')?.value).toBe('claude-fable-5-1[1m]')
   })
 
   it('flattens grouped options, which is the other shape the schema allows', () => {

@@ -18,17 +18,17 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
 }> = {
   'claude-code': {
     command: 'claude-agent-acp',
-    spec: '@agentclientprotocol/claude-agent-acp@0.78.0',
+    spec: '@agentclientprotocol/claude-agent-acp@0.81.1',
     entry: 'dist/index.js'
   },
   codex: {
     command: 'codex-acp',
-    spec: '@agentclientprotocol/codex-acp@1.12.0',
+    spec: '@agentclientprotocol/codex-acp@1.13.1',
     entry: 'dist/index.js'
   },
   opencode: {
     command: 'opencode-acp',
-    spec: '@opencode/cli@2.0.14',
+    spec: '@opencode/cli@2.0.15',
     entry: 'bin/opencode.exe',
     args: ['acp'],
     native: true

@@ -1084,12 +1084,57 @@ things that are easy to get wrong.
   de-duplicated, timeout-capped). One probe answers both — they arrive in the
   same response, so asking separately would cost a second spawn for nothing —
   and `listAdapterModels` returns `{ models, current, modes, currentMode }`.
-  The ids are not what you would guess: Claude Code lists `default` / `sonnet` /
-  `opus` / `haiku`, **not** `claude-haiku-4-5`, and codex-acp lists
-  `gpt-6-astra` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5`
-  with **no `*-mini` or `*-nano` at all**. `resolveModel()` therefore accepts an
-  exact id, a display name or a containment match either way, and fails the
-  session rather than guessing.
+  The ids are not what you would guess: Claude Code lists `default` /
+  `opus[1m]` / `claude-fable-5-1[1m]` / `sonnet` / `haiku` — **not**
+  `claude-haiku-4-5`, and note there is no bare `opus`: the 1M-context
+  variants carry a bracketed suffix that is part of the id. A stored `opus`
+  still works only because `resolveModel()` falls back to containment, which
+  is the case that fallback earns its keep on. codex-acp lists
+  `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra` /
+  `gpt-5.6-luna` / `gpt-5.5` with **no `*-mini` or `*-nano` at all**.
+  `resolveModel()` therefore accepts an exact id, a display name or a
+  containment match either way, and fails the session rather than guessing.
+  **A new model reaches Domo only when a pinned version is bumped, because
+  both catalogues are baked into a bundled binary rather than fetched.** This
+  is the thing to know before promising anyone a model they just read about.
+  Measured in the binaries themselves: the Codex CLI carries the table as
+  literal JSON (`"slug": "gpt-6-sol"`, `"display_name": "GPT-6-Sol"`, and
+  migration notices like "GPT-5.4 is no longer available"), and codex-acp
+  reaches it with a `model/list` call to that local process, never to OpenAI;
+  the Claude Code binary at 2.1.270 contains the string `Opus 5` and **not**
+  `Opus 5.5`, while 2.1.280 contains both. So the same account, minutes apart,
+  answered 5 models on codex-acp 1.12.0 and 7 on 1.13.1, and `opus[1m]` — an
+  alias whose id never changed — meant Opus 5 on claude-agent-acp 0.78.0 and
+  Opus 5.5 on 0.81.1. Two consequences. **Comparing ids across a bump proves
+  nothing**: compare the option *descriptions*, which carry the resolved
+  model. And **a bump has to move both pin sites together** — `package.json`
+  for host sessions and `ADAPTER_PACKAGES` in
+  `server/lib/dev-env/runtime-volume.ts` for container ones — or host and
+  container sessions quietly offer different models. Nothing polls for this,
+  so a scheduled agent does: see the `adapter-version-watch` session and its
+  cron job.
+- **There is no ACP call that asks an adapter for a fuller model list; for
+  Claude Code the lever is its own `availableModels` setting.** What
+  `session/new` advertises is the aliases the bundled CLI ships with, and
+  nothing in the protocol widens it. `applyAvailableModelsAllowlist`
+  (claude-agent-acp's `session-model.js`) reads `availableModels` out of
+  Claude Code's `settings.json` — project or user — and surfaces **exactly**
+  those entries as the `configOptions` model ids, date-pinned versions
+  included. Measured: an allowlist of `claude-opus-4-5-20251101` and friends
+  came back as those literal ids, and the `default` option's description named
+  the real resolved model (`claude-opus-5-5[1m]`), which is the only place
+  that truth is visible. `ANTHROPIC_CUSTOM_MODEL_OPTION` adds one further
+  entry, exempt from the allowlist. This is worth knowing before reaching for
+  an external catalogue: models.dev (`@opencode-ai/models`) describes
+  capabilities and pricing for models in general, not what *this* account may
+  call, so it could only ever be a source of id strings to feed that setting —
+  and `seedClaudeHome()` already copies `settings.json` into a container,
+  which is where such a setting would land. **Domo deliberately does not set
+  it, and should not start**: the allowlist is *restrictive*, so adopting it
+  would freeze the picker at whatever was listed the day it was written and a
+  model added by a later adapter bump would stop appearing at all — the exact
+  problem the bullet above is about, self-inflicted. It is a tool for pinning
+  one dated version, not for widening a list.
 - **An inexact model preference that fits two models resolves to neither, and
   the reason is a bill.** An authenticated OpenCode lists **130 models across
   two providers at once**, measured: `openai/*` (55), which bills the
