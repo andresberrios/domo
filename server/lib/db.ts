@@ -146,6 +146,7 @@ create table if not exists agent_sessions (
   model text,
   config jsonb,
   config_options jsonb,
+  steering boolean,
   last_error text,
   summary text,
   created_at text not null,
@@ -170,6 +171,11 @@ alter table agent_sessions add column if not exists usage jsonb;
 -- is only ever a record of its answer.
 alter table agent_sessions add column if not exists config jsonb;
 alter table agent_sessions add column if not exists config_options jsonb;
+-- Whether the adapter advertised the steering extension on the last attach.
+-- Recorded for the reason config_options is: the composer has to say what a
+-- steer will really do, and asking the adapter would mean starting one. Null
+-- is "never attached", which is not the same answer as false.
+alter table agent_sessions add column if not exists steering boolean;
 -- A session has one visibility state and it is archived. Whether it can be
 -- started is never stored: it is a question about the place it ran — is its
 -- environment still there, is its working directory still on disk — and a

@@ -748,8 +748,11 @@ class AgentRuntime {
     } as any)) as any
 
     // Steering is an extension, so it is advertised in the response's top-level
-    // `_meta` and not in `agentCapabilities`. Both installed adapters set it;
-    // one that does not gets `interrupt` where it would have got `steer`.
+    // `_meta` and not in `agentCapabilities`. claude-agent-acp and codex-acp
+    // set it; OpenCode does not, and gets `interrupt` where it would have got
+    // `steer`. It is recorded on the row for the same reason `config_options`
+    // is: the composer has to be able to say what a `steer` will really do, and
+    // the only other way to find out is to start an adapter and ask it.
     this.steering = initialized?._meta?.steering?.supported === true
 
     // The mesh is an HTTP MCP server now; an adapter that cannot speak that
@@ -780,7 +783,11 @@ class AgentRuntime {
 
     try {
       let fresh = false
-      const patch: { acpSessionId?: string, modes?: any, modeId?: string } = {}
+      const patch: { acpSessionId?: string, modes?: any, modeId?: string, steering?: boolean } = {}
+      // Rides along with the rest of what this attach learned rather than
+      // costing a write of its own; `null` on the row means nothing has ever
+      // attached, which is a different answer from `false`.
+      if (this.steering !== session.steering) patch.steering = this.steering
       if (!this.acpSessionId) {
         const created = (await connection.agent.request(acp.methods.agent.session.new, {
           cwd: session.cwd,

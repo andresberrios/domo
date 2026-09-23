@@ -232,9 +232,14 @@ things that are easy to get wrong.
   Domo *now*, while a peer has no idea what it is cutting across. **`steer` on
   an adapter that does not advertise steering falls back to `interrupt`**, never
   to `queue` — the intent is "change course now", and waiting is the one thing
-  it definitely does not mean. **The queue drains as one turn**: one
-  `claimInboxMessages` takes every waiting row in `seq` order and marks them all
-  delivered in the same statement, and `combineInboxContent`
+  it definitely does not mean. Which adapters those are is recorded on
+  `agent_sessions.steering` at every attach, exactly as `config_options` is and
+  for the same reason: the composer's delivery picker has to say that a `steer`
+  will cancel this agent's turn, and it is visible on a stopped session, so
+  asking the adapter would mean starting one. `null` there is "nothing has ever
+  attached" and is not the same answer as `false`. **The queue drains as one
+  turn**: one `claimInboxMessages` takes every waiting row in `seq` order and
+  marks them all delivered in the same statement, and `combineInboxContent`
   (`server/lib/acp/inbox.ts`) hands them over as a single prompt — each message
   introduced by a line naming its origin (`[From Domo]`, `[From you]`,
   `[Message from agent <id>]`), a single row untouched. Everything that piled up
@@ -983,10 +988,11 @@ things that are easy to get wrong.
   steering, and `queue` otherwise — never `interrupt`.** `steer` falls back to
   `interrupt`, and cancelling a running turn to hand over a branch is far
   blunter than the news deserves. Measured by sending `initialize` to each:
-  claude-agent-acp answers `_meta.steering.supported: true`, **opencode 2.0.14
-  sends no top-level `_meta` at all**. `acpManager.supportsSteering()` asks the
-  connection rather than a list of adapter names, so an adapter that gains steering is
-  steered with nothing here changing. An **idle** session gets the
+  claude-agent-acp answers `_meta.steering.supported: true`, **OpenCode cannot
+  be steered at all** (see the verification note).
+  `acpManager.supportsSteering()` asks the connection rather than a list of
+  adapter names, so an adapter that gains steering is steered with nothing here
+  changing. An **idle** session gets the
   `agent_inbox` row written directly instead, for the reason
   `subscriptions.ts` does it that way: `deliver()` starts the adapter it
   delivers to, and a branch notice must not spawn a process per stopped session.
@@ -1640,6 +1646,35 @@ and permissions are end to end because a permission is a row.
   `sessionId` and `prompt` and starts a detached turn regardless. The delivery
   path is written so that difference cannot bite, and the fake agent in
   `test/server/acp-stream.spec.ts` mirrors the Claude behaviour.
+- **OpenCode cannot be steered over ACP. It has now been measured twice; do not
+  go a third time.** Measured against 2.0.14 and against 2.0.15, the current
+  `latest`, which is identical in every respect below — so a bump is not the
+  fix. Four independent facts, each of which alone settles it.
+  `_session/steering` and its whole vocabulary (`idleBehavior`,
+  `promptRequired`, `startedNewTurn`) appear **nowhere in the binary**; the
+  agent-side method table is exactly initialize, authenticate,
+  `providers/{list,set,disable}`, `mcp/message`, `nes/*`, `document/*`, and
+  `session/` + new, load, set_mode, set_config_option, prompt, cancel, list,
+  delete, fork, resume, close. A real `initialize` answers with **no top-level
+  `_meta`** — only `agentCapabilities._meta["opencode/child-session-updates"]`
+  — so `AgentRuntime.steering` is false and a `steer` is the documented fallback
+  to `interrupt` rather than a bug in it. A second `session/prompt` is **refused
+  outright**: the handler throws `Session already has an active ACP prompt`
+  before doing anything, so concurrency is not a back door either. And
+  `session/resume` is a red herring — the "resumes pending steering input"
+  wording belongs to OpenCode's **HTTP** `/api/session/:id/interrupt` route,
+  while the ACP handler is a bare re-attach (`{ configOptions }` out, no content
+  parameter in). OpenCode really does have a steering inbox, and its own ACP submit really does
+  pass `delivery: "steer"` — but against its *internal* client, behind the
+  active-prompt guard, on an HTTP API `opencode acp` hosts as an implementation
+  detail: a child process on a **random** 127.0.0.1 port (`opencode acp` has no
+  `--port` flag), answering 401 to every scheme tried including with
+  `OPENCODE_PASSWORD` set, and for a container session it is inside the
+  container while Domo is on the host. Note for anyone re-measuring: `lsof` on
+  the adapter's own pid shows nothing, because the listener belongs to a child.
+  What Domo does instead is be honest about it — `agent_sessions.steering`
+  records what the adapter advertised on the last attach, and the composer's
+  delivery picker says a `steer` will interrupt this adapter's turn.
 - The inbox UI was covered by component tests (`test/nuxt/AgentInbox.spec.ts`,
   `AgentComposer.spec.ts`), **not** by a rendered screenshot. The a11y tree does
   not tell you whether the panel and the composer's picker sit right above each

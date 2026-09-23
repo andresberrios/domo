@@ -106,6 +106,7 @@ function session(
     model: null,
     config: null,
     configOptions: null,
+    steering: null,
     lastError: null,
     summary: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -165,6 +166,16 @@ function option(columnLabel: string, text: string): HTMLElement {
     )
   }
   return found as HTMLElement
+}
+
+/**
+ * The Steer entry as the send button's dropdown was handed it. Its description
+ * is what the whole steering-honesty change is about, and it is also what the
+ * send button's own tooltip renders.
+ */
+function steerItem(component: any) {
+  const items = component.findComponent(UDropdownMenu).props('items') as any[][]
+  return items[0]!.find((item: any) => item.label === 'Steer')!
 }
 
 async function type(component: any, text: string) {
@@ -246,6 +257,55 @@ describe('AgentComposer', () => {
       content: [{ type: 'text', text: 'when you get a moment' }],
       delivery: 'queue'
     }))
+  })
+
+  /**
+   * The OpenCode case. `steer` on an adapter that does not advertise the
+   * extension falls back to `interrupt`, so the option that reads "put it into
+   * the turn it is running now" cancels that turn instead — which is a
+   * surprise rather than a choice unless it is said out loud. The row is what
+   * is read: the picker is visible on a stopped session, so a probe here would
+   * start an adapter.
+   */
+  it('says a steer will interrupt when the adapter cannot be steered', async () => {
+    const component = await mountSuspended(Harness, {
+      props: { session: session('thinking', { adapter: 'opencode', steering: false }) }
+    })
+
+    expect(component.find('textarea').attributes('placeholder'))
+      .toContain('cannot be steered')
+
+    // Read off the items the dropdown was handed, for the reason the test
+    // above gives: Reka will not open a menu on a synthesised click.
+    expect(steerItem(component).description).toContain('stops the current turn')
+    // The option is still there and still the default: only the promise changed.
+    expect(steerItem(component).checked).toBe(true)
+    expect(sent).not.toHaveBeenCalled()
+  })
+
+  it('promises a real steer when the adapter advertised one', async () => {
+    const component = await mountSuspended(Harness, {
+      props: { session: session('thinking', { steering: true }) }
+    })
+
+    expect(component.find('textarea').attributes('placeholder'))
+      .toContain('goes into the turn it is running')
+
+    expect(steerItem(component).description).toBe('Put it into the turn it is running now')
+  })
+
+  /**
+   * A session nothing has ever attached to reads `null`, which is not a
+   * measurement: it must not be reported as an adapter that cannot be steered.
+   */
+  it('claims nothing about a session that has never run', async () => {
+    const component = await mountSuspended(Harness, {
+      props: { session: session('thinking', { steering: null }) }
+    })
+
+    expect(component.find('textarea').attributes('placeholder'))
+      .not.toContain('cannot be steered')
+    expect(steerItem(component).description).toBe('Put it into the turn it is running now')
   })
 })
 

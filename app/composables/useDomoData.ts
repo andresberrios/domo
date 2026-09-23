@@ -85,6 +85,7 @@ function toAgentSession(row: any): AgentSession {
     model: row.model ?? null,
     config: row.config ?? null,
     configOptions: row.config_options ?? null,
+    steering: row.steering ?? null,
     lastError: row.last_error ?? null,
     summary: row.summary ?? null,
     createdAt: row.created_at,

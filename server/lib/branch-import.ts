@@ -3,7 +3,8 @@ import type {
   DevEnvironment,
   EnvironmentBranchImport,
   ImportPlan,
-  ImportPlanSession
+  ImportPlanSession,
+  MessageDelivery
 } from '../../shared/types'
 import { acpManager } from './acp/manager'
 import type { EnvironmentGit } from './dev-env/git-sync'
@@ -165,13 +166,17 @@ function noticeFor(notice: Notice): string {
  * about something Domo did, not the words of whoever asked for the import —
  * exactly the case subscription notes already use it for.
  */
-async function tell(session: ImportPlanSession, text: string): Promise<'steer' | 'queue' | 'inbox'> {
+async function tell(session: ImportPlanSession, text: string): Promise<MessageDelivery | 'inbox'> {
   const content = [{ type: 'text', text }]
   const id = session.agentSessionId
   if (acpManager.isBusy(id)) {
     const delivery = deliveryFor(id)
-    await acpManager.deliver(id, { content, delivery, origin: 'system' })
-    return delivery
+    // What the delivery *did*, not what it was asked for. `deliveryFor` already
+    // keeps `steer` away from an adapter that cannot take it, but a steer can
+    // still land as `queue` when the turn settles in the gap — and the report
+    // this feeds is the only record of where the notice actually went.
+    const result = await acpManager.deliver(id, { content, delivery, origin: 'system' })
+    return result.delivery
   }
   await enqueueInboxMessage({ agentSessionId: id, content, delivery: 'queue', origin: 'system' })
   return 'inbox'

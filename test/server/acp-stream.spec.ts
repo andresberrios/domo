@@ -1484,6 +1484,44 @@ describe('a reattach that restores the adapter’s transcript', () => {
  * `_session/steering` extension, becomes an `agent_inbox` row, or cancels the
  * turn first.
  */
+/**
+ * The composer's delivery picker has to say whether a `steer` will really steer
+ * or fall back to interrupting, and the pickers are visible on a stopped
+ * session — so asking the adapter is exactly what it must not do. The answer is
+ * recorded on the row on every attach, the way `config_options` is.
+ */
+describe('whether a session can be steered', () => {
+  async function boot(options: ServeOptions) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const starting = acpManager.start(agent.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, options)
+    await starting
+    return agent
+  }
+
+  it('is null until something has attached', async () => {
+    const agent = await session()
+    expect((await getAgentSession(agent.id))!.steering).toBeNull()
+  })
+
+  it('is recorded from what the adapter advertised', async () => {
+    const agent = await boot({})
+    expect((await getAgentSession(agent.id))!.steering).toBe(true)
+  })
+
+  /**
+   * The OpenCode case: no top-level `_meta` in its `initialize` response, so a
+   * `steer` falls back to `interrupt`. `false` is a measurement and null is
+   * not, which is why the two are kept apart.
+   */
+  it('is false for an adapter that advertises no steering', async () => {
+    const agent = await boot({ steering: false })
+    expect((await getAgentSession(agent.id))!.steering).toBe(false)
+  })
+})
+
 describe('delivering a message to an agent that is already working', () => {
   /** Start a turn and hang it, so the session really is mid-turn. */
   async function working(options: ServeOptions = {}) {

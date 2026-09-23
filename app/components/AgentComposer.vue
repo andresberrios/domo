@@ -15,6 +15,24 @@ const sending = ref(false)
 const isTouch = useIsTouch()
 
 /**
+ * Whether a `steer` on this session really steers.
+ *
+ * `steer` on an adapter that does not advertise the extension falls back to
+ * `interrupt` — the intent is "change course now", and waiting is the one
+ * thing it definitely does not mean — so on such a session the option is still
+ * the right default and still does the right thing, it just does it bluntly.
+ * Saying so is the whole point: the label used to promise an injection into
+ * the running turn and OpenCode would cancel the turn instead, which is a
+ * surprise rather than a choice.
+ *
+ * The row is read, never a probe: `agent_sessions.steering` is written on every
+ * attach, so this costs nothing and — the part that matters — cannot start an
+ * adapter. `null` means nothing has ever attached, and an unmeasured session is
+ * not claimed to be either one.
+ */
+const steers = computed(() => props.session.steering !== false)
+
+/**
  * What happens to a message sent while the agent is mid-turn.
  *
  * `steer` is preselected because that is what typing at a working agent
@@ -24,14 +42,24 @@ const isTouch = useIsTouch()
  * nothing running all three mean the same thing (a prompt), so the button has
  * no dropdown at all until there is a turn to choose about, and the
  * placeholder says in words what the chosen one will do.
+ *
+ * A computed rather than a constant because Steer's description depends on the
+ * session — see `steers`.
  */
-const DELIVERY_ITEMS = [
-  { value: 'steer' as const, label: 'Steer', icon: 'i-lucide-git-branch', description: 'Put it into the turn it is running now' },
+const deliveryModes = computed(() => [
+  {
+    value: 'steer' as const,
+    label: 'Steer',
+    icon: 'i-lucide-git-branch',
+    description: steers.value
+      ? 'Put it into the turn it is running now'
+      : 'This adapter cannot be steered — it stops the current turn instead'
+  },
   { value: 'queue' as const, label: 'Queue', icon: 'i-lucide-inbox', description: 'Wait for the current turn to finish' },
   { value: 'interrupt' as const, label: 'Interrupt', icon: 'i-lucide-octagon-x', description: 'Stop the current turn first' }
-]
+])
 const delivery = ref<MessageDelivery>('steer')
-const deliveryInfo = computed(() => DELIVERY_ITEMS.find(item => item.value === delivery.value)!)
+const deliveryInfo = computed(() => deliveryModes.value.find(item => item.value === delivery.value)!)
 
 /**
  * One checked item rather than a radio group, because `UDropdownMenu` has no
@@ -39,7 +67,7 @@ const deliveryInfo = computed(() => DELIVERY_ITEMS.find(item => item.value === d
  * sensible reading of "none of the three".
  */
 const deliveryItems = computed(() => [
-  DELIVERY_ITEMS.map(item => ({
+  deliveryModes.value.map(item => ({
     label: item.label,
     description: item.description,
     icon: item.icon,
@@ -67,6 +95,7 @@ const placeholder = computed(() => {
   if (!busy.value) return 'Message this agent…'
   if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
   if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'
+  if (!steers.value) return 'The agent is working — this adapter cannot be steered, so this stops its turn first…'
   return 'The agent is working — this goes into the turn it is running…'
 })
 

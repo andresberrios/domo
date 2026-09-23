@@ -83,6 +83,17 @@ export interface AgentSession {
   config: Record<string, string> | null
   /** The selects the adapter last reported, minus mode and model. */
   configOptions: SessionConfigOptionInfo[] | null
+  /**
+   * Whether this session's adapter advertised `_session/steering` the last time
+   * one attached — recorded for the same reason `configOptions` is, so the
+   * composer can say what a `steer` will actually do without probing and,
+   * crucially, without starting an adapter to ask.
+   *
+   * `null` is "nothing has ever attached", which is not the same as `false`:
+   * a session that has never run has not been measured, and claiming it cannot
+   * be steered would be a guess. Only `false` is a measurement.
+   */
+  steering: boolean | null
   lastError: string | null
   createdAt: string
   updatedAt: string
@@ -363,7 +374,8 @@ export interface EnvironmentBranchImport extends BranchImport {
   /** The session that was asked to merge the changes by hand, when one was. */
   resolver?: ImportPlanSession | null
   /** The sessions told where the changes are, and how each one was reached. */
-  notified: Array<{ agentSessionId: string, title: string, via: 'steer' | 'queue' | 'inbox' }>
+  /** Where each notice actually went, as the delivery reported itself. */
+  notified: Array<{ agentSessionId: string, title: string, via: MessageDelivery | 'inbox' }>
 }
 
 /** What importing one branch into an environment did to the environment's checkout. */
