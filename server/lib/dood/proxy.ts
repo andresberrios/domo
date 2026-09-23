@@ -97,7 +97,13 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
   const dockerSocket = options.dockerSocket ?? DEFAULT_DOCKER_SOCKET
   const report = (error: unknown) => options.onError?.(error)
 
+  // `server.close()` only answers once every connection has gone, and a Docker
+  // client holds idle ones open. Tracking them is what lets close() finish.
+  const open = new Set<Socket>()
+
   const handle = (client: Socket) => {
+    open.add(client)
+    client.on('close', () => open.delete(client))
     // `allowHalfOpen` on both ends, and it is not optional. A Docker client
     // with no stdin to send half-closes the connection right after the attach
     // request; with Node's default the socket's *write* side is torn down with
@@ -271,7 +277,10 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
   return {
     socketPath: options.socketPath,
     async close() {
-      await new Promise<void>(resolve => server.close(() => resolve()))
+      const closed = new Promise<void>(resolve => server.close(() => resolve()))
+      for (const socket of open) socket.destroy()
+      open.clear()
+      await closed
       await rm(options.socketPath, { force: true })
     }
   }
