@@ -253,6 +253,10 @@ afterEach(async () => {
 })
 
 afterAll(async () => {
+  // Every retirement here runs a real sweep, and a sweep that still finds
+  // something arms a retry. Unref'd, so it never held the run open — stopped
+  // anyway, because a timer nothing is waiting for is a timer nobody reads.
+  environmentJanitor.stop()
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
   delete process.env.NUXT_DATA_DIR
   delete process.env.NUXT_CLAUDE_CONFIG_DIR
