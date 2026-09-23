@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { availableModelOptions, currentModel, modelConfigOption } from '../../server/lib/acp/model'
+import {
+  ambiguousModelMatches,
+  availableModelOptions,
+  currentModel,
+  modelConfigOption,
+  resolveModel
+} from '../../server/lib/acp/model'
 import { availableModes, currentModeId } from '../../server/lib/acp/mode'
 
 /**
@@ -176,5 +182,47 @@ describe('reading an adapter\'s permission modes', () => {
 
     expect(availableModes(broken).map(mode => mode.id)).toEqual(['plan'])
     expect(currentModeId(broken)).toBeNull()
+  })
+})
+
+/**
+ * What OpenCode 2 offers once it is authenticated: two providers that share
+ * model names and do not share a bill. `opencode/*` is metered console
+ * inference, `opencode-go/*` is the flat Go subscription.
+ */
+const twoProviders = {
+  id: 'model',
+  options: [
+    { value: 'opencode/glm-5.3', name: 'opencode/GLM 5.3' },
+    { value: 'opencode/claude-opus-5', name: 'opencode/Claude Opus 5' },
+    { value: 'opencode-go/glm-5.3', name: 'opencode-go/GLM 5.3' },
+    { value: 'opencode-go/kimi-k3', name: 'opencode-go/Kimi K3' }
+  ]
+}
+
+describe('a model preference that could mean two different bills', () => {
+  it('refuses a bare name both providers offer, rather than taking the first', () => {
+    // `.find()` used to answer `opencode/glm-5.3` here — metered per token —
+    // for somebody who meant their flat subscription.
+    expect(resolveModel(twoProviders, 'glm-5.3')).toBeNull()
+    expect(ambiguousModelMatches(twoProviders, 'glm-5.3'))
+      .toEqual(['opencode/glm-5.3', 'opencode-go/glm-5.3'])
+  })
+
+  it('takes an exact id, which is the way to say which one you meant', () => {
+    expect(resolveModel(twoProviders, 'opencode-go/glm-5.3')?.value).toBe('opencode-go/glm-5.3')
+    // And an exact id is never reported as ambiguous, even though the string
+    // is contained in nothing else.
+    expect(ambiguousModelMatches(twoProviders, 'opencode-go/glm-5.3')).toEqual([])
+  })
+
+  it('still resolves a name only one provider has', () => {
+    expect(resolveModel(twoProviders, 'kimi-k3')?.value).toBe('opencode-go/kimi-k3')
+    expect(resolveModel(twoProviders, 'claude-opus-5')?.value).toBe('opencode/claude-opus-5')
+  })
+
+  it('tells a missing model from an ambiguous one', () => {
+    // Empty means "nothing matched", which is the other error message.
+    expect(ambiguousModelMatches(twoProviders, 'gpt-5')).toEqual([])
   })
 })

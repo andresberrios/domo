@@ -1024,6 +1024,21 @@ things that are easy to get wrong.
   with **no `*-mini` or `*-nano` at all**. `resolveModel()` therefore accepts an
   exact id, a display name or a containment match either way, and fails the
   session rather than guessing.
+- **An inexact model preference that fits two models resolves to neither, and
+  the reason is a bill.** An authenticated OpenCode publishes **two providers
+  at once** — `opencode/*`, which is console inference metered per token, and
+  `opencode-go/*`, which is the flat Go subscription — and they share model
+  names: `opencode/glm-5.3` and `opencode-go/glm-5.3` are both real, both
+  offered in the same list, and cost entirely different things. `resolveModel`
+  used `.find()`, so "glm-5.3" silently took whichever the adapter listed
+  first; it now refuses anything below an exact id that matches more than one,
+  and `ambiguousModelMatches` phrases the error so the reader sees both
+  candidates rather than "the adapter does not offer that". **Nothing may
+  flatten the provider prefix out of a model id** for the same reason — the
+  prefix is the only thing on screen that says which of the two is about to be
+  spent. This is the `ANTHROPIC_API_KEY` hazard in a second costume: one
+  credential makes both reachable, and the metered one is not the one a
+  subscriber thinks they are using.
 - **The two adapters share not one permission-mode id, so nothing may hard-code
   a list and the default is per adapter.** Claude Code answers `default`
   ("Manual") / `acceptEdits` / `plan` / `auto` / `bypassPermissions` — the last

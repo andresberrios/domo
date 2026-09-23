@@ -28,7 +28,14 @@ import {
   resolveConfigValue,
   sameConfigOptions
 } from './config-options'
-import { availableModelIds, currentModel, defaultModel, modelConfigOption, resolveModel } from './model'
+import {
+  ambiguousModelMatches,
+  availableModelIds,
+  currentModel,
+  defaultModel,
+  modelConfigOption,
+  resolveModel
+} from './model'
 import { availableModes, currentModeId, modeConfigOption } from './mode'
 import {
   appendAgentEvent,
@@ -925,9 +932,18 @@ class AgentRuntime {
         const from = session.model
           ? 'This session asked for'
           : `The default model for ${session.adapter} is`
-        const message = `${from} "${preference}", which the adapter does not offer. `
-          + `It offers: ${availableModelIds(option).join(', ') || '(none)'}. `
-          + `The session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
+        // An ambiguous pin is a different problem from a missing one, and
+        // saying "does not offer" about a name the adapter offers twice sends
+        // the reader looking in the wrong place. OpenCode's two providers
+        // share model names and do not share a bill, so name both.
+        const ambiguous = ambiguousModelMatches(option, preference)
+        const message = ambiguous.length > 1
+          ? `${from} "${preference}", which matches more than one model: ${ambiguous.join(', ')}. `
+            + 'Name one exactly — they are not interchangeable. '
+            + `The session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
+          : `${from} "${preference}", which the adapter does not offer. `
+            + `It offers: ${availableModelIds(option).join(', ') || '(none)'}. `
+            + `The session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
         console.error(`[acp:${this.agentSessionId}] ${message}`)
         await appendAgentEvent(this.agentSessionId, 'error', { message })
       } else if (wanted.value !== chosen?.value) {
@@ -1561,9 +1577,13 @@ class AgentRuntime {
 
     const wanted = resolveModel(this.modelOption, model)
     if (!wanted) {
+      const ambiguous = ambiguousModelMatches(this.modelOption, model)
       throw new Error(
-        `This session's adapter does not offer a model matching "${model}". `
-        + `It offers: ${availableModelIds(this.modelOption).join(', ') || '(none)'}.`
+        ambiguous.length > 1
+          ? `"${model}" matches more than one model this adapter offers: ${ambiguous.join(', ')}. `
+            + 'Name one exactly — they are not interchangeable.'
+          : `This session's adapter does not offer a model matching "${model}". `
+            + `It offers: ${availableModelIds(this.modelOption).join(', ') || '(none)'}.`
       )
     }
 
