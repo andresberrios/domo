@@ -1592,11 +1592,23 @@ and permissions are end to end because a permission is a row.
   with no credential it offers exactly the seven `opencode/*-free` models and
   nothing else, which is the list the bug report describes. **Not** verified
   against a paid account: that a key really restores the full list through
-  Domo, whether `OPENCODE_API_KEY` alone is enough or
-  `OPENCODE_CONSOLE_TOKEN` is genuinely needed beside it, whether the org id
-  ever has to be supplied, and whether the `permission` block actually
-  suppresses `session/request_permission` — that last one is piece 4's real
-  acceptance criterion and a container is the only safe place to run it.
+  Domo, whether `OPENCODE_API_KEY` alone is enough or `OPENCODE_CONSOLE_TOKEN`
+  is genuinely needed beside it, and whether the org id ever has to be supplied.
+- **The `permission` block is live, and OpenCode's own default already asks for
+  very little.** Driven over real ACP on a free model, same client capabilities
+  Domo advertises: `{"permission":"ask"}` raises
+  `session/request_permission` for a bash command, `{"permission":"allow"}`
+  raises none, and **with no config at all it raises none either** — neither
+  for bash nor for an edit, which OpenCode delegates to the client as
+  `fs/write_text_file` and which therefore raises no permission whatever the
+  policy says, exactly as Claude Code does. So Domo's container default buys
+  certainty and the tool categories nobody probed (`webfetch`,
+  `external_directory`, `task`, `skill`, `doom_loop`), not a fix for bash.
+  **Which means a session that really does ask for everything is being told to
+  by something else, and the first place to look is the developer's own
+  `~/.config/opencode/opencode.json`** — `opencodeConfigContent()` forwards it
+  into every container, and a `permission` block in it is deliberately left
+  alone.
 - **The OpenCode usage endpoint is right and its *scale* is not established.**
   `/zen/go/v1/usage` answered 200 to a real service-account key with exactly
   the `rolling` / `weekly` / `monthly` shape `normalizeOpenCodeUsage` already
