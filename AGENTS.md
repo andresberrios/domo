@@ -887,9 +887,9 @@ things that are easy to get wrong.
   steering, and `queue` otherwise — never `interrupt`.** `steer` falls back to
   `interrupt`, and cancelling a running turn to hand over a branch is far
   blunter than the news deserves. Measured by sending `initialize` to each:
-  claude-agent-acp answers `_meta.steering.supported: true`, **opencode sends
-  no `_meta` at all**. `acpManager.supportsSteering()` asks the connection
-  rather than a list of adapter names, so an adapter that gains steering is
+  claude-agent-acp answers `_meta.steering.supported: true`, **opencode 2.0.14
+  sends no top-level `_meta` at all**. `acpManager.supportsSteering()` asks the
+  connection rather than a list of adapter names, so an adapter that gains steering is
   steered with nothing here changing. An **idle** session gets the
   `agent_inbox` row written directly instead, for the reason
   `subscriptions.ts` does it that way: `deliver()` starts the adapter it
@@ -1547,6 +1547,18 @@ and permissions are end to end because a permission is a row.
   untracked host changes and nothing ignored. The `git clean -fd` behaviour
   under it was measured separately (git 2.51.1): untracked-but-not-ignored
   files go, ignored files stay, a directory holding only ignored content stays.
+- **OpenCode 2.0.14 was measured over ACP, not assumed to match v1.** A real
+  `initialize` and `session/new` against the pinned binary: `mcpCapabilities.http`
+  is still `true` (so the mesh gate still passes), the modes are still the
+  `configOptions` entry with `category: "mode"` and still `build` / `plan` with
+  no top-level `modes` object, and the model ids are still provider-prefixed.
+  The same probe is what confirms the free-tier diagnosis from the other side:
+  with no credential it offers exactly the seven `opencode/*-free` models and
+  nothing else, which is the list the bug report describes. **Not** verified
+  against a paid account: that a credential really restores the full list
+  through Domo, and anything at all about a container session's credential —
+  see the `OPENCODE_API_KEY` bullet above for why there is currently no way to
+  give one a login.
 - **Both agents were verified end to end inside a real environment**
   (`pnpm test:agents`, 11 tests, ~85 s warm): `session/new` through `docker exec`
   for Claude Code and Codex in one shared environment, each pinned to its cheap

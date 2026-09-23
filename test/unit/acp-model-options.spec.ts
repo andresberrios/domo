@@ -108,18 +108,18 @@ const codexModes = {
   }
 }
 
-/** Shaped the way OpenCode 1.18.28 answers: no top-level `modes` object. */
+/** Shaped the way OpenCode 2.0.14 answers: no top-level `modes` object. */
 const openCodeModes = {
   sessionId: 'acp_1',
   configOptions: [{
     id: 'mode',
-    name: 'Mode',
+    name: 'Session Mode',
     category: 'mode',
     type: 'select',
     currentValue: 'build',
     options: [
-      { value: 'build', name: 'Build', description: 'The default agent with all tools enabled' },
-      { value: 'plan', name: 'Plan', description: 'A restricted agent for planning' }
+      { value: 'build', name: 'Build', description: 'The default agent. Executes tools based on configured permissions.' },
+      { value: 'plan', name: 'Plan', description: 'Read-only agent for exploring the codebase and planning work before implementation.' }
     ]
   }]
 }
@@ -146,8 +146,8 @@ describe('reading an adapter\'s permission modes', () => {
 
   it('reads OpenCode modes from its config option representation', () => {
     expect(availableModes(openCodeModes)).toEqual([
-      { id: 'build', name: 'Build', description: 'The default agent with all tools enabled' },
-      { id: 'plan', name: 'Plan', description: 'A restricted agent for planning' }
+      { id: 'build', name: 'Build', description: 'The default agent. Executes tools based on configured permissions.' },
+      { id: 'plan', name: 'Plan', description: 'Read-only agent for exploring the codebase and planning work before implementation.' }
     ])
     expect(currentModeId(openCodeModes)).toBe('build')
   })
