@@ -1,8 +1,47 @@
-import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { createError, readBody } from 'h3'
+import { computed, ref } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 
 import NewAgentModal from '~/components/NewAgentModal.vue'
+import type { DevEnvironment, Project } from '~~/shared/types'
+
+/**
+ * Two projects with an environment each, so "the environment list is scoped to
+ * the chosen project" is a claim a test can fail: with one project it would
+ * pass whether the filter is there or not.
+ */
+const projects: Project[] = [
+  { id: 'p1', name: 'Domo', repoPath: '/work/domo', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', retiredAt: null },
+  { id: 'p2', name: 'Other', repoPath: '/work/other', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', retiredAt: null }
+]
+
+function environment(id: string, projectId: string, name: string, status: DevEnvironment['status']): DevEnvironment {
+  return {
+    id,
+    projectId,
+    name,
+    containerName: `domo-dev-${id}`,
+    containerId: 'abc123',
+    workspacePath: '/workspaces/repo',
+    configSource: 'domo',
+    configPath: '.domo.json',
+    remoteUser: 'vscode',
+    status,
+    lastError: null,
+    createdAt: '2026-01-02T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    retiredAt: null
+  }
+}
+
+const environments = [
+  environment('env_1', 'p1', 'feature-auth', 'running'),
+  environment('env_2', 'p2', 'other-work', 'stopped')
+]
+
+mockNuxtImport('useProjects', () => () => ({ projects: computed(() => projects), all: computed(() => projects), isReady: ref(true) }))
+mockNuxtImport('useDevEnvironments', () => () => ({ environments: computed(() => environments), all: computed(() => environments), isReady: ref(true) }))
 
 /**
  * Reka's select items throw on an empty-string value, so neither "no
@@ -39,12 +78,18 @@ registerEndpoint('/api/adapters/models', () => {
   }
 })
 
-async function open() {
+async function open(props: Record<string, unknown> = {}) {
   const wrapper = await mountSuspended(NewAgentModal, {
-    props: { open: true },
+    props: { open: true, ...props },
     attachTo: document.body
   })
   return wrapper
+}
+
+/** Every option in the open listbox that carries the given label. */
+function listboxContaining(label: string): HTMLElement | undefined {
+  return [...document.body.querySelectorAll<HTMLElement>('[role="listbox"]')]
+    .find(element => element.textContent?.includes(label))
 }
 
 /** The select whose current label matches, as the user would find it. */
@@ -58,16 +103,67 @@ describe('NewAgentModal', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const wrapper = await open()
 
-    const trigger = selectTrigger('Local host directory')
+    const trigger = selectTrigger('feature-auth')
     expect(trigger, 'the environment select renders with its default selected').toBeTruthy()
 
     trigger!.click()
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[role="listbox"]')?.textContent).toContain('Local host directory')
+      expect(listboxContaining('feature-auth')?.textContent).toContain('Local checkout')
     })
 
     expect(errors).not.toHaveBeenCalled()
     errors.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('lists only the chosen project\'s environments', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = await open()
+
+    // The running environment decides the project the form opens on.
+    expect(selectTrigger('Domo'), 'the project select is above the environment one').toBeTruthy()
+
+    selectTrigger('feature-auth')!.click()
+    const listbox = await vi.waitFor(() => {
+      const found = listboxContaining('feature-auth')
+      expect(found).toBeTruthy()
+      return found!
+    })
+    expect(listbox.textContent, 'another project\'s environment is not offered').not.toContain('other-work')
+
+    expect(errors).not.toHaveBeenCalled()
+    errors.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('asks for a path, and offers no environment, when the caller says "no project"', async () => {
+    // `null` is the sidebar's no-project section opening straight onto a
+    // directory; `undefined` would let the modal pick a project instead.
+    const wrapper = await open({ projectId: null })
+
+    await vi.waitFor(() => {
+      expect(selectTrigger('No project')).toBeTruthy()
+      expect(selectTrigger('feature-auth'), 'there is no environment select').toBeFalsy()
+      expect(
+        document.body.querySelector<HTMLInputElement>('input[placeholder="/path/to/repository"]')?.value,
+        'the directory falls back to the install default'
+      ).toBe('/work')
+    })
+
+    wrapper.unmount()
+  })
+
+  it('starts in a project\'s own checkout when the caller names the project', async () => {
+    const wrapper = await open({ projectId: 'p2' })
+
+    await vi.waitFor(() => {
+      expect(selectTrigger('Other'), 'the named project is selected').toBeTruthy()
+      expect(selectTrigger('Local checkout'), 'and not one of its containers').toBeTruthy()
+      expect(
+        document.body.querySelector<HTMLInputElement>('input[placeholder="/path/to/repository"]')?.value
+      ).toBe('/work/other')
+    })
+
     wrapper.unmount()
   })
 
@@ -141,6 +237,10 @@ describe('NewAgentModal', () => {
     expect(posted[0].model).toBeUndefined()
     // The mode *is* sent: it is a per-session choice, preselected from Settings.
     expect(posted[0]).toMatchObject({ title: 'auth refactor', adapter: 'claude-code', modeId: 'plan' })
+    // The running environment is where it lands, and its own workspace is the
+    // directory, so no path goes with it.
+    expect(posted[0]).toMatchObject({ devEnvironmentId: 'env_1' })
+    expect(posted[0].cwd).toBeUndefined()
     wrapper.unmount()
   })
 
