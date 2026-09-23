@@ -186,43 +186,52 @@ describe('reading an adapter\'s permission modes', () => {
 })
 
 /**
- * What OpenCode 2 offers once it is authenticated: two providers that share
- * model names and do not share a bill. `opencode/*` is metered console
- * inference, `opencode-go/*` is the flat Go subscription.
+ * What OpenCode 2 really offers once it is authenticated, cut down from a
+ * measured `session/new`: **130 models across two providers at once**, and the
+ * two are separate billing relationships. `openai/*` (55) comes from the
+ * developer's own ChatGPT login; `opencode/*` (75) is OpenCode console
+ * inference, metered per token. 18 bare names appear in both.
+ *
+ * `opencode-go/*` — the flat subscription — was advertised by the console's own
+ * config and listed by the adapter **zero** times, so nothing may assume it is
+ * selectable.
  */
 const twoProviders = {
   id: 'model',
   options: [
-    { value: 'opencode/glm-5.3', name: 'opencode/GLM 5.3' },
-    { value: 'opencode/claude-opus-5', name: 'opencode/Claude Opus 5' },
-    { value: 'opencode-go/glm-5.3', name: 'opencode-go/GLM 5.3' },
-    { value: 'opencode-go/kimi-k3', name: 'opencode-go/Kimi K3' }
+    { value: 'openai/gpt-5.4', name: 'openai/GPT-5.4' },
+    { value: 'openai/gpt-5.3-codex', name: 'openai/GPT-5.3 Codex' },
+    { value: 'opencode/gpt-5.4', name: 'opencode/GPT-5.4' },
+    { value: 'opencode/gpt-5.3-codex', name: 'opencode/GPT-5.3 Codex' },
+    { value: 'opencode/claude-opus-5-5', name: 'opencode/Claude Opus 5.5' }
   ]
 }
 
 describe('a model preference that could mean two different bills', () => {
   it('refuses a bare name both providers offer, rather than taking the first', () => {
-    // `.find()` used to answer `opencode/glm-5.3` here — metered per token —
-    // for somebody who meant their flat subscription.
-    expect(resolveModel(twoProviders, 'glm-5.3')).toBeNull()
-    expect(ambiguousModelMatches(twoProviders, 'glm-5.3'))
-      .toEqual(['opencode/glm-5.3', 'opencode-go/glm-5.3'])
+    // `.find()` used to answer whichever came first. On the account this was
+    // measured against that is a real choice between billing the developer's
+    // own OpenAI relationship and billing OpenCode console inference.
+    expect(resolveModel(twoProviders, 'gpt-5.4')).toBeNull()
+    expect(ambiguousModelMatches(twoProviders, 'gpt-5.4'))
+      .toEqual(['openai/gpt-5.4', 'opencode/gpt-5.4'])
+    expect(resolveModel(twoProviders, 'gpt-5.3-codex')).toBeNull()
   })
 
   it('takes an exact id, which is the way to say which one you meant', () => {
-    expect(resolveModel(twoProviders, 'opencode-go/glm-5.3')?.value).toBe('opencode-go/glm-5.3')
-    // And an exact id is never reported as ambiguous, even though the string
-    // is contained in nothing else.
-    expect(ambiguousModelMatches(twoProviders, 'opencode-go/glm-5.3')).toEqual([])
+    expect(resolveModel(twoProviders, 'opencode/gpt-5.4')?.value).toBe('opencode/gpt-5.4')
+    expect(resolveModel(twoProviders, 'openai/gpt-5.4')?.value).toBe('openai/gpt-5.4')
+    // And an exact id is never reported as ambiguous, even though the same
+    // string is contained in nothing else.
+    expect(ambiguousModelMatches(twoProviders, 'opencode/gpt-5.4')).toEqual([])
   })
 
   it('still resolves a name only one provider has', () => {
-    expect(resolveModel(twoProviders, 'kimi-k3')?.value).toBe('opencode-go/kimi-k3')
-    expect(resolveModel(twoProviders, 'claude-opus-5')?.value).toBe('opencode/claude-opus-5')
+    expect(resolveModel(twoProviders, 'claude-opus-5-5')?.value).toBe('opencode/claude-opus-5-5')
   })
 
   it('tells a missing model from an ambiguous one', () => {
     // Empty means "nothing matched", which is the other error message.
-    expect(ambiguousModelMatches(twoProviders, 'gpt-5')).toEqual([])
+    expect(ambiguousModelMatches(twoProviders, 'haiku')).toEqual([])
   })
 })

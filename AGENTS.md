@@ -1025,20 +1025,26 @@ things that are easy to get wrong.
   exact id, a display name or a containment match either way, and fails the
   session rather than guessing.
 - **An inexact model preference that fits two models resolves to neither, and
-  the reason is a bill.** An authenticated OpenCode publishes **two providers
-  at once** — `opencode/*`, which is console inference metered per token, and
-  `opencode-go/*`, which is the flat Go subscription — and they share model
-  names: `opencode/glm-5.3` and `opencode-go/glm-5.3` are both real, both
-  offered in the same list, and cost entirely different things. `resolveModel`
-  used `.find()`, so "glm-5.3" silently took whichever the adapter listed
+  the reason is a bill.** An authenticated OpenCode lists **130 models across
+  two providers at once**, measured: `openai/*` (55), which bills the
+  developer's own ChatGPT login, and `opencode/*` (75), which is OpenCode
+  console inference metered per token. **18 bare names are in both** —
+  `gpt-5`, `gpt-5.1`, `gpt-5.4`, `gpt-5.3-codex` and the rest of that family —
+  so "gpt-5.4" names two models on two separate billing relationships.
+  `resolveModel` used `.find()` and silently took whichever the adapter listed
   first; it now refuses anything below an exact id that matches more than one,
   and `ambiguousModelMatches` phrases the error so the reader sees both
   candidates rather than "the adapter does not offer that". **Nothing may
   flatten the provider prefix out of a model id** for the same reason — the
-  prefix is the only thing on screen that says which of the two is about to be
-  spent. This is the `ANTHROPIC_API_KEY` hazard in a second costume: one
-  credential makes both reachable, and the metered one is not the one a
-  subscriber thinks they are using.
+  prefix is the only thing on screen that says which is about to be spent.
+  This is the `ANTHROPIC_API_KEY` hazard in a second costume.
+  Two things that are *not* true and look like they should be: the collision is
+  not between `opencode` and `opencode-go`, and **`opencode-go/*` is not in the
+  list at all** — the console's own config advertises that provider with 30
+  open-weight models and the adapter offers zero of them, so nothing may assume
+  the flat subscription is selectable. And the adapter's own default on a fresh
+  authenticated session is **`opencode/claude-opus-5-5`**, which is metered: for
+  OpenCode, "it works now" and "it costs per token now" arrive together.
 - **The two adapters share not one permission-mode id, so nothing may hard-code
   a list and the default is per adapter.** Claude Code answers `default`
   ("Manual") / `acceptEdits` / `plan` / `auto` / `bypassPermissions` — the last

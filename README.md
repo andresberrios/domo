@@ -596,6 +596,16 @@ models**, because OpenCode disables every model with a non-zero cost when it has
 no credential. If OpenCode seems to have lost most of its model list, that is
 what has happened.
 
+**Once it is authenticated, check the model.** OpenCode offers two providers in
+one list and they are separate bills: `openai/*` goes to your own ChatGPT
+login, `opencode/*` is OpenCode console inference charged per token. Eighteen
+model names appear under both — `gpt-5.4` is a different thing depending on the
+prefix — so Domo refuses a default model that matches more than one and asks
+you to name it exactly. The prefix is shown everywhere a model is. Note that
+the adapter's own default on a fresh session is `opencode/claude-opus-5-5`,
+which is metered: OpenCode starting to work and OpenCode starting to cost
+arrive together.
+
 **If OpenCode seems to ask permission for everything**, what it is asking about
 is a tool reading or writing a path outside the session's working directory —
 a global config, a sibling checkout, a temp file. An agent does that often, and
