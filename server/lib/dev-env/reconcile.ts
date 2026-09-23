@@ -12,12 +12,11 @@ import {
  * Reconcile what Docker has against what the rows say should be left.
  *
  * A cleanup step can fail for reasons that have nothing to do with the
- * environment and everything to do with the minute it ran in: a volume another
- * container still has mounted, a daemon under load, a full disk. Before this,
- * every one of those failures was swallowed by an `allowFailure` and a
- * `.catch(() => {})`, retirement reported success, and **nothing ever looked
- * again** — measured, once, as a full checkout left on disk referenced by
- * nothing.
+ * environment: a container something else left mounting the volume, a container
+ * somebody ran from the image by hand. Before this, every one of those failures
+ * was swallowed by an `allowFailure` and a `.catch(() => {})`, retirement
+ * reported success, and **nothing ever looked again** — measured, once, as a
+ * full checkout left on disk referenced by nothing.
  *
  * What makes it fixable is that a retired environment **keeps its row**, and
  * every name it owns is derived from its id. So the rows are an authoritative

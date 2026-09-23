@@ -59,9 +59,10 @@ export interface EnvironmentRetirement {
   /**
    * The Docker resources the cleanup could not remove, and why. Empty is the
    * normal answer; anything here is gigabytes still on the disk, so it is
-   * reported rather than swallowed. It stays on the environment row and is
-   * retried — a retirement is never undone by one, and never claims to have
-   * finished when it has not.
+   * reported rather than swallowed. Each error names what is blocking it and
+   * the command that deals with it, because the second attempt is the caller's
+   * to make (`cleanupEnvironment`). A retirement is never undone by one, and
+   * never claims to have finished when it has not.
    */
   leftovers: EnvironmentLeftover[]
 }

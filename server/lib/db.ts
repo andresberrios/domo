@@ -108,8 +108,8 @@ where remote_user is null and container_id is null and workspace_path = '/worksp
 -- is also the only record left of where those sessions ran.
 alter table dev_environments add column if not exists retired_at text;
 -- The Docker resources a cleanup could not remove, and why. Empty is the normal
--- state; anything in here is what the janitor retries against, and is why the
--- row is kept even once nothing else references it.
+-- state; each entry names what is blocking it, and the row is kept even once
+-- nothing else references it so that a later cleanup can still find them.
 alter table dev_environments add column if not exists leftovers jsonb not null default '[]'::jsonb;
 do $$ begin
   if exists (select 1 from information_schema.columns

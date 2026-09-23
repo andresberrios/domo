@@ -499,7 +499,9 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
  * **A removal that failed is not a retirement that succeeded.** Every step here
  * can fail for a reason that has nothing to do with this environment, and used
  * to fail silently and for ever: what is still there afterwards is written to
- * the row, returned to whoever asked, and retried — see `dev-env/reconcile.ts`.
+ * the row and returned to whoever asked, with the container that is blocking it
+ * named in the message. Nothing retries it on a timer — `cleanupEnvironment`
+ * below is the second ask, and `dev-env/reconcile.ts` says why.
  *
  * Standing those sessions down — stopping their adapters first — belongs to
  * `retireProjectEnvironment` in `projects.ts`, one layer up: importing
