@@ -57,8 +57,8 @@ describe('OpenCode Go usage', () => {
 
   it('reads a spent window and a refused one', () => {
     const limits = normalizeOpenCodeUsage({ usage: {
-      rolling: { status: 'ok', percent: 0.12, resetsAt: '2026-09-22T20:00:00Z' },
-      monthly: { status: 'limited', percent: 1, resetsAt: '2026-10-01T00:00:00Z' }
+      rolling: { status: 'ok', percent: 12, resetsAt: '2026-09-22T20:00:00Z' },
+      monthly: { status: 'limited', percent: 100, resetsAt: '2026-10-01T00:00:00Z' }
     } })
     expect(limits.map(limit => [limit.limitId, limit.usedPercent, limit.status]))
       .toEqual([['rolling', 12, 'allowed'], ['monthly', 100, 'rejected']])
