@@ -16,7 +16,7 @@ compaction cut, formatters, settings reconciliation, `.domo.json` parsing and va
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database), the whole ACP client against a fake agent on a pair of pipes, and the voice runtime with Google replaced by a recorder (which model it asks for, and what context a connect is told after a conversation has been folded); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
-| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Opt in. |
+| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Also `dood-proxy.live.spec.ts` and `dood-compose.live.spec.ts`, which drive the DooD socket proxy with the real `docker` CLI and with real `docker compose` — the transport is the point there, so a daemon is the only thing that can answer it (see below). Opt in. |
 | `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
@@ -71,6 +71,20 @@ The shared runtime volume is deliberately *not* swept: it is the expensive part
 (a Node copy and an `npm install` of both adapters) and the point of it is that
 the second environment reuses it. It is named `domo-live-test-runtime-<hash>`
 under the test prefix, so `docker volume rm` it by hand if a pin changes.
+
+**The DooD proxy can only be tested against a real client, and `docker run` is
+not evidence for `docker compose`.** The translation itself is pure and lives in
+`test/unit/dood-rewrite.spec.ts`; everything else about the proxy is transport,
+and transport is exactly where it broke. Two failures cost an afternoon and
+neither is visible from an argv assertion: an `http.createServer` proxy
+deadlocks every `docker run`, because a Docker client reuses one connection, a
+`wait` on it is a long poll, and an HTTP server may not answer out of order — so
+the `start` that would end the wait queues behind it forever. And Node's default
+`allowHalfOpen: false` tears down the write side back to the client when the
+client half-closes after an attach, so a container's output silently never
+arrives and `docker run` prints nothing. Hence a byte splice that parses only
+the client's direction, and hence a separate compose spec: compose speaks the
+Engine API itself, so nothing the CLI proves carries over to it.
 
 **`browserTools` is off for the whole `docker-live` layer, and the two browser
 tests turn it on and back off in an `afterEach`.** Left on, every other test in
