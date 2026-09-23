@@ -433,20 +433,43 @@ things that are easy to get wrong.
   primitives rather than `UCollapsible` wrapping a button, because that shape
   makes a row *either* a link or a disclosure and leaves nowhere for the
   actions to sit.
-- **The mode, the model and the adapter's own settings live in the composer.**
-  They are decisions about the message being written — "plan this one", "switch
-  to Opus for this bit", "think harder about this" — so they sit under the box
-  it is written in rather than in the page header, which is where the mode
-  picker and a read-only model badge used to be. `AgentComposer.vue` renders
-  the mode from `session.modes`, the model from a probe, and then one picker
-  per entry in `session.configOptions`, all through the one
-  `PATCH /api/agents/[id]`. Nothing there holds the chosen value: every picker
-  reads the row, so a change the adapter refuses reverts on its own and one
-  made by the voice agent arrives through Electric like any other. The model is
-  the only one that costs a probe (an adapter reports its models in a
-  `session/new` response and nowhere else), so it is fetched on the picker's
+- **The mode, the model and the adapter's own settings live in the composer, as
+  one card that opens a panel.** They are decisions about the message being
+  written — "plan this one", "switch to Opus for this bit", "think harder about
+  this" — so they sit under the box it is written in rather than in the page
+  header, which is where the mode picker and a read-only model badge used to
+  be. `AgentComposerSettings.vue` builds one uniform `Column` per setting —
+  the model from a probe, one per entry in `session.configOptions`, then the
+  mode from `session.modes` — and renders them side by side in a `UPopover`,
+  all through the one `PATCH /api/agents/[id]`. A *panel* rather than the row
+  of `USelectMenu`s it replaced, because a Codex session has four at once
+  (model, reasoning effort, collaboration mode, permission mode) and four
+  selects do not fit beside the attach button on a phone. **The adapter is not
+  a column**: it is fixed when the session is created, so it heads the panel as
+  a fact. Nothing holds the chosen value: every column reads the row, so a
+  change the adapter refuses reverts on its own and one made by the voice agent
+  arrives through Electric like any other. The panel deliberately stays open
+  after a selection — the options are per model, so changing the model
+  refreshes the effort levels under it and picking both is one errand. The
+  model is the only one that costs a probe (an adapter reports its models in a
+  `session/new` response and nowhere else), so it is fetched on the panel's
   first open rather than on mount — **opening an agent page must not spawn an
-  adapter**.
+  adapter**. That probe is also *started* by the open rather than finished by
+  it, which is why the scroll-the-choice-into-view pass watches the arriving
+  model list as well as `open`: at first paint the model column holds one item.
+- **A setting's value is not always a phrase, and the card's summary line is
+  where that shows.** Both adapters publish their fast-mode switch as a
+  two-value select (Domo does not advertise the client capability that would
+  make it a real boolean), so the summary read "Opus 5 · High · Off · Bypass
+  permissions" — where "Off" says nothing and cost the width that truncated the
+  permission mode away. An on/off value becomes the option's own *name* when it
+  is on ("Fast mode") and nothing when it is off. **And nothing may flatten a
+  model's provider prefix**, which is the `openai/*`-versus-`opencode/*` billing
+  hazard again: the card carries the whole name because it has one line, while
+  the column splits the prefix onto a dimmed second line because it does not —
+  at a width that fits four columns on a laptop, `opencode-go/Kimi K3` truncates
+  to `opencode-go/Ki…`, which is the prefix and nothing else. Filtering still
+  matches the whole id, so typing `openai/` narrows to one provider.
 - **A `NuxtLink` applies no active class unless you give it one.** There is no
   `router-link-active` fallback to hang a `has-[]` selector off, which is why
   each row's link carries `active-class="row-active"` — a bare marker with no
@@ -1352,12 +1375,14 @@ things that are easy to get wrong.
   `click`.** `UDropdownMenu` is a Menu and `USelectMenu` a Combobox, and they
   do not take the same event: measured in happy-dom, a `pointerdown` on a
   `USelectMenu` trigger leaves zero `[role="option"]` nodes in the document and
-  a `click` leaves all of them — the exact opposite of the dropdown. See
-  `openMenu()` in `AgentComposer.spec.ts` for the select and in
-  `ProjectTree.spec.ts` for the dropdown. A component test that only calls
-  `.click()` on a *dropdown* trigger waits forever for `[role="menu"]`.
-  Dispatch `new MouseEvent('pointerdown', { bubbles: true, button: 0 })` first —
-  see `openMenu()` in `test/nuxt/ProjectTree.spec.ts`. And scope the search for
+  a `click` leaves all of them — the exact opposite of the dropdown. A
+  component test that only calls `.click()` on a *dropdown* trigger waits
+  forever for `[role="menu"]`. Dispatch
+  `new MouseEvent('pointerdown', { bubbles: true, button: 0 })` first — see
+  `openMenu()` in `test/nuxt/ProjectTree.spec.ts`. **A `UPopover` takes
+  neither**: Reka opens it on a pointer sequence happy-dom does not synthesise
+  at all, so drive its own `update:open` instead — `openSettings()` in
+  `AgentComposer.spec.ts` and the same move in `UsageSidebarSummary.spec.ts`. And scope the search for
   a dialog's submit button to the dialog: the menu that opened it is still in
   the DOM and usually has an item with the same word on it.
 
@@ -1542,18 +1567,28 @@ and permissions are end to end because a permission is a row.
   with the header enforced and with it stripped.
 - `pnpm typecheck`, `pnpm lint`, `pnpm build` and `pnpm test` all run clean;
   keep them that way.
-- **The composer's pickers were covered in happy-dom, not in a browser.**
-  `test/nuxt/AgentComposer.spec.ts` asserts that the mode, the model and the
-  adapter's own settings render, that a reasoning-effort change leaves as
-  `{ config: { effort: 'high' } }`, and that no model probe is spawned until
-  the picker is opened; `test/server/acp-stream.spec.ts` covers the server half
-  against a fake adapter that publishes an `effort` option (recorded on the
-  row, re-applied after a reattach, skipped when the adapter stops offering
-  it). What no test can say is whether **four** pickers — mode, model, effort
-  and, on Codex, a collaboration mode — still fit beside the attach button at
-  390px. They are set to wrap, which is a guess that has not been looked at.
-  **The host still has to open it**, desktop and mobile, over the Caddy HTTPS
-  address.
+- **The composer's settings panel was opened in Chromium, and two of its rules
+  come from what that showed rather than from reasoning.** Against the running
+  dev server over the Caddy HTTPS address, on a real Claude Code session
+  (five models, effort, fast mode, five permission modes) and a real OpenCode
+  one (130 models across two providers), light and dark, 1440px and 390px: the
+  bare `Off` on the summary line and the truncated `opencode-go/Ki…` in the
+  model column were both *seen*, not predicted, and the on/off and
+  provider-split rules above are the fixes. So was the selected permission mode
+  sitting below the fold of its own scrolled column, which is why the panel
+  scrolls the choice into view. A `PATCH` round trip was exercised harmlessly
+  by re-selecting the value already current — no toast, panel stayed open, row
+  unchanged — and the console was clean throughout. **Not** exercised against a
+  live adapter: a change that the adapter *refuses*, which is the path the
+  "nothing holds the chosen value" design exists for.
+  `test/nuxt/AgentComposer.spec.ts` covers the rest in happy-dom — the card's
+  two lines, a column per setting with `aria-selected` on the chosen one, that
+  a reasoning-effort change leaves as `{ config: { effort: 'high' } }`, that
+  the adapter is named and not offered, that a provider prefix survives in both
+  places, and that no model probe is spawned until the panel is opened;
+  `test/server/acp-stream.spec.ts` covers the server half against a fake
+  adapter that publishes an `effort` option (recorded on the row, re-applied
+  after a reattach, skipped when the adapter stops offering it).
 - **The reasoning-effort payloads were read out of both adapters' shipped
   bundles, not assumed.** `buildEffortConfigOption` in claude-agent-acp's
   `session-effort.js` (id `effort`, and `undefined` when the model has no
