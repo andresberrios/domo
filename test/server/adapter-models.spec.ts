@@ -26,7 +26,7 @@ vi.mock('node:child_process', async (importOriginal) => {
       // The catalog probes both adapters concurrently, so which one this is has
       // to come from the argv; the order they spawn in is a race.
       const invocation = `${command} ${args.join(' ')}`
-      const which: AgentAdapter = invocation.includes('/opencode-ai/')
+      const which: AgentAdapter = invocation.includes('/@opencode/cli/')
         ? 'opencode'
         : invocation.includes('/codex-acp/') ? 'codex' : 'claude-code'
       const adapter = new FakeAdapter(which)

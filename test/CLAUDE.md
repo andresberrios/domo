@@ -17,7 +17,7 @@ compaction cut, formatters, settings reconciliation, `.domo.json` parsing and va
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database), the whole ACP client against a fake agent on a pair of pipes, and the voice runtime with Google replaced by a recorder (which model it asks for, and what context a connect is told after a conversation has been folded); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
 | `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume, and two refusals reported with the blocking container named — a volume another container still mounts, and an image a container was made from. Minutes on a cold cache, needs the network). Opt in. |
-| `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login. Opt in. |
+| `agents-live` | `test/agents/*.live.spec.ts` | all three coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login **and** an OpenCode console key. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
 them but a label; `test/server` and `test/e2e` share one because they have the
@@ -74,6 +74,36 @@ swallowing the refusal is exactly what made it invisible for a day. The image
 half of it has a trap worth knowing: `docker image rm` on an image that still
 has a **second tag** removes the tag and succeeds, running container or not, so
 the test builds a singly-tagged image or it proves nothing.
+
+### The failure this suite keeps having
+
+**An assertion that cannot fail.** Not a wrong assertion — one that reports
+success whatever the code does. It has turned up five times here, with five
+different causes and one shape, so it is worth knowing the shape rather than
+the instances:
+
+- `test/docker/dev-environments.spec.ts` asserted the argv handed to `docker`,
+  and was green while every environment without a `.devcontainer/` failed to
+  start. **The thing asserted was upstream of the thing that broke.**
+- `agents-live` carried `opencode` keys in `MODELS` and `ASKS` because the maps
+  are `Record<AgentAdapter, …>`, while `describe.each` ran two adapters.
+  **Coverage that was type-checked into looking present.**
+- The OpenCode permission test exercised bash and an in-`cwd` edit, neither of
+  which raises a permission on any setting. **The probe could not trigger the
+  behaviour under test.**
+- A config probe ran `OPENCODE_CONFIG_CONTENT='{"permission":"banana"}'` and
+  exited 0, which was read as "the key is accepted". **A path that validates
+  nothing cannot confirm anything.**
+- The browser test matched `/browser_/` against `tool_call` payloads, and
+  OpenCode names no MCP tool in them. **The assertion measured the adapter's
+  reporting format, not the browser.**
+
+The cheap test, and it costs one run: **make it fail on purpose.** Break the
+thing it claims to check and watch it go red. Every one of these survived
+review, and every one died in seconds to that. When the fix is to relax an
+assertion, ask what it would then still catch — "accept `execute` as well"
+would have passed whether a browser ran or not. Prefer gating the narrow claim
+to loosening the broad one.
 
 **Asserting on the argv handed to `docker` cannot tell you Docker accepts it.**
 `test/docker/dev-environments.spec.ts` was green while every environment for a
@@ -154,12 +184,22 @@ so the framing and the handshake order are the real ones.
 ## The `agents-live` layer
 
 `pnpm test:agents`. One environment (`docker: false`, so unprivileged and quick)
-shared by every session, and both adapters run in it in turn — a supported and
-important case that nothing else exercises.
+shared by every session, and all three adapters run in it in turn — a supported
+and important case that nothing else exercises.
 
 - **Its `globalSetup` names everything that is missing at once**, not one thing
-  per run: the database, the daemon, `NUXT_CLAUDE_CODE_OAUTH_TOKEN`, and a Codex
-  login. No skip, no opt-out, same rule as every other service-backed project.
+  per run: the database, the daemon, `NUXT_CLAUDE_CODE_OAUTH_TOKEN`, a Codex
+  login, and `NUXT_OPENCODE_API_KEY`. No skip, no opt-out, same rule as every
+  other service-backed project. OpenCode has no fallback for that key — a
+  container cannot use a host `opencode auth login`, and without a key every
+  priced model answers `provider.no-route`.
+- **`beforeAll` pins `openCodePermission` to `ask` on both surfaces.** Domo's
+  default for an environment is `allow`, which would suppress the very prompt
+  the shared permission test asserts; pinning it means these tests describe the
+  adapter rather than the current default. The one test that is *about* the
+  setting flips it itself and restores it. OpenCode's model is pinned as an
+  exact id for a related reason: with a key the adapter lists `opencode/*` and
+  `opencode-go/*` together, and a bare name is refused as ambiguous.
 - **The mesh server runs in the test process, bound to every interface.** It has
   to be this process — the token secret is `randomBytes(32)` at module scope and
   a token minted here verifies only here. The wildcard is what makes it
@@ -185,8 +225,13 @@ important case that nothing else exercises.
   in the same process, because it has to be reachable from inside the container
   at a URL the test knows. A hit on `/probe` is the assertion that matters:
   nothing else in the process can produce one, so it means a real Chromium in
-  the container really fetched a page. The reply's wording is a model's, so the
-  other assertions are on the recorded `tool_call` names.
+  the container really fetched a page. **The `tool_call` name check is per
+  adapter** (`NAMES_TOOL_CALLS`): OpenCode reports every MCP call as
+  `title: "execute"` with the tool's name nowhere in the payload, so that regex
+  fails for it however well the browser works — it measures the reporting
+  format, not the browser. Do not "fix" it by accepting `execute`; that would
+  pass whether the browser ran or not. The hit on `/probe` and the marker in
+  the reply are the adapter-neutral assertions and they stay unconditional.
 - **Keep the prompts single-turn and the models cheap.** `haiku` for Claude and
   `gpt-5.6-luna` for Codex, chosen off a real `session/new` — and note neither id
   is guessable (Claude lists `haiku`, not `claude-haiku-4-5`; Codex has no

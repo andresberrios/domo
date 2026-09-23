@@ -1,6 +1,16 @@
-import { opencodeAuthContent } from '../acp/adapter-process'
+import { resolveOpenCodeApiKey, settingsOpenCodeApiKey, type OpenCodeKeyLookup } from '../opencode-credentials'
 import type { UsageLimitValue } from './normalize'
 
+/**
+ * Undocumented, and the credential it wants is specific.
+ *
+ * Measured against a real account: a service-account key answers 200 with the
+ * window block below, and the device-flow access token out of the host's own
+ * login answers **401** on the same URL. So the poll needs the configured key
+ * and there is no falling back to the host login — doing so would report a
+ * logged-in developer as "rejected". `/zen/v1/usage` (without `go`) is a 404,
+ * so this path is real rather than left over.
+ */
 const DEFAULT_ENDPOINT = 'https://opencode.ai/zen/go/v1/usage'
 const TIMEOUT_MS = 15_000
 
@@ -12,28 +22,24 @@ export interface OpenCodeUsageResult {
 
 type Fetcher = typeof fetch
 
-/** Resolve the Go API key without ever returning it in an error or database row. */
-export async function opencodeGoApiKey(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
-  const configured = env.NUXT_OPENCODE_GO_API_KEY || env.OPENCODE_GO_API_KEY
-  if (configured) return configured
-  const content = await opencodeAuthContent(env)
-  if (!content) return null
-  try {
-    const auth = JSON.parse(content)
-    const entry = auth?.['opencode-go'] ?? auth?.opencode
-    return entry?.type === 'api' && typeof entry.key === 'string' ? entry.key : null
-  } catch {
-    return null
-  }
-}
-
 const WINDOWS: Record<string, { label: string, minutes: number }> = {
   rolling: { label: '5-hour limit', minutes: 300 },
   weekly: { label: 'Weekly limit', minutes: 7 * 24 * 60 },
   monthly: { label: 'Monthly limit', minutes: 30 * 24 * 60 }
 }
 
-/** Convert OpenCode Go's account response into Domo's provider-neutral rows. */
+/**
+ * Convert OpenCode Go's account response into Domo's provider-neutral rows.
+ *
+ * TODO: confirm the scale of `percent`. The only real response captured came
+ * from an account with no usage, so every window answered `0`, which reads
+ * identically as a fraction and as a percentage. It is read here as a
+ * **fraction** (0-1) deliberately: if that is wrong the card runs to 100% and
+ * pins there almost immediately, which is obvious. The other way round — a
+ * fraction read as a percentage — renders a reassuring "0%" while the plan is
+ * really being spent, and nobody would ever notice. Fix the multiplier here,
+ * not at the call site.
+ */
 export function normalizeOpenCodeUsage(response: any): UsageLimitValue[] {
   const usage = response?.usage
   if (!usage || typeof usage !== 'object') return []
@@ -44,7 +50,7 @@ export function normalizeOpenCodeUsage(response: any): UsageLimitValue[] {
     limits.push({
       limitId: id,
       label: description.label,
-      usedPercent: Math.max(0, Math.min(100, window.percent)),
+      usedPercent: Math.max(0, Math.min(100, window.percent * 100)),
       resetsAt: typeof window.resetsAt === 'string' ? window.resetsAt : null,
       windowMinutes: description.minutes,
       status: window.status === 'ok' ? 'allowed' : window.status ? 'rejected' : null,
@@ -60,14 +66,17 @@ export function normalizeOpenCodeUsage(response: any): UsageLimitValue[] {
 /** Poll the OpenCode Go account endpoint for the account-wide usage display. */
 export async function fetchOpenCodeUsage(
   doFetch: Fetcher = fetch,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  /** Injected for the unit layer, which has no database behind Settings. */
+  stored: OpenCodeKeyLookup = settingsOpenCodeApiKey
 ): Promise<OpenCodeUsageResult> {
-  const key = await opencodeGoApiKey(env)
+  const key = await resolveOpenCodeApiKey(env, stored)
   if (!key) {
     return {
       outcome: 'unconfigured',
       limits: [],
-      message: 'No OpenCode Go API key found. Run `opencode auth login` or set NUXT_OPENCODE_GO_API_KEY.'
+      message: 'No OpenCode console key. Add a service-account key in Settings, or set NUXT_OPENCODE_API_KEY. '
+        + 'A host `opencode auth login` is not enough: the console rejects that credential here.'
     }
   }
   try {
@@ -76,7 +85,7 @@ export async function fetchOpenCodeUsage(
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
     if (response.status === 401 || response.status === 403) {
-      return { outcome: 'unconfigured', limits: [], message: 'The OpenCode Go key was rejected or has no Go subscription.' }
+      return { outcome: 'unconfigured', limits: [], message: 'The OpenCode console key was rejected or has no Go subscription.' }
     }
     if (!response.ok) {
       return { outcome: 'error', limits: [], message: `OpenCode Go usage answered HTTP ${response.status}.` }

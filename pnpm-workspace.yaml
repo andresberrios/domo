@@ -1,7 +1,7 @@
 allowBuilds:
   '@google/genai': true
+  '@opencode/cli': true
   esbuild: true
-  opencode-ai: true
   protobufjs: true
   unrs-resolver: true
   vue-demi: true
@@ -10,5 +10,18 @@ minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@4.0.82'
   - '@ai-sdk/provider-utils@5.0.41'
   - '@ai-sdk/provider@4.0.15'
+  - '@opencode/cli-darwin-arm64@2.0.14'
+  - '@opencode/cli-darwin-x64-baseline@2.0.14'
+  - '@opencode/cli-darwin-x64@2.0.14'
+  - '@opencode/cli-linux-arm64-musl@2.0.14'
+  - '@opencode/cli-linux-arm64@2.0.14'
+  - '@opencode/cli-linux-x64-baseline-musl@2.0.14'
+  - '@opencode/cli-linux-x64-baseline@2.0.14'
+  - '@opencode/cli-linux-x64-musl@2.0.14'
+  - '@opencode/cli-linux-x64@2.0.14'
+  - '@opencode/cli-windows-arm64@2.0.14'
+  - '@opencode/cli-windows-x64-baseline@2.0.14'
+  - '@opencode/cli-windows-x64@2.0.14'
+  - '@opencode/cli@2.0.14'
   - '@types/node@22.20.3'
   - ai@7.0.102

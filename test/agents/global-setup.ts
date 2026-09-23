@@ -55,6 +55,18 @@ export async function setup(): Promise<void> {
       + 'NUXT_CODEX_API_KEY / NUXT_OPENAI_API_KEY.'
     )
   }
+  // The same shape as Claude's token and for the same reason: OpenCode 2 keeps
+  // its own login in sqlite and that login rotates, so nothing copies it into a
+  // container. This layer runs OpenCode *in* one, so a console key is the only
+  // thing that can authenticate it — and without one every priced model answers
+  // `provider.no-route` rather than failing in a way a test could read.
+  if (!process.env.NUXT_OPENCODE_API_KEY && !process.env.OPENCODE_API_KEY) {
+    missing.push(
+      'NUXT_OPENCODE_API_KEY is not set. Mint a service-account key in the OpenCode console '
+      + '(https://opencode.ai/console) and put it in .env — a host `opencode auth login` is '
+      + 'deliberately never copied into an environment.'
+    )
+  }
 
   if (missing.length > 0) {
     throw new Error(

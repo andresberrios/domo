@@ -663,6 +663,84 @@ things that are easy to get wrong.
   without the file the CLI fails identically on auth and writes its own
   `.claude.json`. The seed is kept as cheap insurance, not as a fix for an
   observed failure.
+- **OpenCode 2 is a different npm package, and the old name still publishes.**
+  v2 is `@opencode/cli`; `opencode-ai` is v1 and its `latest` tag is still
+  moving (1.18.32 at the time of writing), so "bump OpenCode to the newest
+  version" against the old name silently keeps you on v1. The layout is
+  otherwise identical — a stub package whose `postinstall` fetches a native
+  `bin/opencode.exe` out of a per-platform optional dependency — so
+  `adapterEntry()` still lands on a binary and `adapterLaunch()` still takes its
+  non-`.js` branch. `pnpm` needs the package in `allowBuilds`, or that
+  postinstall never runs and there is no binary at all.
+- **OpenCode 2 keeps its logins in sqlite, and there is no way to hand one to a
+  container.** v1 read `~/.local/share/opencode/auth.json` and honoured
+  `OPENCODE_AUTH_CONTENT`; v2 has neither, and that variable is absent from its
+  binary, so setting it is a **silent no-op**. The store is
+  `~/.local/share/opencode/opencode.db`, and the one credential row sits beside
+  `session_v2`, `session_message`, `permission` and `instruction_blob` — every
+  conversation the developer has ever had with it — which is the same reason
+  `seedClaudeHome()` is an allow-list and `~/.claude` is never mounted. A host
+  session needs nothing: OpenCode reads that store out of `$HOME` itself. What
+  is left for anything else is `OPENCODE_API_KEY`.
+  **The file name depends on the release channel** (`Qb()` in the binary:
+  `opencode.db` on `latest`/`dev`/`beta`/`next`/`prod`, `opencode-<channel>.db`
+  otherwise), which is why the pinned npm build and a Homebrew install share one
+  login rather than quietly having two.
+- **Without an OpenCode credential nothing that costs anything can run**, and
+  it is not an error and nothing says so. The provider transform sets
+  `apiKey: "public"` and disables every model with a non-zero input cost unless
+  `OPENCODE_API_KEY`, an active console connection or a configured key is
+  present; a priced model then answers `provider.no-route` when prompted. So
+  "OpenCode only offers me a handful of odd models", or "every model I pick
+  refuses to run", is the symptom of *no credential* rather than of a model
+  list that needs refreshing. **Do not read the length of the list as the
+  signal** — see the verification note; it is not stable.
+- **That login rotates, so it is read and never carried — a container gets a
+  console key or nothing.** OpenCode's refresh call
+  (`${server}/auth/device/token`, `grant_type=refresh_token`) writes the
+  refresh token the server answers with back over the stored one, so two
+  holders of one credential log each other out and the loser is the
+  developer's machine: the rotation hazard `~/.claude` is never copied for, in
+  a different file format. **Filtering the sqlite copy down to the credential
+  rows does not fix it** — the rotating token *is* the thing being copied — so
+  that design was considered and rejected rather than never thought of.
+  `readOpenCodeLogin` opens the file read-only and answers one question, "does
+  this host have a login", for the Settings card. It is not what anything
+  authenticates with: measured, the console answers **401** to a device-flow
+  access token on `/zen/go/v1/usage` and **200** to a service-account key.
+  A container therefore gets `resolveOpenCodeApiKey` — `NUXT_OPENCODE_API_KEY`,
+  then the `openCodeApiKey` Settings row — or it gets nothing, which is the
+  same shape `claude setup-token` is for Claude Code and for the same reasons.
+- **`OPENCODE_API_KEY` is the whole mechanism, and `OPENCODE_CONSOLE_TOKEN` is
+  a red herring.** The second name is real — it is what the **console** puts in
+  the provider definition it serves, resolved through the CLI's generic
+  `{env:…}` substitution — but it appears nowhere in the binary and, measured,
+  it does nothing at any stage. Three runs with a deliberately invalid key
+  settle it: with nothing set a priced model answers `provider.no-route`, so it
+  is not reachable at all; with `OPENCODE_API_KEY` set the same model answers
+  `Authentication required`, so it became routable and the key is what is being
+  checked; with `OPENCODE_CONSOLE_TOKEN` set instead the answer is byte-identical
+  to setting nothing, and setting **both** is indistinguishable from setting
+  `OPENCODE_API_KEY` alone. So `adapterEnv` passes one variable.
+  `OPENCODE_API_KEY` also does something the console page does not suggest: it
+  is what makes the **`opencode-go` provider appear in the model list at all**
+  (30 models, absent without it — which is why a host session authenticated
+  from the sqlite store sees none of them).
+- **OpenCode has no permission mode, so the policy is a config block.** Its
+  `mode` option offers `build` and `plan` and neither is one — Build's own
+  description says it "executes tools based on configured permissions". Nothing
+  may add an invented mode to the picker (the adapter is the authority), so
+  `server/lib/acp/opencode-config.ts` puts `{"permission":"allow"}` into
+  `OPENCODE_CONFIG_CONTENT` for **container sessions only**: a container
+  works in a volume Domo can re-create, while a host session is the
+  developer's real tree and silently turning every prompt off there is not a
+  default to inherit from a version bump. The shape is out of the shipped
+  validator — `"ask" | "allow" | "deny"`, or a map over `read`/`edit`/`bash`/…,
+  and the loader expands a bare string to `{"*": action}`. It merges with
+  `jsonc-parser`'s `modify`/`applyEdits` rather than reserialising, because the
+  developer's config is JSONC and their comments are theirs, and a config that
+  already names `permission` is returned **untouched** — somebody who
+  deliberately denied `bash` keeps it.
 - **Resolve the adapter entry from `process.cwd()`.** The production bundle runs
   from a virtual module path, so `createRequire(import.meta.url).resolve(...)`
   fails there. `adapterEntry()` tries cwd first, then `import.meta.url`, then
@@ -680,6 +758,21 @@ things that are easy to get wrong.
   and each spawn gets fresh `mcpServers` (both `session/new` and
   `session/load`). Do not put the token on `agent_sessions` either — that table
   is streamed to the browser through Electric.
+- **OpenCode takes stdio MCP servers despite advertising `{http: true, sse:
+  false}`, and names none of the tools it calls.** Both halves are measured
+  against a purpose-built stdio MCP server handed to a real `session/new`: it
+  spawned the process, sent `initialize`, `notifications/initialized`,
+  `tools/list` and `tools/call`, and the result came back to the model. So
+  `mcpCapabilities` is not the whole story for stdio, and the browser server —
+  the only stdio one Domo ships — does work there. But **every MCP tool call
+  arrives over ACP as `title: "execute"`, `kind: "other"`, `rawInput: {}`**,
+  with the tool's own name nowhere in the payload; only the
+  `tool_call_update` carries the result. Anything keying on a tool *name* —
+  a test assertion, a transcript card, a UI that groups by tool — gets nothing
+  useful out of an OpenCode session, and an assertion that looks for one fails
+  however well the tool worked. That is what the browser test in `agents-live`
+  hit, and why its name check is now per adapter while the behaviour checks
+  either side of it are not.
 - **The mesh is gated on `agentCapabilities.mcpCapabilities.http`**, read from
   the adapter's `initialize` response. An adapter that does not advertise it
   gets no `domo` server rather than one it would fail to connect to, and
@@ -919,9 +1012,9 @@ things that are easy to get wrong.
   steering, and `queue` otherwise — never `interrupt`.** `steer` falls back to
   `interrupt`, and cancelling a running turn to hand over a branch is far
   blunter than the news deserves. Measured by sending `initialize` to each:
-  claude-agent-acp answers `_meta.steering.supported: true`, **opencode sends
-  no `_meta` at all**. `acpManager.supportsSteering()` asks the connection
-  rather than a list of adapter names, so an adapter that gains steering is
+  claude-agent-acp answers `_meta.steering.supported: true`, **opencode 2.0.14
+  sends no top-level `_meta` at all**. `acpManager.supportsSteering()` asks the
+  connection rather than a list of adapter names, so an adapter that gains steering is
   steered with nothing here changing. An **idle** session gets the
   `agent_inbox` row written directly instead, for the reason
   `subscriptions.ts` does it that way: `deliver()` starts the adapter it
@@ -1020,6 +1113,32 @@ things that are easy to get wrong.
   with **no `*-mini` or `*-nano` at all**. `resolveModel()` therefore accepts an
   exact id, a display name or a containment match either way, and fails the
   session rather than guessing.
+- **An inexact model preference that fits two models resolves to neither, and
+  the reason is a bill.** An authenticated OpenCode lists **130 models across
+  two providers at once**, measured: `openai/*` (55), which bills the
+  developer's own ChatGPT login, and `opencode/*` (75), which is OpenCode
+  console inference metered per token. **18 bare names are in both** —
+  `gpt-5`, `gpt-5.1`, `gpt-5.4`, `gpt-5.3-codex` and the rest of that family —
+  so "gpt-5.4" names two models on two separate billing relationships.
+  `resolveModel` used `.find()` and silently took whichever the adapter listed
+  first; it now refuses anything below an exact id that matches more than one,
+  and `ambiguousModelMatches` phrases the error so the reader sees both
+  candidates rather than "the adapter does not offer that". **Nothing may
+  flatten the provider prefix out of a model id** for the same reason — the
+  prefix is the only thing on screen that says which is about to be spent.
+  This is the `ANTHROPIC_API_KEY` hazard in a second costume.
+  The collision is **not** between `opencode` and `opencode-go`, which is what
+  it looks like it ought to be: `opencode-go/*` is absent from the list unless
+  `OPENCODE_API_KEY` is set, so a session authenticated from the sqlite store
+  alone never sees it and never collides with it. **The adapter's own default
+  follows the credential**, which is why the key is worth having rather than
+  merely sufficient: with no key it is `opencode/claude-opus-5-5`, metered per
+  token, so "it works now" and "it costs per token now" would arrive together;
+  with `OPENCODE_API_KEY` set the Go provider appears (measured: 130 models
+  becomes 160) and the default moves to `opencode-go/mimo-v2.6-pro`, which the
+  subscription covers. So `defaultAgentModels` is right to stay empty — pinning
+  an id here would freeze a catalogue that moves, and OpenCode already picks
+  from the cheaper side once it can see it.
 - **The two adapters share not one permission-mode id, so nothing may hard-code
   a list and the default is per adapter.** Claude Code answers `default`
   ("Manual") / `acceptEdits` / `plan` / `auto` / `bypassPermissions` — the last
@@ -1597,6 +1716,58 @@ and permissions are end to end because a permission is a row.
   untracked host changes and nothing ignored. The `git clean -fd` behaviour
   under it was measured separately (git 2.51.1): untracked-but-not-ignored
   files go, ignored files stay, a directory holding only ignored content stays.
+- **OpenCode 2.0.14 was measured over ACP, not assumed to match v1.** A real
+  `initialize` and `session/new` against the pinned binary: `mcpCapabilities.http`
+  is still `true` (so the mesh gate still passes), the modes are still the
+  `configOptions` entry with `category: "mode"` and still `build` / `plan` with
+  no top-level `modes` object, and the model ids are still provider-prefixed.
+  **How many models an unauthenticated session lists is not stable, so do not
+  assert on it.** The same container with an empty `credential` table answered
+  7 on the first run after install and 71 on every run since, and a warm home
+  answers 75 — the free-tier diagnosis rests on the user's own symptom, on
+  `opencode models` run against both binaries, and on the `cost.input > 0`
+  transform read out of the source, not on this number. What *is* reproducible
+  is that a priced model is unusable without a key (`provider.no-route`).
+  A real service-account key has since been exercised: `pnpm test:agents` ran
+  20/20 on the host against one, so a key does complete turns, and **the org id
+  never had to be supplied** — the key alone reaches inference and the console
+  serves the org id inside `/api/config` anyway.
+- **What makes OpenCode ask is a path outside `cwd`, and nothing else did.**
+  Driven over real ACP on a free model with the client capabilities Domo
+  advertises, on 2.0.14. Reading `/etc/hosts` with the `read` tool raises one
+  `session/request_permission`, titled with the path and `kind: "read"`;
+  `{"permission":"allow"}` and `{"permission":{"external_directory":"allow"}}`
+  each suppress it. An in-`cwd` edit never asks whatever the policy says,
+  because OpenCode delegates it to the client as `fs/write_text_file` — exactly
+  as Claude Code does.
+  **What prompts is inconsistent, and the two versions disagree.** On 2.0.14
+  ten bash commands raised nothing — `cat /etc/hosts`, `cat /etc/passwd`,
+  `head`, two `ls`, a `touch` and an `rm` *outside* `cwd`, a `>>` redirect and a
+  `curl` — every one of them verified to have actually run, while the `read`
+  tool on the same `/etc/hosts` prompted. On **1.18.28** `cat /etc/hosts`
+  through bash *did* prompt and `ls /usr/local` did not. Ten commands is not
+  exhaustive and neither is two. So the honest statement is that the prompt
+  fires on the tidy file tools and unpredictably on shell commands, which makes
+  `external_directory` a guardrail against *accidental* drift — worth keeping,
+  because an agent is not trying to evade it — and **not something to document
+  or rely on as containment**.
+- **`agents-live` now runs all three adapters, and gates on an OpenCode console
+  key to do it.** It used to run `codex` and `claude-code` only, while `MODELS`
+  and `ASKS` carried `opencode` keys purely because they are
+  `Record<AgentAdapter, …>` — coverage that looked present and was not. The
+  layer's `globalSetup` therefore asks for `NUXT_OPENCODE_API_KEY` alongside
+  the Claude token and the Codex login, and **`pnpm test:agents` fails without
+  one**: there is no fallback, because a container cannot use a host
+  `opencode auth login` and a priced model without a key answers
+  `provider.no-route`.
+  Two things in there are load-bearing. `beforeAll` pins
+  `openCodePermission` to `ask` on both surfaces, so every test describes the
+  *adapter* rather than whatever Domo's default happens to be — the default for
+  an environment is `allow`, which would suppress the very prompt the shared
+  permission test asserts. And the OpenCode model is pinned as an **exact** id
+  (`opencode-go/glm-5.3-flash`), because with a key set the adapter lists
+  `opencode/*` and `opencode-go/*` together and a bare name is refused as
+  ambiguous rather than guessed at.
 - **Both agents were verified end to end inside a real environment**
   (`pnpm test:agents`, 11 tests, ~85 s warm): `session/new` through `docker exec`
   for Claude Code and Codex in one shared environment, each pinned to its cheap

@@ -7,9 +7,21 @@ const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{
   voiceSessionId?: string | null
   /**
+   * Which project to start in. An agent belongs to a project's work even when
+   * it runs outside a container, so the project is chosen first and everything
+   * below it — which environments exist, where a local agent's directory
+   * defaults to — follows from it.
+   *
+   * `undefined` leaves the choice to the modal; **`null` is the caller saying
+   * "no project"**, which is how the sidebar's no-project section opens
+   * straight onto an arbitrary path.
+   */
+  projectId?: string | null
+  /**
    * Which environment to start in. The sidebar's per-environment plus button
-   * passes it so the agent lands where it was asked for; left unset, the modal
-   * falls back to any running environment, then to the local host.
+   * passes it so the agent lands where it was asked for, and it decides the
+   * project too. Left unset, the modal falls back to any running environment,
+   * then to the first project's own checkout.
    */
   environmentId?: string | null
 }>()
@@ -85,37 +97,93 @@ const modeItems = computed(() => {
   return items
 })
 
-// Settings are fetched lazily and may land after the modal is already open.
-watch(settings, () => {
-  if (open.value && !mode.value) mode.value = defaultMode()
-})
-
 const { environments } = useDevEnvironments()
 const { projects } = useProjects()
 
-// Reka's select items may not have an empty-string value, so "no environment"
-// is a named sentinel rather than ''.
+// Reka's select items may not have an empty-string value, so neither "no
+// project" nor "not in an environment" can be ''.
+const NO_PROJECT = 'no-project'
 const LOCAL = 'local'
+
+const selectedProjectId = ref(NO_PROJECT)
 const devEnvironmentId = ref(LOCAL)
-const environmentItems = computed(() => [
-  { label: 'Local host directory', value: LOCAL },
-  ...environments.value.map(environment => ({
-    label: `${projects.value.find(project => project.id === environment.projectId)?.name ?? 'Project'} / ${environment.name}`,
-    value: environment.id
-  }))
+
+const projectItems = computed(() => [
+  ...projects.value.map(project => ({ label: project.name, value: project.id })),
+  { label: 'No project', value: NO_PROJECT }
 ])
 
-watch(open, async (value) => {
+const selectedProject = computed(() => projects.value.find(project => project.id === selectedProjectId.value) ?? null)
+
+/**
+ * Where to run, *within* the chosen project: its checkout on the host, or one
+ * of its containers. An environment always belongs to a project, so with none
+ * chosen there is nothing to list and the form asks for a path instead.
+ */
+const environmentItems = computed(() => [
+  { label: 'Local checkout (no container)', value: LOCAL },
+  ...environments.value
+    .filter(environment => environment.projectId === selectedProjectId.value)
+    .map(environment => ({ label: environment.name, value: environment.id }))
+])
+
+/** The project's own checkout is where a local agent in it belongs by default. */
+function defaultCwdFor(id: string): string {
+  return projects.value.find(project => project.id === id)?.repoPath
+    ?? settings.value?.defaultCwd
+    ?? ''
+}
+
+function initialTarget(): { projectId: string, devEnvironmentId: string } {
+  // An environment named by the caller wins, and it decides the project too.
+  const named = props.environmentId
+    ? environments.value.find(environment => environment.id === props.environmentId)
+    : null
+  if (named) return { projectId: named.projectId, devEnvironmentId: named.id }
+  if (props.projectId) return { projectId: props.projectId, devEnvironmentId: LOCAL }
+  // Only `undefined` means "you decide" — an explicit `null` is a choice.
+  if (props.projectId === null) return { projectId: NO_PROJECT, devEnvironmentId: LOCAL }
+
+  const running = environments.value.find(environment => environment.status === 'running')
+  if (running) return { projectId: running.projectId, devEnvironmentId: running.id }
+  const first = projects.value[0]
+  if (first) return { projectId: first.id, devEnvironmentId: LOCAL }
+  return { projectId: NO_PROJECT, devEnvironmentId: LOCAL }
+}
+
+// Settings are fetched lazily and may land after the modal is already open.
+watch(settings, () => {
+  if (!open.value) return
+  if (!mode.value) mode.value = defaultMode()
+  if (!cwd.value) cwd.value = defaultCwdFor(selectedProjectId.value)
+})
+
+/**
+ * Changing the project re-points everything under it. The environment is kept
+ * only when it belongs to the project now chosen, which is what lets the open
+ * handler below set both in one go without this undoing it.
+ */
+watch(selectedProjectId, (id) => {
+  const stillThere = environments.value.some(
+    environment => environment.id === devEnvironmentId.value && environment.projectId === id
+  )
+  if (!stillThere) devEnvironmentId.value = LOCAL
+  cwd.value = defaultCwdFor(id)
+})
+
+// `immediate`, because the modal may be mounted already open — without it the
+// form would show the refs' own initial values rather than what was asked for.
+watch(open, (value) => {
   if (!value) return
   title.value = ''
   task.value = ''
   model.value = ADAPTER_DEFAULT
   adapter.value = 'claude-code'
-  cwd.value = settings.value?.defaultCwd ?? ''
-  devEnvironmentId.value = props.environmentId
-    ?? environments.value.find(environment => environment.status === 'running')?.id
-    ?? LOCAL
-})
+  const target = initialTarget()
+  selectedProjectId.value = target.projectId
+  devEnvironmentId.value = target.devEnvironmentId
+  cwd.value = defaultCwdFor(target.projectId)
+}, { immediate: true })
 
 // Asking costs an adapter spawn, so it happens when the modal opens and again
 // only if the adapter changes — never on every keystroke elsewhere in the form.
@@ -138,7 +206,9 @@ async function create() {
       body: {
         title: title.value.trim() || task.value.trim().slice(0, 60),
         adapter: adapter.value,
-        cwd: cwd.value.trim() || undefined,
+        // The environment's own workspace is the directory when there is one,
+        // so the picked path only means anything for a local session.
+        cwd: devEnvironmentId.value === LOCAL ? (cwd.value.trim() || undefined) : undefined,
         model: model.value === ADAPTER_DEFAULT ? undefined : model.value,
         modeId: mode.value || undefined,
         devEnvironmentId: devEnvironmentId.value === LOCAL ? undefined : devEnvironmentId.value,
@@ -164,7 +234,7 @@ async function create() {
   <UModal
     v-model:open="open"
     title="New coding agent"
-    description="Starts a coding agent over ACP in a local directory or development environment."
+    description="Starts a coding agent over ACP in a project's checkout, one of its development environments, or any directory on this machine."
   >
     <template #body>
       <div class="space-y-4">
@@ -221,7 +291,22 @@ async function create() {
           </template>
         </UFormField>
 
-        <UFormField label="Development environment">
+        <UFormField label="Project">
+          <USelectMenu
+            v-model="selectedProjectId"
+            :items="projectItems"
+            value-key="value"
+            class="w-full"
+          />
+          <template #help>
+            <span class="text-xs text-muted">
+              Agents usually belong to a project. Pick "No project" to work in an
+              arbitrary directory instead.
+            </span>
+          </template>
+        </UFormField>
+
+        <UFormField v-if="selectedProject" label="Where">
           <USelectMenu
             v-model="devEnvironmentId"
             :items="environmentItems"
@@ -230,7 +315,9 @@ async function create() {
           />
           <template #help>
             <span class="text-xs text-muted">
-              Environments can be shared by multiple agents. Create and manage them from the sidebar.
+              The local checkout is {{ selectedProject.repoPath }} on this machine.
+              Environments are containers with a private copy of it, and can be
+              shared by multiple agents.
             </span>
           </template>
         </UFormField>

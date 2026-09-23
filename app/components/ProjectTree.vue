@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DevEnvironment, Project } from '~~/shared/types'
+import type { Project } from '~~/shared/types'
 
 /**
  * The sidebar's management surface: projects → environments → agents, plus the
@@ -103,15 +103,22 @@ const newProjectOpen = ref(false)
 const newEnvironmentOpen = ref(false)
 const newEnvironmentProject = ref<Project | null>(null)
 const newAgentOpen = ref(false)
-const newAgentEnvironment = ref<DevEnvironment | null>(null)
+
+/**
+ * Where the next agent should start, as the row that asked for it knows it.
+ *
+ * `projectId: undefined` leaves the choice to the modal; `null` is this tree
+ * saying "no project", which is what the no-project section's plus means.
+ */
+const newAgentTarget = ref<{ projectId?: string | null, environmentId?: string }>({})
 
 function openNewEnvironment(project: Project) {
   newEnvironmentProject.value = project
   newEnvironmentOpen.value = true
 }
 
-function openNewAgent(environment: DevEnvironment) {
-  newAgentEnvironment.value = environment
+function openNewAgent(target: { projectId?: string | null, environmentId?: string }) {
+  newAgentTarget.value = target
   newAgentOpen.value = true
 }
 </script>
@@ -172,13 +179,27 @@ function openNewAgent(environment: DevEnvironment) {
           />
 
           <ul v-show="isExpanded(project.id)" class="mt-0.5 space-y-0.5 border-l border-default ps-3">
-            <li v-if="localAgentsFor(project).length">
-              <p class="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-dimmed">
-                Local checkout
-              </p>
+            <li>
+              <div class="group flex items-center gap-1 rounded-md pe-1">
+                <p class="min-w-0 flex-1 truncate px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-dimmed">
+                  Local checkout
+                </p>
+                <UButton
+                  icon="i-lucide-plus"
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  :aria-label="`New agent in the ${project.name} checkout`"
+                  :class="ROW_ACTIONS_CLASS"
+                  @click="openNewAgent({ projectId: project.id })"
+                />
+              </div>
               <ul class="space-y-0.5">
                 <li v-for="agent in localAgentsFor(project)" :key="agent.id">
                   <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
+                </li>
+                <li v-if="!localAgentsFor(project).length" class="px-2 py-1 text-xs text-dimmed">
+                  No agents yet
                 </li>
               </ul>
             </li>
@@ -189,7 +210,7 @@ function openNewAgent(environment: DevEnvironment) {
                 :expanded="isExpanded(environment.id)"
                 :agent-count="agentsFor(environment.id).length"
                 @toggle="toggle(environment.id)"
-                @new-agent="openNewAgent(environment)"
+                @new-agent="openNewAgent({ environmentId: environment.id })"
               />
 
               <ul v-show="isExpanded(environment.id)" class="mt-0.5 space-y-0.5 border-l border-default ps-3">
@@ -210,10 +231,26 @@ function openNewAgent(environment: DevEnvironment) {
       </ul>
     </div>
 
-    <div v-if="localAgents.length">
-      <p class="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-dimmed">
-        Local agents
+    <div class="group">
+      <div class="flex items-center justify-between gap-1 px-2 pb-1.5">
+        <p class="text-[11px] font-medium uppercase tracking-wide text-dimmed">
+          No project
+        </p>
+        <UButton
+          icon="i-lucide-plus"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          aria-label="New agent without a project"
+          :class="ROW_ACTIONS_CLASS"
+          @click="openNewAgent({ projectId: null })"
+        />
+      </div>
+
+      <p v-if="!localAgents.length" class="px-2 pb-1 text-xs text-dimmed">
+        For a directory outside every project.
       </p>
+
       <ul class="space-y-0.5">
         <li v-for="agent in localAgents" :key="agent.id">
           <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
@@ -234,6 +271,10 @@ function openNewAgent(environment: DevEnvironment) {
 
     <NewProjectModal v-model:open="newProjectOpen" />
     <NewEnvironmentModal v-model:open="newEnvironmentOpen" :project="newEnvironmentProject" />
-    <NewAgentModal v-model:open="newAgentOpen" :environment-id="newAgentEnvironment?.id ?? null" />
+    <NewAgentModal
+      v-model:open="newAgentOpen"
+      :project-id="newAgentTarget.projectId"
+      :environment-id="newAgentTarget.environmentId"
+    />
   </div>
 </template>

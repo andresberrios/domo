@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdir } from 'node:fs/promises'
+import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable, Writable } from 'node:stream'
@@ -251,10 +251,15 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
     .connect(adapter.stream())
 }
 
-/** Every session in this file is a host session, and it has to be startable. */
-const SESSION_CWD = join(tmpdir(), 'domo-test', 'acp-stream')
-
 const textChunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+
+/**
+ * Every session here runs in one directory, and it has to be on disk: a session
+ * whose working directory is gone is not startable, so a machine that has never
+ * run this file before would fail every turn in it for that reason alone.
+ */
+const workspace = join(tmpdir(), 'domo-test', 'acp-stream')
+mkdirSync(workspace, { recursive: true })
 
 let seen: ReturnType<typeof captureBus>
 
@@ -262,7 +267,7 @@ async function session(title = 'Streaming turn') {
   return createAgentSession({
     adapter: 'claude-code',
     title,
-    cwd: SESSION_CWD
+    cwd: workspace
   })
 }
 
@@ -303,11 +308,6 @@ function textOf(events: AgentEvent[]): string[] {
 }
 
 beforeEach(async () => {
-  // A host session is unstartable when its working directory is not on disk
-  // (`sessionStartability`), and every session here is one. The directory used
-  // to be left behind by an older test-data layout, so a machine that had ever
-  // run the suite happened to have it and a fresh checkout did not.
-  await mkdir(SESSION_CWD, { recursive: true })
   await query('truncate agent_sessions cascade')
   // Account-wide, so it hangs off no session and no cascade reaches it.
   await query('truncate usage_limits')
@@ -621,7 +621,7 @@ describe('the model a session runs on', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Model',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       model
     })
     const asked: any[] = []
@@ -721,7 +721,7 @@ describe('the model a session runs on', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Model',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       model: 'gemini-3-pro'
     })
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
@@ -772,7 +772,7 @@ describe('the adapter settings a session runs with', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Effort',
-      cwd: SESSION_CWD
+      cwd: workspace
     })
     if (config) await updateAgentSession(agent.id, { config })
     return { agent, ...await attach(agent.id, options.effort ?? EFFORT) }
@@ -843,7 +843,7 @@ describe('the adapter settings a session runs with', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Effort',
-      cwd: SESSION_CWD
+      cwd: workspace
     })
     await updateAgentSession(agent.id, { config: { effort: 'high' } })
     // No effort option at all, the way Claude Code answers on a model without
@@ -905,7 +905,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       modeId: input.modeId
     })
     // What a session that has run before looks like: an adapter-side id to
@@ -962,7 +962,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       modeId: 'default'
     })
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
@@ -982,7 +982,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: SESSION_CWD
+      cwd: workspace
     })
     const asked: any[] = []
     // A running session, because that is the case this is about: the mode is
@@ -1008,7 +1008,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       modeId: 'plan'
     })
     const asked: any[] = []
@@ -1034,7 +1034,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       modeId: 'default'
     })
     const asked: any[] = []
@@ -1059,7 +1059,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       modeId: 'plan'
     })
     const asked: any[] = []
@@ -1083,7 +1083,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'opencode',
       title: 'OpenCode mode',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       modeId: 'build'
     })
     const asked: any[] = []
@@ -1144,7 +1144,7 @@ describe('changing a setting on a session that is not running', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Stopped',
-      cwd: SESSION_CWD,
+      cwd: workspace,
       modeId: 'default'
     })
     await updateAgentSession(agent.id, {

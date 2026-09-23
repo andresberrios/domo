@@ -76,7 +76,9 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
 - Access to at least one coding agent: a `claude setup-token` token (see
   [Claude authentication](#claude-authentication)), a local Claude Code login,
   or `NUXT_ANTHROPIC_API_KEY`; and/or a local Codex login, `NUXT_CODEX_API_KEY`,
-  or `NUXT_OPENAI_API_KEY`; and/or an OpenCode login (`opencode auth login`)
+  or `NUXT_OPENAI_API_KEY`; and/or an OpenCode login (`opencode auth login`),
+  plus an OpenCode console key if you want OpenCode in a development environment
+  (see [OpenCode authentication](#opencode-authentication))
 
 ## Quick start
 
@@ -468,9 +470,8 @@ configured providers are kept current automatically (see
 | `NUXT_ANTHROPIC_API_KEY` | Optional fallback; **bills the API, not your subscription**, and is passed only when there is no other credential |
 | `NUXT_CODEX_API_KEY` | Optional; forwarded as `CODEX_API_KEY` to the Codex adapter |
 | `NUXT_OPENAI_API_KEY` | Optional; forwarded as `OPENAI_API_KEY` to the Codex adapter |
-| `NUXT_OPENCODE_AUTH_CONTENT` | Optional OpenCode `auth.json` content for a headless install; otherwise Domo reads the local store written by `opencode auth login` |
+| `NUXT_OPENCODE_API_KEY` | Optional OpenCode console service-account key; the only OpenCode credential that reaches a development environment, and what the plan-limit poller uses. Settable in Settings instead |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration, forwarded to host and environment sessions |
-| `NUXT_OPENCODE_GO_API_KEY` | Optional OpenCode Go key used by the plan-limit poller; otherwise the local OpenCode auth store is used |
 | `DATABASE_URL` | Postgres, defaults to the compose service |
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
@@ -525,11 +526,12 @@ directly (`codex app-server`, `account/rateLimits/read`) — the same call the A
 adapter makes for its `/status` output — and shuts the process down again as
 soon as it has answered.
 
-For **OpenCode Go**, Domo reads the key from `NUXT_OPENCODE_GO_API_KEY`, or
-from the `opencode-go` entry written by `opencode auth login`, and polls the
-rolling, weekly and monthly windows automatically. Without that credential it
-is simply reported as unconfigured. The Go usage
-endpoint is currently undocumented and may change.
+For **OpenCode Go** it needs a console **service-account key**, from
+`NUXT_OPENCODE_API_KEY` or the field on the OpenCode settings page. A host
+`opencode auth login` is not enough and Domo will say so rather than showing
+zeroes: measured, the console answers 401 to that credential on this endpoint
+and 200 to a service-account key. Without a key it is reported as unconfigured
+rather than as an error. The endpoint is undocumented and may change.
 
 Gemini publishes no plan-limit API, so a conversation shows its context window
 and nothing else.
@@ -572,6 +574,54 @@ and `auth.json` there is one shared copy rather than a forked chain.
 The same reasoning is why `.claude` and `.claude.json` are refused as
 [home directory mounts](#git-ssh-and-cli-logins-inside-environments), whatever
 you put in the setting.
+
+### OpenCode authentication
+
+**On this machine there is nothing to do.** OpenCode 2 keeps its login in
+`~/.local/share/opencode/opencode.db` and reads it out of `$HOME` itself, so a
+host session works as soon as you have run `opencode auth login`. Domo passes no
+OpenCode credential at all for one.
+
+**For a development environment you need a console service-account key**, in
+`NUXT_OPENCODE_API_KEY` or the field on the OpenCode settings page. It is the
+same story as Claude's setup token, for the same reason: the login is
+device-flow OAuth, and OpenCode writes the refresh token the server answers with
+over the one it had — so a container and your Mac sharing one credential would
+log each other out. A service-account key is durable, revocable and meant for a
+headless caller, with no refresh chain to fork. Mint one in the
+[console](https://opencode.ai/console).
+
+Without a key an OpenCode session still starts, but **only its free models
+actually work** — anything priced fails as unroutable, and OpenCode disables
+models with a non-zero cost when it has no credential. If OpenCode has lost
+most of its model list, or every model you pick refuses to run, that is what
+has happened.
+
+**Once it is authenticated, check the model.** OpenCode offers two providers in
+one list and they are separate bills: `openai/*` goes to your own ChatGPT
+login, `opencode/*` is OpenCode console inference charged per token. Eighteen
+model names appear under both — `gpt-5.4` is a different thing depending on the
+prefix — so Domo refuses a default model that matches more than one and asks
+you to name it exactly. The prefix is shown everywhere a model is. Note that
+the adapter's own default on a fresh session is `opencode/claude-opus-5-5`,
+which is metered: OpenCode starting to work and OpenCode starting to cost
+arrive together.
+
+**If OpenCode seems to ask permission for everything**, what it is asking about
+is a tool reading or writing a path outside the session's working directory —
+a global config, a sibling checkout, a temp file. An agent does that often, and
+each prompt is just a bare path. OpenCode has no permission *mode* to change it
+with (`build` and `plan` are its only two, and Build's own description says it
+"executes tools based on configured permissions"), so Domo puts it on the
+**OpenCode settings page** instead, separately for development environments and
+for this machine.
+
+Environments default to allowing it — the checkout there is one Domo can
+re-create. This machine defaults to asking, because that is your real tree.
+Treat it as a guardrail against straying rather than a boundary: what it asks
+about is inconsistent, and shell commands mostly reach the same places without
+asking. A `permission` block in your own global OpenCode config wins over
+both.
 
 ### Agent modes
 

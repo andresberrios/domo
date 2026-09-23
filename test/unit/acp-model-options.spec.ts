@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { availableModelOptions, currentModel, modelConfigOption } from '../../server/lib/acp/model'
+import {
+  ambiguousModelMatches,
+  availableModelOptions,
+  currentModel,
+  modelConfigOption,
+  resolveModel
+} from '../../server/lib/acp/model'
 import { availableModes, currentModeId } from '../../server/lib/acp/mode'
 
 /**
@@ -108,18 +114,18 @@ const codexModes = {
   }
 }
 
-/** Shaped the way OpenCode 1.18.28 answers: no top-level `modes` object. */
+/** Shaped the way OpenCode 2.0.14 answers: no top-level `modes` object. */
 const openCodeModes = {
   sessionId: 'acp_1',
   configOptions: [{
     id: 'mode',
-    name: 'Mode',
+    name: 'Session Mode',
     category: 'mode',
     type: 'select',
     currentValue: 'build',
     options: [
-      { value: 'build', name: 'Build', description: 'The default agent with all tools enabled' },
-      { value: 'plan', name: 'Plan', description: 'A restricted agent for planning' }
+      { value: 'build', name: 'Build', description: 'The default agent. Executes tools based on configured permissions.' },
+      { value: 'plan', name: 'Plan', description: 'Read-only agent for exploring the codebase and planning work before implementation.' }
     ]
   }]
 }
@@ -146,8 +152,8 @@ describe('reading an adapter\'s permission modes', () => {
 
   it('reads OpenCode modes from its config option representation', () => {
     expect(availableModes(openCodeModes)).toEqual([
-      { id: 'build', name: 'Build', description: 'The default agent with all tools enabled' },
-      { id: 'plan', name: 'Plan', description: 'A restricted agent for planning' }
+      { id: 'build', name: 'Build', description: 'The default agent. Executes tools based on configured permissions.' },
+      { id: 'plan', name: 'Plan', description: 'Read-only agent for exploring the codebase and planning work before implementation.' }
     ])
     expect(currentModeId(openCodeModes)).toBe('build')
   })
@@ -176,5 +182,56 @@ describe('reading an adapter\'s permission modes', () => {
 
     expect(availableModes(broken).map(mode => mode.id)).toEqual(['plan'])
     expect(currentModeId(broken)).toBeNull()
+  })
+})
+
+/**
+ * What OpenCode 2 really offers once it is authenticated, cut down from a
+ * measured `session/new`: **130 models across two providers at once**, and the
+ * two are separate billing relationships. `openai/*` (55) comes from the
+ * developer's own ChatGPT login; `opencode/*` (75) is OpenCode console
+ * inference, metered per token. 18 bare names appear in both.
+ *
+ * `opencode-go/*` — the flat subscription — was advertised by the console's own
+ * config and listed by the adapter **zero** times, so nothing may assume it is
+ * selectable.
+ */
+const twoProviders = {
+  id: 'model',
+  options: [
+    { value: 'openai/gpt-5.4', name: 'openai/GPT-5.4' },
+    { value: 'openai/gpt-5.3-codex', name: 'openai/GPT-5.3 Codex' },
+    { value: 'opencode/gpt-5.4', name: 'opencode/GPT-5.4' },
+    { value: 'opencode/gpt-5.3-codex', name: 'opencode/GPT-5.3 Codex' },
+    { value: 'opencode/claude-opus-5-5', name: 'opencode/Claude Opus 5.5' }
+  ]
+}
+
+describe('a model preference that could mean two different bills', () => {
+  it('refuses a bare name both providers offer, rather than taking the first', () => {
+    // `.find()` used to answer whichever came first. On the account this was
+    // measured against that is a real choice between billing the developer's
+    // own OpenAI relationship and billing OpenCode console inference.
+    expect(resolveModel(twoProviders, 'gpt-5.4')).toBeNull()
+    expect(ambiguousModelMatches(twoProviders, 'gpt-5.4'))
+      .toEqual(['openai/gpt-5.4', 'opencode/gpt-5.4'])
+    expect(resolveModel(twoProviders, 'gpt-5.3-codex')).toBeNull()
+  })
+
+  it('takes an exact id, which is the way to say which one you meant', () => {
+    expect(resolveModel(twoProviders, 'opencode/gpt-5.4')?.value).toBe('opencode/gpt-5.4')
+    expect(resolveModel(twoProviders, 'openai/gpt-5.4')?.value).toBe('openai/gpt-5.4')
+    // And an exact id is never reported as ambiguous, even though the same
+    // string is contained in nothing else.
+    expect(ambiguousModelMatches(twoProviders, 'opencode/gpt-5.4')).toEqual([])
+  })
+
+  it('still resolves a name only one provider has', () => {
+    expect(resolveModel(twoProviders, 'claude-opus-5-5')?.value).toBe('opencode/claude-opus-5-5')
+  })
+
+  it('tells a missing model from an ambiguous one', () => {
+    // Empty means "nothing matched", which is the other error message.
+    expect(ambiguousModelMatches(twoProviders, 'haiku')).toEqual([])
   })
 })
