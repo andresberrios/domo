@@ -16,7 +16,7 @@ compaction cut, formatters, settings reconciliation, `.domo.json` parsing and va
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database), the whole ACP client against a fake agent on a pair of pipes, and the voice runtime with Google replaced by a recorder (which model it asks for, and what context a connect is told after a conversation has been folded); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
-| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume, and a retirement whose `docker volume rm` is refused by a container still holding the volume. Minutes on a cold cache, needs the network). Opt in. |
+| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume, and two refusals reported with the blocking container named — a volume another container still mounts, and an image a container was made from. Minutes on a cold cache, needs the network). Opt in. |
 | `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
@@ -70,7 +70,10 @@ still holds, removes on `rm`, and can refuse a name outright. The refusal
 itself — Docker really will not remove a volume another container has mounted —
 is `dev-environment.live.spec.ts`, where two busybox containers share one
 volume; that pair is what proves the whole feature, since `allowFailure`
-swallowing the refusal is exactly what made it invisible for a day.
+swallowing the refusal is exactly what made it invisible for a day. The image
+half of it has a trap worth knowing: `docker image rm` on an image that still
+has a **second tag** removes the tag and succeeds, running container or not, so
+the test builds a singly-tagged image or it proves nothing.
 
 **Asserting on the argv handed to `docker` cannot tell you Docker accepts it.**
 `test/docker/dev-environments.spec.ts` was green while every environment for a

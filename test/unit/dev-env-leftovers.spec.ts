@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import type { DevEnvironment, EnvironmentLeftover } from '~~/shared/types'
 import {
+  blockerArgs,
   claimedResources,
   environmentResources,
+  explainRefusal,
   planLeftoverRemoval,
   removeArgs,
   unattributedResources,
@@ -160,6 +162,67 @@ describe('what no row accounts for', () => {
       environments: [environment()],
       present: { containers: ['domo-dev-env_1'], volumes: ['domo-dev-env_1-workspace'], images: ['domo-dev-env_1'] }
     })).toEqual([])
+  })
+})
+
+/**
+ * What a refusal says, which is the whole of what replaced the retry loop.
+ *
+ * Nothing retries in the background any more, because the causes that survive
+ * one honest attempt do not clear on their own. That only works if the message
+ * names the thing somebody has to go and remove — "volume is in use" is not
+ * something anyone can act on, and Docker says nothing better on its own.
+ */
+describe('why Docker refused', () => {
+  const volume = { kind: 'volume' as const, name: 'domo-dev-env_1-workspace', environmentId: 'env_1' }
+  const image = { kind: 'image' as const, name: 'domo-dev-env_1', environmentId: 'env_1' }
+
+  it('asks Docker what is holding a volume, and what an image is running in', () => {
+    expect(blockerArgs(volume))
+      .toEqual(['ps', '--all', '--filter', 'volume=domo-dev-env_1-workspace', '--format', '{{.Names}}'])
+    expect(blockerArgs(image))
+      .toEqual(['ps', '--all', '--filter', 'ancestor=domo-dev-env_1', '--format', '{{.Names}}'])
+    // A container removal is forced and does not get refused by a third party.
+    expect(blockerArgs({ kind: 'container', name: 'domo-dev-env_1', environmentId: 'env_1' })).toBeNull()
+  })
+
+  it('names the container in the way and the command that deals with it', () => {
+    expect(explainRefusal({
+      leftover: volume,
+      error: 'docker volume failed: Error response from daemon: remove domo-dev-env_1-workspace: volume is in use - [abc]',
+      blockers: ['tidy-runner']
+    })).toBe(
+      'Container tidy-runner still has it mounted. '
+      + 'Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+    )
+  })
+
+  it('names all of them when more than one is holding it', () => {
+    expect(explainRefusal({ leftover: volume, error: 'volume is in use', blockers: ['one', 'two'] }))
+      .toBe('2 containers still have it mounted: one, two. Remove them (docker rm -f one two) and run the cleanup again.')
+  })
+
+  it('says an image is blocked by a container that was made from it', () => {
+    expect(explainRefusal({ leftover: image, error: 'image is being used by stopped container abc', blockers: ['probe'] }))
+      .toMatch(/^Container probe was made from it\. Remove it \(docker rm -f probe\)/)
+  })
+
+  it('says so plainly for a child image, which Docker will not name', () => {
+    // There is no filter for descent — `since` is chronology — so this points
+    // at the nearest thing that narrows it rather than inventing a suspect.
+    expect(explainRefusal({
+      leftover: image,
+      error: 'conflict: unable to delete abc (cannot be forced) - image has dependent child images',
+      blockers: []
+    })).toMatch(/built from it.*docker image ls --filter since=domo-dev-env_1/s)
+  })
+
+  it('falls back to Docker\'s own words, unwrapped, when it cannot do better', () => {
+    expect(explainRefusal({
+      leftover: volume,
+      error: 'docker volume failed: Error response from daemon: no such volume',
+      blockers: []
+    })).toBe('Docker refused: no such volume')
   })
 })
 

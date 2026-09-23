@@ -164,12 +164,86 @@ export async function observeEnvironmentResources(): Promise<ObservedResources> 
   return { containers, volumes: [...prefixed, ...dind], images }
 }
 
+/**
+ * What to ask Docker when it refuses, to find out *what* is in the way.
+ *
+ * Docker's own refusal is not actionable — "volume is in use" names nothing a
+ * person can go and deal with, and the raw id in brackets is not a name either.
+ * Both filters below answer with the thing that actually has to go first: the
+ * containers mounting a volume, or the containers running an image.
+ *
+ * There is no equivalent for an image blocked by a **child image**. Docker
+ * does not name them and offers no filter that does (`since` is chronology,
+ * not descent), so that case says what happened and stops rather than
+ * inventing a suspect.
+ */
+export function blockerArgs(leftover: Leftover): string[] | null {
+  if (leftover.kind === 'volume') {
+    return ['ps', '--all', '--filter', `volume=${leftover.name}`, '--format', '{{.Names}}']
+  }
+  if (leftover.kind === 'image') {
+    return ['ps', '--all', '--filter', `ancestor=${leftover.name}`, '--format', '{{.Names}}']
+  }
+  return null
+}
+
+/** Docker's own words, minus the wrapping this codebase and the daemon add. */
+function bareError(error: string): string {
+  return error
+    .replace(/^docker \w+ failed: /, '')
+    .replace(/^Error response from daemon: /, '')
+    .trim()
+}
+
+/**
+ * Why a removal was refused, written so that whoever reads it can fix it
+ * without investigating anything first.
+ *
+ * Pure, because the wording is the feature. Every cause that survives one
+ * honest attempt is something a person or an agent has to go and remove — a
+ * container another tool left mounting the volume, an image somebody built a
+ * container from — so the message names it and says what to do about it. There
+ * is no retry loop behind this to make a vague message survivable.
+ */
+export function explainRefusal(input: {
+  leftover: Leftover
+  error: string
+  /** Containers Docker named as holding it, if any. */
+  blockers: string[]
+}): string {
+  const bare = bareError(input.error)
+  const holding = input.leftover.kind === 'volume'
+    ? { one: 'still has it mounted', many: 'still have it mounted' }
+    : { one: 'was made from it', many: 'were made from it' }
+  if (input.blockers.length === 1) {
+    return `Container ${input.blockers[0]} ${holding.one}. `
+      + `Remove it (docker rm -f ${input.blockers[0]}) and run the cleanup again.`
+  }
+  if (input.blockers.length > 1) {
+    return `${input.blockers.length} containers ${holding.many}: ${input.blockers.join(', ')}. `
+      + `Remove them (docker rm -f ${input.blockers.join(' ')}) and run the cleanup again.`
+  }
+  if (input.leftover.kind === 'image' && /child image/i.test(bare)) {
+    return 'Another image on this machine was built from it, and Docker will not remove an image that has one. '
+      + `Find it (docker image ls --filter since=${input.leftover.name}), remove it, and run the cleanup again.`
+  }
+  return `Docker refused: ${bare}`
+}
+
 export interface RemovalOutcome {
   removed: Leftover[]
   failed: Array<Leftover & { error: string }>
 }
 
-/** Remove each, and say which did not go. One failure never stops the rest. */
+/**
+ * Remove each, and say which did not go **and why, in a sentence somebody can
+ * act on**. One failure never stops the rest.
+ *
+ * The blocker lookup is one extra `docker ps` per failure, on a path that is
+ * already the unhappy one. It is what makes this a report instead of a retry:
+ * the causes that survive a first attempt do not clear on their own, so the
+ * only thing that helps is naming the container in the way.
+ */
 export async function removeLeftovers(targets: Leftover[]): Promise<RemovalOutcome> {
   const outcome: RemovalOutcome = { removed: [], failed: [] }
   for (const target of targets) {
@@ -177,7 +251,16 @@ export async function removeLeftovers(targets: Leftover[]): Promise<RemovalOutco
       await run('docker', removeArgs(target))
       outcome.removed.push(target)
     } catch (error) {
-      outcome.failed.push({ ...target, error: error instanceof Error ? error.message : String(error) })
+      const args = blockerArgs(target)
+      const blockers = args ? await names(args).catch(() => []) : []
+      outcome.failed.push({
+        ...target,
+        error: explainRefusal({
+          leftover: target,
+          error: error instanceof Error ? error.message : String(error),
+          blockers
+        })
+      })
     }
   }
   return outcome

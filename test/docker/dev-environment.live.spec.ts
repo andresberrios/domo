@@ -103,14 +103,13 @@ const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
 const { environmentImageName } = await import('../../server/lib/dev-env/image')
 const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
 const {
+  cleanupEnvironment,
   createEnvironment,
   readEnvironmentFile,
   retireEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
-const { environmentJanitor, reconcileEnvironmentResources } = await import(
-  '../../server/lib/dev-env/reconcile'
-)
+const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
 const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
 const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
@@ -253,10 +252,6 @@ afterEach(async () => {
 })
 
 afterAll(async () => {
-  // Every retirement here runs a real sweep, and a sweep that still finds
-  // something arms a retry. Unref'd, so it never held the run open — stopped
-  // anyway, because a timer nothing is waiting for is a timer nobody reads.
-  environmentJanitor.stop()
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
   delete process.env.NUXT_DATA_DIR
   delete process.env.NUXT_CLAUDE_CONFIG_DIR
@@ -838,11 +833,7 @@ describe('populateWorkspaceVolume', () => {
  * out, and a real image build would add minutes and nothing else.
  */
 describe('a retirement whose volume removal is refused', () => {
-  afterEach(() => {
-    environmentJanitor.stop()
-  })
-
-  it('reports it, records it, and removes it on the next sweep', async () => {
+  it('names the container holding it, and removes it when asked again', async () => {
     const id = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
     created.push(id)
     const volume = workspaceVolumeName(id)
@@ -885,8 +876,16 @@ describe('a retirement whose volume removal is refused', () => {
       // instead of reporting a clean sweep.
       expect(await inspectContainer(containerId)).toBeNull()
       expect(await exists()).toBe(volume)
+      // The part only a real daemon can prove: Docker's own refusal names
+      // nothing, and `docker ps --filter volume=` turns it into the container
+      // whoever reads this has to remove.
       expect(report.leftovers).toEqual([
-        expect.objectContaining({ kind: 'volume', name: volume, error: expect.stringMatching(/in use/) })
+        expect.objectContaining({
+          kind: 'volume',
+          name: volume,
+          error: `Container ${holder} still has it mounted. `
+            + `Remove it (docker rm -f ${holder}) and run the cleanup again.`
+        })
       ])
       // Written to the row, which is the only thing that can name this volume
       // again later — and which `pruneRetiredRecords` will now not drop.
@@ -897,13 +896,63 @@ describe('a retirement whose volume removal is refused', () => {
       await run('docker', ['rm', '--force', '--volumes', holder], { allowFailure: true })
     }
 
-    // An hour later, or a restart later, or the next retirement: the holder has
-    // gone and something looks again.
-    const swept = await reconcileEnvironmentResources()
+    // Exactly what the message told them to do, and then the retry it named.
+    const swept = await cleanupEnvironment(id)
 
     expect(swept.removed.map(leftover => leftover.name)).toContain(volume)
     expect(await exists()).toBe('')
     expect(state.rows.get(id).leftovers).toEqual([])
+  }, 5 * 60 * 1000)
+
+  it('names the container an image was made from, which is the other refusal', async () => {
+    // The second cause the owner named: somebody ran a container from the
+    // environment's image by hand. Docker refuses the image removal and, again,
+    // says nothing about what to do; `--filter ancestor=` does.
+    const id = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(id)
+    const image = environmentImageName(id)
+    const holder = `${PREFIX}ancestor-${id}`
+    // Built rather than tagged: `docker image rm` on an image that still has
+    // another tag only removes the tag, and succeeds even while a container is
+    // running from it. One tag is what makes the daemon refuse.
+    await run('docker', ['build', '--tag', image, '-'], {
+      input: `FROM ${HELPER_IMAGE}\nRUN touch /leftover-marker\n`
+    })
+    await run('docker', [
+      'run', '--detach', '--name', holder, image, 'sleep', '600'
+    ])
+    state.rows.set(id, {
+      id,
+      projectId: 'prj_live',
+      name: 'leftover-image',
+      containerName: `${PREFIX}${id}`,
+      containerId: null,
+      workspacePath: '/workspace',
+      status: 'running',
+      lastError: null,
+      retiredAt: new Date().toISOString(),
+      leftovers: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+
+    try {
+      const report = await cleanupEnvironment(id)
+
+      expect(report.leftovers).toEqual([
+        expect.objectContaining({
+          kind: 'image',
+          name: image,
+          error: `Container ${holder} was made from it. `
+            + `Remove it (docker rm -f ${holder}) and run the cleanup again.`
+        })
+      ])
+    } finally {
+      await run('docker', ['rm', '--force', '--volumes', holder], { allowFailure: true })
+    }
+
+    await expect(cleanupEnvironment(id)).resolves.toMatchObject({ leftovers: [] })
+    expect((await run('docker', ['images', '--quiet', image])).stdout).toBe('')
   }, 5 * 60 * 1000)
 
   it('leaves a live environment\'s workspace volume alone while it does it', async () => {

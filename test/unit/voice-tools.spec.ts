@@ -44,7 +44,8 @@ const devEnvironments = {
   safeEnvironmentName: (name: string) => name,
   createEnvironment: vi.fn(),
   startEnvironment: vi.fn(),
-  stopEnvironment: vi.fn()
+  stopEnvironment: vi.fn(),
+  cleanupEnvironment: vi.fn()
 }
 // The sync itself is `test/server/git-sync.spec.ts`, against real git; what
 // matters here is which environment and which branch the spoken call picks.
@@ -744,6 +745,37 @@ describe('retire_dev_environment', () => {
       .resolves.toMatchObject({
         leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'volume is in use' }]
       })
+  })
+})
+
+describe('retry_environment_cleanup', () => {
+  it('finds a retired environment, which is the only kind that has leftovers', async () => {
+    // `list_dev_environments` hides retired ones, and a retired one is exactly
+    // what this is for — so the lookup has to include them or the retry can
+    // never reach the environment that needs it.
+    repo.listDevEnvironments.mockResolvedValue([environment({ retiredAt: '2026-01-09T00:00:00.000Z' })])
+    devEnvironments.cleanupEnvironment.mockResolvedValue({
+      removed: [],
+      leftovers: [{
+        kind: 'volume',
+        name: 'domo-dev-env_1-workspace',
+        environmentId: 'env_1',
+        error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+      }],
+      unattributed: []
+    })
+
+    await expect(voiceTools.retry_environment_cleanup!.handler({ environment: 'auth' }, ctx))
+      .resolves.toEqual({
+        id: 'env_1',
+        removed: [],
+        leftovers: [{
+          resource: 'volume domo-dev-env_1-workspace',
+          error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+        }]
+      })
+    expect(repo.listDevEnvironments).toHaveBeenCalledWith(undefined, true)
+    expect(devEnvironments.cleanupEnvironment).toHaveBeenCalledWith('env_1')
   })
 })
 

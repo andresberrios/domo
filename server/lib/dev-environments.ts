@@ -15,7 +15,7 @@ import {
 } from './dev-env/container'
 import { inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './dev-env/docker'
 import { environmentResources, workspaceVolumeName } from './dev-env/leftovers'
-import { environmentJanitor, type CleanupReport } from './dev-env/reconcile'
+import { sweepEnvironmentResources, type CleanupReport } from './dev-env/reconcile'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
 import {
@@ -420,7 +420,7 @@ export async function createEnvironment(input: {
     // resources explicitly, and the sweep below is what confirms each one is
     // really gone and clears it.
     await claimResources(id)
-    await environmentJanitor.sweep()
+    await sweepEnvironmentResources()
     throw error
   }
 }
@@ -523,14 +523,40 @@ export async function retireEnvironment(id: string): Promise<CleanupReport> {
   // something still has mounted and for one that was never created, and only
   // the first of those is a leftover. The sweep removes whatever is still
   // there, writes the rest to the row, and arms the retry.
-  const report = await environmentJanitor.sweep()
+  const report = await sweepEnvironmentResources()
   await pruneRetiredRecords()
+  return forEnvironment(report, id)
+}
+
+/** The part of a sweep's report that is about one environment. */
+function forEnvironment(report: CleanupReport, id: string): CleanupReport {
   return {
     removed: report.removed.filter(leftover => leftover.environmentId === id),
     leftovers: report.leftovers.filter(leftover => leftover.environmentId === id),
     unattributed: report.unattributed,
     unreachable: report.unreachable
   }
+}
+
+/**
+ * Try again to remove what a retirement — or a failed creation — could not.
+ *
+ * This is the other half of reporting a refusal rather than retrying it behind
+ * the user's back. Nothing Domo can do clears a container somebody else's tool
+ * left mounting the volume; what clears it is a person or an agent reading the
+ * `leftovers` error, removing the thing it names, and asking again. So the
+ * asking has to exist, on every surface that can retire something.
+ *
+ * It is the ordinary sweep, so it is bound by the same attribution rule: this
+ * removes what the *rows* claim and nothing else, and an environment with
+ * nothing owed answers that there was nothing to do.
+ */
+export async function cleanupEnvironment(id: string): Promise<CleanupReport> {
+  const environment = await getDevEnvironment(id)
+  if (!environment) throw new Error('Development environment not found')
+  const report = await sweepEnvironmentResources()
+  await pruneRetiredRecords()
+  return forEnvironment(report, id)
 }
 
 export function containerExecArgs(environment: DevEnvironment, env: NodeJS.ProcessEnv = {}): string[] {

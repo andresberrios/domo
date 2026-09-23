@@ -412,10 +412,28 @@ things that are easy to get wrong.
   or a leftover of a retirement from before this existed, whose row was pruned
   while there was nothing to keep it — is **named in the log and left exactly
   where it is**, because this database cannot tell those two apart and the cost
-  of being wrong is somebody else's checkout. It runs after every retirement, at
-  boot, and on a retry **armed by state rather than by a clock**: with nothing
-  owed there is no timer, and an install that has never made an environment
-  never asks Docker anything at all.
+  of being wrong is somebody else's checkout.
+- **A refused removal fails, names what is in the way, and is never retried on
+  a timer.** An escalating retry was built first and taken out: what survives
+  one honest attempt is not transient — a container another tool left mounting
+  the volume, a container somebody ran from the environment's image, an image
+  that has become the base for another image — and none of those clear on their
+  own, so retrying quietly for hours only hides, for hours, a problem a person
+  or an agent fixes in seconds once told what it is. Docker's own refusal is not
+  that: "volume is in use" names nothing actionable, and the id it puts in
+  brackets is not a name. So `explainRefusal` asks — `docker ps --all --filter
+  volume=<name>` for a volume, `--filter ancestor=<image>` for an image — and
+  the recorded error is "Container X still has it mounted. Remove it (docker rm
+  -f X) and run the cleanup again." **There is no filter for a child image**
+  (`since` is chronology, not descent) and Docker names none, so that one case
+  says what happened and points at `--filter since=` rather than inventing a
+  suspect. The message reaches every surface that can retire something, and so
+  does the second ask: `POST /api/dev-environments/[id]/cleanup`, the mesh tool
+  and the voice tool `retry_environment_cleanup`, and the button on the
+  environment page. The sweep therefore runs **after every retirement, once at
+  boot, and whenever somebody asks** — the boot pass is kept because it is the
+  one moment the blocker has most likely gone by itself, and it asks Docker
+  nothing at all on an install that has never made an environment.
 - **Whether a session can start is derived, and the guard cannot live in one
   place.** A session has one stored visibility state, `archived`; whether it can
   *run* is a question about the place it ran — is its environment retired, is
@@ -1539,12 +1557,17 @@ and permissions are end to end because a permission is a row.
   could not remove and records it on the row, a second sweep that removes it
   once the holder has gone, and a live environment's volume untouched beside it
   — and putting `allowFailure` back on the removal fails that test, so it bites.
-  **Not** verified: the retry timer's own scheduling (nothing winds the clock),
-  the janitor inside a real Nitro boot, and the workspace volume this was
-  written for, which is on the developer's machine and not reachable from the
-  container the work was done in. If its environment row is still there, the
-  next boot removes it; if the row was already pruned, Domo will deliberately
-  never touch it and the log will name it.
+  Both refusals are measured rather than assumed: a volume another container
+  mounts, and an image a container was made from, each reported with the
+  holder's name in the sentence. One thing that looks like a test and is not:
+  `docker image rm` on an image that still carries a **second tag** only removes
+  the tag and *succeeds*, container or no container, so the image case has to
+  build a singly-tagged image to be refused at all.
+  **Not** verified: the sweep inside a real Nitro boot, and the workspace volume
+  this was written for, which is on the developer's machine and not reachable
+  from the container the work was done in. If its environment row is still
+  there, the next boot removes it; if the row was already pruned, Domo will
+  deliberately never touch it and the log will name it.
 - **The dirty-checkout fix was verified against a real daemon**, `pnpm
   test:docker` green (5 files, 67 tests, 851 s cold). Both directions were
   asserted end to end from a dirty fixture: a `discard` environment whose
