@@ -36,6 +36,7 @@ const environment: DevEnvironment = {
   createdAt: '2026-01-02T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
   retiredAt: null,
+  leftovers: [],
 }
 
 /** One agent inside the environment, one directly in the host checkout. */

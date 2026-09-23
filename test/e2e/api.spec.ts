@@ -133,8 +133,10 @@ describe('projects', () => {
   it('retires a project and everything under it', async () => {
     const project = await $fetch<Project>('/api/projects', { method: 'POST', body: { repoPath: checkout } })
 
+    // `leftovers` is what Docker would not remove. Empty here and normally, and
+    // reported either way rather than folded into `ok: true`.
     await expect($fetch(`/api/projects/${project.id}`, { method: 'DELETE' }))
-      .resolves.toEqual({ ok: true, retired: true })
+      .resolves.toEqual({ ok: true, retired: true, leftovers: [] })
     await expect($fetch<Project[]>('/api/projects')).resolves.not.toContainEqual(
       expect.objectContaining({ id: project.id })
     )

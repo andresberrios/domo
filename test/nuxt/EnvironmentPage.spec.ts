@@ -37,6 +37,7 @@ const environment = ref<DevEnvironment>({
   createdAt: '2026-01-02T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
   retiredAt: null,
+  leftovers: [],
 })
 
 const agent: AgentSession = {
@@ -232,6 +233,27 @@ describe('environment details page', { timeout: 30_000 }, () => {
     expect(buttonWithText('New agent')).toBeFalsy()
 
     environment.value = { ...environment.value, retiredAt: null }
+    wrapper.unmount()
+  })
+
+  it('says what Docker would not remove, beside the line claiming it all went', async () => {
+    // The retired notice says the container, the checkout and the image were
+    // destroyed. When something refused to go, that is not the whole truth and
+    // the difference is gigabytes.
+    environment.value = {
+      ...environment.value,
+      retiredAt: '2026-01-09T00:00:00.000Z',
+      leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'volume is in use.' }]
+    }
+    const wrapper = await mountSuspended(defineComponent({
+      setup: () => () => h(UApp, null, { default: () => h(EnvironmentPage) })
+    }), { attachTo: document.body })
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Not everything could be removed'))
+    expect(document.body.textContent).toContain('domo-dev-env_1-workspace')
+    expect(document.body.textContent).toContain('volume is in use.')
+
+    environment.value = { ...environment.value, retiredAt: null, leftovers: [] }
     wrapper.unmount()
   })
 

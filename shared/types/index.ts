@@ -226,6 +226,26 @@ export interface DevEnvironment {
    * them unstartable. Never restorable.
    */
   retiredAt: string | null
+  /**
+   * The Docker resources a cleanup could not remove, and why.
+   *
+   * Empty is the normal state and the only one that means "done". A volume
+   * another container still had mounted, a daemon under load, a full disk — any
+   * of those leaves gigabytes behind, and this is what stops that being
+   * invisible: it is what a retirement reports instead of claiming success,
+   * what the janitor retries against, and what keeps `pruneRetiredRecords` from
+   * dropping the row that is the only way back to the leftover.
+   */
+  leftovers: EnvironmentLeftover[]
+}
+
+export type LeftoverKind = 'container' | 'volume' | 'image'
+
+/** One Docker resource that should no longer exist and still does. */
+export interface EnvironmentLeftover {
+  kind: LeftoverKind
+  name: string
+  error: string
 }
 
 /**

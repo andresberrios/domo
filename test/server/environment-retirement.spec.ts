@@ -25,7 +25,10 @@ import {
   listAgentSubscriptions,
   listDevEnvironments,
   listPermissions,
-  listProjects
+  listProjects,
+  pruneRetiredRecords,
+  retireDevEnvironmentRow,
+  setEnvironmentLeftovers
 } from '../../server/lib/repo'
 
 /**
@@ -64,6 +67,10 @@ vi.mock('../../server/lib/dev-environments', async (importOriginal) => {
       const { retireDevEnvironmentRow, pruneRetiredRecords } = await import('../../server/lib/repo')
       await retireDevEnvironmentRow(id)
       await pruneRetiredRecords()
+      // What a cleanup with a real daemon behind it reports: nothing left over.
+      // The failing case is `test/docker/dev-environments.spec.ts`, where the
+      // daemon is faked at the process boundary and can refuse.
+      return { removed: [], leftovers: [], unattributed: [] }
     },
     ensureEnvironmentRunning: async (id: string) => {
       const { getDevEnvironment: read } = await import('../../server/lib/repo')
@@ -196,6 +203,42 @@ describe('retiring an environment', () => {
 
     // Nothing points at it, so `pruneRetiredRecords` drops it for real.
     expect(await getProject(project.id)).toBeNull()
+  })
+
+  /**
+   * The row is the only way back to a leftover: every Docker name an
+   * environment owns is derived from its id, so a volume a cleanup could not
+   * remove is findable hours later — and only for as long as the row is there.
+   * Pruning one that still owes something would make the leftover
+   * unattributable, and then nothing could ever remove it safely.
+   */
+  it('keeps a retired row that still owes Docker resources, even with nothing pointing at it', async () => {
+    const { environment: env } = await environment()
+    await retireDevEnvironmentRow(env.id)
+    await setEnvironmentLeftovers(env.id, [
+      { kind: 'volume', name: 'domo-dev-env_x-workspace', error: 'volume is in use' }
+    ])
+
+    await expect(pruneRetiredRecords()).resolves.toMatchObject({ environments: 0 })
+    expect(await getDevEnvironment(env.id)).toMatchObject({
+      leftovers: [{ kind: 'volume', name: 'domo-dev-env_x-workspace', error: 'volume is in use' }]
+    })
+
+    // And it goes as soon as a sweep says the volume is gone.
+    await setEnvironmentLeftovers(env.id, [])
+    await expect(pruneRetiredRecords()).resolves.toMatchObject({ environments: 1 })
+    expect(await getDevEnvironment(env.id)).toBeNull()
+  })
+
+  it('writes the leftovers only when they change, because the row is synced', async () => {
+    const { environment: env } = await environment()
+    const owed = [{ kind: 'volume' as const, name: 'domo-dev-env_x-workspace', error: 'volume is in use' }]
+
+    expect(await setEnvironmentLeftovers(env.id, owed)).toMatchObject({ leftovers: owed })
+    // A sweep every few minutes finds the same thing every time; `REPLICA
+    // IDENTITY FULL` means each write re-streams the whole row to every browser.
+    expect(await setEnvironmentLeftovers(env.id, owed)).toBeNull()
+    expect(await setEnvironmentLeftovers(env.id, [])).toMatchObject({ leftovers: [] })
   })
 })
 

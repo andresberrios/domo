@@ -467,8 +467,8 @@ export const voiceTools: Record<string, VoiceTool> = {
     },
     handler: async (args) => {
       const project = await resolveProject(args.project)
-      await retireProjectCascade(project.id)
-      return { id: project.id, retired: true }
+      const { leftovers } = await retireProjectCascade(project.id)
+      return { id: project.id, retired: true, leftovers }
     }
   },
 
@@ -555,7 +555,10 @@ export const voiceTools: Record<string, VoiceTool> = {
       return {
         id: environment.id,
         retired: true,
-        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title }))
+        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title })),
+        // Empty unless Docker refused something. Worth telling the user about:
+        // it is disk space nothing will ever use, and Domo will keep retrying.
+        leftovers: retirement.leftovers
       }
     }
   },
