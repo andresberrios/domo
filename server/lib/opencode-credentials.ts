@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 
 import { getSettings } from './settings'
+import type { AppSettings } from '../../shared/types'
 
 /**
  * Where an OpenCode credential comes from, and why there are two answers.
@@ -32,10 +33,36 @@ import { getSettings } from './settings'
 /** How the settings half of the key lookup is injected, so a unit test has no database. */
 export type OpenCodeKeyLookup = () => Promise<string | null>
 
+/** Everything Settings says about OpenCode, injected for the same reason. */
+export type OpenCodeSettingsLookup = () => Promise<{
+  apiKey: string | null
+  permission: AppSettings['openCodePermission']
+}>
+
 /** The key as the user typed it into Settings, which is the no-`.env` path. */
 export async function settingsOpenCodeApiKey(): Promise<string | null> {
   return await getSettings().then(settings => settings.openCodeApiKey?.trim() || null).catch(() => null)
 }
+
+/**
+ * The two OpenCode settings an adapter launch needs, in one read.
+ *
+ * One lookup rather than two because the permission always costs the database
+ * — unlike the key, which usually answers from the environment — so a second
+ * injected parameter would buy nothing but another thing to stub. A database
+ * that will not answer falls back to the defaults: an adapter must still start.
+ */
+export async function loadOpenCodeSettings(): ReturnType<OpenCodeSettingsLookup> {
+  return await getSettings()
+    .then(settings => ({
+      apiKey: settings.openCodeApiKey?.trim() || null,
+      permission: settings.openCodePermission
+    }))
+    .catch(() => ({ apiKey: null, permission: DEFAULT_OPENCODE_PERMISSION }))
+}
+
+/** Duplicated from `settings.ts` DEFAULTS so a failed read has something to use. */
+const DEFAULT_OPENCODE_PERMISSION: AppSettings['openCodePermission'] = { host: 'ask', environment: 'allow' }
 
 /**
  * The console key to authenticate with, or null.

@@ -28,12 +28,24 @@ const mode = ref('')
 const typedModes = ref<string[]>([])
 const config = ref<Record<string, string>>({})
 const model = ref('')
+/**
+ * OpenCode asks before a tool touches anything outside the session's working
+ * directory, and a coding agent does that constantly. There is no ACP mode for
+ * it — `build` and `plan` are the only two, and Build defers to exactly this —
+ * so it is a setting rather than an entry in the mode picker.
+ */
+const permission = ref<AppSettings['openCodePermission']>({ host: 'ask', environment: 'allow' })
+const PERMISSION_ITEMS = [
+  { label: 'Ask each time', value: 'ask' },
+  { label: 'Allow without asking', value: 'allow' }
+]
 
 watch([settings, adapterId], () => {
   if (!settings.value || !isAgentAdapter(adapterId.value)) return
   mode.value = settings.value.defaultAgentModes[adapterId.value] ?? adapter.value.defaultMode
   model.value = settings.value.defaultAgentModels?.[adapterId.value] ?? ''
   config.value = { ...(settings.value.defaultAgentConfig?.[adapterId.value] ?? {}) }
+  permission.value = { ...permission.value, ...settings.value.openCodePermission }
   typedModes.value = []
 }, { immediate: true })
 
@@ -112,6 +124,7 @@ async function save() {
         defaultAgentModes: { ...settings.value.defaultAgentModes, [adapterId.value]: mode.value },
         defaultAgentModels: { ...settings.value.defaultAgentModels, [adapterId.value]: model.value },
         defaultAgentConfig: { ...settings.value.defaultAgentConfig, [adapterId.value]: config.value },
+        ...(showKeyField.value ? { openCodePermission: { ...permission.value } } : {}),
         ...(showKeyField.value && apiKey.value.trim() ? { openCodeApiKey: apiKey.value.trim() } : {})
       }
     })
@@ -198,6 +211,29 @@ async function removeKey() {
         </UButton>
       </div>
     </UFormField>
+
+    <template v-if="showKeyField">
+      <USeparator />
+      <section class="space-y-4">
+        <div>
+          <h2 class="text-sm font-semibold">Working outside the project</h2>
+          <p class="text-xs text-muted">
+            OpenCode asks before a tool reads or writes a path outside the session's working directory,
+            and an agent does that often — a global config, a sibling checkout, a temp file. It has no
+            permission mode to select, so this is where it is decided. A guardrail against straying
+            rather than a boundary: a shell command crosses it without asking either way, and a
+            <code>permission</code> block in your own OpenCode config wins over both of these.
+          </p>
+        </div>
+        <UFormField label="Development environments" help="A disposable checkout in a volume Domo can re-create.">
+          <USelectMenu v-model="permission.environment" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
+        </UFormField>
+        <UFormField label="This machine" help="Your real checkout, with no container around it.">
+          <USelectMenu v-model="permission.host" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
+        </UFormField>
+      </section>
+      <USeparator />
+    </template>
 
     <UFormField :label="`Default ${adapter.modeLabel.toLowerCase()}`" :help="adapter.modeDescription">
       <USelectMenu

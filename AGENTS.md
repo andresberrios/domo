@@ -1609,21 +1609,30 @@ and permissions are end to end because a permission is a row.
   against a paid account: that a key really restores the full list through
   Domo, whether `OPENCODE_API_KEY` alone is enough or `OPENCODE_CONSOLE_TOKEN`
   is genuinely needed beside it, and whether the org id ever has to be supplied.
-- **The `permission` block is live, and OpenCode's own default already asks for
-  very little.** Driven over real ACP on a free model, same client capabilities
-  Domo advertises: `{"permission":"ask"}` raises
-  `session/request_permission` for a bash command, `{"permission":"allow"}`
-  raises none, and **with no config at all it raises none either** — neither
-  for bash nor for an edit, which OpenCode delegates to the client as
-  `fs/write_text_file` and which therefore raises no permission whatever the
-  policy says, exactly as Claude Code does. So Domo's container default buys
-  certainty and the tool categories nobody probed (`webfetch`,
-  `external_directory`, `task`, `skill`, `doom_loop`), not a fix for bash.
-  **Which means a session that really does ask for everything is being told to
-  by something else, and the first place to look is the developer's own
-  `~/.config/opencode/opencode.json`** — `opencodeConfigContent()` forwards it
-  into every container, and a `permission` block in it is deliberately left
-  alone.
+- **What makes OpenCode ask is a path outside `cwd`, and nothing else did.**
+  Driven over real ACP on a free model with the client capabilities Domo
+  advertises, on 2.0.14. Reading `/etc/hosts` with the `read` tool raises one
+  `session/request_permission`, titled with the path and `kind: "read"`;
+  `{"permission":"allow"}` and `{"permission":{"external_directory":"allow"}}`
+  each suppress it. **Three things that do *not* ask**: a bash command, an
+  in-`cwd` edit (OpenCode delegates it to the client as `fs/write_text_file`,
+  which raises no permission whatever the policy says — exactly as Claude Code
+  does), and — the one that matters — **`cat /etc/hosts` through the bash
+  tool**, reproduced twice. So `external_directory` is a guardrail against the
+  *accidental* step outside a project that the tidy tools make, not
+  containment: the shell crosses the same line silently. Anyone defending the
+  host default as a security boundary is wrong about what it does. It is worth
+  keeping anyway, because an agent is not trying to evade it.
+- **OpenCode is not in `agents-live`, and its entries there are type
+  completeness rather than coverage.** `MODELS` and `ASKS` in
+  `test/agents/agents.live.spec.ts` have an `opencode` key because they are
+  `Record<AgentAdapter, …>` and the compiler requires one; the `describe.each`
+  runs `codex` and `claude-code` only, and the layer's `globalSetup` gates on a
+  Claude token and a Codex login and asks for no OpenCode credential at all. So
+  **nothing in any suite exercises a real OpenCode permission**, and a change to
+  the policy above cannot break a live test because there is not one. Adding it
+  means adding a console-key gate that would fail the layer for everyone without
+  one, which is a decision rather than a chore.
 - **The OpenCode usage endpoint is right and its *scale* is not established.**
   `/zen/go/v1/usage` answered 200 to a real service-account key with exactly
   the `rolling` / `weekly` / `monthly` shape `normalizeOpenCodeUsage` already

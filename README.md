@@ -596,13 +596,20 @@ models**, because OpenCode disables every model with a non-zero cost when it has
 no credential. If OpenCode seems to have lost most of its model list, that is
 what has happened.
 
-Domo also gives a *container* OpenCode session a permissive
-`permission` policy, because OpenCode has no permission mode to select: its two
-modes are `build` and `plan`, and Build's own description says it "executes
-tools based on configured permissions" — which is that block. Host sessions are
-left exactly as OpenCode has them; your real checkout is not a place to inherit
-that default. A `permission` block in your own global OpenCode config always
-wins.
+**If OpenCode seems to ask permission for everything**, what it is asking about
+is a tool reading or writing a path outside the session's working directory —
+a global config, a sibling checkout, a temp file. An agent does that often, and
+each prompt is just a bare path. OpenCode has no permission *mode* to change it
+with (`build` and `plan` are its only two, and Build's own description says it
+"executes tools based on configured permissions"), so Domo puts it on the
+**OpenCode settings page** instead, separately for development environments and
+for this machine.
+
+Environments default to allowing it — the checkout there is one Domo can
+re-create. This machine defaults to asking, because that is your real tree.
+Treat it as a guardrail against straying rather than a boundary: a shell
+command crosses the same line without asking either way. A `permission` block
+in your own global OpenCode config wins over both.
 
 ### Agent modes
 

@@ -81,6 +81,9 @@ export const DEFAULTS: AppSettings = {
   // the row by the first save, and the operator's variable would stop being the
   // thing in charge.
   openCodeApiKey: '',
+  // Environments permissive, the host as OpenCode has it. See
+  // `AppSettings.openCodePermission` for why the two differ.
+  openCodePermission: { host: 'ask', environment: 'allow' },
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
@@ -100,8 +103,26 @@ export async function getSettings(): Promise<AppSettings> {
     ...stored,
     defaultAgentModes: storedAgentModes(stored),
     defaultAgentModels: storedAgentModels(stored),
-    defaultAgentConfig: storedAgentConfig(stored)
+    defaultAgentConfig: storedAgentConfig(stored),
+    openCodePermission: storedOpenCodePermission(stored)
   } as AppSettings
+}
+
+/**
+ * The per-surface OpenCode permission, read the same defensive way as the
+ * records above: a stored object missing a surface keeps that surface's
+ * default rather than becoming undefined, and anything that is not one of the
+ * two actions is dropped rather than reaching OpenCode's config validator.
+ */
+function storedOpenCodePermission(stored: Record<string, any>): AppSettings['openCodePermission'] {
+  const permission = { ...DEFAULTS.openCodePermission }
+  const current = stored.openCodePermission
+  if (current && typeof current === 'object') {
+    for (const surface of Object.keys(permission) as Array<keyof typeof permission>) {
+      if (current[surface] === 'ask' || current[surface] === 'allow') permission[surface] = current[surface]
+    }
+  }
+  return permission
 }
 
 /**

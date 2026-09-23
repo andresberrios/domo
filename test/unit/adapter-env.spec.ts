@@ -8,8 +8,10 @@ import { adapterEnv, adapterLaunch, opencodeConfigContent } from '../../server/l
 /** `gh` must never be spawned from a test, so the lookup is always injected. */
 const noGh = async () => null
 
-/** And the unit layer has no database, so the Settings half is injected too. */
-const noKey = async () => null
+/** And the unit layer has no database, so the Settings read is injected too. */
+const DEFAULT_PERMISSION = { host: 'ask', environment: 'allow' } as const
+const noKey = async () => ({ apiKey: null, permission: DEFAULT_PERMISSION })
+const storedKey = (apiKey: string) => async () => ({ apiKey, permission: DEFAULT_PERMISSION })
 
 /**
  * What the adapter process is allowed to inherit.
@@ -152,20 +154,33 @@ describe('OpenCode', () => {
   })
 
   it('falls back to the key stored in Settings when the environment names none', async () => {
-    const env = await adapterEnv('opencode', true, noGh, async () => 'stored-key')
+    const env = await adapterEnv('opencode', true, noGh, storedKey('stored-key'))
 
     expect(env.OPENCODE_API_KEY).toBe('stored-key')
     expect(env.OPENCODE_CONSOLE_TOKEN).toBe('stored-key')
   })
 
-  it('gives a container a permission policy and leaves the host without one', async () => {
+  it('gives a container a permission policy and leaves the host on OpenCode\'s own', async () => {
     const contained = await adapterEnv('opencode', true, noGh, noKey)
     const host = await adapterEnv('opencode', false, noGh, noKey)
 
     // OpenCode publishes no permission mode at all, so this config block is the
-    // only way to stop a container session asking about every command.
+    // only way to stop a session asking every time a tool steps outside `cwd` —
+    // which a coding agent does constantly.
     expect(JSON.parse(contained.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: 'allow' })
     expect(host.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+  })
+
+  it('follows the setting when the user turns it round', async () => {
+    const permissiveHost = async () => ({
+      apiKey: null,
+      permission: { host: 'allow', environment: 'ask' } as const
+    })
+    const contained = await adapterEnv('opencode', true, noGh, permissiveHost)
+    const host = await adapterEnv('opencode', false, noGh, permissiveHost)
+
+    expect(contained.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+    expect(JSON.parse(host.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: 'allow' })
   })
 
   it('finds the global config that managed environments receive as a snapshot', async () => {

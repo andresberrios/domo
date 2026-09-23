@@ -54,6 +54,14 @@ export type AgentSessionStatus =
 
 export type AgentAdapter = 'claude-code' | 'codex' | 'opencode'
 
+/**
+ * What OpenCode does when a tool reaches outside the session's working
+ * directory. `deny` exists in OpenCode's own schema and is deliberately not
+ * offered: it is not a setting worth a picker, and it broke the provider
+ * outright when probed.
+ */
+export type OpenCodePermission = 'ask' | 'allow'
+
 export interface AgentSession {
   id: string
   voiceSessionId: string | null
@@ -595,6 +603,22 @@ export interface AppSettings {
    * take it back out.
    */
   openCodeApiKey: string
+  /**
+   * Whether OpenCode asks before touching a path outside the session's working
+   * directory, per surface. `ask` is OpenCode's own behaviour and Domo then
+   * writes no policy at all; `allow` suppresses it.
+   *
+   * Two values because the surfaces are not alike. An environment is a volume
+   * Domo can re-create, so the prompts buy nothing and cost a prompt on every
+   * out-of-directory read — an agent hits that constantly. The host is the
+   * developer's real tree, where the same prompt does catch an accidental step
+   * outside the project.
+   *
+   * It is a guardrail and not containment: `bash` crosses the same boundary
+   * silently, measured. A `permission` block in the developer's own OpenCode
+   * config wins over both.
+   */
+  openCodePermission: { host: OpenCodePermission, environment: OpenCodePermission }
   language: string
   /** Let the voice agent name conversations, and rename them as the topic moves. */
   autoTitle: boolean

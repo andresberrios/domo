@@ -8,9 +8,9 @@ import { promisify } from 'node:util'
 
 import { claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
 import {
+  loadOpenCodeSettings,
   resolveOpenCodeApiKey,
-  settingsOpenCodeApiKey,
-  type OpenCodeKeyLookup
+  type OpenCodeSettingsLookup
 } from '../opencode-credentials'
 import { sessionConfigContent } from './opencode-config'
 import type { AgentAdapter } from '../../../shared/types'
@@ -235,7 +235,7 @@ export async function adapterEnv(
   /** Injected by the unit layer: `gh` must never be spawned from a test. */
   ghToken: GhTokenLookup = hostGhToken,
   /** Injected for the same reason: the unit layer has no database to read Settings from. */
-  openCodeKey: OpenCodeKeyLookup = settingsOpenCodeApiKey
+  openCode: OpenCodeSettingsLookup = loadOpenCodeSettings
 ): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
@@ -274,12 +274,14 @@ export async function adapterEnv(
     // container therefore has the console key or nothing.
     const anthropicKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
     const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
-    const consoleKey = await resolveOpenCodeApiKey(process.env, openCodeKey)
+    const settings = await openCode()
+    const consoleKey = await resolveOpenCodeApiKey(process.env, async () => settings.apiKey)
     const configContent = sessionConfigContent(
       inContainer
         ? await opencodeConfigContent()
         : process.env.NUXT_OPENCODE_CONFIG_CONTENT || process.env.OPENCODE_CONFIG_CONTENT || null,
-      inContainer
+      inContainer,
+      settings.permission
     )
     if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey
     if (openAiKey) env.OPENAI_API_KEY = openAiKey
