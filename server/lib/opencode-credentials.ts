@@ -80,9 +80,14 @@ export async function readOpenCodeCredential(
     return null
   }
   try {
+    // Two integrations can hold one: `opencode` is the console account the
+    // device flow writes, `opencode-go` the key a Go subscription is pasted in
+    // as. The console account is preferred because it is what the console API
+    // itself authenticates, and a Go key is an inference credential.
     const row = database.prepare(
-      'select value from credential where integration_id = ? and active = 1 order by time_updated desc limit 1'
-    ).get('opencode') as CredentialRow | undefined
+      'select value from credential where integration_id in (?, ?) and active = 1'
+      + " order by case integration_id when 'opencode' then 0 else 1 end, time_updated desc limit 1"
+    ).get('opencode', 'opencode-go') as CredentialRow | undefined
     return row ? parseCredential(row.value) : null
   } catch {
     return null

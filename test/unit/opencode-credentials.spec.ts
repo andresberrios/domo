@@ -118,6 +118,23 @@ describe('the OpenCode 2 login store', () => {
       .resolves.toMatchObject({ token: 'key-2', type: 'api', expires: null })
   })
 
+  it('takes the Go integration\'s key when the console account is not connected', async () => {
+    writeStore(join(home, '.local', 'share', 'opencode', 'opencode.db'), [
+      { id: 'cred_go_key', integration_id: 'opencode-go', value: '{"type":"api","key":"oc_sk_go"}', active: 1, time_updated: 9 }
+    ])
+
+    await expect(readOpenCodeCredential({ HOME: home })).resolves.toMatchObject({ token: 'oc_sk_go', type: 'api' })
+  })
+
+  it('prefers the console account, which is what the console API authenticates', async () => {
+    writeStore(join(home, '.local', 'share', 'opencode', 'opencode.db'), [
+      { id: 'cred_go_key', integration_id: 'opencode-go', value: '{"type":"api","key":"oc_sk_go"}', active: 1, time_updated: 9 },
+      { id: 'cred_console', integration_id: 'opencode', value: goLogin, active: 1, time_updated: 1 }
+    ])
+
+    await expect(readOpenCodeCredential({ HOME: home })).resolves.toMatchObject({ token: 'access-secret' })
+  })
+
   it('takes a service-account key row as well as a device login', () => {
     expect(parseCredential('{"type":"api","key":"oc_live_1"}'))
       .toMatchObject({ token: 'oc_live_1', type: 'api' })
