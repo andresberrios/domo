@@ -129,6 +129,23 @@ describe('adapterEnv for codex', () => {
 })
 
 describe('OpenCode', () => {
+  // `adapterEnv` reads the host's own global OpenCode config, so a developer
+  // who actually uses OpenCode has one and these assertions pick it up: the
+  // suite passed in a container with no `~/.config/opencode` and failed on a
+  // real machine, where a bare `{ "$schema": ... }` arrived beside the
+  // permission block. Point the lookup at an empty directory — the unit layer
+  // must not read the developer's home, for the same reason it must not spawn
+  // `gh`.
+  let configHome: string
+  beforeEach(async () => {
+    configHome = await mkdtemp(join(systemTmp, 'domo-opencode-empty-'))
+    vi.stubEnv('XDG_CONFIG_HOME', configHome)
+  })
+  afterEach(async () => {
+    vi.unstubAllEnvs()
+    await rm(configHome, { recursive: true, force: true })
+  })
+
   it('launches the native CLI through its ACP subcommand', () => {
     process.env.NUXT_OPENCODE_ACP_ENTRY = '/opt/opencode/bin/opencode'
     expect(adapterLaunch('opencode')).toEqual({ command: '/opt/opencode/bin/opencode', args: ['acp'] })

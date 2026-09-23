@@ -31,14 +31,14 @@ const WINDOWS: Record<string, { label: string, minutes: number }> = {
 /**
  * Convert OpenCode Go's account response into Domo's provider-neutral rows.
  *
- * `percent` is read as 0-100, and that is **measured but unconfirmed**: the one
- * real response captured came from an account with no usage, so every window
- * answered `0` — which reads the same on either scale. Every other source Domo
- * polls disagrees about this (Claude's endpoint answers percent, its headers
- * answer fractions), and a 0.41 read as a percentage renders as a reassuring
- * "0%". If OpenCode turns out to answer fractions, the symptom is a card that
- * sits near zero while the plan is really being spent; divide here, not at the
- * call site.
+ * TODO: confirm the scale of `percent`. The only real response captured came
+ * from an account with no usage, so every window answered `0`, which reads
+ * identically as a fraction and as a percentage. It is read here as a
+ * **fraction** (0-1) deliberately: if that is wrong the card runs to 100% and
+ * pins there almost immediately, which is obvious. The other way round — a
+ * fraction read as a percentage — renders a reassuring "0%" while the plan is
+ * really being spent, and nobody would ever notice. Fix the multiplier here,
+ * not at the call site.
  */
 export function normalizeOpenCodeUsage(response: any): UsageLimitValue[] {
   const usage = response?.usage
@@ -50,7 +50,7 @@ export function normalizeOpenCodeUsage(response: any): UsageLimitValue[] {
     limits.push({
       limitId: id,
       label: description.label,
-      usedPercent: Math.max(0, Math.min(100, window.percent)),
+      usedPercent: Math.max(0, Math.min(100, window.percent * 100)),
       resetsAt: typeof window.resetsAt === 'string' ? window.resetsAt : null,
       windowMinutes: description.minutes,
       status: window.status === 'ok' ? 'allowed' : window.status ? 'rejected' : null,

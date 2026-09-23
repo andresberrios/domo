@@ -1658,16 +1658,6 @@ and permissions are end to end because a permission is a row.
   (`opencode-go/glm-5.3-flash`), because with a key set the adapter lists
   `opencode/*` and `opencode-go/*` together and a bare name is refused as
   ambiguous rather than guessed at.
-- **The OpenCode usage endpoint is right and its *scale* is not established.**
-  `/zen/go/v1/usage` answered 200 to a real service-account key with exactly
-  the `rolling` / `weekly` / `monthly` shape `normalizeOpenCodeUsage` already
-  read, so the fixture in `test/unit/opencode-usage.spec.ts` is a captured
-  response rather than an invented one. But the account had spent nothing and
-  every `percent` came back `0`, which reads identically as a percentage and
-  as a fraction. The code keeps 0-100. If the card sits near zero while the
-  plan is visibly being spent, that is the fraction case — and it is the same
-  trap the Claude bullet above documents, where `5h-utilization: 0.41` read as
-  a percentage renders as a reassuring "0%".
 - **Both agents were verified end to end inside a real environment**
   (`pnpm test:agents`, 11 tests, ~85 s warm): `session/new` through `docker exec`
   for Claude Code and Codex in one shared environment, each pinned to its cheap
