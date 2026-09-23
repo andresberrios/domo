@@ -1,5 +1,5 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
-import { UApp, UPopover } from '#components'
+import { UApp, UDropdownMenu, UPopover } from '#components'
 import { getQuery, readBody } from 'h3'
 import { defineComponent, h } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -213,12 +213,39 @@ describe('AgentComposer', () => {
     }))
   })
 
+  /**
+   * The delivery mode hangs off the send button rather than sitting in the
+   * settings panel: it is a property of the message, not of the session. With
+   * nothing running all three modes mean the same thing, so there is nothing
+   * to choose and no control to choose it with.
+   */
   it('offers the choice only while there is a turn to choose about', async () => {
     const idle = await mountSuspended(Harness, { props: { session: session('idle') } })
-    expect(idle.text()).not.toContain('Steer')
+    expect(idle.find('button[aria-label^="Delivery:"]').exists()).toBe(false)
 
     const busy = await mountSuspended(Harness, { props: { session: session('thinking') } })
-    expect(busy.text()).toContain('Steer')
+    expect(busy.find('button[aria-label="Delivery: Steer"]').exists()).toBe(true)
+  })
+
+  it('sends with the delivery mode chosen on the send button', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('thinking') } })
+
+    // Reka does not open a menu on a click happy-dom can synthesise, so this
+    // takes the items the dropdown was actually handed and invokes the one the
+    // user would have clicked. What that covers is the wiring from the item to
+    // the body the prompt endpoint receives; that Reka renders a menu is Reka's.
+    const menu: any = component.findComponent(UDropdownMenu)
+    const items = menu.props('items') as any[][]
+    const queue = items[0]?.find(item => item.label === 'Queue')
+    expect(queue.checked).toBe(false)
+    queue.onUpdateChecked(true)
+
+    await type(component, 'when you get a moment')
+
+    await vi.waitFor(() => expect(sent).toHaveBeenCalledWith({
+      content: [{ type: 'text', text: 'when you get a moment' }],
+      delivery: 'queue'
+    }))
   })
 })
 

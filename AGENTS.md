@@ -457,6 +457,13 @@ things that are easy to get wrong.
   adapter**. That probe is also *started* by the open rather than finished by
   it, which is why the scroll-the-choice-into-view pass watches the arriving
   model list as well as `open`: at first paint the model column holds one item.
+- **The delivery mode is on the send button, not in that panel.** `steer` /
+  `queue` / `interrupt` is a property of *this message* rather than of the
+  session, so it is a `UDropdownMenu` hanging off the send button in a
+  `UFieldGroup` — the control it modifies. It appears only while a turn is
+  running: with nothing running all three mean the same thing (a prompt), so
+  there is nothing to choose, and the placeholder says in words what the chosen
+  one will do.
 - **A setting's value is not always a phrase, and the card's summary line is
   where that shows.** Both adapters publish their fast-mode switch as a
   two-value select (Domo does not advertise the client capability that would
@@ -1589,6 +1596,10 @@ and permissions are end to end because a permission is a row.
   `test/server/acp-stream.spec.ts` covers the server half against a fake
   adapter that publishes an `effort` option (recorded on the row, re-applied
   after a reattach, skipped when the adapter stops offering it).
+  What no component test reaches is the delivery dropdown's *menu*: Reka will
+  not open one under happy-dom, so the test takes the items `UDropdownMenu` was
+  handed and invokes the one a user would have clicked. The menu itself was
+  opened in Chromium instead.
 - **The reasoning-effort payloads were read out of both adapters' shipped
   bundles, not assumed.** `buildEffortConfigOption` in claude-agent-acp's
   `session-effort.js` (id `effort`, and `undefined` when the model has no

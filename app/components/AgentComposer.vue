@@ -18,8 +18,12 @@ const isTouch = useIsTouch()
  * What happens to a message sent while the agent is mid-turn.
  *
  * `steer` is preselected because that is what typing at a working agent
- * normally means; it only matters while something is running, so the picker is
- * hidden the rest of the time.
+ * normally means. It is a property of *this message* rather than of the
+ * session — which is why it is not in the settings panel with the model and
+ * the mode — so it hangs off the send button, the control it modifies. With
+ * nothing running all three mean the same thing (a prompt), so the button has
+ * no dropdown at all until there is a turn to choose about, and the
+ * placeholder says in words what the chosen one will do.
  */
 const DELIVERY_ITEMS = [
   { value: 'steer' as const, label: 'Steer', icon: 'i-lucide-git-branch', description: 'Put it into the turn it is running now' },
@@ -27,6 +31,23 @@ const DELIVERY_ITEMS = [
   { value: 'interrupt' as const, label: 'Interrupt', icon: 'i-lucide-octagon-x', description: 'Stop the current turn first' }
 ]
 const delivery = ref<MessageDelivery>('steer')
+const deliveryInfo = computed(() => DELIVERY_ITEMS.find(item => item.value === delivery.value)!)
+
+/**
+ * One checked item rather than a radio group, because `UDropdownMenu` has no
+ * radio type; unchecking the checked one re-selects it, which is the only
+ * sensible reading of "none of the three".
+ */
+const deliveryItems = computed(() => [
+  DELIVERY_ITEMS.map(item => ({
+    label: item.label,
+    description: item.description,
+    icon: item.icon,
+    type: 'checkbox' as const,
+    checked: item.value === delivery.value,
+    onUpdateChecked: () => { delivery.value = item.value }
+  }))
+])
 const attachments = ref<Array<{ name: string, path: string, mimeType: string, size: number }>>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 
@@ -254,18 +275,9 @@ async function stop() {
             -->
             <AgentComposerSettings :session="session" />
 
-            <span v-if="!busy" class="hidden text-xs text-dimmed lg:inline">
+            <span class="hidden min-w-0 truncate text-xs text-dimmed lg:inline">
               {{ shortPath(session.cwd, 3) }}
             </span>
-            <USelectMenu
-              v-else
-              v-model="delivery"
-              :items="DELIVERY_ITEMS"
-              value-key="value"
-              size="xs"
-              variant="ghost"
-              class="w-32"
-            />
           </div>
 
           <div class="flex items-center gap-1">
@@ -274,19 +286,33 @@ async function stop() {
               nothing else, so on a touch screen — where Enter deliberately
               types a line break — there was no way to send at all. Steering a
               running turn is the normal thing to do here, so it gets its own
-              button rather than a rule about which key to press.
+              button rather than a rule about which key to press — and the
+              delivery mode hangs off that button as a split control, because
+              it is a choice about the message this button is about to send.
             -->
-            <UTooltip v-if="busy" text="Send">
-              <UButton
-                icon="i-lucide-arrow-up"
-                color="neutral"
-                size="md"
-                aria-label="Send"
-                :loading="sending"
-                :disabled="!canSend"
-                @click="submit"
-              />
-            </UTooltip>
+            <UFieldGroup v-if="busy">
+              <UTooltip :text="`Send — ${deliveryInfo.description.toLowerCase()}`">
+                <UButton
+                  icon="i-lucide-arrow-up"
+                  color="neutral"
+                  size="md"
+                  aria-label="Send"
+                  :loading="sending"
+                  :disabled="!canSend"
+                  @click="submit"
+                />
+              </UTooltip>
+              <UDropdownMenu :items="deliveryItems" :content="{ side: 'top', align: 'end' }">
+                <UTooltip text="What happens to this message mid-turn">
+                  <UButton
+                    icon="i-lucide-chevron-up"
+                    color="neutral"
+                    size="md"
+                    :aria-label="`Delivery: ${deliveryInfo.label}`"
+                  />
+                </UTooltip>
+              </UDropdownMenu>
+            </UFieldGroup>
             <UChatPromptSubmit
               :status="status"
               :loading="sending"
