@@ -9,7 +9,7 @@ import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-dig
 import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
 import { importBranchIntoEnvironment } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
-import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
+import { cleanupEnvironment, createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import {
@@ -78,8 +78,8 @@ async function resolveProject(identifier: string) {
 }
 
 /** Pick the development environment the user means from an id or a spoken name. */
-async function resolveEnvironment(identifier: string) {
-  const environments = await listDevEnvironments()
+async function resolveEnvironment(identifier: string, includeRetired = false) {
+  const environments = await listDevEnvironments(undefined, includeRetired)
   const direct = environments.find(e => e.id === identifier)
   if (direct) return direct
   const byName = environments.find(e => e.name.toLowerCase() === identifier.toLowerCase())
@@ -559,6 +559,29 @@ export const voiceTools: Record<string, VoiceTool> = {
         // Empty unless Docker refused something. Worth telling the user about:
         // it is disk space nothing will ever use, and Domo will keep retrying.
         leftovers: retirement.leftovers
+      }
+    }
+  },
+
+  retry_environment_cleanup: {
+    declaration: {
+      name: 'retry_environment_cleanup',
+      description:
+        'Try again to remove the Docker resources a retirement could not. Domo never retries on its own: a refused removal names the container that is in the way, and this is what to call once the user has removed it. Works on a retired environment, which is the usual case.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: { environment: { type: Type.STRING, description: 'Environment id or name. Retired ones count.' } },
+        required: ['environment']
+      }
+    },
+    handler: async (args) => {
+      // Retired ones are the point of this tool, and they are off the live list.
+      const environment = await resolveEnvironment(args.environment, true)
+      const report = await cleanupEnvironment(environment.id)
+      return {
+        id: environment.id,
+        removed: report.removed.map(leftover => `${leftover.kind} ${leftover.name}`),
+        leftovers: report.leftovers.map(({ kind, name, error }) => ({ resource: `${kind} ${name}`, error }))
       }
     }
   },

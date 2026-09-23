@@ -12,19 +12,19 @@ import {
  * Reconcile what Docker has against what the rows say should be left.
  *
  * A cleanup step can fail for reasons that have nothing to do with the
- * environment and everything to do with the minute it ran in: a volume another
- * container still has mounted, a daemon under load, a full disk. Before this,
- * every one of those failures was swallowed by an `allowFailure` and a
- * `.catch(() => {})`, retirement reported success, and **nothing ever looked
- * again** — measured, once, as a full checkout left on disk referenced by
- * nothing.
+ * environment: a container something else left mounting the volume, a container
+ * somebody ran from the image by hand. Before this, every one of those failures
+ * was swallowed by an `allowFailure` and a `.catch(() => {})`, retirement
+ * reported success, and **nothing ever looked again** — measured, once, as a
+ * full checkout left on disk referenced by nothing.
  *
- * What makes it fixable rather than merely retryable is that a retired
- * environment **keeps its row**, and every name it owns is derived from its id.
- * So the rows are an authoritative list of what should no longer exist, the
- * leftovers of a failed cleanup are findable by name however much later, and a
- * retry is not a race against a window but a lookup. `leftovers.ts` holds the
- * attribution rule that keeps that safe.
+ * What makes it fixable is that a retired environment **keeps its row**, and
+ * every name it owns is derived from its id. So the rows are an authoritative
+ * list of what should no longer exist, and the leftovers of a failed cleanup
+ * are findable by name however much later — a lookup rather than a race against
+ * a window, which is what lets the retry be somebody's deliberate second go
+ * instead of a timer. `leftovers.ts` holds the attribution rule that keeps that
+ * safe.
  *
  * The row is also the record: whatever is still there after a pass is written
  * to `dev_environments.leftovers`, which is what stops `pruneRetiredRecords`
@@ -46,10 +46,6 @@ export interface CleanupReport {
 }
 
 const EMPTY: CleanupReport = { removed: [], leftovers: [], unattributed: [] }
-
-/** How long the janitor waits before looking again while anything is still owed. */
-const RETRY_MIN_MS = 60_000
-const RETRY_MAX_MS = 30 * 60_000
 
 function describe(leftover: Leftover): string {
   return `${leftover.kind} ${leftover.name}`
@@ -97,103 +93,74 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
 }
 
 /**
- * The reconciliation, and when it runs.
+ * The reconciliation, and when it runs: **after every retirement, once at
+ * boot, and whenever somebody asks for it again.** No timer, deliberately.
  *
- * Three moments, and each covers a gap the others cannot. **After every
- * retirement**, because that is when leftovers are made and when the rows to
- * compare against are freshest. **At boot**, because a retirement that failed
- * is otherwise waiting on the next one, and a Domo that is restarted is a Domo
- * whose host has very likely just changed. And **on a retry while anything is
- * still owed**, because the reason a removal fails is usually temporary and
- * outlives neither the hour nor the process: the volume that was left behind
- * was free again an hour later, with nothing running that would look.
+ * An escalating retry was the obvious answer and it is the wrong one. What
+ * survives one honest attempt is not transient — a container another tool left
+ * mounting the volume, an image somebody built a container from, an image that
+ * has become the base for another image — and none of those clear on their own.
+ * Retrying quietly for hours would hide, for hours, a problem a person or an
+ * agent could fix in seconds if only they were told what it was. So a refusal
+ * is a **failure with a name in it** (`explainRefusal`), reported on every
+ * surface that can retire something, and the retry is theirs to run once they
+ * have removed whatever was in the way.
  *
- * The retry is armed by state, not by a clock — with nothing owed there is no
- * timer at all, so an install that never retires anything never sweeps and
- * never asks Docker anything.
+ * The boot pass stays, because it is the one moment where the blocker has very
+ * likely gone by itself: the machine restarted, and whatever held the volume is
+ * not running any more. It costs nothing on an install with nothing owed —
+ * `reconcileEnvironmentResources` returns before asking Docker anything.
  */
-class EnvironmentJanitor {
-  private timer: NodeJS.Timeout | null = null
-  private delay = RETRY_MIN_MS
-  private chain: Promise<unknown> = Promise.resolve()
-  private lastUnreachable: string | null = null
-  private lastUnattributed: string | null = null
 
-  start(): void {
-    void this.sweep()
-  }
+let chain: Promise<unknown> = Promise.resolve()
+let lastUnreachable: string | null = null
+let lastUnattributed: string | null = null
 
-  stop(): void {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
-    this.delay = RETRY_MIN_MS
-  }
-
-  /**
-   * A pass, queued behind whatever is already running rather than joined to it.
-   *
-   * Joining would be cheaper and would answer the wrong question: a retirement
-   * that lands while a timer's pass is halfway through would get that pass's
-   * report, which was planned from rows read before this environment was
-   * retired, and would call a cleanup nobody has checked yet a success.
-   */
-  async sweep(): Promise<CleanupReport> {
-    const next = this.chain.then(() => this.pass(), () => this.pass())
-    this.chain = next.catch(() => {})
-    return next
-  }
-
-  private async pass(): Promise<CleanupReport> {
-    let report: CleanupReport
-    try {
-      report = await reconcileEnvironmentResources()
-    } catch (error) {
-      report = { ...EMPTY, unreachable: error instanceof Error ? error.message : String(error) }
-    }
-    if (report.unreachable) {
-      // Once per stretch of failure: a machine with no daemon would otherwise
-      // say the same thing every half hour for ever.
-      if (this.lastUnreachable !== report.unreachable) {
-        console.warn(`[dev-env] could not check for leftover Docker resources: ${report.unreachable}`)
-        this.lastUnreachable = report.unreachable
-      }
-    } else {
-      this.lastUnreachable = null
-      for (const removed of report.removed) {
-        console.warn(`[dev-env] removed leftover ${describe(removed)} from retired environment ${removed.environmentId}`)
-      }
-      if (report.unattributed.length && this.lastUnattributed !== report.unattributed.join(',')) {
-        this.lastUnattributed = report.unattributed.join(',')
-        console.warn(
-          `[dev-env] ${report.unattributed.join(', ')} look like Domo's and belong to no environment record. `
-          + 'Left alone: nothing here can tell them from another install\'s. Remove them by hand if they are yours.'
-        )
-      }
-      for (const left of report.leftovers) {
-        console.warn(
-          `[dev-env] leftover ${describe(left)} from environment ${left.environmentId} could not be removed `
-          + `and will be retried: ${left.error}`
-        )
-      }
-    }
-    this.rearm(Boolean(report.unreachable) || report.leftovers.length > 0)
-    return report
-  }
-
-  private rearm(pending: boolean): void {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
-    if (!pending) {
-      this.delay = RETRY_MIN_MS
-      return
-    }
-    this.timer = setTimeout(() => {
-      this.timer = null
-      void this.sweep()
-    }, this.delay)
-    this.timer.unref?.()
-    this.delay = Math.min(this.delay * 2, RETRY_MAX_MS)
-  }
+/**
+ * A pass, queued behind whatever is already running rather than joined to it.
+ *
+ * Joining would be cheaper and would answer the wrong question: a retirement
+ * that lands while another pass is halfway through would get that pass's
+ * report, which was planned from rows read before this environment was
+ * retired, and would call a cleanup nobody has checked yet a success.
+ */
+export async function sweepEnvironmentResources(): Promise<CleanupReport> {
+  const next = chain.then(() => pass(), () => pass())
+  chain = next.catch(() => {})
+  return next
 }
 
-export const environmentJanitor = new EnvironmentJanitor()
+async function pass(): Promise<CleanupReport> {
+  let report: CleanupReport
+  try {
+    report = await reconcileEnvironmentResources()
+  } catch (error) {
+    report = { ...EMPTY, unreachable: error instanceof Error ? error.message : String(error) }
+  }
+  if (report.unreachable) {
+    // Once per stretch of failure: a machine with no daemon would otherwise say
+    // the same thing on every retirement for ever.
+    if (lastUnreachable !== report.unreachable) {
+      console.warn(`[dev-env] could not check for leftover Docker resources: ${report.unreachable}`)
+      lastUnreachable = report.unreachable
+    }
+    return report
+  }
+  lastUnreachable = null
+  for (const removed of report.removed) {
+    console.warn(`[dev-env] removed leftover ${describe(removed)} from retired environment ${removed.environmentId}`)
+  }
+  if (report.unattributed.length && lastUnattributed !== report.unattributed.join(',')) {
+    lastUnattributed = report.unattributed.join(',')
+    console.warn(
+      `[dev-env] ${report.unattributed.join(', ')} look like Domo's and belong to no environment record. `
+      + 'Left alone: nothing here can tell them from another install\'s. Remove them by hand if they are yours.'
+    )
+  }
+  for (const left of report.leftovers) {
+    console.warn(
+      `[dev-env] leftover ${describe(left)} from environment ${left.environmentId} was not removed. ${left.error}`
+    )
+  }
+  return report
+}

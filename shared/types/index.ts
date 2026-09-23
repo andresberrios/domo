@@ -229,12 +229,16 @@ export interface DevEnvironment {
   /**
    * The Docker resources a cleanup could not remove, and why.
    *
-   * Empty is the normal state and the only one that means "done". A volume
-   * another container still had mounted, a daemon under load, a full disk — any
-   * of those leaves gigabytes behind, and this is what stops that being
-   * invisible: it is what a retirement reports instead of claiming success,
-   * what the janitor retries against, and what keeps `pruneRetiredRecords` from
-   * dropping the row that is the only way back to the leftover.
+   * Empty is the normal state and the only one that means "done". A container
+   * another tool left mounting the volume, a container somebody ran from the
+   * image — any of those leaves gigabytes behind, and this is what stops that
+   * being invisible: it is what a retirement reports instead of claiming
+   * success, and what keeps `pruneRetiredRecords` from dropping the row that is
+   * the only way back to the leftover.
+   *
+   * `error` is written to be acted on rather than merely read: it names the
+   * container in the way and the command that removes it, because nothing
+   * retries this in the background.
    */
   leftovers: EnvironmentLeftover[]
 }

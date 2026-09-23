@@ -208,7 +208,10 @@ describe('projects', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ branch: 'main' })
-      })
+      }),
+      // The retry for a cleanup Docker refused. Nothing retries on a timer, so
+      // this route is the whole of the second attempt on the HTTP surface.
+      fetch('/api/dev-environments/env_nope/cleanup', { method: 'POST' })
     ]) {
       const response = await request
       expect(response.status).toBe(500)

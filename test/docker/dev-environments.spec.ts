@@ -77,10 +77,9 @@ vi.mock('../../server/lib/repo', () => repo)
 // only thing here that reads them.
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
 
-const { environmentJanitor, reconcileEnvironmentResources } = await import(
-  '../../server/lib/dev-env/reconcile'
-)
+const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
 const {
+  cleanupEnvironment,
   containerExecArgs,
   createEnvironment,
   readEnvironmentFile,
@@ -315,10 +314,12 @@ describe('a cleanup that Docker refuses', () => {
     images: string[]
     /** Names this daemon will not let go of, whatever it is asked. */
     refuses: string[]
+    /** What `ps --filter volume=…` / `--filter ancestor=…` answers: who is in the way. */
+    holders: Record<string, string[]>
   }
 
   function daemon(state: Partial<FakeDaemon> = {}): FakeDaemon {
-    const fake: FakeDaemon = { containers: [], volumes: [], images: [], refuses: [], ...state }
+    const fake: FakeDaemon = { containers: [], volumes: [], images: [], refuses: [], holders: {}, ...state }
     const answer = (values: string[]) => ({ stdout: values.join('\n'), stderr: '' })
     const remove = (from: 'containers' | 'volumes' | 'images', name: string, allowFailure?: boolean) => {
       if (fake.refuses.includes(name)) {
@@ -331,7 +332,13 @@ describe('a cleanup that Docker refuses', () => {
     run.mockImplementation(async (_program: string, args: string[], options?: any) => {
       const filter = args.includes('--filter') ? String(args[args.indexOf('--filter') + 1]) : ''
       const prefix = filter.replace(/^name=\^/, '')
-      if (args[0] === 'ps') return answer(fake.containers.filter(name => name.startsWith(prefix)))
+      if (args[0] === 'ps') {
+        const [key, value] = filter.split('=')
+        // The blocker lookup, which is what turns "volume is in use" into a
+        // sentence naming what to remove.
+        if (key === 'volume' || key === 'ancestor') return answer(fake.holders[value!] ?? [])
+        return answer(fake.containers.filter(name => name.startsWith(prefix)))
+      }
       if (args[0] === 'rm') return remove('containers', args[3]!, options?.allowFailure)
       if (args[0] === 'volume' && args[1] === 'ls') {
         return answer(fake.volumes.filter(name => name.startsWith(prefix)))
@@ -355,19 +362,26 @@ describe('a cleanup that Docker refuses', () => {
     })
   })
 
-  afterEach(() => {
-    environmentJanitor.stop()
-  })
-
-  it('reports the volume it could not remove instead of a clean retirement', async () => {
-    const fake = daemon({ volumes: ['domo-dev-env_1-workspace'], refuses: ['domo-dev-env_1-workspace'] })
+  it('reports the volume it could not remove, naming what is holding it', async () => {
+    const fake = daemon({
+      volumes: ['domo-dev-env_1-workspace'],
+      refuses: ['domo-dev-env_1-workspace'],
+      holders: { 'domo-dev-env_1-workspace': ['tidy-runner'] }
+    })
     repo.getDevEnvironment.mockResolvedValue(environment())
     repo.listDevEnvironments.mockResolvedValue([RETIRED])
 
     const report = await retireEnvironment('env_1')
 
+    // Nothing retries this in the background, so the message is the whole of
+    // what the reader gets: the container in the way, and the command for it.
     expect(report.leftovers).toEqual([
-      expect.objectContaining({ kind: 'volume', name: 'domo-dev-env_1-workspace' })
+      expect.objectContaining({
+        kind: 'volume',
+        name: 'domo-dev-env_1-workspace',
+        error: 'Container tidy-runner still has it mounted. '
+          + 'Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+      })
     ])
     // And it is written down, so the row is still the way back to it however
     // much later — and `pruneRetiredRecords` will not drop that row.
@@ -377,19 +391,51 @@ describe('a cleanup that Docker refuses', () => {
     expect(fake.volumes).toEqual(['domo-dev-env_1-workspace'])
   })
 
-  it('removes it on the next sweep, once whatever was holding it has gone', async () => {
-    // The measured case: the container that had it mounted went away an hour
-    // later, and nothing looked. Now something does.
+  it('never retries on its own, however long nobody asks', async () => {
+    daemon({
+      volumes: ['domo-dev-env_1-workspace'],
+      refuses: ['domo-dev-env_1-workspace'],
+      holders: { 'domo-dev-env_1-workspace': ['tidy-runner'] }
+    })
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    repo.listDevEnvironments.mockResolvedValue([RETIRED])
+    vi.useFakeTimers()
+    try {
+      await retireEnvironment('env_1')
+      const afterRetirement = dockerCalls().length
+
+      await vi.advanceTimersByTimeAsync(45 * 60_000)
+
+      // A timer here would hide, for as long as it kept going, a problem that
+      // one person removing one container would fix in seconds.
+      expect(dockerCalls().length).toBe(afterRetirement)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('removes it when the cleanup is asked for again, once the holder has gone', async () => {
+    // The retry: whoever read the message removed the container it named, and
+    // asked again. Same sweep, same attribution rule, nothing automatic.
     const fake = daemon({ volumes: ['domo-dev-env_1-workspace'] })
+    repo.getDevEnvironment.mockResolvedValue(RETIRED)
     repo.listDevEnvironments.mockResolvedValue([RETIRED])
 
-    const report = await reconcileEnvironmentResources()
+    const report = await cleanupEnvironment('env_1')
 
     expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
     expect(fake.volumes).toEqual([])
+    expect(report.removed.map(leftover => leftover.name)).toEqual(['domo-dev-env_1-workspace'])
     expect(report.leftovers).toEqual([])
     // Cleared, which is what lets the row be pruned again.
     expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith('env_1', [])
+  })
+
+  it('refuses a cleanup for an environment that is not there', async () => {
+    daemon()
+    repo.getDevEnvironment.mockResolvedValue(null)
+
+    await expect(cleanupEnvironment('env_gone')).rejects.toThrow(/not found/)
   })
 
   it('never touches a live environment, whatever else it finds', async () => {

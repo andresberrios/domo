@@ -74,13 +74,13 @@ async function retireEnvironment() {
   try {
     const result = await $fetch(`/api/dev-environments/${environmentId.value}`, { method: 'DELETE' })
     // Normally empty. When it is not, Docker refused to remove something and
-    // that is gigabytes still on the disk — said out loud rather than swallowed,
-    // even though Domo keeps retrying it on its own.
+    // that is gigabytes still on the disk. Nothing retries it in the background,
+    // so the reason — which names what is in the way — has to be said here and
+    // stay on the page.
     toast.add(result.leftovers.length
       ? {
-          title: 'Environment retired, with leftovers',
-          description: `Docker would not remove ${result.leftovers.map(left => left.name).join(', ')}. `
-            + 'Domo will keep trying.',
+          title: 'Environment retired, but not everything could be removed',
+          description: result.leftovers[0]!.error,
           color: 'warning'
         }
       : { title: 'Environment retired', description: 'Its records stay readable.', color: 'neutral' })
@@ -89,6 +89,30 @@ async function retireEnvironment() {
     await router.push(project.value ? `/projects/${project.value.id}` : '/')
   } catch (error: any) {
     toast.add({ title: 'Could not retire the environment', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  } finally {
+    busy.value = false
+  }
+}
+
+/**
+ * Ask again, once whatever the error named has been dealt with.
+ *
+ * There is no timer behind this on the server: a refused removal is refused for
+ * a reason that does not clear on its own, so the button is the retry.
+ */
+async function retryCleanup() {
+  busy.value = true
+  try {
+    const result = await $fetch(`/api/dev-environments/${environmentId.value}/cleanup`, { method: 'POST' })
+    toast.add(result.leftovers.length
+      ? { title: 'Still blocked', description: result.leftovers[0]!.error, color: 'warning' }
+      : {
+          title: 'Cleaned up',
+          description: 'Nothing of this environment is left on the machine.',
+          color: 'success'
+        })
+  } catch (error: any) {
+    toast.add({ title: 'Could not run the cleanup', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     busy.value = false
   }
@@ -171,7 +195,14 @@ const importOpen = ref(false)
           variant="subtle"
           icon="i-lucide-hard-drive"
           title="Not everything could be removed"
-          :description="`Docker still has ${leftoverNames}: ${leftovers[0]?.error} Domo retries on its own, and keeps this record until they are gone.`"
+          :description="`Docker still has ${leftoverNames}. ${leftovers[0]?.error} This record is kept until it is gone.`"
+          :actions="[{
+            label: 'Try again',
+            color: 'warning',
+            variant: 'outline',
+            loading: busy,
+            onClick: retryCleanup
+          }]"
         />
 
         <UAlert
