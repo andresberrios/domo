@@ -448,13 +448,43 @@ async function toolConfigDir(variable: string, fallbackName: string): Promise<st
   return access(configured).then(() => configured).catch(() => null)
 }
 
+/**
+ * Record that an environment needs somebody, and hand back the error to throw.
+ *
+ * `error` is the one state that means "this is broken and you have to do
+ * something", and until now only a failed creation ever reached it — a
+ * container that had been removed underneath Domo, or one the daemon refuses to
+ * start, threw at the caller and left the row saying `stopped`, which is what a
+ * perfectly healthy environment says. Both of those are permanent until a
+ * person acts, which is exactly the bar for writing it.
+ *
+ * Deliberately not written for a failed `stop`: the container is still running,
+ * nothing is lost, and the next attempt is a button away.
+ */
+async function breakEnvironment(id: string, reason: string): Promise<Error> {
+  await updateDevEnvironment(id, { status: 'error', lastError: reason })
+  return new Error(reason)
+}
+
 export async function startEnvironment(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
-  if (!inspection) throw new Error('The environment container no longer exists. Delete and recreate the environment.')
-  if (!inspection.running) await run('docker', ['start', inspection.id])
+  if (!inspection) {
+    throw await breakEnvironment(id, 'The environment container no longer exists. Delete and recreate the environment.')
+  }
+  if (!inspection.running) {
+    await run('docker', ['start', inspection.id]).catch(async (error) => {
+      throw await breakEnvironment(
+        id,
+        `The environment container would not start: ${error instanceof Error ? error.message : String(error)}`
+      )
+    })
+  }
+  // A start that worked clears the field, for the reason the agent sessions
+  // clear theirs: `last_error` is history and `status` is state, and a banner
+  // keyed on the history outlives what it described.
   const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
   await refreshEnvironmentPorts(id)
   return updated

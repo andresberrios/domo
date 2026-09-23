@@ -1,6 +1,7 @@
-import type { EnvironmentLeftover } from '../../../shared/types'
+import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover } from '../../../shared/types'
 import { listDevEnvironments, pruneRetiredRecords, setEnvironmentLeftovers } from '../repo'
 import {
+  describeLeftovers,
   observeEnvironmentResources,
   planLeftoverRemoval,
   removeLeftovers,
@@ -85,11 +86,40 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
     remaining.set(failure.environmentId, list)
   }
   for (const environment of claimants) {
-    await setEnvironmentLeftovers(environment.id, remaining.get(environment.id) ?? [])
+    const owed = remaining.get(environment.id) ?? []
+    await setEnvironmentLeftovers(environment.id, owed, health(environment, owed))
   }
   // A row that was only being kept because it still owed something can go now.
   if (outcome.removed.length) await pruneRetiredRecords()
   return { removed: outcome.removed, leftovers: outcome.failed, unattributed }
+}
+
+/**
+ * What a half-cleaned environment reports as its health.
+ *
+ * A retirement that leaves gigabytes behind is not a quiet field on a row: it
+ * is something wrong that needs a person, so it reads as `error` with the
+ * blocker named in `last_error` — the same generic state a failed creation
+ * uses, and the one an environment's banner keys on. A successful cleanup puts
+ * it back to `stopped`, which is what a retired environment normally is.
+ *
+ * `status` is health and `retired_at` is lifecycle, and they are independent:
+ * retiring cannot wait for Docker to agree (the container has to go first, or
+ * the volume can never be removed at all, and by then the sessions can never
+ * run again) so the row is retired and *then* found to owe something.
+ *
+ * Null for a row that is not retired: the wreckage of a failed creation is a
+ * detail of that failure, and the creation's own message is the one worth
+ * keeping on screen.
+ */
+function health(
+  environment: DevEnvironment,
+  owed: EnvironmentLeftover[]
+): { status: DevEnvironmentStatus, lastError: string | null } | null {
+  if (!environment.retiredAt) return null
+  return owed.length
+    ? { status: 'error', lastError: describeLeftovers(owed) }
+    : { status: 'stopped', lastError: null }
 }
 
 /**

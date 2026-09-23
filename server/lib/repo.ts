@@ -15,6 +15,7 @@ import type {
   CronRun,
   DevEnvironment,
   DevEnvironmentPort,
+  DevEnvironmentStatus,
   EnvironmentLeftover,
   McpServer,
   MessageDelivery,
@@ -505,12 +506,30 @@ export async function retireDevEnvironmentRow(id: string): Promise<DevEnvironmen
  */
 export async function setEnvironmentLeftovers(
   id: string,
-  leftovers: EnvironmentLeftover[]
+  leftovers: EnvironmentLeftover[],
+  /**
+   * What the row should now report about its health, or null to leave `status`
+   * and `last_error` exactly as they are — which is what a row that is broken
+   * for a better reason than this needs (a creation that failed halfway already
+   * says why, and its wreckage is a detail of that).
+   */
+  health: { status: DevEnvironmentStatus, lastError: string | null } | null = null
 ): Promise<DevEnvironment | null> {
+  const sets = ['leftovers = $2::jsonb', 'updated_at = $3']
+  const changed = ['leftovers::text is distinct from $2::jsonb::text']
+  const params: any[] = [id, JSON.stringify(leftovers), nowIso()]
+  if (health) {
+    params.push(health.status)
+    sets.push(`status = $${params.length}`)
+    changed.push(`status is distinct from $${params.length}`)
+    params.push(health.lastError)
+    sets.push(`last_error = $${params.length}::text`)
+    changed.push(`last_error is distinct from $${params.length}::text`)
+  }
   const row = await queryOne(
-    `update dev_environments set leftovers = $2::jsonb, updated_at = $3
-      where id = $1 and leftovers::text is distinct from $2::jsonb::text returning *`,
-    [id, JSON.stringify(leftovers), nowIso()]
+    `update dev_environments set ${sets.join(', ')}
+      where id = $1 and (${changed.join(' or ')}) returning *`,
+    params
   )
   if (!row) return null
   bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })

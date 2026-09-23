@@ -71,10 +71,14 @@ vi.mock('../../server/lib/repo', () => ({
   listDevEnvironments: async (projectId?: string, includeRetired = false) =>
     [...state.rows.values()].filter(row =>
       (!projectId || row.projectId === projectId) && (includeRetired || !row.retiredAt)),
-  setEnvironmentLeftovers: async (id: string, leftovers: any[]) => {
+  setEnvironmentLeftovers: async (id: string, leftovers: any[], health: any = null) => {
     const row = state.rows.get(id)
-    if (row) row.leftovers = leftovers
-    return row ?? null
+    if (!row) return null
+    row.leftovers = leftovers
+    // The real column writes health in the same statement: a retirement that
+    // owes Docker something reads as broken, and a cleanup that worked does not.
+    if (health) Object.assign(row, { status: health.status, lastError: health.lastError })
+    return row
   },
   pruneRetiredRecords: async () => ({ environments: 0, projects: 0 }),
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
@@ -892,6 +896,12 @@ describe('a retirement whose volume removal is refused', () => {
       expect(state.rows.get(id).leftovers).toEqual([
         expect.objectContaining({ kind: 'volume', name: volume })
       ])
+      // And it reads as broken rather than as a quiet field: `error` is the
+      // state anything showing this environment keys on.
+      expect(state.rows.get(id)).toMatchObject({
+        status: 'error',
+        lastError: expect.stringContaining(`docker rm -f ${holder}`)
+      })
     } finally {
       await run('docker', ['rm', '--force', '--volumes', holder], { allowFailure: true })
     }
@@ -901,7 +911,7 @@ describe('a retirement whose volume removal is refused', () => {
 
     expect(swept.removed.map(leftover => leftover.name)).toContain(volume)
     expect(await exists()).toBe('')
-    expect(state.rows.get(id).leftovers).toEqual([])
+    expect(state.rows.get(id)).toMatchObject({ leftovers: [], status: 'stopped', lastError: null })
   }, 5 * 60 * 1000)
 
   it('names the container an image was made from, which is the other refusal', async () => {

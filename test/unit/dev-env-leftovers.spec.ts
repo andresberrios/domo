@@ -4,6 +4,7 @@ import type { DevEnvironment, EnvironmentLeftover } from '~~/shared/types'
 import {
   blockerArgs,
   claimedResources,
+  describeLeftovers,
   environmentResources,
   explainRefusal,
   planLeftoverRemoval,
@@ -223,6 +224,30 @@ describe('why Docker refused', () => {
       error: 'docker volume failed: Error response from daemon: no such volume',
       blockers: []
     })).toBe('Docker refused: no such volume')
+  })
+})
+
+describe('what the row says is wrong', () => {
+  it('keeps the container name and the command, because that is the whole value', () => {
+    expect(describeLeftovers([{
+      kind: 'volume',
+      name: 'domo-dev-env_1-workspace',
+      error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+    }])).toBe(
+      'Docker still has volume domo-dev-env_1-workspace. '
+      + 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+    )
+  })
+
+  it('folds several into one line rather than counting them', () => {
+    // `last_error` is one column and the page renders it as the reason; a count
+    // would throw away the only part anybody can act on.
+    expect(describeLeftovers([
+      { kind: 'volume', name: 'vol', error: 'Remove one.' },
+      { kind: 'image', name: 'img', error: 'Remove two.' }
+    ])).toBe(
+      'Docker still has 2 of this environment\'s resources. volume vol: Remove one. image img: Remove two.'
+    )
   })
 })
 

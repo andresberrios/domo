@@ -434,6 +434,26 @@ things that are easy to get wrong.
   boot, and whenever somebody asks** — the boot pass is kept because it is the
   one moment the blocker has most likely gone by itself, and it asks Docker
   nothing at all on an install that has never made an environment.
+- **`status` is an environment's health and `retired_at` is its lifecycle, and
+  they are independent.** A retired environment is normally `stopped`, and
+  `error` **only if it still owes Docker something** — the leftovers go in
+  `last_error` too, because a half-cleaned environment is not a quiet field on a
+  row, it is something wrong that needs a person. Retirement cannot wait for
+  Docker to agree before setting `retired_at`, which is the obvious alternative
+  and does not work: the container has to be removed *first* or the volume can
+  never be removed at all, and by then the sessions can never run again, so
+  "not retired yet" would have `sessionStartability` calling them startable —
+  and `retired_at` is also what makes the row *claim* the four derived names, so
+  setting it late would leave the failed cleanup's leftover unattributable,
+  which is the exact orphan this exists to prevent. `error` is the one generic
+  state that means "you have to do something", so it is also written by a failed
+  creation, by a container that has been removed underneath Domo, and by one the
+  daemon will not start; not by a failed `stop`, where nothing is lost and the
+  next attempt is a button away. **Anything rendering it keys on `status ===
+  'error'`, never on `lastError`** — the same rule, and the same measured
+  reason, as `AgentErrorBanner.vue`: `last_error` is history and a banner keyed
+  on the history outlives what it described. A successful start or cleanup
+  clears both.
 - **Whether a session can start is derived, and the guard cannot live in one
   place.** A session has one stored visibility state, `archived`; whether it can
   *run* is a question about the place it ran — is its environment retired, is
@@ -1559,7 +1579,8 @@ and permissions are end to end because a permission is a row.
   — and putting `allowFailure` back on the removal fails that test, so it bites.
   Both refusals are measured rather than assumed: a volume another container
   mounts, and an image a container was made from, each reported with the
-  holder's name in the sentence. One thing that looks like a test and is not:
+  holder's name in the sentence and leaving the row `error` until a retry
+  clears it. One thing that looks like a test and is not:
   `docker image rm` on an image that still carries a **second tag** only removes
   the tag and *succeeds*, container or no container, so the image case has to
   build a singly-tagged image to be refused at all.

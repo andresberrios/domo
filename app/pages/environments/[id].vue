@@ -22,7 +22,22 @@ const retired = computed(() => !!environment.value?.retiredAt)
  * truth, and gigabytes are the difference.
  */
 const leftovers = computed(() => environment.value?.leftovers ?? [])
-const leftoverNames = computed(() => leftovers.value.map(left => `${left.kind} ${left.name}`).join(', '))
+/**
+ * Keyed on the **status**, never on `lastError`.
+ *
+ * The same rule as `AgentErrorBanner`, and for the same measured reason: a
+ * banner keyed on the field outlives what it described, because `last_error` is
+ * history and `status` is state. What the field is for is saying *what* is
+ * wrong once the state says something is.
+ */
+const broken = computed(() => environment.value?.status === 'error')
+const brokenTitle = computed(() => (
+  leftovers.value.length ? 'Not everything could be removed' : 'This environment needs attention'
+))
+/** Only a cleanup can be retried from here; every other failure needs its own action. */
+const brokenActions = computed(() => (leftovers.value.length
+  ? [{ label: 'Try again', color: 'error' as const, variant: 'outline' as const, loading: busy.value, onClick: retryCleanup }]
+  : undefined))
 const agents = computed(() => agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId.value))
 /** Every session that ran here, archived ones included: this page is their record. */
 const pastAgents = computed(() =>
@@ -190,28 +205,13 @@ const importOpen = ref(false)
         />
 
         <UAlert
-          v-if="leftovers.length"
-          color="warning"
-          variant="subtle"
-          icon="i-lucide-hard-drive"
-          title="Not everything could be removed"
-          :description="`Docker still has ${leftoverNames}. ${leftovers[0]?.error} This record is kept until it is gone.`"
-          :actions="[{
-            label: 'Try again',
-            color: 'warning',
-            variant: 'outline',
-            loading: busy,
-            onClick: retryCleanup
-          }]"
-        />
-
-        <UAlert
-          v-if="environment.lastError && !retired"
+          v-if="broken"
           color="error"
           variant="subtle"
           icon="i-lucide-triangle-alert"
-          title="The last operation failed"
-          :description="environment.lastError"
+          :title="brokenTitle"
+          :description="environment.lastError ?? 'Something about this environment needs looking at.'"
+          :actions="brokenActions"
         />
 
         <section class="rounded-lg border border-default">
