@@ -10,7 +10,9 @@ if (!isAgentAdapter(adapterId.value)) {
 }
 const adapter = computed(() => agentAdapterInfo(adapterId.value as any))
 
-const { data: settings, refresh: refreshSettings } = await useFetch<AppSettings>('/api/settings')
+const { data: settings, refresh: refreshSettings } = await useFetch<
+  AppSettings & { hasOpenCodeKey: boolean, hasOpenCodeAuth: boolean }
+>('/api/settings')
 const { data: probe, status: probeStatus, error: probeError, refresh: refreshProbe } = await useFetch<{
   models: Array<{ id: string, name: string }>
   current: string | null
@@ -88,6 +90,17 @@ function setConfigValue(option: SessionConfigOptionInfo, value: string) {
     : { ...config.value, [option.id]: value }
 }
 
+/**
+ * The OpenCode console key, which is write-only on purpose.
+ *
+ * `GET /api/settings` never answers it — it answers `hasOpenCodeKey` — so the
+ * box starts empty whether or not one is stored, and an ordinary save must not
+ * read that empty box as "remove it". Only a non-empty value is ever sent, and
+ * removal is its own explicit action.
+ */
+const showKeyField = computed(() => adapterId.value === 'opencode')
+const apiKey = ref('')
+
 const saving = ref(false)
 async function save() {
   if (!settings.value || !isAgentAdapter(adapterId.value)) return
@@ -98,9 +111,11 @@ async function save() {
       body: {
         defaultAgentModes: { ...settings.value.defaultAgentModes, [adapterId.value]: mode.value },
         defaultAgentModels: { ...settings.value.defaultAgentModels, [adapterId.value]: model.value },
-        defaultAgentConfig: { ...settings.value.defaultAgentConfig, [adapterId.value]: config.value }
+        defaultAgentConfig: { ...settings.value.defaultAgentConfig, [adapterId.value]: config.value },
+        ...(showKeyField.value && apiKey.value.trim() ? { openCodeApiKey: apiKey.value.trim() } : {})
       }
     })
+    apiKey.value = ''
     await refreshSettings()
     toast.add({ title: `${adapter.value.label} settings saved`, color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
@@ -113,6 +128,21 @@ async function save() {
 function addMode(id: string) {
   typedModes.value.push(id)
   mode.value = id
+}
+
+const removing = ref(false)
+async function removeKey() {
+  removing.value = true
+  try {
+    await $fetch('/api/settings', { method: 'PATCH', body: { openCodeApiKey: '' } })
+    apiKey.value = ''
+    await refreshSettings()
+    toast.add({ title: 'Console key removed', color: 'success', icon: 'i-lucide-check' })
+  } catch (error: any) {
+    toast.add({ title: 'Could not remove the key', description: error?.message, color: 'error' })
+  } finally {
+    removing.value = false
+  }
 }
 </script>
 
@@ -140,6 +170,34 @@ function addMode(id: string) {
       :title="`${probe?.models.length ?? 0} models available`"
       :description="probe?.current ? `Adapter default: ${probe.current}` : 'The adapter chooses its default model.'"
     />
+
+    <UFormField
+      v-if="showKeyField"
+      label="Console API key"
+      :help="settings?.hasOpenCodeAuth
+        ? 'Host sessions already use your own opencode auth login. A service-account key from the OpenCode console is what a development environment can use, because that login cannot be copied into one.'
+        : 'A service-account key from the OpenCode console. Without one, OpenCode offers only its free models.'"
+    >
+      <div class="flex items-center gap-2">
+        <UInput
+          v-model="apiKey"
+          type="password"
+          class="flex-1"
+          autocomplete="off"
+          :placeholder="settings?.hasOpenCodeKey ? 'A key is configured — type a new one to replace it' : 'oc_sk_…'"
+        />
+        <UButton
+          v-if="settings?.hasOpenCodeKey"
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-trash-2"
+          :loading="removing"
+          @click="removeKey"
+        >
+          Remove
+        </UButton>
+      </div>
+    </UFormField>
 
     <UFormField :label="`Default ${adapter.modeLabel.toLowerCase()}`" :help="adapter.modeDescription">
       <USelectMenu

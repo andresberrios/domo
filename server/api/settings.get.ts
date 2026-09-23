@@ -1,10 +1,13 @@
 import { geminiApiKey } from '../lib/gemini'
 import { getSettings } from '../lib/settings'
-import { hasOpenCodeCredential } from '../lib/opencode-credentials'
+import { openCodeCredentialState } from '../lib/opencode-credentials'
 
 export default defineEventHandler(async () => {
-  const settings = await getSettings()
-  const openCodeAuth = await hasOpenCodeCredential()
+  // `openCodeApiKey` is the one secret stored in Settings, and it must not go
+  // back out: every other credential here is reported as a boolean, and this
+  // response is what the Settings page holds in memory.
+  const { openCodeApiKey, ...settings } = await getSettings()
+  const openCode = await openCodeCredentialState()
   return {
     ...settings,
     hasGeminiKey: !!geminiApiKey(),
@@ -15,6 +18,9 @@ export default defineEventHandler(async () => {
       || process.env.NUXT_OPENAI_API_KEY
       || process.env.OPENAI_API_KEY
     ),
-    hasOpenCodeAuth: openCodeAuth
+    /** A console key, which is what a container session and the usage poll use. */
+    hasOpenCodeKey: openCode.key,
+    /** A login on this machine, which is all a host session needs and all Domo can see. */
+    hasOpenCodeAuth: openCode.hostLogin
   }
 })

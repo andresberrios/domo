@@ -76,6 +76,11 @@ export const DEFAULTS: AppSettings = {
   // point for settings Domo does not know the names of. See
   // `AppSettings.defaultAgentConfig`.
   defaultAgentConfig: Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, {}])) as AppSettings['defaultAgentConfig'],
+  // Empty, and `NUXT_OPENCODE_API_KEY` is read ahead of it rather than seeded
+  // into it: a default that copied the environment in would be written back to
+  // the row by the first save, and the operator's variable would stop being the
+  // thing in charge.
+  openCodeApiKey: '',
   language: 'en-US',
   autoTitle: true,
   vscodeSshHost: '',
@@ -184,6 +189,14 @@ export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSet
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue
     if (key === 'systemInstruction' && value === DEFAULT_SYSTEM_INSTRUCTION) {
+      await query('delete from settings where key = $1', [key])
+      continue
+    }
+    // An empty key is a removal, not a stored empty string, so the row goes
+    // rather than shadowing whatever `NUXT_OPENCODE_API_KEY` says. The page
+    // never sends this field on an ordinary save — it cannot, since the key is
+    // never sent *to* it — so an empty value here is always deliberate.
+    if (key === 'openCodeApiKey' && typeof value === 'string' && !value.trim()) {
       await query('delete from settings where key = $1', [key])
       continue
     }

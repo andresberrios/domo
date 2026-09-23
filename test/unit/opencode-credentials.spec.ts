@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   opencodeApiKey,
   opencodeDatabasePath,
+  openCodeCredentialState,
   parseCredential,
-  readOpenCodeCredential
+  readOpenCodeLogin,
+  resolveOpenCodeApiKey
 } from '../../server/lib/opencode-credentials'
 
 /**
@@ -85,7 +87,7 @@ describe('the OpenCode 2 login store', () => {
       { id: 'cred_go', integration_id: 'opencode', value: goLogin, active: 1, time_updated: 3 }
     ])
 
-    const credential = await readOpenCodeCredential({ HOME: home })
+    const credential = await readOpenCodeLogin({ HOME: home })
 
     expect(credential).toEqual({
       token: 'access-secret',
@@ -104,18 +106,33 @@ describe('the OpenCode 2 login store', () => {
       { id: 'cred_go', integration_id: 'opencode', value: goLogin, active: 0, time_updated: 3 }
     ])
 
-    await expect(readOpenCodeCredential({ HOME: home })).resolves.toBeNull()
-    await expect(readOpenCodeCredential({ HOME: join(home, 'nowhere') })).resolves.toBeNull()
+    await expect(readOpenCodeLogin({ HOME: home })).resolves.toBeNull()
+    await expect(readOpenCodeLogin({ HOME: join(home, 'nowhere') })).resolves.toBeNull()
   })
 
-  it('prefers a console key, which is the only credential a container can get', async () => {
+  it('reads the console key from the environment first, then from Settings', async () => {
+    const stored = async () => 'key-from-settings'
+
+    expect(opencodeApiKey({ NUXT_OPENCODE_API_KEY: 'key-1', OPENCODE_API_KEY: 'key-2' })).toBe('key-1')
+    await expect(resolveOpenCodeApiKey({ NUXT_OPENCODE_API_KEY: 'key-1' }, stored)).resolves.toBe('key-1')
+    await expect(resolveOpenCodeApiKey({ OPENCODE_API_KEY: 'key-2' }, stored)).resolves.toBe('key-2')
+    await expect(resolveOpenCodeApiKey({}, stored)).resolves.toBe('key-from-settings')
+    await expect(resolveOpenCodeApiKey({}, async () => null)).resolves.toBeNull()
+  })
+
+  it('keeps the key and the host login as separate answers', async () => {
+    // One says nothing about the other: the key is what a container session and
+    // the usage poll use, the login is what a host session runs on.
     writeStore(join(home, '.local', 'share', 'opencode', 'opencode.db'), [
       { id: 'cred_go', integration_id: 'opencode', value: goLogin, active: 1, time_updated: 3 }
     ])
 
-    expect(opencodeApiKey({ NUXT_OPENCODE_API_KEY: 'key-1', OPENCODE_API_KEY: 'key-2' })).toBe('key-1')
-    await expect(readOpenCodeCredential({ HOME: home, OPENCODE_API_KEY: 'key-2' }))
-      .resolves.toMatchObject({ token: 'key-2', type: 'api', expires: null })
+    await expect(openCodeCredentialState({ HOME: home }, async () => null))
+      .resolves.toEqual({ key: false, hostLogin: true })
+    await expect(openCodeCredentialState({ HOME: home, OPENCODE_API_KEY: 'k' }, async () => null))
+      .resolves.toEqual({ key: true, hostLogin: true })
+    await expect(openCodeCredentialState({ HOME: join(home, 'nowhere') }, async () => 'k'))
+      .resolves.toEqual({ key: true, hostLogin: false })
   })
 
   it('takes the Go integration\'s key when the console account is not connected', async () => {
@@ -123,7 +140,7 @@ describe('the OpenCode 2 login store', () => {
       { id: 'cred_go_key', integration_id: 'opencode-go', value: '{"type":"api","key":"oc_sk_go"}', active: 1, time_updated: 9 }
     ])
 
-    await expect(readOpenCodeCredential({ HOME: home })).resolves.toMatchObject({ token: 'oc_sk_go', type: 'api' })
+    await expect(readOpenCodeLogin({ HOME: home })).resolves.toMatchObject({ token: 'oc_sk_go', type: 'api' })
   })
 
   it('prefers the console account, which is what the console API authenticates', async () => {
@@ -132,7 +149,7 @@ describe('the OpenCode 2 login store', () => {
       { id: 'cred_console', integration_id: 'opencode', value: goLogin, active: 1, time_updated: 1 }
     ])
 
-    await expect(readOpenCodeCredential({ HOME: home })).resolves.toMatchObject({ token: 'access-secret' })
+    await expect(readOpenCodeLogin({ HOME: home })).resolves.toMatchObject({ token: 'access-secret' })
   })
 
   it('takes a service-account key row as well as a device login', () => {

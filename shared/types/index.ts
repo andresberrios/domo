@@ -580,6 +580,21 @@ export interface AppSettings {
    * model without effort levels) is skipped rather than failing the start.
    */
   defaultAgentConfig: Record<AgentAdapter, Record<string, string>>
+  /**
+   * An OpenCode console service-account key, for installs without a `.env`.
+   *
+   * The one credential in this object, and the reason it is here rather than in
+   * the environment alone is that it is the *only* way a container session can
+   * authenticate: OpenCode 2 keeps its own login in sqlite, and that login
+   * rotates its refresh token, so nothing copies it. `NUXT_OPENCODE_API_KEY`
+   * still wins when it is set.
+   *
+   * **Never returned by `GET /api/settings`** — that endpoint answers
+   * `hasOpenCodeKey` instead, the way it already does for the Gemini and
+   * Anthropic keys. Anything that spreads `AppSettings` into a response has to
+   * take it back out.
+   */
+  openCodeApiKey: string
   language: string
   /** Let the voice agent name conversations, and rename them as the topic moves. */
   autoTitle: boolean

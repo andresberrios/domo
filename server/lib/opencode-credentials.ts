@@ -1,21 +1,58 @@
 import { join } from 'node:path'
 
+import { getSettings } from './settings'
+
 /**
- * OpenCode 2 keeps its logins in sqlite, not in a JSON file.
+ * Where an OpenCode credential comes from, and why there are two answers.
  *
- * v1 read `~/.local/share/opencode/auth.json` and honoured
- * `OPENCODE_AUTH_CONTENT` to be handed one inline. v2 has neither: the store is
- * `~/.local/share/opencode/opencode.db`, and that variable is not in its binary
- * at all — passing it is a silent no-op. What is left is this database and
- * `OPENCODE_API_KEY`.
+ * A **host** session needs nothing from Domo: OpenCode 2 reads its own login
+ * out of `$HOME` and Domo passes no credential at all. A **container** session
+ * cannot have that login, and there is no longer any way to hand it one. v1
+ * read `~/.local/share/opencode/auth.json` and honoured `OPENCODE_AUTH_CONTENT`
+ * to be given one inline; v2 has neither, and that variable is absent from its
+ * binary, so setting it is a silent no-op.
  *
- * Domo *reads* the database and never writes to it. The one row it wants sits
- * beside every OpenCode conversation the developer has ever had (`session_v2`,
- * `session_message`, `permission`, `instruction_blob`, …), which is why nothing
- * here hands the file itself to anything.
+ * What replaced it is sqlite — `~/.local/share/opencode/opencode.db` — and
+ * copying that across is the one design this must not have. The credential is
+ * device-flow OAuth whose refresh call stores the refresh token the server
+ * answers with over the old one, so two holders of one credential log each
+ * other out and the loser is the developer's own machine: the hazard
+ * `home-overlay.ts` refuses to mount `~/.claude` for, in a different file
+ * format. Filtering the copy down to the credential rows does not help, because
+ * the rotating token is the part being copied.
+ *
+ * So a container gets a **console service-account key** or nothing. That is the
+ * same answer `claude setup-token` is for Claude Code — durable, revocable,
+ * meant for a headless caller, with no refresh chain to fork — and OpenCode
+ * lists it as a first-class auth method beside the device flow. The sqlite
+ * store is still *read*, never written, for the one question it is honest
+ * about: whether this host has a login at all.
  */
 
-/** A static console key, which outranks the login store and needs no database. */
+/** How the settings half of the key lookup is injected, so a unit test has no database. */
+export type OpenCodeKeyLookup = () => Promise<string | null>
+
+/** The key as the user typed it into Settings, which is the no-`.env` path. */
+export async function settingsOpenCodeApiKey(): Promise<string | null> {
+  return await getSettings().then(settings => settings.openCodeApiKey?.trim() || null).catch(() => null)
+}
+
+/**
+ * The console key to authenticate with, or null.
+ *
+ * The environment wins, as it does for every other secret here: a key in
+ * `.env` is the operator's deployment choice and the Settings field is the
+ * convenience beneath it. Checking it first is also what keeps the database out
+ * of the common path — and out of the unit layer, which has none.
+ */
+export async function resolveOpenCodeApiKey(
+  env: NodeJS.ProcessEnv = process.env,
+  stored: OpenCodeKeyLookup = settingsOpenCodeApiKey
+): Promise<string | null> {
+  return env.NUXT_OPENCODE_API_KEY || env.OPENCODE_API_KEY || await stored()
+}
+
+/** The environment half alone, for the paths that must not touch the database. */
 export function opencodeApiKey(env: NodeJS.ProcessEnv = process.env): string | null {
   return env.NUXT_OPENCODE_API_KEY || env.OPENCODE_API_KEY || null
 }
@@ -47,25 +84,22 @@ interface CredentialRow {
 }
 
 /**
- * The active OpenCode console credential on this host, or null.
+ * The login `opencode auth login` left on *this host*, or null.
  *
- * The access token is read and used as it is. It is deliberately never
- * refreshed: OpenCode's refresh call replaces the stored refresh token with the
- * one the server answers with, so a second holder of the old token is relying
- * on the server not to invalidate it — the same rotation hazard Domo refuses to
- * copy a Claude login for. When the token has expired, say so and let the
- * developer's own OpenCode renew it.
+ * Read-only in the strongest sense: the file is opened read-only, nothing is
+ * ever written back, and the refresh token is never touched. It answers one
+ * question — does this machine have an OpenCode login — for the Settings card,
+ * and it is **not** what a request is authenticated with. The console rejects
+ * this credential on the endpoints Domo polls (measured: 401 on the usage
+ * endpoint with a device-flow access token, 200 with a service-account key),
+ * and it cannot reach a container at all.
  *
  * `node:sqlite` is imported lazily so an install that never runs OpenCode pays
  * neither the module nor its experimental warning.
  */
-export async function readOpenCodeCredential(
+export async function readOpenCodeLogin(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<OpenCodeCredential | null> {
-  const key = opencodeApiKey(env)
-  if (key) {
-    return { token: key, type: 'api', expires: null, server: OPENCODE_CONSOLE_URL, orgId: null, email: null }
-  }
   const path = opencodeDatabasePath(env)
   if (!path) return null
 
@@ -124,7 +158,18 @@ export function parseCredential(value: string): OpenCodeCredential | null {
   return null
 }
 
-/** Whether this host has an OpenCode login at all, asked without keeping it. */
-export async function hasOpenCodeCredential(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  return !!await readOpenCodeCredential(env)
+/**
+ * Whether OpenCode can authenticate at all, from either side.
+ *
+ * Two independent things, and the Settings card has to tell them apart: a
+ * configured key is what container sessions and the usage poll use, while the
+ * host's own login is what a host session runs on and Domo never touches.
+ * Having one says nothing about having the other.
+ */
+export async function openCodeCredentialState(
+  env: NodeJS.ProcessEnv = process.env,
+  stored: OpenCodeKeyLookup = settingsOpenCodeApiKey
+): Promise<{ key: boolean, hostLogin: boolean }> {
+  const [key, login] = await Promise.all([resolveOpenCodeApiKey(env, stored), readOpenCodeLogin(env)])
+  return { key: !!key, hostLogin: !!login }
 }

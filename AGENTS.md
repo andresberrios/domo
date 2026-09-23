@@ -624,13 +624,49 @@ things that are easy to get wrong.
   connection or a configured key is present. So "OpenCode only offers me a
   handful of odd models" is the symptom of *no credential*, not of a model list
   that needs refreshing.
-- **Domo reads that store and must never refresh it.** OpenCode's refresh call
+- **That login rotates, so it is read and never carried — a container gets a
+  console key or nothing.** OpenCode's refresh call
   (`${server}/auth/device/token`, `grant_type=refresh_token`) writes the
-  refresh token the server answers with back over the stored one, so a second
-  holder of the old token is relying on the server not to invalidate it — the
-  rotation hazard `~/.claude` is never copied for. `readOpenCodeCredential`
-  takes the access token as it is and leaves the refresh token where it found
-  it; an expired token is reported, not renewed.
+  refresh token the server answers with back over the stored one, so two
+  holders of one credential log each other out and the loser is the
+  developer's machine: the rotation hazard `~/.claude` is never copied for, in
+  a different file format. **Filtering the sqlite copy down to the credential
+  rows does not fix it** — the rotating token *is* the thing being copied — so
+  that design was considered and rejected rather than never thought of.
+  `readOpenCodeLogin` opens the file read-only and answers one question, "does
+  this host have a login", for the Settings card. It is not what anything
+  authenticates with: measured, the console answers **401** to a device-flow
+  access token on `/zen/go/v1/usage` and **200** to a service-account key.
+  A container therefore gets `resolveOpenCodeApiKey` — `NUXT_OPENCODE_API_KEY`,
+  then the `openCodeApiKey` Settings row — or it gets nothing, which is the
+  same shape `claude setup-token` is for Claude Code and for the same reasons.
+- **`OPENCODE_API_KEY` and `OPENCODE_CONSOLE_TOKEN` are one value with two
+  jobs, and only the first is OpenCode's own.** `OPENCODE_API_KEY` is compiled
+  into the binary and is the *gate*: the provider transform disables every
+  model whose input cost is non-zero unless it is set (or a console connection
+  or a configured `apiKey` exists), which is why an unauthenticated OpenCode
+  offers exactly the free tier and says nothing about why.
+  `OPENCODE_CONSOLE_TOKEN` appears nowhere in the binary — it is the name the
+  **console** puts in the provider definition it serves, resolved through the
+  CLI's generic `{env:…}` substitution, so the server can rename it and every
+  client will follow. `adapterEnv` sets both from the one key; if OpenCode
+  sessions lose their paid models after a console-side change, that second
+  name is the thing to re-read off `/console/api/config`.
+- **OpenCode has no permission mode, so the policy is a config block.** Its
+  `mode` option offers `build` and `plan` and neither is one — Build's own
+  description says it "executes tools based on configured permissions". Nothing
+  may add an invented mode to the picker (the adapter is the authority), so
+  `server/lib/acp/opencode-config.ts` puts `{"permission":"allow"}` into
+  `OPENCODE_CONFIG_CONTENT` for **container sessions only**: a container
+  works in a volume Domo can re-create, while a host session is the
+  developer's real tree and silently turning every prompt off there is not a
+  default to inherit from a version bump. The shape is out of the shipped
+  validator — `"ask" | "allow" | "deny"`, or a map over `read`/`edit`/`bash`/…,
+  and the loader expands a bare string to `{"*": action}`. It merges with
+  `jsonc-parser`'s `modify`/`applyEdits` rather than reserialising, because the
+  developer's config is JSONC and their comments are theirs, and a config that
+  already names `permission` is returned **untouched** — somebody who
+  deliberately denied `bash` keeps it.
 - **Resolve the adapter entry from `process.cwd()`.** The production bundle runs
   from a virtual module path, so `createRequire(import.meta.url).resolve(...)`
   fails there. `adapterEntry()` tries cwd first, then `import.meta.url`, then
@@ -1555,10 +1591,22 @@ and permissions are end to end because a permission is a row.
   The same probe is what confirms the free-tier diagnosis from the other side:
   with no credential it offers exactly the seven `opencode/*-free` models and
   nothing else, which is the list the bug report describes. **Not** verified
-  against a paid account: that a credential really restores the full list
-  through Domo, and anything at all about a container session's credential —
-  see the `OPENCODE_API_KEY` bullet above for why there is currently no way to
-  give one a login.
+  against a paid account: that a key really restores the full list through
+  Domo, whether `OPENCODE_API_KEY` alone is enough or
+  `OPENCODE_CONSOLE_TOKEN` is genuinely needed beside it, whether the org id
+  ever has to be supplied, and whether the `permission` block actually
+  suppresses `session/request_permission` — that last one is piece 4's real
+  acceptance criterion and a container is the only safe place to run it.
+- **The OpenCode usage endpoint is right and its *scale* is not established.**
+  `/zen/go/v1/usage` answered 200 to a real service-account key with exactly
+  the `rolling` / `weekly` / `monthly` shape `normalizeOpenCodeUsage` already
+  read, so the fixture in `test/unit/opencode-usage.spec.ts` is a captured
+  response rather than an invented one. But the account had spent nothing and
+  every `percent` came back `0`, which reads identically as a percentage and
+  as a fraction. The code keeps 0-100. If the card sits near zero while the
+  plan is visibly being spent, that is the fraction case — and it is the same
+  trap the Claude bullet above documents, where `5h-utilization: 0.41` read as
+  a percentage renders as a reassuring "0%".
 - **Both agents were verified end to end inside a real environment**
   (`pnpm test:agents`, 11 tests, ~85 s warm): `session/new` through `docker exec`
   for Claude Code and Codex in one shared environment, each pinned to its cheap

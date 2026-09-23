@@ -7,7 +7,12 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 import { claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
-import { opencodeApiKey } from '../opencode-credentials'
+import {
+  resolveOpenCodeApiKey,
+  settingsOpenCodeApiKey,
+  type OpenCodeKeyLookup
+} from '../opencode-credentials'
+import { sessionConfigContent } from './opencode-config'
 import type { AgentAdapter } from '../../../shared/types'
 
 export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride: string }> = {
@@ -228,7 +233,9 @@ export async function adapterEnv(
   adapter: AgentAdapter,
   inContainer: boolean,
   /** Injected by the unit layer: `gh` must never be spawned from a test. */
-  ghToken: GhTokenLookup = hostGhToken
+  ghToken: GhTokenLookup = hostGhToken,
+  /** Injected for the same reason: the unit layer has no database to read Settings from. */
+  openCodeKey: OpenCodeKeyLookup = settingsOpenCodeApiKey
 ): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
@@ -267,13 +274,27 @@ export async function adapterEnv(
     // container therefore has the console key or nothing.
     const anthropicKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
     const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
-    const consoleKey = opencodeApiKey()
-    const configContent = inContainer
-      ? await opencodeConfigContent()
-      : process.env.NUXT_OPENCODE_CONFIG_CONTENT || process.env.OPENCODE_CONFIG_CONTENT
+    const consoleKey = await resolveOpenCodeApiKey(process.env, openCodeKey)
+    const configContent = sessionConfigContent(
+      inContainer
+        ? await opencodeConfigContent()
+        : process.env.NUXT_OPENCODE_CONFIG_CONTENT || process.env.OPENCODE_CONFIG_CONTENT || null,
+      inContainer
+    )
     if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey
     if (openAiKey) env.OPENAI_API_KEY = openAiKey
-    if (consoleKey) env.OPENCODE_API_KEY = consoleKey
+    if (consoleKey) {
+      // Two variables, two measured jobs, one value. `OPENCODE_API_KEY` is
+      // compiled into the binary and is the gate that decides whether the
+      // priced models are enabled at all — without it every model with a
+      // non-zero input cost is disabled and only the free tier is offered.
+      // `OPENCODE_CONSOLE_TOKEN` is not in the binary anywhere: it is the name
+      // the *console* puts in the provider definition it serves, which the CLI
+      // resolves through its generic `{env:…}` substitution. So it is the
+      // server's to rename, and this is the pair that works today.
+      env.OPENCODE_API_KEY = consoleKey
+      env.OPENCODE_CONSOLE_TOKEN = consoleKey
+    }
     if (configContent) env.OPENCODE_CONFIG_CONTENT = configContent
     if (!inContainer) {
       if (process.env.OPENCODE_CONFIG) env.OPENCODE_CONFIG = process.env.OPENCODE_CONFIG
