@@ -1133,7 +1133,25 @@ class AgentRuntime {
     // Detached here, before anything awaits: the block's row has to exist with a
     // lower `seq` than this event, or the transcript would show the text that
     // preceded a tool call after it.
-    const block = this.takeStream()
+    //
+    // A tool call that has not started is the one thing that does not end the
+    // text around it. OpenCode announces a part the instant it exists —
+    // `pending`, empty `rawInput`, no locations, filled in by a later
+    // `tool_call_update` — and that lands *between* two deltas of a sentence
+    // still being written, so closing here split one sentence into two bubbles
+    // with a tool card wedged between them. A tool that has not run yet cannot
+    // have produced anything for the agent to be commenting on, so text that
+    // arrives while the newest call is still pending is a continuation of the
+    // text before it. Everything else closes the block as before, the first
+    // `tool_call_update` included: that one means the tool really started. An
+    // adapter that fills a call in immediately sends it before the next delta,
+    // so nothing about Claude Code or codex-acp changes.
+    //
+    // Seq is untouched by this. The block claimed its `seq` at its *first*
+    // delta, which is already below this event's, so continuing to write into
+    // it renders the whole sentence above the tool card, which is where it
+    // belongs.
+    const block = kind === 'tool_call' && update.status === 'pending' ? null : this.takeStream()
     await this.serial(async () => {
       await this.closeStream(block)
       await appendAgentEvent(this.agentSessionId, kind, update)

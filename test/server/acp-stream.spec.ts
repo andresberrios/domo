@@ -359,6 +359,82 @@ describe('a streamed turn', () => {
     expect(events.every(event => event.type !== 'agent_message' || event.payload.streaming === false)).toBe(true)
   })
 
+  /**
+   * The shape OpenCode produces, taken from a real transcript: it announces a
+   * tool-call part the instant it exists — `pending`, empty `rawInput` — and
+   * that lands between two deltas of a sentence that is still streaming. The
+   * row seen there read `Now let me look at` / a tool card / ` the OpenCode
+   * normalizer:`, which is one sentence rendered as two bubbles.
+   */
+  it('keeps one sentence in one row when a tool call is announced mid-text', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'read the normalizer' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Now let me look at'))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'read:2', title: 'Read', kind: 'read', status: 'pending', rawInput: {} })
+      await send(textChunk(' the OpenCode normalizer:'))
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'read:2', status: 'completed' })
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+
+    expect(events.map(event => event.type)).toEqual([
+      'user_message',
+      'agent_message',
+      'tool_call',
+      'tool_call_update',
+      'turn_end'
+    ])
+    expect(textOf(events)).toEqual(['Now let me look at the OpenCode normalizer:'])
+    // The row kept the `seq` it claimed at its first delta, which is below the
+    // tool call's — so the whole sentence renders above the card, not after it.
+    const message = events.find(event => event.type === 'agent_message')!
+    const call = events.find(event => event.type === 'tool_call')!
+    expect(message.seq).toBeLessThan(call.seq)
+    expect(message.payload.streaming).toBe(false)
+  })
+
+  /**
+   * The other half of the same rule, and the reason it is safe: a tool that has
+   * actually started *can* have produced something the text after it is about,
+   * so the first `tool_call_update` still ends the block. A well-behaved
+   * adapter sends that update before its next delta, which is why nothing about
+   * Claude Code or codex-acp rendering changes.
+   */
+  it('still splits the message once the tool call has started', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Looking at the build.'))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Read', kind: 'read', status: 'pending' })
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'in_progress' })
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
+      await send(textChunk('Found it.'))
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+
+    expect(events.map(event => event.type)).toEqual([
+      'user_message',
+      'agent_message',
+      'tool_call',
+      'tool_call_update',
+      'tool_call_update',
+      'agent_message',
+      'turn_end'
+    ])
+    expect(textOf(events)).toEqual(['Looking at the build.', 'Found it.'])
+    const call = events.find(event => event.type === 'tool_call')!
+    const [, second] = events.filter(event => event.type === 'agent_message')
+    expect(second!.seq).toBeGreaterThan(call.seq)
+  })
+
   it('shows a reader who arrives mid-turn the text so far', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const agent = await session()

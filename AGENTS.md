@@ -875,11 +875,22 @@ things that are easy to get wrong.
 - **Sequence columns are `bigserial`, not `max(seq)+1`.** Concurrent event
   appends collided and produced duplicate `seq` values within a session.
 - **Open the streaming row on the first delta, and close it before anything
-  else is appended.** The row's `seq` is what fixes its place in the transcript,
-  so it has to be claimed when the text starts, not when it is flushed —
-  otherwise a tool call that arrives mid-message takes a lower `seq` and the
-  text jumps below it. `takeStream()` detaches the open block *synchronously*,
-  and the close plus the next append happen in one `serial()` step.
+  else is appended — except a `tool_call` that is still `pending`.** The row's
+  `seq` is what fixes its place in the transcript, so it has to be claimed when
+  the text starts, not when it is flushed — otherwise a tool call that arrives
+  mid-message takes a lower `seq` and the text jumps below it. `takeStream()`
+  detaches the open block *synchronously*, and the close plus the next append
+  happen in one `serial()` step. The exception is OpenCode's doing and is
+  measured rather than defensive: it announces a tool-call part the instant it
+  exists (`pending`, empty `rawInput`, filled in by a later `tool_call_update`),
+  and three of three real turns put that announcement *between* two deltas of a
+  sentence still being written — so closing there rendered one sentence as two
+  bubbles with a tool card wedged between them. A tool that has not run cannot
+  have produced anything the text after it is about, so the block survives it
+  and keeps the lower `seq` it already claimed, which is what puts the whole
+  sentence above the card. The first `tool_call_update` still closes it: that
+  one means the tool really started, and claude-agent-acp and codex-acp send it
+  before their next delta, so nothing about their rendering changes.
 - **The flush interval grows with the block.** An in-place update re-streams the
   whole row (`REPLICA IDENTITY FULL`), so a fixed 150 ms interval costs
   O(length²/interval) bytes: fine for the couple of kilobytes a message usually
