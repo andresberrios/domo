@@ -230,14 +230,46 @@ describe('retiring an environment', () => {
     expect(await getDevEnvironment(env.id)).toBeNull()
   })
 
+  it('reads as broken while it owes Docker something, and stopped once it does not', async () => {
+    // A half-cleaned environment must not be a quiet field on a row: `error` is
+    // the state a banner keys on, and `last_error` is what it then says.
+    const { environment: env } = await environment()
+    await retireDevEnvironmentRow(env.id)
+
+    await setEnvironmentLeftovers(
+      env.id,
+      [{ kind: 'volume', name: 'domo-dev-env_x-workspace', error: 'Remove it (docker rm -f tidy-runner).' }],
+      { status: 'error', lastError: 'Docker still has volume domo-dev-env_x-workspace. Remove it (docker rm -f tidy-runner).' }
+    )
+
+    expect(await getDevEnvironment(env.id)).toMatchObject({
+      status: 'error',
+      lastError: expect.stringContaining('docker rm -f tidy-runner'),
+      // Independent of each other: retired is lifecycle, error is health.
+      retiredAt: expect.any(String)
+    })
+
+    await setEnvironmentLeftovers(env.id, [], { status: 'stopped', lastError: null })
+
+    expect(await getDevEnvironment(env.id)).toMatchObject({
+      status: 'stopped',
+      lastError: null,
+      retiredAt: expect.any(String)
+    })
+  })
+
   it('writes the leftovers only when they change, because the row is synced', async () => {
     const { environment: env } = await environment()
     const owed = [{ kind: 'volume' as const, name: 'domo-dev-env_x-workspace', error: 'volume is in use' }]
 
     expect(await setEnvironmentLeftovers(env.id, owed)).toMatchObject({ leftovers: owed })
-    // A sweep every few minutes finds the same thing every time; `REPLICA
-    // IDENTITY FULL` means each write re-streams the whole row to every browser.
+    // A sweep finds the same thing every time; `REPLICA IDENTITY FULL` means
+    // each write re-streams the whole row to every browser.
     expect(await setEnvironmentLeftovers(env.id, owed)).toBeNull()
+    // …but a health that has drifted is still corrected, even with the same
+    // leftovers, or a row could never be put right.
+    expect(await setEnvironmentLeftovers(env.id, owed, { status: 'error', lastError: 'blocked' }))
+      .toMatchObject({ status: 'error', lastError: 'blocked' })
     expect(await setEnvironmentLeftovers(env.id, [])).toMatchObject({ leftovers: [] })
   })
 })

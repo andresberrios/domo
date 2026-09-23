@@ -250,6 +250,11 @@ describe('environment details page', { timeout: 30_000 }, () => {
     environment.value = {
       ...environment.value,
       retiredAt: '2026-01-09T00:00:00.000Z',
+      // Retired is lifecycle and error is health: a half-cleaned environment is
+      // both, and the banner reads the health.
+      status: 'error',
+      lastError: 'Docker still has volume domo-dev-env_1-workspace. '
+        + 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.',
       leftovers: [{
         kind: 'volume',
         name: 'domo-dev-env_1-workspace',
@@ -272,7 +277,28 @@ describe('environment details page', { timeout: 30_000 }, () => {
       expect.objectContaining({ method: 'POST', path: '/api/dev-environments/env_1/cleanup' })
     ))
 
-    environment.value = { ...environment.value, retiredAt: null, leftovers: [] }
+    environment.value = { ...environment.value, retiredAt: null, status: 'running', lastError: null, leftovers: [] }
+    wrapper.unmount()
+  })
+
+  it('shows nothing for a stale lastError, because the state is what says it is broken', async () => {
+    // Measured on the agent page and the same rule here: a banner keyed on the
+    // field outlives what it described. `last_error` is history; `status` is
+    // state.
+    environment.value = { ...environment.value, status: 'running', lastError: 'it would not start, an hour ago' }
+    const wrapper = await mountPage()
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('feature-auth'))
+    expect(document.body.textContent).not.toContain('an hour ago')
+
+    // And with the state to match, it says exactly that — with no retry, which
+    // belongs only to a cleanup.
+    environment.value = { ...environment.value, status: 'error' }
+    await vi.waitFor(() => expect(document.body.textContent).toContain('This environment needs attention'))
+    expect(document.body.textContent).toContain('it would not start, an hour ago')
+    expect(buttonWithText('Try again')).toBeFalsy()
+
+    environment.value = { ...environment.value, status: 'running', lastError: null }
     wrapper.unmount()
   })
 

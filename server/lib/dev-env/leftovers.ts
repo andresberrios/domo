@@ -230,6 +230,24 @@ export function explainRefusal(input: {
   return `Docker refused: ${bare}`
 }
 
+/**
+ * What a half-cleaned environment says on its row, in one line.
+ *
+ * `last_error` is a single column and the page renders it as the reason, so the
+ * per-resource sentences are folded into one rather than summarised away: the
+ * whole value of them is the container name and the command, and a count would
+ * throw both away.
+ */
+export function describeLeftovers(leftovers: EnvironmentLeftover[]): string {
+  if (!leftovers.length) return ''
+  if (leftovers.length === 1) {
+    const [only] = leftovers as [EnvironmentLeftover]
+    return `Docker still has ${only.kind} ${only.name}. ${only.error}`
+  }
+  return `Docker still has ${leftovers.length} of this environment's resources. `
+    + leftovers.map(leftover => `${leftover.kind} ${leftover.name}: ${leftover.error}`).join(' ')
+}
+
 export interface RemovalOutcome {
   removed: Leftover[]
   failed: Array<Leftover & { error: string }>

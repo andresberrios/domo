@@ -229,11 +229,42 @@ describe('start, stop and remove', () => {
     expect(dockerCalls()).toEqual([])
   })
 
-  it('asks for a recreate when the container is gone', async () => {
+  it('asks for a recreate when the container is gone, and says so on the row', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment())
     inspectContainer.mockResolvedValue(null)
 
     await expect(startEnvironment('env_1')).rejects.toThrow(/no longer exists\. Delete and recreate/)
+
+    // `error` is the one state that means "you have to do something", and this
+    // is permanent until somebody does. Throwing at the caller alone left the
+    // row saying `stopped`, which is what a healthy environment says.
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', {
+      status: 'error',
+      lastError: expect.stringContaining('no longer exists')
+    })
+  })
+
+  it('records an environment whose container the daemon will not start', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({ id: 'container-sha', running: false, publishedPorts: [] })
+    run.mockRejectedValue(new Error('docker start failed: no space left on device'))
+
+    await expect(startEnvironment('env_1')).rejects.toThrow(/would not start: .*no space left/)
+
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', {
+      status: 'error',
+      lastError: expect.stringContaining('no space left on device')
+    })
+  })
+
+  it('clears the error when a start works, because the state is what a banner reads', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ status: 'error', lastError: 'it would not start' }))
+    repo.updateDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({ id: 'container-sha', running: false, publishedPorts: [] })
+
+    await startEnvironment('env_1')
+
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', { status: 'running', lastError: null })
   })
 
   it('stops the container and marks the environment stopped', async () => {
@@ -384,10 +415,14 @@ describe('a cleanup that Docker refuses', () => {
       })
     ])
     // And it is written down, so the row is still the way back to it however
-    // much later — and `pruneRetiredRecords` will not drop that row.
-    expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith('env_1', [
-      expect.objectContaining({ kind: 'volume', name: 'domo-dev-env_1-workspace', error: expect.any(String) })
-    ])
+    // much later — and `pruneRetiredRecords` will not drop that row. A
+    // half-cleaned environment is not a quiet field either: it reads as broken,
+    // with the blocker in the field the page shows.
+    expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith(
+      'env_1',
+      [expect.objectContaining({ kind: 'volume', name: 'domo-dev-env_1-workspace', error: expect.any(String) })],
+      { status: 'error', lastError: expect.stringContaining('docker rm -f tidy-runner') }
+    )
     expect(fake.volumes).toEqual(['domo-dev-env_1-workspace'])
   })
 
@@ -427,8 +462,27 @@ describe('a cleanup that Docker refuses', () => {
     expect(fake.volumes).toEqual([])
     expect(report.removed.map(leftover => leftover.name)).toEqual(['domo-dev-env_1-workspace'])
     expect(report.leftovers).toEqual([])
-    // Cleared, which is what lets the row be pruned again.
-    expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith('env_1', [])
+    // Cleared, which is what lets the row be pruned again — and the row stops
+    // reporting itself broken, which is what a retried cleanup is for.
+    expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith('env_1', [], { status: 'stopped', lastError: null })
+  })
+
+  it('leaves a failed creation\'s own error alone while sweeping its wreckage', async () => {
+    // Its row is not retired and already says something better than "a volume
+    // is still there" — the creation is what failed, and that is what the
+    // person reading the page has to know.
+    const broken = environment({
+      status: 'error',
+      lastError: 'postCreateCommand failed: exit 1',
+      leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'not confirmed' }]
+    })
+    daemon({ volumes: ['domo-dev-env_1-workspace'] })
+    repo.getDevEnvironment.mockResolvedValue(broken)
+    repo.listDevEnvironments.mockResolvedValue([broken])
+
+    await cleanupEnvironment('env_1')
+
+    expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith('env_1', [], null)
   })
 
   it('refuses a cleanup for an environment that is not there', async () => {
