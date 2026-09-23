@@ -59,6 +59,36 @@ then kept in step by hand for no benefit. Do not reintroduce either.
 `test:unit` and `test:nuxt` are the ones that need no services, and they need no
 flag to say so.
 
+### The failure this suite keeps having
+
+**An assertion that cannot fail.** Not a wrong assertion — one that reports
+success whatever the code does. It has turned up five times here, with five
+different causes and one shape, so it is worth knowing the shape rather than
+the instances:
+
+- `test/docker/dev-environments.spec.ts` asserted the argv handed to `docker`,
+  and was green while every environment without a `.devcontainer/` failed to
+  start. **The thing asserted was upstream of the thing that broke.**
+- `agents-live` carried `opencode` keys in `MODELS` and `ASKS` because the maps
+  are `Record<AgentAdapter, …>`, while `describe.each` ran two adapters.
+  **Coverage that was type-checked into looking present.**
+- The OpenCode permission test exercised bash and an in-`cwd` edit, neither of
+  which raises a permission on any setting. **The probe could not trigger the
+  behaviour under test.**
+- A config probe ran `OPENCODE_CONFIG_CONTENT='{"permission":"banana"}'` and
+  exited 0, which was read as "the key is accepted". **A path that validates
+  nothing cannot confirm anything.**
+- The browser test matched `/browser_/` against `tool_call` payloads, and
+  OpenCode names no MCP tool in them. **The assertion measured the adapter's
+  reporting format, not the browser.**
+
+The cheap test, and it costs one run: **make it fail on purpose.** Break the
+thing it claims to check and watch it go red. Every one of these survived
+review, and every one died in seconds to that. When the fix is to relax an
+assertion, ask what it would then still catch — "accept `execute` as well"
+would have passed whether a browser ran or not. Prefer gating the narrow claim
+to loosening the broad one.
+
 **Asserting on the argv handed to `docker` cannot tell you Docker accepts it.**
 `test/docker/dev-environments.spec.ts` was green while every environment for a
 project without a `.devcontainer/` failed to start. The live spec exists for
