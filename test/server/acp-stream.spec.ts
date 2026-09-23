@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable, Writable } from 'node:stream'
@@ -252,13 +253,21 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
 
 const textChunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 
+/**
+ * Every session here runs in one directory, and it has to be on disk: a session
+ * whose working directory is gone is not startable, so a machine that has never
+ * run this file before would fail every turn in it for that reason alone.
+ */
+const workspace = join(tmpdir(), 'domo-test', 'acp-stream')
+mkdirSync(workspace, { recursive: true })
+
 let seen: ReturnType<typeof captureBus>
 
 async function session(title = 'Streaming turn') {
   return createAgentSession({
     adapter: 'claude-code',
     title,
-    cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+    cwd: workspace
   })
 }
 
@@ -612,7 +621,7 @@ describe('the model a session runs on', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Model',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       model
     })
     const asked: any[] = []
@@ -712,7 +721,7 @@ describe('the model a session runs on', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Model',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       model: 'gemini-3-pro'
     })
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
@@ -763,7 +772,7 @@ describe('the adapter settings a session runs with', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Effort',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+      cwd: workspace
     })
     if (config) await updateAgentSession(agent.id, { config })
     return { agent, ...await attach(agent.id, options.effort ?? EFFORT) }
@@ -834,7 +843,7 @@ describe('the adapter settings a session runs with', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Effort',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+      cwd: workspace
     })
     await updateAgentSession(agent.id, { config: { effort: 'high' } })
     // No effort option at all, the way Claude Code answers on a model without
@@ -896,7 +905,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: input.modeId
     })
     // What a session that has run before looks like: an adapter-side id to
@@ -953,7 +962,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'default'
     })
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
@@ -973,7 +982,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+      cwd: workspace
     })
     const asked: any[] = []
     // A running session, because that is the case this is about: the mode is
@@ -999,7 +1008,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'plan'
     })
     const asked: any[] = []
@@ -1025,7 +1034,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'default'
     })
     const asked: any[] = []
@@ -1050,7 +1059,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'plan'
     })
     const asked: any[] = []
@@ -1074,7 +1083,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'opencode',
       title: 'OpenCode mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'build'
     })
     const asked: any[] = []
@@ -1135,7 +1144,7 @@ describe('changing a setting on a session that is not running', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Stopped',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'default'
     })
     await updateAgentSession(agent.id, {

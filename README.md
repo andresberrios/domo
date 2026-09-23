@@ -468,9 +468,8 @@ configured providers are kept current automatically (see
 | `NUXT_ANTHROPIC_API_KEY` | Optional fallback; **bills the API, not your subscription**, and is passed only when there is no other credential |
 | `NUXT_CODEX_API_KEY` | Optional; forwarded as `CODEX_API_KEY` to the Codex adapter |
 | `NUXT_OPENAI_API_KEY` | Optional; forwarded as `OPENAI_API_KEY` to the Codex adapter |
-| `NUXT_OPENCODE_AUTH_CONTENT` | Optional OpenCode `auth.json` content for a headless install; otherwise Domo reads the local store written by `opencode auth login` |
+| `NUXT_OPENCODE_API_KEY` | Optional OpenCode console key; the only OpenCode credential that reaches a development environment, and what the plan-limit poller uses |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration, forwarded to host and environment sessions |
-| `NUXT_OPENCODE_GO_API_KEY` | Optional OpenCode Go key used by the plan-limit poller; otherwise the local OpenCode auth store is used |
 | `DATABASE_URL` | Postgres, defaults to the compose service |
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
@@ -525,11 +524,13 @@ directly (`codex app-server`, `account/rateLimits/read`) — the same call the A
 adapter makes for its `/status` output — and shuts the process down again as
 soon as it has answered.
 
-For **OpenCode Go**, Domo reads the key from `NUXT_OPENCODE_GO_API_KEY`, or
-from the `opencode-go` entry written by `opencode auth login`, and polls the
-rolling, weekly and monthly windows automatically. Without that credential it
-is simply reported as unconfigured. The Go usage
-endpoint is currently undocumented and may change.
+For **OpenCode Go**, Domo reads the login `opencode auth login` wrote — since
+OpenCode 2 that is a row in `~/.local/share/opencode/opencode.db` — or a
+console key in `NUXT_OPENCODE_API_KEY`. Without either it is reported as
+unconfigured rather than as an error. The access token is used as it is and
+never refreshed: OpenCode replaces its stored refresh token on every refresh,
+and Domo does not race your own CLI over it. The console usage endpoint is
+undocumented and may change.
 
 Gemini publishes no plan-limit API, so a conversation shows its context window
 and nothing else.

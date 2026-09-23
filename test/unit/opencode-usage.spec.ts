@@ -1,16 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { fetchOpenCodeUsage, normalizeOpenCodeUsage, opencodeGoApiKey } from '../../server/lib/usage/opencode'
+import { fetchOpenCodeUsage, normalizeOpenCodeUsage } from '../../server/lib/usage/opencode'
 
 describe('OpenCode Go usage', () => {
-  it('reads the API key from OpenCode auth without exposing the rest', async () => {
-    const env = {
-      NUXT_OPENCODE_AUTH_CONTENT: JSON.stringify({
-        'opencode-go': { type: 'api', key: 'oc-secret' },
-        anthropic: { type: 'oauth', access: 'other-secret' }
-      })
-    }
-    await expect(opencodeGoApiKey(env)).resolves.toBe('oc-secret')
+  it('says so rather than failing when this host has no OpenCode login', async () => {
+    // No key and no database: the poller must report "not configured" rather
+    // than an error, so the card can tell the two apart.
+    const result = await fetchOpenCodeUsage(async () => new Response('{}'), {})
+    expect(result.outcome).toBe('unconfigured')
   })
 
   it('normalizes rolling, weekly and monthly windows', () => {
@@ -32,7 +29,7 @@ describe('OpenCode Go usage', () => {
       expect(init?.headers).toEqual({ Authorization: 'Bearer oc-secret' })
       return new Response('no', { status: 401 })
     }) as typeof fetch
-    const result = await fetchOpenCodeUsage(request, { NUXT_OPENCODE_GO_API_KEY: 'oc-secret' })
+    const result = await fetchOpenCodeUsage(request, { NUXT_OPENCODE_API_KEY: 'oc-secret' })
     expect(result.outcome).toBe('unconfigured')
     expect(JSON.stringify(result)).not.toContain('oc-secret')
   })

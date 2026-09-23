@@ -1,4 +1,4 @@
-import { opencodeAuthContent } from '../acp/adapter-process'
+import { readOpenCodeCredential } from '../opencode-credentials'
 import type { UsageLimitValue } from './normalize'
 
 const DEFAULT_ENDPOINT = 'https://opencode.ai/zen/go/v1/usage'
@@ -11,21 +11,6 @@ export interface OpenCodeUsageResult {
 }
 
 type Fetcher = typeof fetch
-
-/** Resolve the Go API key without ever returning it in an error or database row. */
-export async function opencodeGoApiKey(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
-  const configured = env.NUXT_OPENCODE_GO_API_KEY || env.OPENCODE_GO_API_KEY
-  if (configured) return configured
-  const content = await opencodeAuthContent(env)
-  if (!content) return null
-  try {
-    const auth = JSON.parse(content)
-    const entry = auth?.['opencode-go'] ?? auth?.opencode
-    return entry?.type === 'api' && typeof entry.key === 'string' ? entry.key : null
-  } catch {
-    return null
-  }
-}
 
 const WINDOWS: Record<string, { label: string, minutes: number }> = {
   rolling: { label: '5-hour limit', minutes: 300 },
@@ -62,21 +47,21 @@ export async function fetchOpenCodeUsage(
   doFetch: Fetcher = fetch,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<OpenCodeUsageResult> {
-  const key = await opencodeGoApiKey(env)
-  if (!key) {
+  const credential = await readOpenCodeCredential(env)
+  if (!credential) {
     return {
       outcome: 'unconfigured',
       limits: [],
-      message: 'No OpenCode Go API key found. Run `opencode auth login` or set NUXT_OPENCODE_GO_API_KEY.'
+      message: 'No OpenCode login found. Run `opencode auth login` or set NUXT_OPENCODE_API_KEY.'
     }
   }
   try {
     const response = await doFetch(env.NUXT_OPENCODE_GO_USAGE_URL || DEFAULT_ENDPOINT, {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: { Authorization: `Bearer ${credential.token}` },
       signal: AbortSignal.timeout(TIMEOUT_MS)
     })
     if (response.status === 401 || response.status === 403) {
-      return { outcome: 'unconfigured', limits: [], message: 'The OpenCode Go key was rejected or has no Go subscription.' }
+      return { outcome: 'unconfigured', limits: [], message: 'The OpenCode login was rejected or has no Go subscription.' }
     }
     if (!response.ok) {
       return { outcome: 'error', limits: [], message: `OpenCode Go usage answered HTTP ${response.status}.` }

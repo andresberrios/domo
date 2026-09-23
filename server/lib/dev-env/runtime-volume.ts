@@ -28,7 +28,7 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
   },
   opencode: {
     command: 'opencode-acp',
-    spec: 'opencode-ai@1.18.28',
+    spec: '@opencode/cli@2.0.14',
     entry: 'bin/opencode.exe',
     args: ['acp'],
     native: true

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 import { claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
+import { opencodeApiKey } from '../opencode-credentials'
 import type { AgentAdapter } from '../../../shared/types'
 
 export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride: string }> = {
@@ -19,7 +20,7 @@ export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride
     entryOverride: 'NUXT_CODEX_ACP_ENTRY'
   },
   opencode: {
-    packageName: 'opencode-ai',
+    packageName: '@opencode/cli',
     entryOverride: 'NUXT_OPENCODE_ACP_ENTRY'
   }
 }
@@ -164,15 +165,6 @@ let warnedNoGhToken = false
 
 export type GhTokenLookup = () => Promise<string | null>
 
-/** The auth store written by `opencode auth login`, when this host has one. */
-export async function opencodeAuthContent(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
-  const explicit = env.NUXT_OPENCODE_AUTH_CONTENT || env.OPENCODE_AUTH_CONTENT
-  if (explicit) return explicit
-  const dataHome = env.XDG_DATA_HOME || (env.HOME ? join(env.HOME, '.local', 'share') : null)
-  if (!dataHome) return null
-  return readFile(join(dataHome, 'opencode', 'auth.json'), 'utf8').catch(() => null)
-}
-
 /**
  * The global OpenCode config to carry into a managed environment.
  *
@@ -268,15 +260,20 @@ export async function adapterEnv(
     // OpenCode can use dozens of providers from its own `opencode auth login`
     // store. These explicit values cover headless installs without turning the
     // adapter allow-list into "every secret whose name happens to end in KEY".
+    //
+    // The login store itself is not among them. On the host OpenCode reads it
+    // out of `$HOME` unaided; there is no longer any way to hand it over, since
+    // OpenCode 2 keeps it in sqlite and dropped `OPENCODE_AUTH_CONTENT`. A
+    // container therefore has the console key or nothing.
     const anthropicKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
     const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
-    const authContent = await opencodeAuthContent()
+    const consoleKey = opencodeApiKey()
     const configContent = inContainer
       ? await opencodeConfigContent()
       : process.env.NUXT_OPENCODE_CONFIG_CONTENT || process.env.OPENCODE_CONFIG_CONTENT
     if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey
     if (openAiKey) env.OPENAI_API_KEY = openAiKey
-    if (authContent) env.OPENCODE_AUTH_CONTENT = authContent
+    if (consoleKey) env.OPENCODE_API_KEY = consoleKey
     if (configContent) env.OPENCODE_CONFIG_CONTENT = configContent
     if (!inContainer) {
       if (process.env.OPENCODE_CONFIG) env.OPENCODE_CONFIG = process.env.OPENCODE_CONFIG

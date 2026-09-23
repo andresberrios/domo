@@ -130,13 +130,17 @@ describe('OpenCode', () => {
     delete process.env.NUXT_OPENCODE_ACP_ENTRY
   })
 
-  it('passes an explicit auth snapshot and common provider keys', async () => {
-    process.env.NUXT_OPENCODE_AUTH_CONTENT = '{"opencode-go":{"type":"api","key":"secret"}}'
+  it('passes the console key and common provider keys, and no login store', async () => {
+    process.env.NUXT_OPENCODE_API_KEY = 'console-key'
     process.env.NUXT_OPENAI_API_KEY = 'openai-test'
     const env = await adapterEnv('opencode', true, noGh)
 
-    expect(env.OPENCODE_AUTH_CONTENT).toContain('opencode-go')
+    expect(env.OPENCODE_API_KEY).toBe('console-key')
     expect(env.OPENAI_API_KEY).toBe('openai-test')
+    // OpenCode 2 dropped `OPENCODE_AUTH_CONTENT`; passing it would be a silent
+    // no-op, and its own store is sqlite that nothing here may hand over.
+    expect(env.OPENCODE_AUTH_CONTENT).toBeUndefined()
+    expect(env.OPENCODE_DB).toBeUndefined()
   })
 
   it('finds the global config that managed environments receive as a snapshot', async () => {

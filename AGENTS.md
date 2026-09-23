@@ -593,6 +593,44 @@ things that are easy to get wrong.
   without the file the CLI fails identically on auth and writes its own
   `.claude.json`. The seed is kept as cheap insurance, not as a fix for an
   observed failure.
+- **OpenCode 2 is a different npm package, and the old name still publishes.**
+  v2 is `@opencode/cli`; `opencode-ai` is v1 and its `latest` tag is still
+  moving (1.18.32 at the time of writing), so "bump OpenCode to the newest
+  version" against the old name silently keeps you on v1. The layout is
+  otherwise identical — a stub package whose `postinstall` fetches a native
+  `bin/opencode.exe` out of a per-platform optional dependency — so
+  `adapterEntry()` still lands on a binary and `adapterLaunch()` still takes its
+  non-`.js` branch. `pnpm` needs the package in `allowBuilds`, or that
+  postinstall never runs and there is no binary at all.
+- **OpenCode 2 keeps its logins in sqlite, and there is no way to hand one to a
+  container.** v1 read `~/.local/share/opencode/auth.json` and honoured
+  `OPENCODE_AUTH_CONTENT`; v2 has neither, and that variable is absent from its
+  binary, so setting it is a **silent no-op**. The store is
+  `~/.local/share/opencode/opencode.db`, and the one credential row sits beside
+  `session_v2`, `session_message`, `permission` and `instruction_blob` — every
+  conversation the developer has ever had with it — which is the same reason
+  `seedClaudeHome()` is an allow-list and `~/.claude` is never mounted. A host
+  session needs nothing: OpenCode reads that store out of `$HOME` itself. What
+  is left for anything else is `OPENCODE_API_KEY`.
+  **The file name depends on the release channel** (`Qb()` in the binary:
+  `opencode.db` on `latest`/`dev`/`beta`/`next`/`prod`, `opencode-<channel>.db`
+  otherwise), which is why the pinned npm build and a Homebrew install share one
+  login rather than quietly having two.
+- **Without an OpenCode credential every model that costs anything is
+  disabled**, leaving the free Zen tier and nothing else — measured as 7 models
+  against a paid account's full list. It is not an error and nothing says so:
+  the provider transform sets `apiKey: "public"` and then disables every model
+  with a non-zero input cost unless `OPENCODE_API_KEY`, an active console
+  connection or a configured key is present. So "OpenCode only offers me a
+  handful of odd models" is the symptom of *no credential*, not of a model list
+  that needs refreshing.
+- **Domo reads that store and must never refresh it.** OpenCode's refresh call
+  (`${server}/auth/device/token`, `grant_type=refresh_token`) writes the
+  refresh token the server answers with back over the stored one, so a second
+  holder of the old token is relying on the server not to invalidate it — the
+  rotation hazard `~/.claude` is never copied for. `readOpenCodeCredential`
+  takes the access token as it is and leaves the refresh token where it found
+  it; an expired token is reported, not renewed.
 - **Resolve the adapter entry from `process.cwd()`.** The production bundle runs
   from a virtual module path, so `createRequire(import.meta.url).resolve(...)`
   fails there. `adapterEntry()` tries cwd first, then `import.meta.url`, then

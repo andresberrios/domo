@@ -81,11 +81,11 @@ describe('ensureRuntimeVolume', () => {
     expect(script).toContain('npm install --prefix /opt/domo/adapters')
     expect(script).toContain('@agentclientprotocol/claude-agent-acp@0.78.0')
     expect(script).toContain('@agentclientprotocol/codex-acp@1.12.0')
-    expect(script).toContain('opencode-ai@1.18.28')
+    expect(script).toContain('@opencode/cli@2.0.14')
     // The absolute node: npm's own shims say `#!/usr/bin/env node`, and the environment's
     // image is not required to have a node at all.
     expect(script).toContain('exec /opt/domo/node/bin/node /opt/domo/adapters/node_modules/')
-    expect(script).toContain('exec /opt/domo/adapters/node_modules/opencode-ai/bin/opencode.exe acp')
+    expect(script).toContain('exec /opt/domo/adapters/node_modules/@opencode/cli/bin/opencode.exe acp')
     expect(script.trim().endsWith('touch /opt/domo/.ready')).toBe(true)
   })
 
