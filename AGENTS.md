@@ -1060,10 +1060,15 @@ things that are easy to get wrong.
   The collision is **not** between `opencode` and `opencode-go`, which is what
   it looks like it ought to be: `opencode-go/*` is absent from the list unless
   `OPENCODE_API_KEY` is set, so a session authenticated from the sqlite store
-  alone never sees it and never collides with it. And the adapter's own default
-  on a fresh authenticated session is **`opencode/claude-opus-5-5`**, which is
-  metered: for OpenCode, "it works now" and "it costs per token now" arrive
-  together.
+  alone never sees it and never collides with it. **The adapter's own default
+  follows the credential**, which is why the key is worth having rather than
+  merely sufficient: with no key it is `opencode/claude-opus-5-5`, metered per
+  token, so "it works now" and "it costs per token now" would arrive together;
+  with `OPENCODE_API_KEY` set the Go provider appears (measured: 130 models
+  becomes 160) and the default moves to `opencode-go/mimo-v2.6-pro`, which the
+  subscription covers. So `defaultAgentModels` is right to stay empty — pinning
+  an id here would freeze a catalogue that moves, and OpenCode already picks
+  from the cheaper side once it can see it.
 - **The two adapters share not one permission-mode id, so nothing may hard-code
   a list and the default is per adapter.** Claude Code answers `default`
   ("Manual") / `acceptEdits` / `plan` / `auto` / `bypassPermissions` — the last
@@ -1635,8 +1640,10 @@ and permissions are end to end because a permission is a row.
   `opencode models` run against both binaries, and on the `cost.input > 0`
   transform read out of the source, not on this number. What *is* reproducible
   is that a priced model is unusable without a key (`provider.no-route`).
-  **Not** verified against a paid account: that a real key completes a turn,
-  and whether the org id ever has to be supplied.
+  A real service-account key has since been exercised: `pnpm test:agents` ran
+  20/20 on the host against one, so a key does complete turns, and **the org id
+  never had to be supplied** — the key alone reaches inference and the console
+  serves the org id inside `/api/config` anyway.
 - **What makes OpenCode ask is a path outside `cwd`, and nothing else did.**
   Driven over real ACP on a free model with the client capabilities Domo
   advertises, on 2.0.14. Reading `/etc/hosts` with the `read` tool raises one
