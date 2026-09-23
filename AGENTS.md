@@ -384,6 +384,38 @@ things that are easy to get wrong.
   `retire_dev_environment` refuse a target that contains the calling agent's own
   session — killing your own adapter process mid-tool-call leaves the response
   undelivered.
+- **A retirement is finished when Docker no longer has the resources, not when
+  `docker` exited.** Every cleanup step used to be `allowFailure` plus a
+  `.catch(() => {})`, so a `volume rm` refused because something else still had
+  the volume mounted reported success and **nothing ever looked again** —
+  measured once as a whole checkout left on a machine, referenced by nothing,
+  permanently. What makes that recoverable rather than merely retryable is that
+  a retired environment **keeps its row** and every Docker name it owns is
+  derived from its id (`dev-env/leftovers.ts`), so the leftovers of a failed
+  cleanup are findable by name hours later. `dev-env/reconcile.ts` compares what
+  Docker has against what the rows claim, removes the difference and writes what
+  survived to `dev_environments.leftovers` — which `pruneRetiredRecords` now
+  refuses to drop a row over, because a row that is gone makes its leftover
+  unattributable for ever. Whether a removal worked is decided by *observing*,
+  never by an exit code: `docker volume rm` fails identically for a volume in
+  use and for one that was never created, and an unreachable daemon answers an
+  empty `volume ls` that reads exactly like a clean machine. **Attribution is
+  positive, and that is the whole safety argument** — a resource goes only
+  because a row claims it by name (retired ⇒ all four; any row ⇒ whatever a
+  cleanup wrote down as owed, which is how the wreckage of a failed
+  `createEnvironment` is claimed), so a live environment's workspace volume (the
+  only copy of an agent's work), the shared hash-named runtime and browser
+  volumes, and a second install's resources on the same daemon are never
+  candidates. Sweeping by prefix instead would be one `docker volume ls` away
+  from destroying work nobody can get back, and ids are random so it buys
+  nothing. A prefixed resource no row accounts for at all — a second install's,
+  or a leftover of a retirement from before this existed, whose row was pruned
+  while there was nothing to keep it — is **named in the log and left exactly
+  where it is**, because this database cannot tell those two apart and the cost
+  of being wrong is somebody else's checkout. It runs after every retirement, at
+  boot, and on a retry **armed by state rather than by a clock**: with nothing
+  owed there is no timer, and an install that has never made an environment
+  never asks Docker anything at all.
 - **Whether a session can start is derived, and the guard cannot live in one
   place.** A session has one stored visibility state, `archived`; whether it can
   *run* is a question about the place it ran — is its environment retired, is
@@ -1501,6 +1533,18 @@ and permissions are end to end because a permission is a row.
   import returns it synchronously to whoever asked and the modal shows it, and
   an agent resolving a merge in a container nobody is working in produces a
   resolution nobody reviews.
+- **The leftover sweep was verified against a real daemon, and the orphan that
+  prompted it was not.** `pnpm test:docker` covers the refusal end to end — two
+  busybox containers sharing one volume, a retirement that reports the volume it
+  could not remove and records it on the row, a second sweep that removes it
+  once the holder has gone, and a live environment's volume untouched beside it
+  — and putting `allowFailure` back on the removal fails that test, so it bites.
+  **Not** verified: the retry timer's own scheduling (nothing winds the clock),
+  the janitor inside a real Nitro boot, and the workspace volume this was
+  written for, which is on the developer's machine and not reachable from the
+  container the work was done in. If its environment row is still there, the
+  next boot removes it; if the row was already pruned, Domo will deliberately
+  never touch it and the log will name it.
 - **The dirty-checkout fix was verified against a real daemon**, `pnpm
   test:docker` green (5 files, 67 tests, 851 s cold). Both directions were
   asserted end to end from a dirty fixture: a `discard` environment whose

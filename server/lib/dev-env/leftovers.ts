@@ -99,6 +99,40 @@ export function planLeftoverRemoval(input: {
   ))
 }
 
+/**
+ * The shared volumes, which are nobody's environment and have their own
+ * collectors (`collectRuntimeVolumes` / `collectBrowserVolumes`). Named by a
+ * hash of what is pinned inside them, so no row will ever claim one.
+ */
+function isSharedVolume(name: string): boolean {
+  const prefix = resourcePrefix()
+  return name.startsWith(`${prefix}runtime-`) || name.startsWith(`${prefix}browser-`)
+}
+
+/**
+ * Present resources that no row accounts for at all — **reported, never
+ * removed.**
+ *
+ * This is the case Domo cannot safely act on and must not pretend it can: a
+ * second install on the same daemon, or a leftover whose row was pruned before
+ * there was anything to keep it. Removing one would mean assuming this database
+ * is the only account of what is on this machine, and the cost of being wrong
+ * is somebody else's checkout. Saying so is free.
+ */
+export function unattributedResources(input: {
+  environments: Array<{ id: string }>
+  present: ObservedResources
+}): string[] {
+  const known = new Set(input.environments.flatMap(
+    environment => environmentResources(environment.id).map(resource => `${resource.kind} ${resource.name}`)
+  ))
+  return [
+    ...input.present.containers.map(name => `container ${name}`),
+    ...input.present.volumes.filter(name => !isSharedVolume(name)).map(name => `volume ${name}`),
+    ...input.present.images.map(name => `image ${name}`)
+  ].filter(entry => !known.has(entry))
+}
+
 /** The argv that removes one. `--volumes` takes the anonymous volumes a container owns outright. */
 export function removeArgs(leftover: Leftover): string[] {
   if (leftover.kind === 'container') return ['rm', '--force', '--volumes', leftover.name]

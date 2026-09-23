@@ -4,6 +4,7 @@ import {
   observeEnvironmentResources,
   planLeftoverRemoval,
   removeLeftovers,
+  unattributedResources,
   type Leftover
 } from './leftovers'
 
@@ -35,11 +36,16 @@ export interface CleanupReport {
   removed: Leftover[]
   /** Claimed, still there, and not removable this time. Each with why. */
   leftovers: Array<Leftover & { error: string }>
+  /**
+   * Prefixed resources no row accounts for. Never removed — see
+   * `unattributedResources` — and named so a person can decide.
+   */
+  unattributed: string[]
   /** Set when Docker could not be asked at all: nothing was removed and nothing was recorded. */
   unreachable?: string
 }
 
-const EMPTY: CleanupReport = { removed: [], leftovers: [] }
+const EMPTY: CleanupReport = { removed: [], leftovers: [], unattributed: [] }
 
 /** How long the janitor waits before looking again while anything is still owed. */
 const RETRY_MIN_MS = 60_000
@@ -59,13 +65,13 @@ function describe(leftover: Leftover): string {
  */
 export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   const environments = await listDevEnvironments(undefined, true)
+  // No environment has ever existed, so nothing on this daemon can be Domo's.
+  // Worth the early return: an install that does not use development
+  // environments at all must not log a Docker error every half hour.
+  if (!environments.length) return EMPTY
   const claimants = environments.filter(
     environment => environment.retiredAt || environment.leftovers.length
   )
-  // Nothing has ever been retired and nothing is owed, so there is nothing a
-  // pass could legitimately remove. Worth the early return: an install with no
-  // Docker at all must not log a daemon error every half hour for no reason.
-  if (!claimants.length) return EMPTY
 
   let present
   try {
@@ -73,6 +79,7 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   } catch (error) {
     return { ...EMPTY, unreachable: error instanceof Error ? error.message : String(error) }
   }
+  const unattributed = unattributedResources({ environments, present })
 
   const outcome = await removeLeftovers(planLeftoverRemoval({ environments: claimants, present }))
   const remaining = new Map<string, EnvironmentLeftover[]>()
@@ -86,7 +93,7 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   }
   // A row that was only being kept because it still owed something can go now.
   if (outcome.removed.length) await pruneRetiredRecords()
-  return { removed: outcome.removed, leftovers: outcome.failed }
+  return { removed: outcome.removed, leftovers: outcome.failed, unattributed }
 }
 
 /**
@@ -110,6 +117,7 @@ class EnvironmentJanitor {
   private delay = RETRY_MIN_MS
   private chain: Promise<unknown> = Promise.resolve()
   private lastUnreachable: string | null = null
+  private lastUnattributed: string | null = null
 
   start(): void {
     void this.sweep()
@@ -153,6 +161,13 @@ class EnvironmentJanitor {
       this.lastUnreachable = null
       for (const removed of report.removed) {
         console.warn(`[dev-env] removed leftover ${describe(removed)} from retired environment ${removed.environmentId}`)
+      }
+      if (report.unattributed.length && this.lastUnattributed !== report.unattributed.join(',')) {
+        this.lastUnattributed = report.unattributed.join(',')
+        console.warn(
+          `[dev-env] ${report.unattributed.join(', ')} look like Domo's and belong to no environment record. `
+          + 'Left alone: nothing here can tell them from another install\'s. Remove them by hand if they are yours.'
+        )
       }
       for (const left of report.leftovers) {
         console.warn(

@@ -409,13 +409,27 @@ describe('a cleanup that Docker refuses', () => {
     expect(fake.images).toEqual(['domo-dev-env_live'])
   })
 
-  it('asks Docker nothing at all when no row claims anything', async () => {
+  it('asks Docker nothing at all when no environment has ever existed', async () => {
     daemon({ volumes: ['domo-dev-env_1-workspace'] })
-    repo.listDevEnvironments.mockResolvedValue([environment()])
+    repo.listDevEnvironments.mockResolvedValue([])
 
     await reconcileEnvironmentResources()
 
+    // An install that does not use development environments must not log a
+    // daemon error every half hour for nothing.
     expect(dockerCalls()).toEqual([])
+  })
+
+  it('names a resource no row accounts for, and leaves it exactly where it is', async () => {
+    const fake = daemon({ volumes: ['domo-dev-env_pruned-workspace'] })
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+
+    const report = await reconcileEnvironmentResources()
+
+    // It may be a second install's, and this database cannot tell. Saying so is
+    // free; acting on it would cost somebody else their checkout.
+    expect(report.unattributed).toEqual(['volume domo-dev-env_pruned-workspace'])
+    expect(fake.volumes).toEqual(['domo-dev-env_pruned-workspace'])
   })
 
   it('records nothing when Docker cannot be asked, rather than calling it clean', async () => {

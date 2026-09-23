@@ -54,7 +54,7 @@ const devEnvironments = vi.hoisted(() => ({
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
   // What a cleanup with a working daemon reports: nothing left over.
-  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [] }))
+  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [] }))
 }))
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)

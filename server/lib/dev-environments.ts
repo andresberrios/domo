@@ -507,7 +507,7 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
  */
 export async function retireEnvironment(id: string): Promise<CleanupReport> {
   const environment = await getDevEnvironment(id)
-  if (!environment) return { removed: [], leftovers: [] }
+  if (!environment) return { removed: [], leftovers: [], unattributed: [] }
   stopEnvironmentForwarders(id)
   await removeContainer(containerReference(environment))
   await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
@@ -528,6 +528,7 @@ export async function retireEnvironment(id: string): Promise<CleanupReport> {
   return {
     removed: report.removed.filter(leftover => leftover.environmentId === id),
     leftovers: report.leftovers.filter(leftover => leftover.environmentId === id),
+    unattributed: report.unattributed,
     unreachable: report.unreachable
   }
 }

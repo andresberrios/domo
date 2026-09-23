@@ -6,6 +6,7 @@ import {
   environmentResources,
   planLeftoverRemoval,
   removeArgs,
+  unattributedResources,
   workspaceVolumeName
 } from '../../server/lib/dev-env/leftovers'
 
@@ -129,6 +130,35 @@ describe('planning a removal', () => {
     expect(planned({
       environments: [RETIRED],
       present: { containers: [], volumes: [], images: [] }
+    })).toEqual([])
+  })
+})
+
+describe('what no row accounts for', () => {
+  it('is named but never planned for removal', () => {
+    const present = {
+      containers: [],
+      volumes: ['domo-dev-env_pruned-workspace', 'domo-dev-env_1-workspace'],
+      images: []
+    }
+
+    expect(unattributedResources({ environments: [RETIRED], present }))
+      .toEqual(['volume domo-dev-env_pruned-workspace'])
+    expect(planned({ environments: [RETIRED], present }))
+      .toEqual(['volume domo-dev-env_1-workspace'])
+  })
+
+  it('says nothing about the shared volumes, which are nobody\'s environment', () => {
+    expect(unattributedResources({
+      environments: [RETIRED],
+      present: { containers: [], volumes: ['domo-dev-runtime-abc123', 'domo-dev-browser-def456'], images: [] }
+    })).toEqual([])
+  })
+
+  it('counts a live environment\'s own resources as accounted for', () => {
+    expect(unattributedResources({
+      environments: [environment()],
+      present: { containers: ['domo-dev-env_1'], volumes: ['domo-dev-env_1-workspace'], images: ['domo-dev-env_1'] }
     })).toEqual([])
   })
 })
