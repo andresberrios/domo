@@ -551,7 +551,7 @@ describe('scheduled agent tasks', () => {
 describe('resolving which project or environment the user meant', () => {
   it('matches a project on a partial name', async () => {
     repo.listProjects.mockResolvedValue([project()])
-    projects.retireProjectCascade.mockResolvedValue(undefined)
+    projects.retireProjectCascade.mockResolvedValue({ leftovers: [] })
 
     await voiceTools.retire_project!.handler({ project: 'domo' }, ctx)
 
@@ -568,7 +568,7 @@ describe('resolving which project or environment the user meant', () => {
   it('matches an environment on a partial name', async () => {
     repo.listDevEnvironments.mockResolvedValue([environment()])
     projects.retireProjectEnvironment.mockResolvedValue({
-      sessions: [], cronJobsDisabled: 0, subscriptionsRemoved: 0, permissionsCancelled: 0
+      sessions: [], cronJobsDisabled: 0, subscriptionsRemoved: 0, permissionsCancelled: 0, leftovers: []
     })
 
     await voiceTools.retire_dev_environment!.handler({ environment: 'auth' }, ctx)
@@ -618,7 +618,7 @@ describe('retire_project', () => {
     repo.listProjects.mockResolvedValue([project()])
 
     await expect(voiceTools.retire_project!.handler({ project: 'prj_1' }, ctx))
-      .resolves.toEqual({ id: 'prj_1', retired: true })
+      .resolves.toEqual({ id: 'prj_1', retired: true, leftovers: [] })
     expect(projects.retireProjectCascade).toHaveBeenCalledWith('prj_1')
   })
 })
@@ -712,7 +712,8 @@ describe('retire_dev_environment', () => {
       sessions: [{ id: 'ag_1', title: 'Auth refactor' }],
       cronJobsDisabled: 0,
       subscriptionsRemoved: 0,
-      permissionsCancelled: 0
+      permissionsCancelled: 0,
+      leftovers: []
     })
 
     // Named rather than counted: the user may well have been talking about one
@@ -721,9 +722,28 @@ describe('retire_dev_environment', () => {
       .resolves.toEqual({
         id: 'env_1',
         retired: true,
-        sessionsStoodDown: [{ id: 'ag_1', title: 'Auth refactor' }]
+        sessionsStoodDown: [{ id: 'ag_1', title: 'Auth refactor' }],
+        leftovers: []
       })
     expect(projects.retireProjectEnvironment).toHaveBeenCalledWith('env_1')
+  })
+
+  it('tells the model what Docker would not remove, rather than claiming a clean retirement', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+    projects.retireProjectEnvironment.mockResolvedValue({
+      sessions: [],
+      cronJobsDisabled: 0,
+      subscriptionsRemoved: 0,
+      permissionsCancelled: 0,
+      leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'volume is in use' }]
+    })
+
+    // The whole point of the feature: a retirement that leaves gigabytes behind
+    // must not sound like one that did not.
+    await expect(voiceTools.retire_dev_environment!.handler({ environment: 'env_1' }, ctx))
+      .resolves.toMatchObject({
+        leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'volume is in use' }]
+      })
   })
 })
 

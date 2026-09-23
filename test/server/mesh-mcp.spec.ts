@@ -53,7 +53,8 @@ const devEnvironments = vi.hoisted(() => ({
   })),
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
-  retireEnvironment: vi.fn(async () => {})
+  // What a cleanup with a working daemon reports: nothing left over.
+  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [] }))
 }))
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
@@ -625,7 +626,7 @@ describe('projects and dev environments', () => {
       projectId: project.id
     })).body)
 
-    expect(body).toEqual({ id: project.id, retired: true })
+    expect(body).toEqual({ id: project.id, retired: true, leftovers: [] })
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
@@ -720,7 +721,10 @@ describe('projects and dev environments', () => {
       environmentId: environment.id
     })).body)
 
-    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [] })
+    // `leftovers` is what Docker would not remove: empty here and normally, and
+    // reported rather than swallowed, so a peer agent is not told a retirement
+    // was clean when gigabytes are still on the disk.
+    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [], leftovers: [] })
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
