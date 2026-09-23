@@ -137,6 +137,22 @@ const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
   }
 }
 
+/**
+ * Whether the adapter names the tool in its ACP `tool_call` event.
+ *
+ * Claude Code and Codex do. OpenCode does not — an MCP call arrives as
+ * `title: "execute"`, `kind: "other"`, `rawInput: {}`, with the tool's own name
+ * nowhere in the payload, so anything asserting on the name is measuring the
+ * adapter's reporting format rather than what the tool did. The behaviour
+ * assertions either side of this are adapter-neutral and are the ones that
+ * matter.
+ */
+const NAMES_TOOL_CALLS: Record<AgentAdapter, boolean> = {
+  'claude-code': true,
+  codex: true,
+  opencode: false
+}
+
 /** Start a session in the shared environment, on the cheap model. */
 async function start(adapter: AgentAdapter, options: { modeId?: string, host?: boolean } = {}) {
   const { acpManager } = await import('../../server/lib/acp/manager')
@@ -280,13 +296,23 @@ describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev e
       'nothing fetched the probe page, so no browser ran in the container'
     ).toBeGreaterThan(0)
 
-    // And the adapter was offered the server and routed a call to it. Asserted
-    // on the tool names rather than on the reply, which is a model's wording.
-    const toolNames = (await eventsOfType(session.id, 'tool_call'))
-      .map(event => JSON.stringify(event.payload))
-      .join(' ')
-    expect(toolNames, 'no browser tool call was recorded').toMatch(/browser_/)
+    // …and it came back through the browser rather than by some other route:
+    // the marker is only in the rendered page.
     expect(await assistantText(session.id)).toContain(PROBE_MARKER)
+
+    // Which tool was called is only assertable on an adapter that says.
+    // OpenCode reports every MCP tool call as `title: "execute"`, `kind:
+    // "other"`, `rawInput: {}` — the tool's own name appears nowhere in the
+    // ACP event, so this regex cannot pass for it however well the browser
+    // works. Measured against a purpose-built stdio MCP server: OpenCode
+    // spawned it, sent `initialize`, `tools/list` and `tools/call`, and the
+    // result came back — reported as `execute` throughout.
+    if (NAMES_TOOL_CALLS[adapter]) {
+      const toolNames = (await eventsOfType(session.id, 'tool_call'))
+        .map(event => JSON.stringify(event.payload))
+        .join(' ')
+      expect(toolNames, 'no browser tool call was recorded').toMatch(/browser_/)
+    }
   }, HOUR / 4)
 
   it('reaches Domo\'s mesh from inside the container, authenticated as itself', async () => {

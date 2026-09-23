@@ -179,8 +179,13 @@ and important case that nothing else exercises.
   in the same process, because it has to be reachable from inside the container
   at a URL the test knows. A hit on `/probe` is the assertion that matters:
   nothing else in the process can produce one, so it means a real Chromium in
-  the container really fetched a page. The reply's wording is a model's, so the
-  other assertions are on the recorded `tool_call` names.
+  the container really fetched a page. **The `tool_call` name check is per
+  adapter** (`NAMES_TOOL_CALLS`): OpenCode reports every MCP call as
+  `title: "execute"` with the tool's name nowhere in the payload, so that regex
+  fails for it however well the browser works — it measures the reporting
+  format, not the browser. Do not "fix" it by accepting `execute`; that would
+  pass whether the browser ran or not. The hit on `/probe` and the marker in
+  the reply are the adapter-neutral assertions and they stay unconditional.
 - **Keep the prompts single-turn and the models cheap.** `haiku` for Claude and
   `gpt-5.6-luna` for Codex, chosen off a real `session/new` — and note neither id
   is guessable (Claude lists `haiku`, not `claude-haiku-4-5`; Codex has no

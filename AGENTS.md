@@ -688,6 +688,21 @@ things that are easy to get wrong.
   and each spawn gets fresh `mcpServers` (both `session/new` and
   `session/load`). Do not put the token on `agent_sessions` either — that table
   is streamed to the browser through Electric.
+- **OpenCode takes stdio MCP servers despite advertising `{http: true, sse:
+  false}`, and names none of the tools it calls.** Both halves are measured
+  against a purpose-built stdio MCP server handed to a real `session/new`: it
+  spawned the process, sent `initialize`, `notifications/initialized`,
+  `tools/list` and `tools/call`, and the result came back to the model. So
+  `mcpCapabilities` is not the whole story for stdio, and the browser server —
+  the only stdio one Domo ships — does work there. But **every MCP tool call
+  arrives over ACP as `title: "execute"`, `kind: "other"`, `rawInput: {}`**,
+  with the tool's own name nowhere in the payload; only the
+  `tool_call_update` carries the result. Anything keying on a tool *name* —
+  a test assertion, a transcript card, a UI that groups by tool — gets nothing
+  useful out of an OpenCode session, and an assertion that looks for one fails
+  however well the tool worked. That is what the browser test in `agents-live`
+  hit, and why its name check is now per adapter while the behaviour checks
+  either side of it are not.
 - **The mesh is gated on `agentCapabilities.mcpCapabilities.http`**, read from
   the adapter's `initialize` response. An adapter that does not advertise it
   gets no `domo` server rather than one it would fail to connect to, and
