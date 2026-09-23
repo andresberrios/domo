@@ -135,16 +135,16 @@ describe('OpenCode', () => {
     delete process.env.NUXT_OPENCODE_ACP_ENTRY
   })
 
-  it('passes the console key under both names, and no login store', async () => {
+  it('passes the console key, and no login store', async () => {
     process.env.NUXT_OPENCODE_API_KEY = 'console-key'
     process.env.NUXT_OPENAI_API_KEY = 'openai-test'
     const env = await adapterEnv('opencode', true, noGh, noKey)
 
-    // Two names, two jobs: `OPENCODE_API_KEY` is the in-binary gate that
-    // enables the priced models, `OPENCODE_CONSOLE_TOKEN` is what the console's
-    // own provider definition substitutes to authenticate them.
+    // One variable, measured: it is what makes a priced model routable at all.
+    // `OPENCODE_CONSOLE_TOKEN` is the name the console puts in the provider
+    // definition it serves and it changes nothing, so it is not passed.
     expect(env.OPENCODE_API_KEY).toBe('console-key')
-    expect(env.OPENCODE_CONSOLE_TOKEN).toBe('console-key')
+    expect(env.OPENCODE_CONSOLE_TOKEN).toBeUndefined()
     expect(env.OPENAI_API_KEY).toBe('openai-test')
     // OpenCode 2 dropped `OPENCODE_AUTH_CONTENT`; passing it would be a silent
     // no-op, and its own store is sqlite that nothing here may hand over —
@@ -157,7 +157,6 @@ describe('OpenCode', () => {
     const env = await adapterEnv('opencode', true, noGh, storedKey('stored-key'))
 
     expect(env.OPENCODE_API_KEY).toBe('stored-key')
-    expect(env.OPENCODE_CONSOLE_TOKEN).toBe('stored-key')
   })
 
   it('gives a container a permission policy and leaves the host on OpenCode\'s own', async () => {

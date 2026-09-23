@@ -285,18 +285,15 @@ export async function adapterEnv(
     )
     if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey
     if (openAiKey) env.OPENAI_API_KEY = openAiKey
-    if (consoleKey) {
-      // Two variables, two measured jobs, one value. `OPENCODE_API_KEY` is
-      // compiled into the binary and is the gate that decides whether the
-      // priced models are enabled at all — without it every model with a
-      // non-zero input cost is disabled and only the free tier is offered.
-      // `OPENCODE_CONSOLE_TOKEN` is not in the binary anywhere: it is the name
-      // the *console* puts in the provider definition it serves, which the CLI
-      // resolves through its generic `{env:…}` substitution. So it is the
-      // server's to rename, and this is the pair that works today.
-      env.OPENCODE_API_KEY = consoleKey
-      env.OPENCODE_CONSOLE_TOKEN = consoleKey
-    }
+    // One variable does the whole job, which was measured rather than assumed.
+    // With nothing set, a priced model answers `provider.no-route` — it is not
+    // routable at all. With `OPENCODE_API_KEY` set it answers "authentication
+    // required" instead, so the model is reachable and the key is what is being
+    // checked, and the `opencode-go` provider appears in the model list for the
+    // first time. `OPENCODE_CONSOLE_TOKEN` — the name the console puts in the
+    // provider definition it serves — changes nothing at any stage, and setting
+    // both is indistinguishable from setting this one, so it is not passed.
+    if (consoleKey) env.OPENCODE_API_KEY = consoleKey
     if (configContent) env.OPENCODE_CONFIG_CONTENT = configContent
     if (!inContainer) {
       if (process.env.OPENCODE_CONFIG) env.OPENCODE_CONFIG = process.env.OPENCODE_CONFIG

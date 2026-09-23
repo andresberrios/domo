@@ -17,7 +17,7 @@ compaction cut, formatters, settings reconciliation, `.domo.json` parsing and va
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database), the whole ACP client against a fake agent on a pair of pipes, and the voice runtime with Google replaced by a recorder (which model it asks for, and what context a connect is told after a conversation has been folded); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
 | `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Opt in. |
-| `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login. Opt in. |
+| `agents-live` | `test/agents/*.live.spec.ts` | all three coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login **and** an OpenCode console key. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
 them but a label; `test/server` and `test/e2e` share one because they have the
@@ -138,12 +138,22 @@ so the framing and the handshake order are the real ones.
 ## The `agents-live` layer
 
 `pnpm test:agents`. One environment (`docker: false`, so unprivileged and quick)
-shared by every session, and both adapters run in it in turn — a supported and
-important case that nothing else exercises.
+shared by every session, and all three adapters run in it in turn — a supported
+and important case that nothing else exercises.
 
 - **Its `globalSetup` names everything that is missing at once**, not one thing
-  per run: the database, the daemon, `NUXT_CLAUDE_CODE_OAUTH_TOKEN`, and a Codex
-  login. No skip, no opt-out, same rule as every other service-backed project.
+  per run: the database, the daemon, `NUXT_CLAUDE_CODE_OAUTH_TOKEN`, a Codex
+  login, and `NUXT_OPENCODE_API_KEY`. No skip, no opt-out, same rule as every
+  other service-backed project. OpenCode has no fallback for that key — a
+  container cannot use a host `opencode auth login`, and without a key every
+  priced model answers `provider.no-route`.
+- **`beforeAll` pins `openCodePermission` to `ask` on both surfaces.** Domo's
+  default for an environment is `allow`, which would suppress the very prompt
+  the shared permission test asserts; pinning it means these tests describe the
+  adapter rather than the current default. The one test that is *about* the
+  setting flips it itself and restores it. OpenCode's model is pinned as an
+  exact id for a related reason: with a key the adapter lists `opencode/*` and
+  `opencode-go/*` together, and a bare name is refused as ambiguous.
 - **The mesh server runs in the test process, bound to every interface.** It has
   to be this process — the token secret is `randomBytes(32)` at module scope and
   a token minted here verifies only here. The wildcard is what makes it

@@ -616,14 +616,15 @@ things that are easy to get wrong.
   `opencode.db` on `latest`/`dev`/`beta`/`next`/`prod`, `opencode-<channel>.db`
   otherwise), which is why the pinned npm build and a Homebrew install share one
   login rather than quietly having two.
-- **Without an OpenCode credential every model that costs anything is
-  disabled**, leaving the free Zen tier and nothing else — measured as 7 models
-  against a paid account's full list. It is not an error and nothing says so:
-  the provider transform sets `apiKey: "public"` and then disables every model
-  with a non-zero input cost unless `OPENCODE_API_KEY`, an active console
-  connection or a configured key is present. So "OpenCode only offers me a
-  handful of odd models" is the symptom of *no credential*, not of a model list
-  that needs refreshing.
+- **Without an OpenCode credential nothing that costs anything can run**, and
+  it is not an error and nothing says so. The provider transform sets
+  `apiKey: "public"` and disables every model with a non-zero input cost unless
+  `OPENCODE_API_KEY`, an active console connection or a configured key is
+  present; a priced model then answers `provider.no-route` when prompted. So
+  "OpenCode only offers me a handful of odd models", or "every model I pick
+  refuses to run", is the symptom of *no credential* rather than of a model
+  list that needs refreshing. **Do not read the length of the list as the
+  signal** — see the verification note; it is not stable.
 - **That login rotates, so it is read and never carried — a container gets a
   console key or nothing.** OpenCode's refresh call
   (`${server}/auth/device/token`, `grant_type=refresh_token`) writes the
@@ -640,18 +641,21 @@ things that are easy to get wrong.
   A container therefore gets `resolveOpenCodeApiKey` — `NUXT_OPENCODE_API_KEY`,
   then the `openCodeApiKey` Settings row — or it gets nothing, which is the
   same shape `claude setup-token` is for Claude Code and for the same reasons.
-- **`OPENCODE_API_KEY` and `OPENCODE_CONSOLE_TOKEN` are one value with two
-  jobs, and only the first is OpenCode's own.** `OPENCODE_API_KEY` is compiled
-  into the binary and is the *gate*: the provider transform disables every
-  model whose input cost is non-zero unless it is set (or a console connection
-  or a configured `apiKey` exists), which is why an unauthenticated OpenCode
-  offers exactly the free tier and says nothing about why.
-  `OPENCODE_CONSOLE_TOKEN` appears nowhere in the binary — it is the name the
-  **console** puts in the provider definition it serves, resolved through the
-  CLI's generic `{env:…}` substitution, so the server can rename it and every
-  client will follow. `adapterEnv` sets both from the one key; if OpenCode
-  sessions lose their paid models after a console-side change, that second
-  name is the thing to re-read off `/console/api/config`.
+- **`OPENCODE_API_KEY` is the whole mechanism, and `OPENCODE_CONSOLE_TOKEN` is
+  a red herring.** The second name is real — it is what the **console** puts in
+  the provider definition it serves, resolved through the CLI's generic
+  `{env:…}` substitution — but it appears nowhere in the binary and, measured,
+  it does nothing at any stage. Three runs with a deliberately invalid key
+  settle it: with nothing set a priced model answers `provider.no-route`, so it
+  is not reachable at all; with `OPENCODE_API_KEY` set the same model answers
+  `Authentication required`, so it became routable and the key is what is being
+  checked; with `OPENCODE_CONSOLE_TOKEN` set instead the answer is byte-identical
+  to setting nothing, and setting **both** is indistinguishable from setting
+  `OPENCODE_API_KEY` alone. So `adapterEnv` passes one variable.
+  `OPENCODE_API_KEY` also does something the console page does not suggest: it
+  is what makes the **`opencode-go` provider appear in the model list at all**
+  (30 models, absent without it — which is why a host session authenticated
+  from the sqlite store sees none of them).
 - **OpenCode has no permission mode, so the policy is a config block.** Its
   `mode` option offers `build` and `plan` and neither is one — Build's own
   description says it "executes tools based on configured permissions". Nothing
@@ -1038,13 +1042,13 @@ things that are easy to get wrong.
   flatten the provider prefix out of a model id** for the same reason — the
   prefix is the only thing on screen that says which is about to be spent.
   This is the `ANTHROPIC_API_KEY` hazard in a second costume.
-  Two things that are *not* true and look like they should be: the collision is
-  not between `opencode` and `opencode-go`, and **`opencode-go/*` is not in the
-  list at all** — the console's own config advertises that provider with 30
-  open-weight models and the adapter offers zero of them, so nothing may assume
-  the flat subscription is selectable. And the adapter's own default on a fresh
-  authenticated session is **`opencode/claude-opus-5-5`**, which is metered: for
-  OpenCode, "it works now" and "it costs per token now" arrive together.
+  The collision is **not** between `opencode` and `opencode-go`, which is what
+  it looks like it ought to be: `opencode-go/*` is absent from the list unless
+  `OPENCODE_API_KEY` is set, so a session authenticated from the sqlite store
+  alone never sees it and never collides with it. And the adapter's own default
+  on a fresh authenticated session is **`opencode/claude-opus-5-5`**, which is
+  metered: for OpenCode, "it works now" and "it costs per token now" arrive
+  together.
 - **The two adapters share not one permission-mode id, so nothing may hard-code
   a list and the default is per adapter.** Claude Code answers `default`
   ("Manual") / `acceptEdits` / `plan` / `auto` / `bypassPermissions` — the last
@@ -1609,12 +1613,15 @@ and permissions are end to end because a permission is a row.
   is still `true` (so the mesh gate still passes), the modes are still the
   `configOptions` entry with `category: "mode"` and still `build` / `plan` with
   no top-level `modes` object, and the model ids are still provider-prefixed.
-  The same probe is what confirms the free-tier diagnosis from the other side:
-  with no credential it offers exactly the seven `opencode/*-free` models and
-  nothing else, which is the list the bug report describes. **Not** verified
-  against a paid account: that a key really restores the full list through
-  Domo, whether `OPENCODE_API_KEY` alone is enough or `OPENCODE_CONSOLE_TOKEN`
-  is genuinely needed beside it, and whether the org id ever has to be supplied.
+  **How many models an unauthenticated session lists is not stable, so do not
+  assert on it.** The same container with an empty `credential` table answered
+  7 on the first run after install and 71 on every run since, and a warm home
+  answers 75 — the free-tier diagnosis rests on the user's own symptom, on
+  `opencode models` run against both binaries, and on the `cost.input > 0`
+  transform read out of the source, not on this number. What *is* reproducible
+  is that a priced model is unusable without a key (`provider.no-route`).
+  **Not** verified against a paid account: that a real key completes a turn,
+  and whether the org id ever has to be supplied.
 - **What makes OpenCode ask is a path outside `cwd`, and nothing else did.**
   Driven over real ACP on a free model with the client capabilities Domo
   advertises, on 2.0.14. Reading `/etc/hosts` with the `read` tool raises one
@@ -1634,16 +1641,23 @@ and permissions are end to end because a permission is a row.
   `external_directory` a guardrail against *accidental* drift — worth keeping,
   because an agent is not trying to evade it — and **not something to document
   or rely on as containment**.
-- **OpenCode is not in `agents-live`, and its entries there are type
-  completeness rather than coverage.** `MODELS` and `ASKS` in
-  `test/agents/agents.live.spec.ts` have an `opencode` key because they are
-  `Record<AgentAdapter, …>` and the compiler requires one; the `describe.each`
-  runs `codex` and `claude-code` only, and the layer's `globalSetup` gates on a
-  Claude token and a Codex login and asks for no OpenCode credential at all. So
-  **nothing in any suite exercises a real OpenCode permission**, and a change to
-  the policy above cannot break a live test because there is not one. Adding it
-  means adding a console-key gate that would fail the layer for everyone without
-  one, which is a decision rather than a chore.
+- **`agents-live` now runs all three adapters, and gates on an OpenCode console
+  key to do it.** It used to run `codex` and `claude-code` only, while `MODELS`
+  and `ASKS` carried `opencode` keys purely because they are
+  `Record<AgentAdapter, …>` — coverage that looked present and was not. The
+  layer's `globalSetup` therefore asks for `NUXT_OPENCODE_API_KEY` alongside
+  the Claude token and the Codex login, and **`pnpm test:agents` fails without
+  one**: there is no fallback, because a container cannot use a host
+  `opencode auth login` and a priced model without a key answers
+  `provider.no-route`.
+  Two things in there are load-bearing. `beforeAll` pins
+  `openCodePermission` to `ask` on both surfaces, so every test describes the
+  *adapter* rather than whatever Domo's default happens to be — the default for
+  an environment is `allow`, which would suppress the very prompt the shared
+  permission test asserts. And the OpenCode model is pinned as an **exact** id
+  (`opencode-go/glm-5.3-flash`), because with a key set the adapter lists
+  `opencode/*` and `opencode-go/*` together and a bare name is refused as
+  ambiguous rather than guessed at.
 - **The OpenCode usage endpoint is right and its *scale* is not established.**
   `/zen/go/v1/usage` answered 200 to a real service-account key with exactly
   the `rolling` / `weekly` / `monthly` shape `normalizeOpenCodeUsage` already

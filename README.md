@@ -591,10 +591,11 @@ log each other out. A service-account key is durable, revocable and meant for a
 headless caller, with no refresh chain to fork. Mint one in the
 [console](https://opencode.ai/console).
 
-Without a key an OpenCode session still starts — it just offers **only the free
-models**, because OpenCode disables every model with a non-zero cost when it has
-no credential. If OpenCode seems to have lost most of its model list, that is
-what has happened.
+Without a key an OpenCode session still starts, but **only its free models
+actually work** — anything priced fails as unroutable, and OpenCode disables
+models with a non-zero cost when it has no credential. If OpenCode has lost
+most of its model list, or every model you pick refuses to run, that is what
+has happened.
 
 **Once it is authenticated, check the model.** OpenCode offers two providers in
 one list and they are separate bills: `openai/*` goes to your own ChatGPT
