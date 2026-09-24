@@ -116,6 +116,7 @@ function session(
     lastActivityAt: null,
     archived: false,
     usage: null,
+    spawnedBy: null,
     ...overrides
   }
 }

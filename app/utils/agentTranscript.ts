@@ -47,7 +47,10 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,
   mesh_outbound: payload => `Sent to agent "${payload?.toTitle ?? payload?.to}": ${payload?.message}`,
   mesh_spawned: payload => `Spawned agent "${payload?.title}"`,
-  mesh_message: payload => `Told the voice supervisor: ${payload?.message}`,
+  mesh_message: payload => `Told you: ${payload?.message}${
+    payload?.attachments?.length ? ` (attached ${payload.attachments.join(', ')})` : ''}`,
+  mesh_permission_answered: payload =>
+    `Answered a permission request from agent "${payload?.title}": ${payload?.optionId ?? 'rejected'}`,
   cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
   environment_retired: () =>
     'Its development environment was retired — this session can no longer be started'

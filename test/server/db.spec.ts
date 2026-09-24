@@ -26,7 +26,8 @@ const TABLES = [
   'cron_runs',
   'mcp_servers',
   'usage_limits',
-  'usage_providers'
+  'usage_providers',
+  'notifications'
 ]
 
 /**

@@ -44,6 +44,7 @@ const newAgentOpen = ref(false)
               block
               class="justify-start"
             />
+            <NotificationsButton />
             <UButton
               label="New coding agent"
               icon="i-lucide-plus"
@@ -61,6 +62,7 @@ const newAgentOpen = ref(false)
           <UButton icon="i-lucide-mic" :loading="creating" aria-label="New conversation" @click="startConversation" />
           <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New coding agent" @click="newAgentOpen = true" />
           <UButton to="/schedules" icon="i-lucide-clock-3" color="neutral" variant="ghost" aria-label="Schedules" />
+          <NotificationsButton collapsed />
         </div>
       </template>
 

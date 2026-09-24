@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { agentEvent, textChunk, thoughtChunk, userMessage } from '../helpers/events'
 import type { VoiceToolContext } from '../../server/lib/voice/tools'
+import type { AgentEvent } from '../../shared/types'
 
 /**
  * The voice agent only ever touches Domo through these handlers, and it is a
@@ -18,6 +19,14 @@ const repo = {
   getVoiceSession: vi.fn(),
   getCronJob: vi.fn(),
   listAgentEvents: vi.fn(),
+  // The digest reads through the window query; here that is the real query's
+  // contract applied to whatever a test put in `listAgentEvents`.
+  listAgentEventsWindow: vi.fn(async (_id: string, input: { types: string[], afterSeq?: number, beforeSeq?: number, limit: number }) => {
+    const events: AgentEvent[] = (await repo.listAgentEvents()).filter((event: AgentEvent) => input.types.includes(event.type))
+    return input.afterSeq === undefined
+      ? events.filter(event => event.seq < (input.beforeSeq ?? Infinity)).reverse().slice(0, input.limit)
+      : events.filter(event => event.seq > input.afterSeq!).slice(0, input.limit)
+  }),
   listAgentSessions: vi.fn(),
   listCronJobs: vi.fn(),
   listDevEnvironments: vi.fn(),

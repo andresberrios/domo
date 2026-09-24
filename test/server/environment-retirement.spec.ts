@@ -277,13 +277,16 @@ describe('the read-only guarantee', () => {
     await expect(callMeshTool(caller.id, 'subscribe_to_agent', { agentId: target.id }))
       .rejects.toThrow(UnstartableSessionError)
 
-    // Still listed, and marked — a peer's transcript is worth reading, and
-    // being told up front beats finding out by being refused.
-    const listed = await callMeshTool(caller.id, 'list_agents', {}) as {
-      agents: Array<{ id: string, startable: boolean, cannotStart?: string }>
-    }
-    expect(listed.agents.find(item => item.id === target.id))
-      .toMatchObject({ startable: false, cannotStart: expect.stringContaining('feature-auth') })
+    // Off the default list, where it would only be noise on a long-lived
+    // install; listed and marked when asked for, because a peer's transcript
+    // is still worth reading; and the reason is one call away.
+    type Listed = { agents: Array<{ id: string, startable?: boolean }> }
+    const listed = await callMeshTool(caller.id, 'list_agents', {}) as Listed
+    expect(listed.agents.map(item => item.id)).not.toContain(target.id)
+    const all = await callMeshTool(caller.id, 'list_agents', { includeUnstartable: true }) as Listed
+    expect(all.agents.find(item => item.id === target.id)).toMatchObject({ startable: false })
+    await expect(callMeshTool(caller.id, 'get_agent', { agentId: target.id }))
+      .resolves.toMatchObject({ startable: false, cannotStart: expect.stringContaining('feature-auth') })
   })
 
   it('still lets a session that cannot run be archived and renamed', async () => {

@@ -31,6 +31,12 @@ const session = computed<AgentSession | null>(() => synced.value ?? fetched.valu
 const environment = computed(() =>
   allEnvironments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
 )
+/** The agent that spawned this one over the mesh: the edge its cross-agent powers follow. */
+const { all: allSessions } = useAgentSessions()
+const spawner = computed(() => {
+  const id = session.value?.spawnedBy
+  return id ? { id, title: allSessions.value.find(item => item.id === id)?.title ?? id } : null
+})
 const startability = useSessionStartability(session)
 /** Set only when the session cannot run; the sentence to show for it. */
 const blocked = computed(() => startability.value.startable ? null : startability.value.reason)
@@ -166,6 +172,17 @@ const menuItems = computed(() => [
             :label="environment.retiredAt ? `${environment.name} (retired)` : environment.name"
           >
             <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
+          </UBadge>
+          <UBadge
+            v-if="spawner"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            :label="`Spawned by ${spawner.title}`"
+            as="NuxtLink"
+            :to="`/agents/${spawner.id}`"
+          >
+            <template #leading><UIcon name="i-lucide-git-fork" class="size-3" /></template>
           </UBadge>
         </template>
         <template #right>

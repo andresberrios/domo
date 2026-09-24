@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
-import type { DevEnvironment, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
+import type { AgentAdapter, DevEnvironment, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
 import { seedClaudeHome } from './dev-env/claude-home'
@@ -22,7 +22,13 @@ import {
   collectBrowserVolumes,
   ensureBrowserVolume
 } from './dev-env/browser-volume'
-import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
+import {
+  ADAPTER_PACKAGES,
+  collectRuntimeVolumes,
+  ensureRuntimeVolume,
+  pinnedAdapterVersions,
+  RUNTIME_ROOT
+} from './dev-env/runtime-volume'
 import { carryMessage, readHostWorkingTree, reconcileArgs, seedReport } from './dev-env/workspace-seed'
 import { dataDir } from './paths'
 import { getSettings } from './settings'
@@ -242,25 +248,58 @@ async function reconcileWorkingTree(input: {
   })
 }
 
-export async function createEnvironment(input: {
+export interface EnvironmentCreationInput {
   projectId: string
   name: string
   /** What to do with whatever is uncommitted on the host. Defaults to `discard`. */
   workingTree?: WorkingTreeMode
-}): Promise<DevEnvironment & { workspaceSeed: WorkspaceSeedReport }> {
+}
+
+export type CreatedEnvironment = DevEnvironment & { workspaceSeed: WorkspaceSeedReport }
+
+export async function createEnvironment(input: EnvironmentCreationInput): Promise<CreatedEnvironment> {
+  return (await beginEnvironment(input)).built
+}
+
+/**
+ * Check the request and write the `creating` row, then build in the
+ * background. The row is returned as soon as it exists; `built` settles when
+ * the environment is running or has failed, and the row says which either way
+ * (`status`, `lastError`). For a caller that cannot wait minutes for an image
+ * build, which is every agent.
+ */
+export async function beginEnvironment(
+  input: EnvironmentCreationInput
+): Promise<{ environment: DevEnvironment, built: Promise<CreatedEnvironment> }> {
   const project = await getProject(input.projectId)
   if (!project) throw new Error('Project not found')
   if (project.retiredAt) throw new Error('That project has been retired; its environments cannot be recreated.')
   await access(join(project.repoPath, '.git'))
 
   const id = newId('env')
-  const workingTree = input.workingTree ?? 'discard'
   const name = input.name.trim()
   const safeName = safeEnvironmentName(name) || id
   const workspacePath = `/workspaces/${safeName}`
   const containerName = `${resourcePrefix()}${id}`
-  await createDevEnvironmentRow({ id, projectId: project.id, name, containerName, workspacePath })
+  const environment = await createDevEnvironmentRow({ id, projectId: project.id, name, containerName, workspacePath })
+  const built = buildEnvironment({
+    id, name, workspacePath, containerName, project, workingTree: input.workingTree ?? 'discard'
+  })
+  // Whoever holds `built` sees the rejection; this only keeps a caller that
+  // does not from crashing the process. The row already records the failure.
+  built.catch(() => {})
+  return { environment, built }
+}
 
+async function buildEnvironment(input: {
+  id: string
+  name: string
+  workspacePath: string
+  containerName: string
+  project: { id: string, repoPath: string }
+  workingTree: WorkingTreeMode
+}): Promise<CreatedEnvironment> {
+  const { id, name, workspacePath, containerName, project, workingTree } = input
   try {
     // The definition, build contexts and Dockerfiles are read from the project's own
     // checkout; the environment gets a copy in a named volume, never a host directory.
@@ -328,7 +367,8 @@ export async function createEnvironment(input: {
       workspacePath,
       configSource: resolved.source,
       configPath: resolved.displayPath,
-      remoteUser
+      remoteUser,
+      adapterVersions: pinnedAdapterVersions()
     })
 
     // Before anything assumes the image can host an agent. `git config` below is itself
@@ -486,6 +526,49 @@ export async function retireEnvironment(id: string): Promise<void> {
   await collectBrowserVolumes().catch(() => {})
   await retireDevEnvironmentRow(id)
   await pruneRetiredRecords()
+}
+
+/**
+ * The adapter versions an environment runs, which are the ones in the runtime
+ * volume its container mounted at creation — not necessarily the ones Domo
+ * would install today. Recorded at creation; an environment from before that
+ * is asked once, while it is running, and the answer is kept. Null when it has
+ * never been recorded and the container is not running to ask.
+ */
+export async function environmentAdapterVersions(
+  environment: DevEnvironment
+): Promise<Partial<Record<AgentAdapter, string>> | null> {
+  if (environment.adapterVersions) return environment.adapterVersions
+  if (environment.retiredAt || environment.status !== 'running') return null
+  const script = [
+    'const [root, ...names] = process.argv.slice(1)',
+    'const out = {}',
+    'for (const name of names) {',
+    '  try { out[name] = require(`${root}/node_modules/${name}/package.json`).version } catch {}',
+    '}',
+    'process.stdout.write(JSON.stringify(out))'
+  ].join('\n')
+  const packages = Object.entries(ADAPTER_PACKAGES).map(([adapter, entry]) => ({
+    adapter: adapter as AgentAdapter,
+    name: entry.spec.slice(0, entry.spec.lastIndexOf('@'))
+  }))
+  const read = await run('docker', [
+    'exec', containerReference(environment),
+    `${RUNTIME_ROOT}/node/bin/node`, '--eval', script, `${RUNTIME_ROOT}/adapters`, ...packages.map(entry => entry.name)
+  ]).catch(() => null)
+  if (!read) return null
+  let found: Record<string, string>
+  try {
+    found = JSON.parse(read.stdout)
+  } catch {
+    return null
+  }
+  const versions: Partial<Record<AgentAdapter, string>> = {}
+  for (const entry of packages) {
+    if (found[entry.name]) versions[entry.adapter] = found[entry.name]
+  }
+  await updateDevEnvironment(environment.id, { adapterVersions: versions })
+  return versions
 }
 
 export function containerExecArgs(environment: DevEnvironment, env: NodeJS.ProcessEnv = {}): string[] {

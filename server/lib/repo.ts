@@ -15,9 +15,11 @@ import type {
   CronRun,
   DevEnvironment,
   DevEnvironmentPort,
+  DomoNotification,
   McpServer,
   MessageDelivery,
   MessageOrigin,
+  NotificationAttachment,
   PendingPermission,
   Project,
   UsageLimit,
@@ -91,7 +93,8 @@ function mapAgentSession(r: any): AgentSession {
     updatedAt: r.updated_at,
     lastActivityAt: r.last_activity_at,
     archived: r.archived,
-    usage: r.usage ?? null
+    usage: r.usage ?? null,
+    spawnedBy: r.spawned_by ?? null
   }
 }
 
@@ -147,7 +150,8 @@ function mapDevEnvironment(r: any): DevEnvironment {
     lastError: r.last_error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    retiredAt: r.retired_at ?? null
+    retiredAt: r.retired_at ?? null,
+    adapterVersions: r.adapter_versions ?? null
   }
 }
 
@@ -381,7 +385,7 @@ export async function updateDevEnvironment(
   id: string,
   patch: Partial<Pick<DevEnvironment,
     'name' | 'status' | 'lastError' | 'containerName' | 'containerId'
-    | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser'>>
+    | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser' | 'adapterVersions'>>
 ): Promise<DevEnvironment | null> {
   const sets = ['updated_at = $2']
   const params: any[] = [id, nowIso()]
@@ -398,6 +402,10 @@ export async function updateDevEnvironment(
   if (patch.configSource !== undefined) push('config_source', patch.configSource)
   if (patch.configPath !== undefined) push('config_path', patch.configPath)
   if (patch.remoteUser !== undefined) push('remote_user', patch.remoteUser)
+  if (patch.adapterVersions !== undefined) {
+    params.push(JSON.stringify(patch.adapterVersions))
+    sets.push(`adapter_versions = $${params.length}::jsonb`)
+  }
   const row = await queryOne(`update dev_environments set ${sets.join(', ')} where id = $1 returning *`, params)
   if (!row) return null
   const environment = mapDevEnvironment(row)
@@ -821,15 +829,17 @@ export async function createAgentSession(input: {
   modeId?: string | null
   model?: string | null
   devEnvironmentId?: string | null
+  spawnedBy?: string | null
 }): Promise<AgentSession> {
   const now = nowIso()
   const row = await queryOne(
     `insert into agent_sessions
-       (id, voice_session_id, adapter, title, cwd, dev_environment_id, status, mode_id, model, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, 'starting', $7, $8, $9, $9) returning *`,
+       (id, voice_session_id, adapter, title, cwd, dev_environment_id, status, mode_id, model, spawned_by,
+        created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, 'starting', $7, $8, $9, $10, $10) returning *`,
     [
       newId('ag'), input.voiceSessionId ?? null, input.adapter, input.title, input.cwd,
-      input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, now
+      input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, input.spawnedBy ?? null, now
     ]
   )
   bus.publish({ type: 'agent-list-changed' })
@@ -895,6 +905,25 @@ export async function updateAgentSession(
   return mapAgentSession(row)
 }
 
+/**
+ * Whether `ancestorId` spawned `agentId`, directly or through agents it
+ * spawned in turn. The ownership edge the mesh ties cross-agent powers to.
+ */
+export async function isSpawnedBy(agentId: string, ancestorId: string): Promise<boolean> {
+  const row = await queryOne(
+    `with recursive chain(id, spawned_by, depth) as (
+       select id, spawned_by, 0 from agent_sessions where id = $1
+       union all
+       select a.id, a.spawned_by, c.depth + 1
+         from agent_sessions a join chain c on a.id = c.spawned_by
+        where c.depth < 32
+     )
+     select 1 from chain where spawned_by = $2 limit 1`,
+    [agentId, ancestorId]
+  )
+  return !!row
+}
+
 export async function deleteAgentSession(id: string): Promise<void> {
   await query('delete from agent_sessions where id = $1', [id])
   bus.publish({ type: 'agent-list-changed' })
@@ -909,6 +938,24 @@ export async function listAgentEvents(
     `select * from agent_events where agent_session_id = $1 and seq > $2
      order by seq asc limit $3`,
     [agentSessionId, since, limit]
+  )
+  return rows.map(mapAgentEvent)
+}
+
+/**
+ * One window of the event log, restricted to `types`: the rows after
+ * `afterSeq` oldest first, or the rows before `beforeSeq` newest first.
+ */
+export async function listAgentEventsWindow(
+  agentSessionId: string,
+  input: { types: string[], afterSeq?: number, beforeSeq?: number, limit: number }
+): Promise<AgentEvent[]> {
+  const backwards = input.afterSeq === undefined
+  const rows = await query(
+    `select * from agent_events
+      where agent_session_id = $1 and type = any($2::text[]) and seq ${backwards ? '<' : '>'} $3
+      order by seq ${backwards ? 'desc' : 'asc'} limit $4`,
+    [agentSessionId, input.types, backwards ? (input.beforeSeq ?? Number.MAX_SAFE_INTEGER) : input.afterSeq, input.limit]
   )
   return rows.map(mapAgentEvent)
 }
@@ -1280,6 +1327,26 @@ export async function claimCronJob(
   }
 }
 
+/**
+ * Record a firing somebody asked for now, outside the schedule. The job's
+ * next run is left where it was; the run is listed with the scheduled ones.
+ */
+export async function startManualCronRun(id: string): Promise<CronRun> {
+  const now = nowIso()
+  const row = await queryOne(
+    `insert into cron_runs (id, cron_job_id, scheduled_for, started_at, status)
+     values ($1, $2, $3, $3, 'running') returning *`,
+    [newId('crun'), id, now]
+  )
+  await query(
+    `update cron_jobs set last_run_at = $2, last_status = 'running', last_error = null,
+       run_count = run_count + 1, updated_at = $2 where id = $1`,
+    [id, now]
+  )
+  bus.publish({ type: 'cron-job-changed', cronJobId: id })
+  return mapCronRun(row)
+}
+
 /** Disable a due job whose schedule cannot produce another occurrence. */
 export async function failCronJobSchedule(
   id: string,
@@ -1418,12 +1485,46 @@ export async function deleteInboxMessage(id: string): Promise<AgentInboxMessage 
 /* subscriptions between agents                                        */
 /* ------------------------------------------------------------------ */
 
-export async function addAgentSubscription(subscriberId: string, targetId: string): Promise<void> {
+/**
+ * Follow `targetId` for `remainingTurns` turn ends, or indefinitely with null.
+ * Subscribing again replaces the window rather than adding to it.
+ */
+export async function addAgentSubscription(
+  subscriberId: string,
+  targetId: string,
+  remainingTurns: number | null = null
+): Promise<void> {
   await query(
-    `insert into agent_subscriptions (subscriber_id, target_id, created_at)
-     values ($1, $2, $3) on conflict do nothing`,
-    [subscriberId, targetId, nowIso()]
+    `insert into agent_subscriptions (subscriber_id, target_id, created_at, remaining_turns)
+     values ($1, $2, $3, $4)
+     on conflict (subscriber_id, target_id) do update set remaining_turns = excluded.remaining_turns`,
+    [subscriberId, targetId, nowIso(), remainingTurns]
   )
+}
+
+/**
+ * Count one turn end against every subscription to `targetId`, and drop the
+ * ones it used up. Returns each subscriber with what it has left afterwards:
+ * null for indefinite, 0 for the one that just ended.
+ */
+export async function consumeSubscriptionTurn(
+  targetId: string
+): Promise<Array<{ subscriberId: string, remainingTurns: number | null }>> {
+  const rows = await query<{ subscriber_id: string, remaining_turns: number | null }>(
+    `update agent_subscriptions
+        set remaining_turns = case when remaining_turns is null then null else greatest(remaining_turns - 1, 0) end
+      where target_id = $1
+      returning subscriber_id, remaining_turns`,
+    [targetId]
+  )
+  await query('delete from agent_subscriptions where target_id = $1 and remaining_turns <= 0', [targetId])
+  return rows.map(row => ({ subscriberId: row.subscriber_id, remainingTurns: row.remaining_turns }))
+}
+
+/** Drop every subscription `subscriberId` holds, so nothing queues notes for it. */
+export async function removeSubscriptionsHeldBy(subscriberId: string): Promise<number> {
+  const rows = await query('delete from agent_subscriptions where subscriber_id = $1 returning target_id', [subscriberId])
+  return rows.length
 }
 
 export async function removeAgentSubscription(subscriberId: string, targetId: string): Promise<boolean> {
@@ -1455,11 +1556,25 @@ export async function listAgentSubscriptions(subscriberId: string): Promise<Agen
     'select * from agent_subscriptions where subscriber_id = $1 order by created_at asc',
     [subscriberId]
   )
-  return rows.map(row => ({
+  return rows.map(mapSubscription)
+}
+
+/** Who follows this agent, with how long for. */
+export async function listAgentFollowers(targetId: string): Promise<AgentSubscription[]> {
+  const rows = await query(
+    'select * from agent_subscriptions where target_id = $1 order by created_at asc',
+    [targetId]
+  )
+  return rows.map(mapSubscription)
+}
+
+function mapSubscription(row: any): AgentSubscription {
+  return {
     subscriberId: row.subscriber_id,
     targetId: row.target_id,
-    createdAt: row.created_at
-  }))
+    createdAt: row.created_at,
+    remainingTurns: row.remaining_turns ?? null
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1585,4 +1700,53 @@ export async function updateMcpServer(id: string, patch: Partial<McpServer>): Pr
 export async function deleteMcpServer(id: string): Promise<void> {
   await query('delete from mcp_servers where id = $1', [id])
   bus.publish({ type: 'mcp-changed' })
+}
+
+/* ------------------------------------------------------------------ */
+/* notifications for the human                                         */
+/* ------------------------------------------------------------------ */
+
+function mapNotification(r: any): DomoNotification {
+  return {
+    id: r.id,
+    agentSessionId: r.agent_session_id ?? null,
+    agentTitle: r.agent_title,
+    message: r.message,
+    urgent: !!r.urgent,
+    attachments: r.attachments ?? [],
+    createdAt: r.created_at,
+    seenAt: r.seen_at ?? null
+  }
+}
+
+export async function createNotification(input: {
+  id?: string
+  agentSessionId: string | null
+  agentTitle: string
+  message: string
+  urgent: boolean
+  attachments: NotificationAttachment[]
+}): Promise<DomoNotification> {
+  const row = await queryOne(
+    `insert into notifications (id, agent_session_id, agent_title, message, urgent, attachments, created_at)
+     values ($1, $2, $3, $4, $5, $6::jsonb, $7) returning *`,
+    [
+      input.id ?? newId('nt'), input.agentSessionId, input.agentTitle, input.message, input.urgent,
+      JSON.stringify(input.attachments), nowIso()
+    ]
+  )
+  return mapNotification(row)
+}
+
+export async function getNotification(id: string): Promise<DomoNotification | null> {
+  const row = await queryOne('select * from notifications where id = $1', [id])
+  return row ? mapNotification(row) : null
+}
+
+/** Mark notifications seen: the ones named, or every unseen one when none are. */
+export async function markNotificationsSeen(ids?: string[]): Promise<number> {
+  const rows = ids
+    ? await query('update notifications set seen_at = $1 where id = any($2::text[]) and seen_at is null returning id', [nowIso(), ids])
+    : await query('update notifications set seen_at = $1 where seen_at is null returning id', [nowIso()])
+  return rows.length
 }

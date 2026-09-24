@@ -1,5 +1,11 @@
 import { acpManager } from './acp/manager'
-import { deleteAgentSession, getAgentSession, pruneRetiredRecords, updateAgentSession } from './repo'
+import {
+  deleteAgentSession,
+  getAgentSession,
+  pruneRetiredRecords,
+  removeSubscriptionsHeldBy,
+  updateAgentSession
+} from './repo'
 import type { AgentSession } from '../../shared/types'
 
 /**
@@ -16,10 +22,16 @@ import type { AgentSession } from '../../shared/types'
  * and the mesh tool all used to reach for `updateAgentSession` directly, and
  * two of the three left a live adapter attached to a session that had just
  * vanished from every list.
+ *
+ * Archiving also drops the subscriptions the session holds: a note queued for
+ * a session nobody is looking at would only pile up in its inbox and wake it
+ * the next time anyone starts it. Subscriptions *to* it are left alone; it can
+ * be brought back and prompted, and its followers still want to hear then.
  */
 export async function setAgentSessionArchived(id: string, archived: boolean): Promise<AgentSession | null> {
   if (!archived) return updateAgentSession(id, { archived: false })
   acpManager.stop(id)
+  await removeSubscriptionsHeldBy(id)
   return updateAgentSession(id, { archived: true, status: 'stopped' })
 }
 

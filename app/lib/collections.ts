@@ -59,6 +59,7 @@ export const permissionsCollection = () => collection('agent_permissions', { tab
 export const cronJobsCollection = () => collection('cron_jobs', { table: 'cron_jobs' })
 export const projectsCollection = () => collection('projects', { table: 'projects' })
 export const devEnvironmentsCollection = () => collection('dev_environments', { table: 'dev_environments' })
+export const notificationsCollection = () => collection('notifications', { table: 'notifications' })
 
 /** Account-wide plan limits, so every page can show them without a fetch. */
 export const usageLimitsCollection = () => collection('usage_limits', {

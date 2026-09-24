@@ -117,6 +117,11 @@ do $$ begin
   end if;
 end $$;
 
+-- The adapter versions in the runtime volume the container mounted, by
+-- adapter. Fixed at docker run, so written once: at creation, or the first
+-- time a running container is asked.
+alter table dev_environments add column if not exists adapter_versions jsonb;
+
 create table if not exists dev_environment_ports (
   id text primary key,
   dev_environment_id text not null references dev_environments(id) on delete cascade,
@@ -189,6 +194,10 @@ alter table agent_sessions add column if not exists steering boolean;
 drop index if exists agent_sessions_retired;
 alter table agent_sessions drop column if exists retired_at;
 alter table agent_sessions drop column if exists retired_reason;
+-- The agent that spawned this one over the mesh, if one did. The ownership
+-- edge that cross-agent powers (scheduling for it, answering its permission
+-- requests, withdrawing its queued messages) are tied to.
+alter table agent_sessions add column if not exists spawned_by text references agent_sessions(id) on delete set null;
 
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.
@@ -339,6 +348,10 @@ create table if not exists agent_subscriptions (
   primary key (subscriber_id, target_id)
 );
 create index if not exists agent_subscriptions_target on agent_subscriptions(target_id);
+-- How many more turn ends the subscriber wants to hear about; the row goes
+-- when it reaches zero. Null is indefinite, which is what every row made
+-- before the column existed meant.
+alter table agent_subscriptions add column if not exists remaining_turns integer;
 
 -- Prompts that wake an existing agent on a recurring cron schedule or at one
 -- specific instant. next_run_at is materialised so the scheduler only needs an
@@ -410,6 +423,22 @@ create table if not exists mcp_servers (
   updated_at text not null
 );
 
+-- What an agent wanted the human to see, kept until the human has seen it: a
+-- voice session may not be live, and a line in one agent's transcript is
+-- somewhere nobody is looking. Attachments are copied under the data
+-- directory and listed here by name and path, never inlined.
+create table if not exists notifications (
+  id text primary key,
+  agent_session_id text references agent_sessions(id) on delete set null,
+  agent_title text not null,
+  message text not null,
+  urgent boolean not null default false,
+  attachments jsonb not null default '[]'::jsonb,
+  created_at text not null,
+  seen_at text
+);
+create index if not exists notifications_unseen on notifications(created_at) where seen_at is null;
+
 -- One row per rate-limit window per provider, account-wide: the limits belong
 -- to the developer rather than to any one session, and have to be readable when
 -- nothing is running at all. Fed by the poller and, between polls, by what
@@ -466,6 +495,7 @@ alter table dev_environments replica identity full;
 alter table dev_environment_ports replica identity full;
 alter table usage_limits replica identity full;
 alter table usage_providers replica identity full;
+alter table notifications replica identity full;
 `
 
 let pool: pg.Pool | null = null

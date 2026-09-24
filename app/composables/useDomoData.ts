@@ -6,6 +6,7 @@ import {
   cronJobsCollection,
   devEnvironmentsCollection,
   mcpServersCollection,
+  notificationsCollection,
   permissionsCollection,
   projectsCollection,
   usageLimitsCollection,
@@ -19,6 +20,7 @@ import type {
   AgentSession,
   CronJob,
   DevEnvironment,
+  DomoNotification,
   McpServer,
   PendingPermission,
   Project,
@@ -92,7 +94,8 @@ function toAgentSession(row: any): AgentSession {
     updatedAt: row.updated_at,
     lastActivityAt: row.last_activity_at ?? null,
     archived: !!row.archived,
-    usage: row.usage ?? null
+    usage: row.usage ?? null,
+    spawnedBy: row.spawned_by ?? null
   }
 }
 
@@ -146,7 +149,8 @@ export function useProjects() {
       repoPath: row.repo_path,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      retiredAt: row.retired_at ?? null
+      retiredAt: row.retired_at ?? null,
+      adapterVersions: row.adapter_versions ?? null
     })).sort((a, b) => a.name.localeCompare(b.name))
   )
   const projects = computed(() =>
@@ -174,7 +178,8 @@ export function useDevEnvironments() {
       lastError: row.last_error ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      retiredAt: row.retired_at ?? null
+      retiredAt: row.retired_at ?? null,
+      adapterVersions: row.adapter_versions ?? null
     })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   )
   const environments = computed(() =>
@@ -424,4 +429,23 @@ export function useUsageLimits() {
     providers.value.find(row => row.provider === provider) ?? null
 
   return { limits, providers, forProvider, providerState, isReady }
+}
+
+/** What agents asked the human to see, newest first. */
+export function useNotifications() {
+  const { data, isReady } = useLiveQuery(q => q.from({ notification: notificationsCollection() }))
+  const notifications = computed<DomoNotification[]>(() =>
+    (data.value ?? []).map((row: any) => ({
+      id: row.id,
+      agentSessionId: row.agent_session_id ?? null,
+      agentTitle: row.agent_title,
+      message: row.message,
+      urgent: !!row.urgent,
+      attachments: row.attachments ?? [],
+      createdAt: row.created_at,
+      seenAt: row.seen_at ?? null
+    })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  )
+  const unseen = computed(() => notifications.value.filter(notification => !notification.seenAt))
+  return { notifications, unseen, isReady }
 }

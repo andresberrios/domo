@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -9,6 +9,8 @@ import {
   appendAgentEvent,
   createAgentSession,
   createDevEnvironmentRow,
+  createNotification,
+  getNotification,
   createPermission,
   createProject,
   enqueueInboxMessage,
@@ -17,6 +19,7 @@ import {
   listProjects,
   retireDevEnvironmentRow
 } from '../../server/lib/repo'
+import { attachmentPath } from '../../server/lib/notifications'
 import { APP_BUILD_DIR } from '../helpers/app-build'
 import { startElectricStub } from '../helpers/electric-stub'
 import type {
@@ -565,6 +568,54 @@ describe('mcp servers', () => {
 
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({ statusMessage: message })
+  })
+})
+
+describe('notifications', () => {
+  async function withFiles(files: Array<{ name: string, mimeType: string, data: string }>) {
+    const notification = await createNotification({
+      agentSessionId: null,
+      agentTitle: 'watcher',
+      message: 'look',
+      urgent: false,
+      attachments: files.map(file => ({ name: file.name, mimeType: file.mimeType, size: file.data.length }))
+    })
+    await mkdir(join(process.env.NUXT_DATA_DIR!, 'notifications', notification.id), { recursive: true })
+    for (const [index, file] of files.entries()) await writeFile(attachmentPath(notification.id, index), file.data)
+    return notification
+  }
+
+  it('serves an image inline, and anything that could run script only as a sandboxed download', async () => {
+    const notification = await withFiles([
+      { name: 'shot.png', mimeType: 'image/png', data: 'png' },
+      { name: 'evil.svg', mimeType: 'image/svg+xml', data: '<svg onload="alert(1)"/>' }
+    ])
+
+    const image = await fetch(`/api/notifications/${notification.id}/attachments/0`)
+    expect(image.status).toBe(200)
+    expect(image.headers.get('content-type')).toBe('image/png')
+    expect(image.headers.get('content-disposition')).toMatch(/^inline/)
+    expect(image.headers.get('content-security-policy')).toMatch(/^sandbox/)
+    await expect(image.text()).resolves.toBe('png')
+
+    const svg = await fetch(`/api/notifications/${notification.id}/attachments/1`)
+    expect(svg.headers.get('content-type')).toBe('application/octet-stream')
+    expect(svg.headers.get('content-disposition')).toMatch(/^attachment/)
+    expect(svg.headers.get('x-content-type-options')).toBe('nosniff')
+
+    expect((await fetch(`/api/notifications/${notification.id}/attachments/2`)).status).toBe(404)
+  })
+
+  it('marks the ones named seen, or all of them', async () => {
+    const one = await withFiles([])
+    const two = await withFiles([])
+
+    await $fetch('/api/notifications/seen', { method: 'POST', body: { ids: [one.id] } })
+    expect((await getNotification(one.id))!.seenAt).not.toBeNull()
+    expect((await getNotification(two.id))!.seenAt).toBeNull()
+
+    await $fetch('/api/notifications/seen', { method: 'POST', body: {} })
+    expect((await getNotification(two.id))!.seenAt).not.toBeNull()
   })
 })
 

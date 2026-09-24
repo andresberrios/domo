@@ -1,9 +1,10 @@
 import { bus } from '../bus'
 import {
+  consumeSubscriptionTurn,
   enqueueInboxMessage,
   getAgentSession,
   latestAgentMessage,
-  listAgentSubscribers,
+  listAgentFollowers,
   listAllSubscriptionTargets
 } from '../repo'
 import { acpManager } from './manager'
@@ -16,6 +17,11 @@ import type { StreamEvent } from '../../../shared/types'
  * ends, and the peer's finishes minutes later. A subscription closes that gap —
  * when the target finishes a turn, stops for a permission, or dies, Domo
  * composes one message and delivers it to each subscriber's inbox.
+ *
+ * A subscription lasts a number of turn ends, or indefinitely. Only a turn
+ * that ends counts: a permission request or an error is worth hearing about
+ * but is not the "it finished" the subscriber is waiting for, so those notify
+ * without using the window up.
  *
  * This listens on the bus rather than being called from `AgentRuntime`, for the
  * same reason the voice runtime does: the notifier needs `acpManager` to
@@ -65,8 +71,11 @@ function trimmed(text: string): string {
  * `queue` and origin `system`: a note is never a reason to cut across work an
  * agent is already doing.
  */
-async function notifySubscribers(targetId: string, what: string): Promise<void> {
-  const subscribers = await listAgentSubscribers(targetId)
+async function notifySubscribers(
+  targetId: string,
+  what: string,
+  subscribers: Array<{ subscriberId: string, remainingTurns: number | null }>
+): Promise<void> {
   if (!subscribers.length) return
 
   const target = await getAgentSession(targetId)
@@ -77,12 +86,12 @@ async function notifySubscribers(targetId: string, what: string): Promise<void> 
     = `Agent ${target.title} (${target.id}) ${what}.`
       + (output ? ` Latest output: ${output}` : '')
 
-  for (const subscriber of subscribers) {
+  for (const { subscriberId: subscriber, remainingTurns } of subscribers) {
     if (subscriber === targetId) continue
     try {
       await enqueueInboxMessage({
         agentSessionId: subscriber,
-        content: [{ type: 'text', text }],
+        content: [{ type: 'text', text: text + windowNote(remainingTurns) }],
         delivery: 'queue',
         origin: 'system'
       })
@@ -91,6 +100,15 @@ async function notifySubscribers(targetId: string, what: string): Promise<void> 
       console.error(`[acp:${subscriber}] could not queue a subscription note`, error)
     }
   }
+}
+
+/** What is left of the subscriber's window, so ending it is never a surprise. */
+function windowNote(remainingTurns: number | null): string {
+  if (remainingTurns === null) return ''
+  if (remainingTurns === 0) {
+    return '\n\n(That was the last update this subscription covered; call subscribe_to_agent to keep following it.)'
+  }
+  return `\n\n(Subscribed for ${remainingTurns} more turn end${remainingTurns === 1 ? '' : 's'}.)`
 }
 
 function handle(event: StreamEvent): Promise<void> | void {
@@ -107,7 +125,8 @@ async function dispatch(event: StreamEvent): Promise<void> {
     if (event.permission.resolvedAt) return
     await notifySubscribers(
       event.agentSessionId,
-      `is waiting for a permission: ${event.permission.title}`
+      `is waiting for a permission: ${event.permission.title} (permission id ${event.permission.id})`,
+      await followers(event.agentSessionId)
     )
     return
   }
@@ -118,22 +137,30 @@ async function dispatch(event: StreamEvent): Promise<void> {
     case 'turn_end':
       await notifySubscribers(
         event.agentSessionId,
-        `finished its turn (${event.event.payload?.stopReason ?? 'end_turn'})`
+        `finished its turn (${event.event.payload?.stopReason ?? 'end_turn'})`,
+        await consumeSubscriptionTurn(event.agentSessionId)
       )
       break
     case 'error':
       await notifySubscribers(
         event.agentSessionId,
-        `stopped with an error: ${event.event.payload?.message ?? 'unknown error'}`
+        `stopped with an error: ${event.event.payload?.message ?? 'unknown error'}`,
+        await followers(event.agentSessionId)
       )
       break
     case 'adapter-exit':
       await notifySubscribers(
         event.agentSessionId,
-        `stopped: its adapter exited (code ${event.event.payload?.code ?? 'unknown'})`
+        `stopped: its adapter exited (code ${event.event.payload?.code ?? 'unknown'})`,
+        await followers(event.agentSessionId)
       )
       break
   }
+}
+
+async function followers(targetId: string) {
+  return (await listAgentFollowers(targetId))
+    .map(entry => ({ subscriberId: entry.subscriberId, remainingTurns: entry.remainingTurns }))
 }
 
 const globalKey = '__domo_subscription_notifier__'

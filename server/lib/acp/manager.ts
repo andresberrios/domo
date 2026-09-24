@@ -1793,6 +1793,8 @@ class AcpManager {
     model?: string | null
     devEnvironmentId?: string | null
     initialPrompt?: string
+    /** The agent spawning this one over the mesh. */
+    spawnedBy?: string | null
   }): Promise<AgentSession> {
     const settings = await getSettings()
     const environment = input.devEnvironmentId
@@ -1812,7 +1814,8 @@ class AcpManager {
       voiceSessionId: input.voiceSessionId ?? null,
       modeId: input.modeId ?? settings.defaultAgentModes[input.adapter ?? 'claude-code'],
       model: input.model?.trim() || null,
-      devEnvironmentId: environment?.id ?? null
+      devEnvironmentId: environment?.id ?? null,
+      spawnedBy: input.spawnedBy ?? null
     })
     // A failed boot is recorded on the session row (status + lastError) so the
     // UI can show it and offer a retry instead of blowing up the request.

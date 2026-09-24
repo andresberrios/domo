@@ -26,7 +26,8 @@ const session: AgentSession = {
   updatedAt: '2026-01-01T00:00:00.000Z',
   lastActivityAt: null,
   archived: false,
-  usage: null
+  usage: null,
+  spawnedBy: null
 }
 
 function render(events: AgentEvent[], permissions: PendingPermission[] = [], condensed = false) {

@@ -111,6 +111,8 @@ export interface AgentSession {
   summary: string | null
   /** Context-window occupancy and session cost, as the adapter last reported them. */
   usage: AgentUsage | null
+  /** The agent that spawned this one over the mesh; null for one a person or the voice agent started. */
+  spawnedBy: string | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -245,6 +247,12 @@ export interface DevEnvironment {
    * them unstartable. Never restorable.
    */
   retiredAt: string | null
+  /**
+   * The version of each adapter in the runtime volume this container mounted.
+   * Null until it has been recorded: at creation, or read from the running
+   * container the first time somebody asks.
+   */
+  adapterVersions: Partial<Record<AgentAdapter, string>> | null
 }
 
 /**
@@ -453,8 +461,11 @@ export interface PendingPermission {
   createdAt: string
   resolvedAt: string | null
   resolvedOptionId: string | null
-  /** `retired` is a request nobody ever answered, because its environment was retired under it. */
-  resolvedBy: 'user' | 'voice-agent' | 'auto' | 'retired' | null
+  /**
+   * `retired` is a request nobody ever answered, because its environment was
+   * retired under it; `agent:<id>` is the agent that spawned the one asking.
+   */
+  resolvedBy: 'user' | 'voice-agent' | 'auto' | 'retired' | `agent:${string}` | null
 }
 
 /**
@@ -502,6 +513,27 @@ export interface AgentSubscription {
   subscriberId: string
   targetId: string
   createdAt: string
+  /** Turn ends still to be told about; the subscription ends at zero. Null is indefinite. */
+  remainingTurns: number | null
+}
+
+/** A file an agent attached to a notification, copied under Domo's data directory. */
+export interface NotificationAttachment {
+  name: string
+  mimeType: string
+  size: number
+}
+
+/** Something an agent wanted the human to see, kept until they have. */
+export interface DomoNotification {
+  id: string
+  agentSessionId: string | null
+  agentTitle: string
+  message: string
+  urgent: boolean
+  attachments: NotificationAttachment[]
+  createdAt: string
+  seenAt: string | null
 }
 
 export type CronScheduleType = 'cron' | 'once'

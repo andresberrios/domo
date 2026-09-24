@@ -2,7 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 
-import { callMeshTool, MESH_TOOLS } from './tools'
+import { callMeshTool, MESH_INSTRUCTIONS, MESH_TOOLS } from './tools'
 import { verifyMeshToken } from './token'
 
 function jsonRpcError(status: number, code: number, message: string): Response {
@@ -15,7 +15,7 @@ function jsonRpcError(status: number, code: number, message: string): Response {
 function meshServer(agentSessionId: string): Server {
   const server = new Server(
     { name: 'domo-agent-mesh', version: '1.0.0' },
-    { capabilities: { tools: { listChanged: false } } }
+    { capabilities: { tools: { listChanged: false } }, instructions: MESH_INSTRUCTIONS }
   )
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: MESH_TOOLS as unknown as any[] }))
@@ -23,7 +23,8 @@ function meshServer(agentSessionId: string): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const result = await callMeshTool(agentSessionId, request.params.name, request.params.arguments)
-      const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+      // Compact: every byte of a result is context the calling agent pays for.
+      const text = typeof result === 'string' ? result : JSON.stringify(result)
       return { content: [{ type: 'text', text }] }
     } catch (error) {
       // A tool that fails is a tool result the agent can read and react to, not

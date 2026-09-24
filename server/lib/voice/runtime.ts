@@ -822,12 +822,10 @@ class VoiceRuntime {
           + `Latest output: ${(agent.summary ?? '').replace(/\s+/g, ' ').slice(0, 500) || '(no text output)'}. `
           + 'Tell the user what happened in one or two sentences.'
         )
-      } else if (agentEvent.type === 'mesh_message') {
-        await this.injectNote(
-          `Agent "${agentEvent.payload?.from ?? 'unknown'}" says: ${agentEvent.payload?.message}. `
-          + 'Relay this to the user.'
-        )
       }
+      // Not `mesh_message`: `notifyHuman` injects that note itself, whatever
+      // the proactive setting, since the agent addressed the human directly.
+      // Relaying it here as well had the supervisor say it twice.
     }
 
     if (event.type === 'permission-changed') {

@@ -37,6 +37,7 @@ const environment: DevEnvironment = {
   createdAt: '2026-01-02T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
   retiredAt: null,
+  adapterVersions: null,
 }
 
 const agent: AgentSession = {
@@ -61,6 +62,7 @@ const agent: AgentSession = {
   lastActivityAt: null,
   usage: null,
   archived: false,
+  spawnedBy: null,
 }
 
 const conversation: VoiceSession = {

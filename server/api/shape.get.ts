@@ -17,7 +17,9 @@ const ALLOWED_TABLES = new Set([
   // Account-wide, and deliberately free of anything secret: no token, no
   // header and no raw response body is ever written to either of them.
   'usage_limits',
-  'usage_providers'
+  'usage_providers',
+  // Attachment files are not in the row, only their names and sizes.
+  'notifications'
 ])
 
 /**

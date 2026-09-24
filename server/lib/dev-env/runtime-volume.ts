@@ -39,6 +39,13 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
   }
 }
 
+/** The version of each adapter the runtime volume built today would hold. */
+export function pinnedAdapterVersions(): Record<AgentAdapter, string> {
+  return Object.fromEntries(Object.entries(ADAPTER_PACKAGES).map(
+    ([adapter, entry]) => [adapter, entry.spec.slice(entry.spec.lastIndexOf('@') + 1)]
+  )) as Record<AgentAdapter, string>
+}
+
 /** Where the volume is mounted in every environment, read-only. */
 export const RUNTIME_ROOT = '/opt/domo'
 
