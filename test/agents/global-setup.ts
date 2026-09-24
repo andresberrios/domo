@@ -11,7 +11,7 @@ import { ensureTestDatabase, unavailableError } from '../helpers/database'
  * Every missing thing is named in one message rather than one per run, because
  * this layer's preconditions are the awkward kind — an account, a daemon and a
  * database — and finding out about them one at a time is three round trips.
- * There is no skip and no opt-out; see test/CLAUDE.md.
+ * There is no skip and no opt-out; see test/AGENTS.md.
  */
 
 function dockerIsUp(): Promise<boolean> {
@@ -41,7 +41,7 @@ export async function setup(): Promise<void> {
   }
   // The one credential with no fallback: a host login is never copied into an
   // environment, so inside a container this token is the only way Claude Code
-  // can authenticate. See README, "Claude authentication".
+  // can authenticate. See README, "Authentication".
   if (!process.env.NUXT_CLAUDE_CODE_OAUTH_TOKEN && !process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     missing.push(
       'NUXT_CLAUDE_CODE_OAUTH_TOKEN is not set. Run `claude setup-token` and put it in .env — '

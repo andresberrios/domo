@@ -12,6 +12,8 @@ or when an adapter acts in an unexpected way. Everything else is in
   different models. To confirm a bump, compare the model option
   *descriptions*. An alias id such as `opus[1m]` can stay the same while the
   model behind it changes.
+- **A daily cron job wakes the host agent `adapter-version-watch` to check for
+  adapter releases.** Do not archive that session: if you do, the job stops.
 - **Do not set Claude Code's `availableModels` to widen the model list.** It is
   an allowlist. It freezes the list, and models added by later bumps stop
   appearing.
