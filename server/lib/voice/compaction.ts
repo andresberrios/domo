@@ -26,9 +26,10 @@ export const COMPACT_CONNECT_TIMEOUT_MS = 6000
 /**
  * The text model that writes the summary. Not the Live model: it cannot do this.
  *
- * Lite by choice, and measured rather than assumed — see the AGENTS.md bullet.
- * A fold is a background job on a few kilobytes of transcript, and the connect
- * path waits on it, so latency is the property that matters.
+ * Lite by choice, and measured: on a fold-sized transcript it answered in about
+ * 1.2 s, against 4–5 s for the flash models, which also returned 503s far more
+ * often, and the summaries were as usable. The connect path waits on a fold, so
+ * latency is the property that matters.
  */
 export function summaryModel(): string {
   return process.env.NUXT_GEMINI_SUMMARY_MODEL || process.env.GEMINI_SUMMARY_MODEL || 'gemini-flash-lite-latest'

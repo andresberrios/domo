@@ -15,6 +15,8 @@ export const DATABASE_URL
 // to be safe as numbers and the UI sorts on them.
 pg.types.setTypeParser(20, value => Number(value))
 
+// A template literal: a backtick in a SQL comment below ends the string, and
+// shows up as a TypeScript error several lines later. Escape it as \`.
 const SCHEMA = /* sql */ `
 create table if not exists settings (
   key text primary key,

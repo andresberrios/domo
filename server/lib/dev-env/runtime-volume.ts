@@ -7,6 +7,10 @@ import { dockerServerArch, resourcePrefix, run } from './docker'
  * Everything pinned into the runtime volume, in one place. Change any of it and the
  * volume gets a new name, so a running environment keeps the one it mounted and the
  * next environment created builds the new one.
+ *
+ * Bump `ADAPTER_PACKAGES` together with `package.json`: host sessions run the
+ * adapters from there, and the two drifting apart gives host and container
+ * sessions different models.
  */
 export const RUNTIME_IMAGE = process.env.NUXT_DEV_ENV_RUNTIME_IMAGE || 'node:22-bookworm-slim'
 export const ADAPTER_PACKAGES: Record<AgentAdapter, {

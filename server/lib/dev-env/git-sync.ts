@@ -20,6 +20,9 @@ import { run } from './docker'
  * arbitrary command and speaks the pack protocol over its stdin/stdout, so
  * `docker exec … git-upload-pack <workspace>` is a perfectly ordinary remote:
  * a real fetch, with real negotiation, where only the missing objects cross.
+ * It is a fetch rather than a bundle copied out because `docker cp` cannot
+ * read a container's tmpfs, and a bundle written into the workspace volume
+ * would dirty the agent's own checkout.
  * The same command serves a push, because git asks it for `git-receive-pack`
  * instead — see `environmentTransport()` for the one character that makes that
  * work.
