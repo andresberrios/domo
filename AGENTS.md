@@ -1490,6 +1490,23 @@ things that are easy to get wrong.
 **`test/CLAUDE.md` is the authoritative guide** — layout, the database
 lifecycle, and the Electric rules. This is the summary.
 
+**Verify it yourself. A browser and a real account are both on the table.**
+Nothing here is the host's job to check. If a change is visual, open it —
+`pnpm dev` is usually already running, and Chromium over the Caddy HTTPS
+address is a couple of tool calls. If it needs a coding agent, run one: **you
+may spend real subscription usage on testing.** Use the cheap models
+(`haiku`, `gpt-5.6-luna`, `opencode-go/glm-5.3-flash`), keep prompts
+single-turn, run a scratch session in `/tmp` rather than a real checkout, and
+archive it when you are done — archiving stops the adapter. Do not loop, do
+not leave a turn running, and do not reach for a live account when a fake
+adapter or a component test answers the same question. Within that, the
+subscriptions cover it and the cost of *not* checking is higher.
+
+A verification note in this file records what was **measured** — including what
+was deliberately left unmeasured and why. It is not a to-do list addressed to
+somebody else. "The host still has to look at it" is not an outcome; if you
+find that sentence, either do the thing or say plainly that it is untested.
+
 **`docker compose up -d` is a precondition of `pnpm test`, not a branch in it.**
 The run takes ~30 s. One Vitest project per *runtime*: a project earns its own
 entry only when it needs a different environment, a different setup file, or a
@@ -1579,12 +1596,13 @@ and permissions are end to end because a permission is a row.
   the code is right or wrong. It was removed rather than left as a false
   negative; the mechanism (`active-class` → `has-[a.row-active]`) is Vue
   Router's own and has to be confirmed by looking at it.
-- **The theme was *not* checked in a rendered browser.** The palette, the font
-  and the sidebar's hover/touch behaviour have been verified only by their
-  contrast arithmetic, by the built CSS and by component tests. The a11y tree will not
-  tell you whether a forest green reads as organic or as swamp, and it will not
-  tell you whether the row actions fit at 390px. **The host still has to look at
-  it** — light and dark, desktop and mobile, over the Caddy HTTPS address.
+- **The theme has been looked at, light and dark, 1440px and 390px.** The green
+  reads as pine rather than swamp and `bark` reads as warm timber rather than
+  grey — which the contrast arithmetic could never have told you. The row
+  actions at 390px are settled by measurement rather than by eye: with every
+  row's buttons forced visible in the mobile drawer, 24 of 24 rows report
+  `scrollWidth === clientWidth`, so the ellipsis, the plus and the count badge
+  fit with nothing clipped.
 - The CSP was verified in Chromium against the production build: dashboard,
   settings, projects, a conversation and an agent transcript, light and dark,
   desktop and mobile, zero violations. The agent page rendered byte-identically
@@ -1602,9 +1620,13 @@ and permissions are end to end because a permission is a row.
   sitting below the fold of its own scrolled column, which is why the panel
   scrolls the choice into view. A `PATCH` round trip was exercised harmlessly
   by re-selecting the value already current — no toast, panel stayed open, row
-  unchanged — and the console was clean throughout. **Not** exercised against a
-  live adapter: a change that the adapter *refuses*, which is the path the
-  "nothing holds the chosen value" design exists for.
+  unchanged — and the console was clean throughout. **A refusal is covered as a
+  test rather than against a live adapter**, because the interesting half is
+  the browser's and a real rejection is hard to provoke on demand: the PATCH
+  endpoint throws, and the panel has to both say so and still show what the row
+  says. That test is the only thing standing between here and somebody adding
+  optimistic state — "reverts on its own" is really "never moved", and the
+  difference is invisible until something refuses.
   `test/nuxt/AgentComposer.spec.ts` covers the rest in happy-dom — the card's
   two lines, a column per setting with `aria-selected` on the chosen one, that
   a reasoning-effort change leaves as `{ config: { effort: 'high' } }`, that
@@ -1616,7 +1638,12 @@ and permissions are end to end because a permission is a row.
   What no component test reaches is the delivery dropdown's *menu*: Reka will
   not open one under happy-dom, so the test takes the items `UDropdownMenu` was
   handed and invokes the one a user would have clicked. The menu itself was
-  opened in Chromium instead.
+  opened in Chromium — including the half only a real OpenCode session can
+  show. Against a live one mid-turn, with `steering` recorded as `false` by its
+  own attach, the Steer row reads "This adapter cannot be steered — it stops
+  the current turn instead" and the placeholder matches; a live Claude Code
+  session beside it still reads "this goes into the turn it is running". Both
+  branches, on real rows rather than fixtures.
 - **The reasoning-effort payloads were read out of both adapters' shipped
   bundles, not assumed.** `buildEffortConfigOption` in claude-agent-acp's
   `session-effort.js` (id `effort`, and `undefined` when the model has no
@@ -1626,17 +1653,21 @@ and permissions are end to end because a permission is a row.
   in the SDK is documented as "the full set of configuration options and their
   current values", which is what the refresh-on-every-set design rests on.
   The fixtures in `test/unit/acp-config-options.spec.ts` are those payloads.
-  **Not** verified against a live account: whether an effort actually changes
-  how either model behaves, and the fast-mode and collaboration-mode options,
-  which no test has ever seen an adapter emit.
+  **A live Claude Code session really does publish the fast-mode option** — it
+  renders as a third column, `On` / `Off`, beside the model and the effort —
+  so the two-value-select shape is observed rather than inferred. Still
+  unmeasured: whether an effort actually changes how a model behaves, and
+  codex-acp's collaboration mode, which nothing has yet seen emitted.
 - **The condensed transcript was covered in happy-dom, not in a browser.**
   `test/nuxt/ActivityGroup.spec.ts` and the `condensed` block of
   `test/nuxt/AgentTranscript.spec.ts` assert the label, the breakdown, the
   failed count, that a click expands to the real `ToolCallCard`s and collapses
   again, and that a pending permission and the running call stay outside the
-  group; `test/unit/condenseTranscript.spec.ts` pins the pass itself. No
-  screenshot: how the row *looks* beside the cards around it, and how it wraps
-  at mobile widths, is still worth a real rendered pass.
+  group; `test/unit/condenseTranscript.spec.ts` pins the pass itself. It has
+  since been seen rendering live at 1440px and 390px, on a session mid-turn:
+  the group row carries its breakdown and an error-toned failed count, the
+  breakdown truncates rather than wrapping at 390px, and the running tool call
+  sits outside the group as its own card — the live tail rule, on screen.
 - **Steering was read out of both adapters' shipped bundles, not assumed.**
   `STEER_METHOD = "_session/steering"` and `_meta: { steering: { supported:
   true } }` in claude-agent-acp's `acp-agent.js`; `SESSION_STEERING_METHOD` and
@@ -1675,10 +1706,11 @@ and permissions are end to end because a permission is a row.
   What Domo does instead is be honest about it — `agent_sessions.steering`
   records what the adapter advertised on the last attach, and the composer's
   delivery picker says a `steer` will interrupt this adapter's turn.
-- The inbox UI was covered by component tests (`test/nuxt/AgentInbox.spec.ts`,
-  `AgentComposer.spec.ts`), **not** by a rendered screenshot. The a11y tree does
-  not tell you whether the panel and the composer's picker sit right above each
-  other correctly at mobile widths; that is still worth a real browser pass.
+- **The inbox UI was seen at 390px** with a real message queued behind a real
+  running turn, on top of the component tests (`test/nuxt/AgentInbox.spec.ts`,
+  `AgentComposer.spec.ts`): the "1 queued" bar, the message card with its
+  take-back control and the composer stack in that order above the keyboard
+  line with nothing overlapping.
 - **Pasting into the composer was verified in Chromium against the running dev
   server**, not only in happy-dom, because a synthetic `DataTransfer` is
   precisely the part a component test cannot vouch for. Over the Caddy HTTPS

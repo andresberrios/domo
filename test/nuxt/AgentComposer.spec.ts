@@ -50,6 +50,8 @@ const patched = vi.fn()
 registerEndpoint('/api/agents/ag_1', {
   method: 'PATCH',
   handler: async (event) => {
+    // The mock is what answers, so a test can make the adapter refuse by
+    // having it throw — see the refusal case below.
     patched(await readBody(event))
     return { id: 'ag_1' }
   }
@@ -622,6 +624,32 @@ describe('AgentComposer settings', () => {
       .map(node => node.textContent?.replace(/\s+/g, ' ').trim())
     expect(models).toContain('GPT-5.4openai')
     expect(models).toContain('GPT-5.4opencode')
+  })
+
+  /**
+   * The whole reason no column holds its own value: the adapter is the
+   * authority, so a change it refuses has to leave the panel showing what the
+   * session is really on. Nothing is written optimistically, so "revert" is
+   * really "never moved" — and this is the test that says so, because the
+   * difference is invisible until something refuses.
+   */
+  it('keeps the adapter\u2019s answer when a change is refused', async () => {
+    patched.mockImplementationOnce(() => {
+      throw createError({ statusCode: 400, statusMessage: 'Unsupported effort for this model' })
+    })
+    const component = await mountSuspended(Harness, { props: { session: session('idle', claude) } })
+    await openSettings(component)
+
+    option('Effort', 'High').click()
+
+    // The failure is told, not swallowed.
+    await vi.waitFor(() => expect(component.text()).toContain('Could not change the effort'))
+    expect(component.text()).toContain('Unsupported effort for this model')
+
+    // And the column still shows what the row says, not what was clicked.
+    expect(option('Effort', 'Medium').getAttribute('aria-selected')).toBe('true')
+    expect(option('Effort', 'High').getAttribute('aria-selected')).toBe('false')
+    expect(component.text()).toContain('Medium \u00b7 Manual')
   })
 
   it('does not spawn a model probe until the panel is opened', async () => {
