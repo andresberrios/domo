@@ -12,7 +12,7 @@ import type { DomoNotification } from '~~/shared/types'
  */
 const props = withDefaults(defineProps<{ collapsed?: boolean }>(), { collapsed: false })
 
-const { notifications, unseen, isReady } = useNotifications()
+const { notifications, unseen } = useNotifications()
 const toast = useToast()
 const open = ref(false)
 const showSeen = ref(false)
@@ -41,14 +41,15 @@ async function markSeen(ids?: string[]) {
   }
 }
 
-const known = new Set<string>()
-let loaded = false
-watch([isReady, unseen], ([ready, list]) => {
-  if (!ready) return
+// Only what arrives while the page is open is toasted. Readiness is no
+// guide to that — the rows can land after the collection says it is ready —
+// so the test is the notification's own time, with a little slack for clocks.
+const openedAt = Date.now() - 10_000
+const toasted = new Set<string>()
+watch(unseen, (list) => {
   for (const notification of list) {
-    if (known.has(notification.id)) continue
-    known.add(notification.id)
-    if (!loaded) continue
+    if (toasted.has(notification.id) || Date.parse(notification.createdAt) < openedAt) continue
+    toasted.add(notification.id)
     toast.add({
       title: `${notification.agentTitle}${notification.urgent ? ' (urgent)' : ''}`,
       description: truncate(notification.message, 200),
@@ -58,7 +59,6 @@ watch([isReady, unseen], ([ready, list]) => {
       actions: [{ label: 'Open', onClick: () => { open.value = true } }]
     })
   }
-  loaded = true
 }, { immediate: true })
 </script>
 

@@ -43,7 +43,8 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
   own schedules through the built-in mesh tools.
 - **Agent mesh** — every coding agent gets a built-in `domo` MCP server, served
   over HTTP by Domo itself, so agents can list each other, hand work over, spawn
-  new peers, subscribe to each other's progress, and page the voice supervisor.
+  new peers, subscribe to each other's progress, and leave you notifications
+  (with files attached) that stay in the sidebar until you have seen them.
   Each session is handed its own bearer token, so a call can only ever act as
   the agent that made it.
 - **Conversations that don't reset** — a Live socket lasts minutes; a
@@ -134,8 +135,11 @@ could not see it, could not cancel it, and it would vanish with the process.
 An agent that hands work to a peer cannot wait for it: its own turn ends long
 before the peer's does. So it can **subscribe**: when the agent it follows
 finishes a turn, stops for a permission, or fails, Domo queues it a short note
-with that agent's latest output. `spawn_agent` subscribes by default. Because
-notes are queued, they never interrupt work of the agent's own.
+with that agent's latest output. A subscription lasts one turn end by default
+("tell me when this is done"), or as many as asked, or indefinitely;
+permission requests and errors are reported without using it up.
+`spawn_agent` subscribes by default. Because notes are queued, they never
+interrupt work of the agent's own.
 
 ### Retiring, archiving and deleting
 
@@ -171,10 +175,11 @@ already in progress. An idle or stopped agent is started automatically when its
 development environment is running; if that environment is stopped, the run
 fails and records the reason in the job's `last_error`.
 
-Coding agents have four authenticated mesh tools for the same lifecycle:
-`schedule_task`, `list_scheduled_tasks`, `update_scheduled_task`, and
-`delete_scheduled_task`. A mesh caller can only see or modify jobs targeting
-its own session. The voice supervisor can schedule, list, and delete jobs for a
+Coding agents have mesh tools for the same lifecycle, plus a test run:
+`schedule_task`, `list_scheduled_tasks`, `update_scheduled_task`,
+`run_scheduled_task` and `delete_scheduled_task`. A mesh caller can read any
+agent's jobs, but can only create or change jobs for its own session and for
+agents it spawned. The voice supervisor can schedule, list, and delete jobs for a
 named agent too. Schedules and their next due time survive server restarts.
 
 ### `.domo.json`
