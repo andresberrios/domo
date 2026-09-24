@@ -47,6 +47,7 @@ function runArgs(input: {
   codexConfigDir?: string | null
   homeOverlay?: HomeOverlay
   browserVolume?: string | null
+  dockerSocket?: string | null
 } = {}): string[] {
   return containerRunArgs({
     environmentId: 'env_1',
@@ -63,7 +64,8 @@ function runArgs(input: {
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
     codexConfigDir: input.codexConfigDir ?? null,
     homeOverlay: input.homeOverlay
-      ?? emptyHomeOverlay({ containerHome: '/home/vscode', workspacePath: '/workspaces/api' })
+      ?? emptyHomeOverlay({ containerHome: '/home/vscode', workspacePath: '/workspaces/api' }),
+    dockerSocket: input.dockerSocket ?? null
   })
 }
 
@@ -109,6 +111,22 @@ describe('mergeImageMetadata', () => {
 
     expect(merged.volumeMounts).toEqual([])
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('/var/run/docker.sock'))
+  })
+
+  it('takes the docker-outside-of-docker Feature\'s CLI and nothing else', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const merged = mergeImageMetadata([{
+      id: 'ghcr.io/devcontainers/features/docker-outside-of-docker:1',
+      entrypoint: '/usr/local/share/docker-init.sh',
+      mounts: [{ source: '/var/run/docker.sock', target: '/var/run/docker-host.sock', type: 'bind' }]
+    }], 'env_1')
+
+    // Its entrypoint would start a socat relay on Docker Desktop, and its
+    // mount is the host socket Domo replaces with the proxy.
+    expect(merged.entrypoints).toEqual([])
+    expect(merged.volumeMounts).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('takes privileged, init, capabilities and security options from any entry', () => {
@@ -170,6 +188,13 @@ describe('keepAliveScript', () => {
       'while sleep 1 & wait $!; do :; done'
     ].join('\n'))
   })
+
+  it('opens the Docker proxy socket to the remote user on every start', () => {
+    const script = keepAliveScript([], { dockerSocket: true }).split('\n')
+
+    expect(script).toContain('[ -S /var/run/docker.sock ] && chmod 666 /var/run/docker.sock')
+    expect(keepAliveScript([])).not.toContain('docker.sock')
+  })
 })
 
 describe('containerRunArgs', () => {
@@ -220,6 +245,23 @@ describe('containerRunArgs', () => {
     expect(args).toContain('--privileged')
     expect(values(args, '--mount')).toContain('type=volume,source=dind-var-lib-docker-env_1,target=/var/lib/docker')
     expect(args.at(-2)).toContain('/usr/local/share/docker-init.sh')
+  })
+
+  it('mounts the Docker proxy socket as a file, unprivileged, and labels the container for it', () => {
+    const args = runArgs({ dockerSocket: '/Users/dev/.domo/dood/abcd1234/env_1.sock' })
+
+    // `-v`, because Docker Desktop refuses a host socket through `--mount`.
+    expect(values(args, '--volume')).toEqual(['/Users/dev/.domo/dood/abcd1234/env_1.sock:/var/run/docker.sock'])
+    expect(values(args, '--label')).toContain('domo.dood=true')
+    expect(args).not.toContain('--privileged')
+    expect(args.at(-2)).toContain('chmod 666 /var/run/docker.sock')
+  })
+
+  it('has no Docker socket and no proxy label without one', () => {
+    const args = runArgs()
+
+    expect(args.join('\n')).not.toContain('docker.sock')
+    expect(values(args, '--label')).not.toContain('domo.dood=true')
   })
 
   it('publishes each declared port on the loopback address only', () => {

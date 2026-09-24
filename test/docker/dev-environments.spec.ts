@@ -28,6 +28,15 @@ const buildEnvironmentImage = vi.fn(async () => 'domo-dev-env_1')
 const readImageMetadata = vi.fn()
 const ensureRuntimeVolume = vi.fn(async () => 'domo-dev-runtime-abc123')
 const collectRuntimeVolumes = vi.fn(async () => undefined)
+// The proxy is a real listening socket and its own spec is live; here it is
+// only a step in the order of things.
+const dood = {
+  ensureDoodProxy: vi.fn(async ({ environmentId }: { environmentId: string }) =>
+    ({ socketPath: `/sockets/${environmentId}.sock`, close: async () => {} })),
+  stopDoodProxy: vi.fn(async () => undefined),
+  stopEnvironmentContainers: vi.fn(async () => undefined),
+  sweepEnvironmentResources: vi.fn(async () => undefined)
+}
 const repo = {
   createDevEnvironmentRow: vi.fn(),
   // Removal tombstones the row rather than deleting it: the retired sessions
@@ -69,6 +78,7 @@ vi.mock('../../server/lib/dev-environment-ports', () => ({
   stopEnvironmentForwarders: vi.fn()
 }))
 vi.mock('../../server/lib/repo', () => repo)
+vi.mock('../../server/lib/dood/manager', () => dood)
 // Settings live in Postgres, and this project has none. The home overlay is the
 // only thing here that reads them.
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
@@ -204,7 +214,7 @@ describe('start, stop and remove', () => {
   it('starts a container that exists but is not running', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
     repo.updateDevEnvironment.mockResolvedValue(environment())
-    inspectContainer.mockResolvedValue({ id: 'container-sha', running: false, publishedPorts: [] })
+    inspectContainer.mockResolvedValue({ id: 'container-sha', running: false, labels: {}, publishedPorts: [] })
 
     await startEnvironment('env_1')
 
@@ -215,11 +225,54 @@ describe('start, stop and remove', () => {
   it('does not start a container that is already running', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment())
     repo.updateDevEnvironment.mockResolvedValue(environment())
-    inspectContainer.mockResolvedValue({ id: 'container-sha', running: true, publishedPorts: [] })
+    inspectContainer.mockResolvedValue({ id: 'container-sha', running: true, labels: {}, publishedPorts: [] })
 
     await startEnvironment('env_1')
 
     expect(dockerCalls()).toEqual([])
+  })
+
+  it('brings the Docker proxy up before starting an environment created with one', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
+    repo.updateDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha', running: false, labels: { 'domo.dood': 'true' }, publishedPorts: []
+    })
+
+    await startEnvironment('env_1')
+
+    // The socket is a bind source: a start without it fails.
+    expect(dood.ensureDoodProxy).toHaveBeenCalledWith(expect.objectContaining({
+      environmentId: 'env_1',
+      containerReference: 'container-sha',
+      workspacePath: '/workspaces/api',
+      workspaceVolume: 'domo-dev-env_1-workspace'
+    }))
+    const started = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'start')]!
+    expect(dood.ensureDoodProxy.mock.invocationCallOrder[0]).toBeLessThan(started)
+  })
+
+  it('leaves an older environment with no proxy label alone', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
+    repo.updateDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({ id: 'container-sha', running: false, labels: {}, publishedPorts: [] })
+
+    await startEnvironment('env_1')
+
+    expect(dood.ensureDoodProxy).not.toHaveBeenCalled()
+  })
+
+  it('stops what the environment started on the host daemon along with it', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    repo.updateDevEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha', running: true, labels: { 'domo.dood': 'true' }, publishedPorts: []
+    })
+
+    await stopEnvironment('env_1')
+
+    expect(dood.stopEnvironmentContainers).toHaveBeenCalledWith('env_1')
+    expect(dockerCalls()).toEqual([['stop', 'container-sha']])
   })
 
   it('asks for a recreate when the container is gone', async () => {
@@ -232,7 +285,7 @@ describe('start, stop and remove', () => {
   it('stops the container and marks the environment stopped', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment())
     repo.updateDevEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
-    inspectContainer.mockResolvedValue({ id: 'container-sha', running: true, publishedPorts: [] })
+    inspectContainer.mockResolvedValue({ id: 'container-sha', running: true, labels: {}, publishedPorts: [] })
 
     await stopEnvironment('env_1')
 
@@ -278,6 +331,25 @@ describe('start, stop and remove', () => {
     // Once the container is gone there is nothing left to ask which volumes it had.
     const removedAt = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'rm')]!
     expect(inspectContainer.mock.invocationCallOrder[0]).toBeLessThan(removedAt)
+  })
+
+  it('sweeps the host daemon after the container and before the workspace volume', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha', labels: { 'domo.dood': 'true' }, namedVolumes: [], publishedPorts: []
+    })
+
+    await retireEnvironment('env_1')
+
+    const callAt = (first: string, second?: string) => run.mock.invocationCallOrder[
+      run.mock.calls.findIndex(([, args]) => args[0] === first && (!second || args.includes(second)))
+    ]!
+    const swept = dood.sweepEnvironmentResources.mock.invocationCallOrder[0]!
+    expect(dood.stopDoodProxy).toHaveBeenCalledWith('env_1')
+    // The container may have joined the stack's networks, and the stack's
+    // containers mount the workspace volume.
+    expect(callAt('rm')).toBeLessThan(swept)
+    expect(swept).toBeLessThan(callAt('volume', 'domo-dev-env_1-workspace'))
   })
 
   it('is a no-op for an environment that is not there', async () => {
@@ -379,6 +451,36 @@ describe('createEnvironment', () => {
     ]
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(order.includes(-1)).toBe(false)
+  })
+
+  it('mounts a Docker proxy that is already listening when the environment asked for Docker', async () => {
+    await writeFile(
+      join(repoPath, '.domo.json'),
+      JSON.stringify({ devEnvironment: { image: 'ghcr.io/acme/dev:latest', docker: true } }),
+      'utf8'
+    )
+
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const runArgs = dockerCalls().find(args => args[0] === 'run')!
+    expect(runArgs).toContainEqual(expect.stringMatching(/^\/sockets\/env_\w+\.sock:\/var\/run\/docker\.sock$/))
+    expect(runArgs).not.toContain('--privileged')
+    const ran = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'run')]!
+    expect(dood.ensureDoodProxy.mock.invocationCallOrder[0]).toBeLessThan(ran)
+  })
+
+  it('has no proxy for an environment without Docker, and sweeps on a failed create', async () => {
+    run.mockImplementation(async (_program, args) => {
+      if (args.includes('pnpm install')) throw new Error('exit 1')
+      return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+    })
+
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(/postCreateCommand/)
+
+    expect(dood.ensureDoodProxy).not.toHaveBeenCalled()
+    expect(dockerCalls().find(args => args[0] === 'run')!.join(' ')).not.toContain('docker.sock')
+    // postCreateCommand may already have started a stack before it failed.
+    expect(dood.sweepEnvironmentResources).toHaveBeenCalledWith(expect.stringMatching(/^env_/))
   })
 
   it('mounts the host\'s login state, skipping what this host does not have', async () => {
@@ -709,7 +811,7 @@ describe('createEnvironment', () => {
     await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(message)
   })
 
-  it('waits for the nested daemon, and gives up with a readable message', async () => {
+  it('waits for Docker to answer, and gives up with a readable message', async () => {
     process.env.NUXT_DEV_ENV_DOCKER_READY_MS = '30'
     await writeFile(
       join(repoPath, '.domo.json'),
@@ -726,7 +828,7 @@ describe('createEnvironment', () => {
     })
 
     await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' }))
-      .rejects.toThrow(/nested Docker daemon did not come up/)
+      .rejects.toThrow(/Docker did not answer inside the environment/)
 
     expect(attempts).toBeGreaterThan(1)
     delete process.env.NUXT_DEV_ENV_DOCKER_READY_MS

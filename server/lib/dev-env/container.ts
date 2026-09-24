@@ -1,6 +1,7 @@
 import { BROWSER_ROOT } from './browser-volume'
 import { run } from './docker'
 import { CONTAINER_SSH_AUTH_SOCK, type HomeOverlay } from './home-overlay'
+import { DOOD_FEATURE } from './config'
 import type {
   DevEnvironmentConfig,
   ImageMetadata,
@@ -19,21 +20,34 @@ import type {
  * (the image's own command is not kept), and the `sleep` loop is what holds the
  * container open while staying interruptible by the `trap`.
  *
- * The `chmod` is the forwarded SSH agent socket. Docker Desktop hands it over
- * owned by root with no group or world access, so the remote user cannot reach
- * it; this command runs as root, and it has to happen on every `docker start`,
- * not only at creation.
+ * The `chmod`s are the forwarded sockets: the SSH agent and, for an environment
+ * on the host daemon, Domo's Docker proxy. Docker Desktop hands a forwarded
+ * socket over as root:root 0660 whatever its mode on the host, so the remote
+ * user cannot reach it; this command runs as root, and it has to happen on
+ * every `docker start`, not only at creation. Measured: the mode set here is
+ * per container, never reaches the host file, and survives the host socket
+ * being re-created at the same path (which is what a Domo restart does).
  */
-export function keepAliveScript(entrypoints: string[]): string {
+export function keepAliveScript(entrypoints: string[], options: { dockerSocket?: boolean } = {}): string {
   return [
     'echo Container started',
     'trap "exit 0" 15',
     `[ -S ${CONTAINER_SSH_AUTH_SOCK} ] && chmod 666 ${CONTAINER_SSH_AUTH_SOCK}`,
+    ...(options.dockerSocket ? [`[ -S ${CONTAINER_DOCKER_SOCK} ] && chmod 666 ${CONTAINER_DOCKER_SOCK}`] : []),
     ...entrypoints,
     'exec "$@"',
     'while sleep 1 & wait $!; do :; done'
   ].join('\n')
 }
+
+/** Where an environment on the host daemon finds Domo's proxy. */
+export const CONTAINER_DOCKER_SOCK = '/var/run/docker.sock'
+
+/** Stamped on an environment created with the proxy, so a restart knows to bring one up. */
+export const DOOD_CONTAINER_LABEL = 'domo.dood'
+
+/** `ghcr.io/devcontainers/features/docker-outside-of-docker:1` -> `…/docker-outside-of-docker`. */
+const featureName = (id: string) => id.replace(/:[^/]*$/, '')
 
 function parseMountString(value: string): { type?: string, source?: string, target?: string } {
   const mount: Record<string, string> = {}
@@ -71,6 +85,12 @@ export function mergeImageMetadata(entries: ImageMetadataEntry[], environmentId:
   }
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object') continue
+    // Domo takes this Feature's CLI and nothing else. Its bind mount is the
+    // host socket, which Domo replaces with its own proxy; its entrypoint falls
+    // back to a `socat` relay whenever the socket's group is root — always, on
+    // Docker Desktop — and socat's default half-close timeout (0.5 s) cuts off
+    // an attached container's output. See `server/lib/dood/proxy.ts`.
+    if (entry.id && featureName(entry.id) === featureName(DOOD_FEATURE)) continue
     if (entry.entrypoint) merged.entrypoints.push(entry.entrypoint)
     if (entry.privileged === true) merged.privileged = true
     if (entry.init === true) merged.init = true
@@ -137,6 +157,15 @@ export interface RunContainerInput {
   codexConfigDir: string | null
   /** The host user's login state, projected into the container's home. */
   homeOverlay: HomeOverlay
+  /**
+   * The host-side path of this environment's Docker proxy socket, or null for
+   * an environment with no Docker. Bind-mounted as a *file*: virtiofs does not
+   * carry a socket inside a mounted directory (`ENOTSUP`). And with `-v`, not
+   * `--mount`: measured on Docker Desktop 4.92, `--mount type=bind` of a host
+   * socket fails with `bind source path does not exist: /socket_mnt/…` while
+   * `-v` of the same path works.
+   */
+  dockerSocket: string | null
 }
 
 function mountArg(mount: VolumeMount & { type?: string, readonly?: boolean }): string[] {
@@ -149,8 +178,8 @@ function mountArg(mount: VolumeMount & { type?: string, readonly?: boolean }): s
  * The full `docker run` argv for an environment. Pure, so the unit layer can read it.
  *
  * `--privileged` is here only when the image's metadata asked for it, which in practice
- * means the docker-in-docker Feature: an environment created with `"docker": false`
- * runs unprivileged.
+ * means a project that listed the docker-in-docker Feature itself. `"docker": true`
+ * no longer needs it: the environment reaches the host daemon through a socket.
  */
 export function containerRunArgs(input: RunContainerInput): string[] {
   const home = homeDirectory(input.remoteUser)
@@ -186,6 +215,12 @@ export function containerRunArgs(input: RunContainerInput): string[] {
   // the overlay puts it at `~/.gitconfig-host` and Domo writes `~/.gitconfig`.
   for (const mount of input.homeOverlay.mounts) args.push(...mountArg(mount))
   for (const mount of input.metadata.volumeMounts) args.push(...mountArg(mount))
+  if (input.dockerSocket) {
+    args.push(
+      '--volume', `${input.dockerSocket}:${CONTAINER_DOCKER_SOCK}`,
+      '--label', `${DOOD_CONTAINER_LABEL}=true`
+    )
+  }
   for (const port of input.ports) {
     args.push('--publish', `127.0.0.1:0:${port.innerPort}/${port.protocol}`)
   }
@@ -202,7 +237,7 @@ export function containerRunArgs(input: RunContainerInput): string[] {
   args.push(
     '--entrypoint', '/bin/sh',
     input.imageName,
-    '-c', keepAliveScript(input.metadata.entrypoints), '-'
+    '-c', keepAliveScript(input.metadata.entrypoints, { dockerSocket: !!input.dockerSocket }), '-'
   )
   return args
 }

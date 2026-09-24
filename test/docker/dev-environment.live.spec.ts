@@ -93,6 +93,7 @@ const {
 const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
 const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
+const { doodSocketDir, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
 
 const HOUR = 60 * 60 * 1000
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
@@ -223,6 +224,8 @@ afterEach(async () => {
       await run('docker', ['rm', '--force', '--volumes', container], { allowFailure: true })
       for (const volume of named) await run('docker', ['volume', 'rm', '--force', volume], { allowFailure: true })
     }
+    await stopDoodProxy(id)
+    await sweepEnvironmentResources(id)
     await run('docker', ['volume', 'rm', '--force', workspaceVolumeName(id)], { allowFailure: true })
     await run('docker', ['image', 'rm', '--force', environmentImageName(id)], { allowFailure: true })
   }
@@ -233,6 +236,9 @@ afterEach(async () => {
 
 afterAll(async () => {
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
+  // The proxies' sockets live under the home directory, in a folder named for
+  // this run's scratch data directory.
+  await rm(doodSocketDir(), { recursive: true, force: true })
   delete process.env.NUXT_DATA_DIR
   delete process.env.NUXT_CLAUDE_CONFIG_DIR
   delete process.env.NUXT_CODEX_CONFIG_DIR
@@ -279,17 +285,50 @@ describe('an environment for a project with no .domo.json', () => {
     await inContainer(environment, 'sh', '-c', 'echo scribble > written-inside.txt')
     expect(await exists(join(repo, 'written-inside.txt'))).toBe(false)
 
-    // The default definition asks for Node and Docker, so both are there.
+    // The default definition asks for Node and Docker, so both are there —
+    // and Docker is the *host's* daemon, reached through Domo's proxy socket,
+    // so there is no privilege and no nested image store.
     await expect(inContainer(environment, 'node', '--version')).resolves.toMatch(/^v22\./)
-    expect(await isPrivileged(environment.containerId!)).toBe(true)
-    await expect(inContainer(environment, 'docker', 'info', '--format', '{{.ServerVersion}}'))
-      .resolves.toMatch(/^\d+\.\d+/)
+    expect(await isPrivileged(environment.containerId!)).toBe(false)
+    expect(all.map(mount => mount.Name ?? '').join('\n')).not.toContain('dind-var-lib-docker')
+    expect(all).toContainEqual(expect.objectContaining({ Type: 'bind', Destination: '/var/run/docker.sock' }))
+    const hostDaemon = await run('docker', ['info', '--format', '{{.ID}}'])
+    await expect(inContainer(environment, 'docker', 'info', '--format', '{{.ID}}'))
+      .resolves.toBe(hostDaemon.stdout)
+
+    // The case the proxy exists for, as the environment's own user: a compose
+    // stack mounting the checkout, brought up from inside the environment.
+    await inContainer(environment, 'sh', '-c', [
+      'mkdir -p site && echo from-the-checkout > site/index.html',
+      'printf "%s\\n" "services:" "  web:" "    image: busybox:1.37"'
+      + ' "    command: [\\"httpd\\", \\"-f\\", \\"-p\\", \\"8080\\", \\"-h\\", \\"/site\\"]"'
+      + ' "    volumes: [\\"./site:/site:ro\\"]" "    ports: [\\"8080:8080\\"]" > compose.yaml'
+    ].join(' && '))
+    const up = await run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, 'docker', 'compose', '-p', 'livestack', 'up', '-d'
+    ])
+    expect(up.stderr).toMatch(/Started/)
+    // On the host daemon, stamped with the environment, publishing nothing.
+    const stack = (await run('docker', ['ps', '-q', '--filter', `label=domo.env=${environment.id}`])).stdout
+    expect(stack.split('\n').filter(Boolean)).toHaveLength(1)
+    const bindings = await run('docker', ['inspect', '--format', '{{json .HostConfig.PortBindings}}', stack])
+    expect(bindings.stdout).toBe('{}')
+    // The checkout reached the service, and the environment can reach the
+    // service by name because it joined the stack's network.
+    await expect(inContainer(environment, 'sh', '-c', 'curl -s http://web:8080/index.html'))
+      .resolves.toBe('from-the-checkout')
+    // An attached run's output arrives, through the proxy, as the remote user.
+    await expect(inContainer(environment, 'docker', 'run', '--rm', 'busybox:1.37', 'echo', 'attached-ok'))
+      .resolves.toBe('attached-ok')
 
     // The host's login state is in there, at the container user's home.
     const home = `/home/${environment.remoteUser}`
     expect(all).toContainEqual(expect.objectContaining({
       Type: 'bind',
-      Source: join(process.env.NUXT_HOME_OVERLAY_DIR!, '.ssh'),
+      // By suffix: Docker Desktop reports a bind source as the VM sees it,
+      // `/host_mnt/private/var/folders/…` for a `/var/folders/…` temp dir.
+      Source: expect.stringMatching(new RegExp(`${join(process.env.NUXT_HOME_OVERLAY_DIR!, '.ssh').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)),
       Destination: `${home}/.ssh-host`
     }))
     // `.kube` was asked for and this host has none: skipped, not a failure.
@@ -356,6 +395,12 @@ describe('an environment for a project with no .domo.json', () => {
     await retireEnvironment(environment.id)
 
     expect(await inspectContainer(environment.containerId!)).toBeNull()
+    // What it made on the shared daemon went with it.
+    for (const kind of ['container', 'network'] as const) {
+      const left = await run('docker', [kind === 'container' ? 'ps' : 'network', ...(kind === 'container' ? ['-aq'] : ['ls', '-q']),
+        '--filter', `label=domo.env=${environment.id}`])
+      expect(left.stdout, `a ${kind} outlived its environment`).toBe('')
+    }
     for (const name of kept) {
       if (name.startsWith(`${PREFIX}runtime-`)) continue // shared, and deliberately kept
       const left = await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${name}$`])

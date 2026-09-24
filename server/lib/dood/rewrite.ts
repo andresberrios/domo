@@ -161,3 +161,41 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope): Rewrit
   spec.HostConfig = hostConfig
   return { spec, requiredSubpaths, networksToJoin, droppedPorts }
 }
+
+/**
+ * `POST /networks/create` and `POST /volumes/create`: stamp the scope's labels
+ * and nothing else. Compose makes both for a stack, and on a daemon of its own
+ * they went away with it; on the shared one only a label says whose they are,
+ * so retirement can remove exactly them rather than pruning the host.
+ */
+export function labelCreate(input: unknown, scope: Pick<DoodScope, 'labels'>): Record<string, unknown> {
+  const spec = (input && typeof input === 'object' ? { ...input } : {}) as Record<string, unknown>
+  spec.Labels = { ...(spec.Labels as Record<string, string> | undefined), ...scope.labels }
+  return spec
+}
+
+/** What the proxy does with one request line. */
+export type RequestRoute =
+  | { kind: 'container-create' }
+  | { kind: 'label-create' }
+  | { kind: 'network-delete', network: string }
+  | { kind: 'network-inspect', network: string }
+  | { kind: 'forward' }
+
+/**
+ * Routes by request line alone. The API version prefix (`/v1.47`) is optional,
+ * as the query string is. A network is deleted by id or by name, and whichever
+ * it is is what `docker network disconnect` takes too.
+ */
+export function routeRequest(line: string): RequestRoute {
+  const match = line.match(/^(\w+)\s+(\S+)\s+HTTP\/1\.[01]$/i)
+  if (!match) return { kind: 'forward' }
+  const method = match[1]!.toUpperCase()
+  const path = match[2]!.split('?')[0]!.replace(/^\/v[\d.]+(?=\/)/, '')
+  if (method === 'POST' && path === '/containers/create') return { kind: 'container-create' }
+  if (method === 'POST' && (path === '/networks/create' || path === '/volumes/create')) return { kind: 'label-create' }
+  const network = path.match(/^\/networks\/([^/]+)$/)?.[1]
+  if (network && method === 'DELETE') return { kind: 'network-delete', network: decodeURIComponent(network) }
+  if (network && method === 'GET') return { kind: 'network-inspect', network: decodeURIComponent(network) }
+  return { kind: 'forward' }
+}

@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { run } from '../../server/lib/dev-env/docker'
-import { startDoodProxy, type DoodProxy } from '../../server/lib/dood/proxy'
+import { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } from '../../server/lib/dood/manager'
+import type { DoodProxy } from '../../server/lib/dood/proxy'
 import type { PublishedPort } from '../../server/lib/dood/rewrite'
 
 /**
@@ -14,14 +15,20 @@ import type { PublishedPort } from '../../server/lib/dood/rewrite'
  *
  * Compose is worth its own file because it is not the Docker CLI — it speaks
  * the Engine API directly, so nothing a `docker run` test proves carries over
- * to it for free.
+ * to it for free. It runs through `manager.ts` rather than a bare proxy so
+ * that the Docker work is the real one: a stand-in for the environment's own
+ * container really joins the stack's network, which is exactly what makes a
+ * plain `compose down` fail on "active endpoints" unless the proxy detaches it
+ * first; and the sweep really removes only what carries the label.
  *
  * Opt in with `pnpm test:docker`.
  */
 
+const ENV_ID = 'env_composeprobe'
 const VOLUME = 'domo-dood-compose-workspace'
 const WORKSPACE = '/workspaces/probe'
 const PROJECT = 'domodoodprobe'
+const ENV_CONTAINER = 'domo-dood-compose-env'
 
 const daemon = await run('docker', ['info', '--format', '{{.ServerVersion}}'], { allowFailure: true })
   .then(output => output.stdout.length > 0).catch(() => false)
@@ -30,7 +37,6 @@ let proxy: DoodProxy
 let workDir: string
 let socketDir: string
 const dropped: PublishedPort[] = []
-const joined: string[] = []
 
 const inVolume = (script: string) =>
   run('docker', ['run', '--rm', '-v', `${VOLUME}:/w`, 'alpine:3', 'sh', '-c', script])
@@ -42,13 +48,25 @@ const compose = (args: string[], allowFailure = false) =>
     allowFailure
   })
 
+const envNetworks = async () => Object.keys(JSON.parse((await run('docker', [
+  'inspect', '--format', '{{json .NetworkSettings.Networks}}', ENV_CONTAINER
+])).stdout))
+
+const labelled = async (kind: 'network' | 'volume') => (await run('docker', [
+  kind, 'ls', '-q', '--filter', `label=domo.env=${ENV_ID}`
+])).stdout.split('\n').filter(Boolean)
+
 describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
   beforeAll(async () => {
+    socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-sock-'))
+    process.env.NUXT_DOOD_SOCKET_DIR = socketDir
+    await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
     await run('docker', ['volume', 'create', VOLUME])
     // The file the service will read comes from the workspace volume, which on
     // the host daemon does not exist as a path at all.
     await inVolume("mkdir -p /w/site && echo 'from-the-workspace' > /w/site/index.html")
+    await run('docker', ['run', '-d', '--name', ENV_CONTAINER, 'alpine:3', 'sleep', '600'])
 
     workDir = await mkdtemp(join(tmpdir(), 'domo-dood-compose-'))
     await writeFile(join(workDir, 'compose.yaml'), [
@@ -58,27 +76,31 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
       '    command: ["sleep", "300"]',
       '    volumes:',
       `      - ${WORKSPACE}/site:/usr/share/site:ro`,
+      '      - data:/data',
       '    ports:',
       '      - "8080:8080"',
+      'volumes:',
+      '  data: {}',
       ''
     ].join('\n'))
 
-    socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-sock-'))
-    proxy = await startDoodProxy({
-      socketPath: join(socketDir, 'docker.sock'),
-      scope: { workspacePath: WORKSPACE, workspaceVolume: VOLUME, labels: { 'domo.env': 'env_compose' } },
-      ensureSubpaths: async subpaths => {
-        for (const subpath of subpaths) await inVolume(`mkdir -p ${JSON.stringify(`/w/${subpath}`)}`)
-      },
-      joinNetworks: async networks => { joined.push(...networks) },
+    proxy = await ensureDoodProxy({
+      environmentId: ENV_ID,
+      containerReference: ENV_CONTAINER,
+      workspacePath: WORKSPACE,
+      workspaceVolume: VOLUME,
+      helperImage: 'alpine:3',
       onDroppedPorts: ports => { dropped.push(...ports) }
     })
   }, 180_000)
 
   afterAll(async () => {
     if (proxy) await compose(['down', '-v', '--remove-orphans'], true).catch(() => {})
-    await proxy?.close()
+    await stopDoodProxy(ENV_ID)
+    await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
+    await sweepEnvironmentResources(ENV_ID)
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
+    delete process.env.NUXT_DOOD_SOCKET_DIR
     for (const dir of [workDir, socketDir]) if (dir) await rm(dir, { recursive: true, force: true })
   }, 180_000)
 
@@ -102,11 +124,42 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     expect(bindings.stdout).toBe('{}')
     expect(dropped).toContainEqual({ containerPort: 8080, protocol: 'tcp' })
 
-    // Everything compose created carries the environment's label.
+    // Everything compose created carries the environment's label: the
+    // container, and the network and volume it made for it.
     const label = await run('docker', ['inspect', '--format', '{{index .Config.Labels "domo.env"}}', ids[0]!])
-    expect(label.stdout).toBe('env_compose')
+    expect(label.stdout).toBe(ENV_ID)
+    expect(await labelled('network')).toHaveLength(1)
+    expect(await labelled('volume')).toHaveLength(1)
 
-    // And the environment container was told which network to join.
-    expect(joined.some(name => name.includes(PROJECT))).toBe(true)
+    // And the environment's own container really joined the stack's network,
+    // so the agent can reach `web` by name.
+    expect(await envNetworks()).toContain(`${PROJECT}_default`)
+  }, 180_000)
+
+  it('can take the stack down although the environment joined its network', async () => {
+    const down = await compose(['down'], true)
+    expect(down.stderr).not.toMatch(/active endpoints/)
+    expect(await envNetworks()).not.toContain(`${PROJECT}_default`)
+    expect(await labelled('network')).toHaveLength(0)
+  }, 180_000)
+
+  it('sweeps exactly what the environment made, and nothing else', async () => {
+    await compose(['up', '-d'])
+    const bystander = 'domo-dood-compose-bystander'
+    await run('docker', ['network', 'create', bystander], { allowFailure: true })
+    try {
+      await run('docker', ['rm', '-f', ENV_CONTAINER])
+      await sweepEnvironmentResources(ENV_ID)
+
+      const left = await run('docker', ['ps', '-aq', '--filter', `label=domo.env=${ENV_ID}`])
+      expect(left.stdout).toBe('')
+      expect(await labelled('network')).toHaveLength(0)
+      expect(await labelled('volume')).toHaveLength(0)
+      // An unlabelled, unused network is someone else's and must survive.
+      const still = await run('docker', ['network', 'ls', '-q', '--filter', `name=^${bystander}$`])
+      expect(still.stdout).not.toBe('')
+    } finally {
+      await run('docker', ['network', 'rm', bystander], { allowFailure: true })
+    }
   }, 180_000)
 })

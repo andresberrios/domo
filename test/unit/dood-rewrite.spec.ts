@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { rewriteContainerCreate, workspaceSubpath, type DoodScope } from '../../server/lib/dood/rewrite'
+import { labelCreate, rewriteContainerCreate, routeRequest, workspaceSubpath, type DoodScope } from '../../server/lib/dood/rewrite'
 
 const scope: DoodScope = {
   workspacePath: '/workspaces/domo',
@@ -128,5 +128,36 @@ describe('rewriteContainerCreate — identity and networks', () => {
     expect(result.spec.Image).toBe('alpine')
     expect(result.droppedPorts).toEqual([])
     expect(result.networksToJoin).toEqual([])
+  })
+})
+
+describe('labelCreate', () => {
+  it('adds the scope labels to a network or volume, keeping compose\'s own', () => {
+    const spec = labelCreate(
+      { Name: 'stack_default', Labels: { 'com.docker.compose.project': 'stack' } },
+      { labels: { 'domo.env': 'env_1' } }
+    )
+
+    expect(spec).toEqual({
+      Name: 'stack_default',
+      Labels: { 'com.docker.compose.project': 'stack', 'domo.env': 'env_1' }
+    })
+  })
+})
+
+describe('routeRequest', () => {
+  it.each([
+    ['POST /v1.47/containers/create?name=web HTTP/1.1', { kind: 'container-create' }],
+    ['POST /containers/create HTTP/1.1', { kind: 'container-create' }],
+    ['POST /v1.47/networks/create HTTP/1.1', { kind: 'label-create' }],
+    ['POST /v1.47/volumes/create HTTP/1.1', { kind: 'label-create' }],
+    ['DELETE /v1.47/networks/stack_default HTTP/1.1', { kind: 'network-delete', network: 'stack_default' }],
+    ['DELETE /v1.47/containers/abc?force=1 HTTP/1.1', { kind: 'forward' }],
+    ['POST /v1.47/containers/abc/start HTTP/1.1', { kind: 'forward' }],
+    ['GET /v1.47/networks/stack_default HTTP/1.1', { kind: 'network-inspect', network: 'stack_default' }],
+    ['GET /v1.47/networks?filters=%7B%7D HTTP/1.1', { kind: 'forward' }],
+    ['POST /v1.47/networks/stack_default/connect HTTP/1.1', { kind: 'forward' }]
+  ])('%s', (line, expected) => {
+    expect(routeRequest(line)).toEqual(expected)
   })
 })

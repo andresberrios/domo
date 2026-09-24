@@ -5,15 +5,22 @@ import type { DevEnvironment, WorkingTreeMode, WorkspaceSeedReport } from '../..
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
 import { seedClaudeHome } from './dev-env/claude-home'
-import { resolveEnvironmentConfig, resolveForwardPorts } from './dev-env/config'
+import { resolveEnvironmentConfig, resolveForwardPorts, usesHostDaemon } from './dev-env/config'
 import {
   containerRunArgs,
+  DOOD_CONTAINER_LABEL,
   homeDirectory,
   postCreateArgs,
   readImageMetadata,
   resolveRemoteUser
 } from './dev-env/container'
-import { inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './dev-env/docker'
+import {
+  inspectContainer,
+  populateWorkspaceVolume,
+  resourcePrefix,
+  run,
+  type ContainerInspection
+} from './dev-env/docker'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
 import {
@@ -24,12 +31,19 @@ import {
 } from './dev-env/browser-volume'
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { carryMessage, readHostWorkingTree, reconcileArgs, seedReport } from './dev-env/workspace-seed'
+import {
+  ensureDoodProxy,
+  stopDoodProxy,
+  stopEnvironmentContainers,
+  sweepEnvironmentResources
+} from './dood/manager'
 import { dataDir } from './paths'
 import { getSettings } from './settings'
 import {
   createDevEnvironmentRow,
   getDevEnvironment,
   getProject,
+  listDevEnvironments,
   pruneRetiredRecords,
   retireDevEnvironmentRow,
   updateDevEnvironment,
@@ -37,7 +51,7 @@ import {
 } from './repo'
 
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
-/** How long the nested daemon gets to answer `docker info` before creation is called failed. */
+/** How long the environment's Docker gets to answer `docker info` before creation is called failed. */
 function dockerReadyTimeout(): number {
   return Number(process.env.NUXT_DEV_ENV_DOCKER_READY_MS) || 30_000
 }
@@ -95,6 +109,29 @@ async function removeContainer(reference: string): Promise<void> {
     await run('docker', ['volume', 'rm', volume], { allowFailure: true }).catch(() => {})
   }
 }
+
+/**
+ * The environment's socket onto the host daemon (`server/lib/dood/`). It has to
+ * be listening before the container is created *or started*: the socket is
+ * bind-mounted as a file, and a bind whose source is missing fails the start.
+ */
+function ensureDockerProxy(environment: {
+  id: string
+  containerReference: string
+  workspacePath: string
+}) {
+  return ensureDoodProxy({
+    environmentId: environment.id,
+    containerReference: environment.containerReference,
+    workspacePath: environment.workspacePath,
+    workspaceVolume: workspaceVolumeName(environment.id),
+    helperImage: HELPER_IMAGE
+  })
+}
+
+/** Whether the container was created with the proxy mounted — fixed at creation, so it is on a label. */
+const hasDockerProxy = (inspection: ContainerInspection | null) =>
+  inspection?.labels[DOOD_CONTAINER_LABEL] === 'true'
 
 function execArgs(input: {
   containerId: string
@@ -161,8 +198,8 @@ async function preflight(
     if (ready) return
     if (Date.now() >= deadline) {
       throw new Error(
-        `The nested Docker daemon did not come up within ${Math.round(timeout / 1000)}s. `
-        + 'Check that this machine allows privileged containers.'
+        `Docker did not answer inside the environment within ${Math.round(timeout / 1000)}s. `
+        + 'Check that the image has the `docker` CLI and that the host\'s Docker daemon is running.'
       )
     }
     await new Promise(wait => setTimeout(wait, Math.min(1_000, timeout / 4)))
@@ -304,6 +341,10 @@ export async function createEnvironment(input: {
       workspacePath,
       paths: settings.homeMounts
     })
+    // Before `docker run`: the socket is mounted as a file, and it has to exist.
+    const dockerSocket = usesHostDaemon(resolved.config)
+      ? (await ensureDockerProxy({ id, containerReference: containerName, workspacePath })).socketPath
+      : null
     const { stdout: containerId } = await run('docker', containerRunArgs({
       environmentId: id,
       projectId: project.id,
@@ -318,7 +359,8 @@ export async function createEnvironment(input: {
       browserVolume,
       ports: declaredPorts,
       codexConfigDir,
-      homeOverlay: overlay
+      homeOverlay: overlay,
+      dockerSocket
     }))
     const inspection = await inspectContainer(containerId)
     if (!inspection) throw new Error('The environment container was created but could not be inspected.')
@@ -410,6 +452,9 @@ export async function createEnvironment(input: {
         await removeContainer(containerId)
       }
     }
+    // `postCreateCommand` may already have started a stack on the host daemon.
+    await stopDoodProxy(id).catch(() => {})
+    await sweepEnvironmentResources(id).catch(() => {})
     await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
     await removeImage(environmentImageName(id))
     throw error
@@ -429,6 +474,7 @@ export async function startEnvironment(id: string): Promise<DevEnvironment> {
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (!inspection) throw new Error('The environment container no longer exists. Delete and recreate the environment.')
+  if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment))
   if (!inspection.running) await run('docker', ['start', inspection.id])
   const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
   await refreshEnvironmentPorts(id)
@@ -441,6 +487,7 @@ export async function stopEnvironment(id: string): Promise<DevEnvironment> {
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   stopEnvironmentForwarders(id)
+  if (hasDockerProxy(inspection)) await stopEnvironmentContainers(id)
   if (inspection?.running) await run('docker', ['stop', inspection.id])
   return (await updateDevEnvironment(id, { status: 'stopped' }))!
 }
@@ -451,6 +498,7 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (inspection?.running) {
+    if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment))
     if (environment.status !== 'running') {
       return (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     }
@@ -479,13 +527,42 @@ export async function retireEnvironment(id: string): Promise<void> {
   const environment = await getDevEnvironment(id)
   if (!environment) return
   stopEnvironmentForwarders(id)
+  await stopDoodProxy(id)
   await removeContainer(containerReference(environment))
+  // After the container, which may have joined the stack's networks; before
+  // the workspace volume, which the stack's containers mount.
+  await sweepEnvironmentResources(id).catch(() => {})
   await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
   await removeImage(environmentImageName(id))
   await collectRuntimeVolumes().catch(() => {})
   await collectBrowserVolumes().catch(() => {})
   await retireDevEnvironmentRow(id)
   await pruneRetiredRecords()
+}
+
+function proxyTarget(environment: DevEnvironment) {
+  return {
+    id: environment.id,
+    containerReference: containerReference(environment),
+    workspacePath: environment.workspacePath
+  }
+}
+
+/**
+ * Bring every environment's Docker proxy back after a restart. Stopped ones
+ * too: the proxy costs a listening socket, and without it a `docker start`
+ * from anywhere but Domo — Docker Desktop's own button — fails on the missing
+ * bind source.
+ */
+export async function restoreDockerProxies(): Promise<void> {
+  for (const environment of await listDevEnvironments()) {
+    if (environment.retiredAt) continue
+    const inspection = await inspectContainer(containerReference(environment)).catch(() => null)
+    if (!hasDockerProxy(inspection)) continue
+    await ensureDockerProxy(proxyTarget(environment)).catch(error =>
+      console.warn(`[dood] could not restore ${environment.id}:`, error instanceof Error ? error.message : error)
+    )
+  }
 }
 
 export function containerExecArgs(environment: DevEnvironment, env: NodeJS.ProcessEnv = {}): string[] {

@@ -2,13 +2,17 @@ import { mkdir, rm } from 'node:fs/promises'
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 
-import { rewriteContainerCreate, type DoodScope, type PublishedPort } from './rewrite'
+import { labelCreate, rewriteContainerCreate, routeRequest, type DoodScope, type PublishedPort } from './rewrite'
 
 /**
  * The Docker socket an environment is given in place of a daemon of its own.
  *
- * Everything is forwarded to the host daemon untouched except
- * `POST /containers/create`, which is translated by `rewrite.ts`. One socket is
+ * Everything is forwarded to the host daemon untouched except three requests
+ * (`routeRequest` in `rewrite.ts`): `POST /containers/create`, which is
+ * translated; `POST /networks/create` and `/volumes/create`, which are
+ * labelled; and `GET` / `DELETE /networks/…`, before which the
+ * environment's own container leaves a network it joined, or `compose down`
+ * could never remove it. One socket is
  * created per environment and bind-mounted at the container's
  * `/var/run/docker.sock`, so *which* environment a request came from is the
  * socket it arrived on — there is nothing in a request body to trust.
@@ -34,7 +38,6 @@ import { rewriteContainerCreate, type DoodScope, type PublishedPort } from './re
  */
 
 const DEFAULT_DOCKER_SOCKET = '/var/run/docker.sock'
-const CREATE_LINE = /^POST\s+\S*\/containers\/create(\?\S*)?\s+HTTP\/1\.[01]$/i
 const HEAD_END = '\r\n\r\n'
 
 export interface DoodProxyOptions {
@@ -53,6 +56,17 @@ export interface DoodProxyOptions {
    * joins, so an agent can reach the services it just started by name.
    */
   joinNetworks(networks: string[]): Promise<void>
+  /**
+   * Detach the environment's own container from a network. It joined because
+   * of `joinNetworks`, so the stack's owner does not know it is there, and a
+   * network with an endpoint left cannot be removed. `onlyIfAlone` is the
+   * inspect case: `compose down` inspects a network before deleting it and,
+   * seeing any endpoint at all, says "Resource is still in use" and never
+   * sends the DELETE — measured — so the environment has to be gone by the
+   * time the inspect is answered. It leaves only a network nothing else is on
+   * any more, where it has nothing to reach; the next create rejoins it.
+   */
+  leaveNetwork?(network: string, options: { onlyIfAlone: boolean }): Promise<void>
   onDroppedPorts?(ports: PublishedPort[]): void
   onError?(error: unknown): void
   /** Diagnostics. `kind` is how the request was handled, not what it was. */
@@ -167,12 +181,16 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
           const length = Number.parseInt(headerValue(head, 'content-length') ?? '', 10)
           const chunked = (headerValue(head, 'transfer-encoding') ?? '').toLowerCase().includes('chunked')
 
-          if (CREATE_LINE.test(head.line)) {
+          const route = routeRequest(head.line)
+          if ((route.kind === 'network-delete' || route.kind === 'network-inspect') && options.leaveNetwork) {
+            await options.leaveNetwork(route.network, { onlyIfAlone: route.kind === 'network-inspect' }).catch(report)
+          }
+          if (route.kind === 'container-create' || route.kind === 'label-create') {
             if (Number.isInteger(length)) {
               if (buffer.length < afterHead + length) break
               const body = buffer.subarray(afterHead, afterHead + length)
               buffer = buffer.subarray(afterHead + length)
-              await rewriteAndForward(head, body)
+              await rewriteAndForward(head, body, route.kind)
               continue
             }
             // Every Docker client sends this body from a buffer, so it always
@@ -180,7 +198,7 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
             // create would otherwise be forwarded untranslated, and a bind
             // mount reaching the host daemon is exactly what must not happen
             // quietly.
-            report(new Error(`container create with no content-length: ${head.line}`))
+            report(new Error(`create with no content-length, forwarded untranslated: ${head.line}`))
           }
 
           options.onRequest?.({ line: head.line, kind: 'forwarded' })
@@ -229,7 +247,7 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
       return true
     }
 
-    const rewriteAndForward = async (head: Head, body: Buffer) => {
+    const rewriteAndForward = async (head: Head, body: Buffer, kind: 'container-create' | 'label-create') => {
       let parsed: unknown
       try {
         parsed = JSON.parse(body.toString('utf8') || '{}')
@@ -238,6 +256,13 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
         options.onRequest?.({ line: head.line, kind: 'forwarded' })
         upstream.write(head.raw + HEAD_END)
         upstream.write(body)
+        return
+      }
+      if (kind === 'label-create') {
+        const labelled = Buffer.from(JSON.stringify(labelCreate(parsed, options.scope)), 'utf8')
+        options.onRequest?.({ line: head.line, kind: 'rewritten' })
+        upstream.write(renderHead(head, labelled.length))
+        upstream.write(labelled)
         return
       }
       const result = rewriteContainerCreate(parsed, options.scope)
@@ -265,7 +290,9 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
   server.on('error', report)
 
   await mkdir(dirname(options.socketPath), { recursive: true })
-  await rm(options.socketPath, { force: true })
+  // Recursive, because a container started while nothing was listening here
+  // leaves a *directory* behind: `-v` creates a missing source as one.
+  await rm(options.socketPath, { force: true, recursive: true })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(options.socketPath, () => {

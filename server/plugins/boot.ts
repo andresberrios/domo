@@ -8,6 +8,8 @@ import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
 } from '../lib/dev-environment-ports'
+import { restoreDockerProxies } from '../lib/dev-environments'
+import { stopAllDoodProxies } from '../lib/dood/manager'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
@@ -31,6 +33,9 @@ export default defineNitroPlugin(async (nitro) => {
   // Subscriptions are rows, so they outlive the process that made them.
   await startSubscriptionNotifier().catch(error => console.error('[domo] subscriptions', error))
 
+  // Before the ports: detecting a stack's services goes through the daemon,
+  // and an environment's agent may be mid-`docker compose` right now.
+  await restoreDockerProxies().catch(error => console.error('[domo] docker proxy restore failed', error))
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
   cronScheduler.start()
 
@@ -45,5 +50,6 @@ export default defineNitroPlugin(async (nitro) => {
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()
+    await stopAllDoodProxies().catch(() => {})
   })
 })
