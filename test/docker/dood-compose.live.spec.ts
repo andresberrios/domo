@@ -122,7 +122,7 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     // `ports: 8080:8080` was asked for and must not have reached the host.
     const bindings = await run('docker', ['inspect', '--format', '{{json .HostConfig.PortBindings}}', ids[0]!])
     expect(bindings.stdout).toBe('{}')
-    expect(dropped).toContainEqual({ containerPort: 8080, protocol: 'tcp' })
+    expect(dropped).toContainEqual({ containerPort: 8080, protocol: 'tcp', hostPort: 8080 })
 
     // Everything compose created carries the environment's label: the
     // container, and the network and volume it made for it.

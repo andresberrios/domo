@@ -249,6 +249,11 @@ export interface WorkspaceSeedReport {
 export interface DevEnvironmentPort {
   id: string
   devEnvironmentId: string
+  /**
+   * The container the port is in, when it is not the environment itself: a
+   * container the environment started on the host daemon (a compose service).
+   */
+  service: string | null
   innerPort: number
   protocol: 'tcp' | 'udp'
   appProtocol: 'http' | 'https' | 'tcp' | 'udp' | null

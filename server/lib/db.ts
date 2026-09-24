@@ -127,10 +127,19 @@ create table if not exists dev_environment_ports (
   listening boolean not null default false,
   forwarded boolean not null default false,
   created_at text not null,
-  updated_at text not null,
-  unique (dev_environment_id, inner_port, protocol)
+  updated_at text not null
 );
 create index if not exists dev_environment_ports_environment on dev_environment_ports(dev_environment_id);
+-- Which container the port is in: empty for the environment itself, otherwise
+-- the name of a container the environment started on the host daemon. Two
+-- services of one stack may well both listen on 80, so it is part of the key.
+-- The old key's name is what Postgres generated for it, cut to 63 bytes, which
+-- is why it ends in protoco_key: spelled out in full it matches nothing.
+alter table dev_environment_ports add column if not exists service text not null default '';
+alter table dev_environment_ports
+  drop constraint if exists dev_environment_ports_dev_environment_id_inner_port_protoco_key;
+create unique index if not exists dev_environment_ports_identity
+  on dev_environment_ports(dev_environment_id, service, inner_port, protocol);
 
 create table if not exists agent_sessions (
   id text primary key,

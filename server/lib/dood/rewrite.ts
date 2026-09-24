@@ -33,7 +33,16 @@ export interface DoodScope {
 export interface PublishedPort {
   containerPort: number
   protocol: string
+  /** The host port it asked for, when it named one. */
+  hostPort: number | null
 }
+
+/**
+ * Where the dropped publishing is written down, on the container itself: the
+ * port scanner reads it to forward exactly what the stack asked to publish,
+ * on the host port it asked for when that one is free.
+ */
+export const REQUESTED_PORTS_LABEL = 'domo.ports'
 
 export interface RewriteResult {
   spec: Record<string, unknown>
@@ -94,11 +103,13 @@ function parseBind(bind: string): { source: string, target: string, readOnly: bo
   return { source, target, readOnly: options.split(',').includes('ro') }
 }
 
-function parsePortKey(key: string): PublishedPort | null {
+function parsePortKey(key: string, bindings: unknown): PublishedPort | null {
   const [rawPort, protocol = 'tcp'] = key.split('/')
   const containerPort = Number.parseInt(rawPort ?? '', 10)
   if (!Number.isInteger(containerPort)) return null
-  return { containerPort, protocol }
+  const first = Array.isArray(bindings) ? bindings[0] as { HostPort?: string } | undefined : undefined
+  const hostPort = Number.parseInt(first?.HostPort ?? '', 10)
+  return { containerPort, protocol, hostPort: Number.isInteger(hostPort) && hostPort > 0 ? hostPort : null }
 }
 
 export function rewriteContainerCreate(input: unknown, scope: DoodScope): RewriteResult {
@@ -137,8 +148,9 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope): Rewrit
   if (mounts.length) hostConfig.Mounts = mounts
 
   const droppedPorts: PublishedPort[] = []
-  for (const key of Object.keys(hostConfig.PortBindings ?? {})) {
-    const port = parsePortKey(key)
+  const bindings = (hostConfig.PortBindings ?? {}) as Record<string, unknown>
+  for (const [key, value] of Object.entries(bindings)) {
+    const port = parsePortKey(key, value)
     if (port) droppedPorts.push(port)
   }
   hostConfig.PortBindings = {}
@@ -157,7 +169,11 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope): Rewrit
     networksToJoin.push(networkMode)
   }
 
-  spec.Labels = { ...(spec.Labels as Record<string, string> | undefined), ...scope.labels }
+  spec.Labels = {
+    ...(spec.Labels as Record<string, string> | undefined),
+    ...scope.labels,
+    ...(droppedPorts.length && { [REQUESTED_PORTS_LABEL]: JSON.stringify(droppedPorts) })
+  }
   spec.HostConfig = hostConfig
   return { spec, requiredSubpaths, networksToJoin, droppedPorts }
 }

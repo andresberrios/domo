@@ -16,7 +16,7 @@ compaction cut, formatters, settings reconciliation, `.domo.json` parsing and va
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database), the whole ACP client against a fake agent on a pair of pipes, and the voice runtime with Google replaced by a recorder (which model it asks for, and what context a connect is told after a conversation has been folded); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
-| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Also `dood-proxy.live.spec.ts` and `dood-compose.live.spec.ts`, which drive the DooD socket proxy with the real `docker` CLI and with real `docker compose` — the transport is the point there, so a daemon is the only thing that can answer it (see below). Opt in. |
+| `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Also `dood-proxy.live.spec.ts` and `dood-compose.live.spec.ts`, which drive the DooD socket proxy with the real `docker` CLI and with real `docker compose` — the transport is the point there, so a daemon is the only thing that can answer it (see below) — and `dood-ports.live.spec.ts`, a loopback-only compose service found, forwarded and fetched from the host through its port helper, then again after a restart. Opt in. |
 | `agents-live` | `test/agents/*.live.spec.ts` | both coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
@@ -64,8 +64,8 @@ flag to say so.
 project without a `.devcontainer/` failed to start. The live spec exists for
 that gap; when the environment lifecycle changes, run `pnpm test:docker`. It
 leaves nothing behind, and its `afterEach` removes containers, workspace volumes,
-Docker-in-Docker volumes and per-environment images when an assertion fails
-halfway. Everything it creates is named `domo-live-test-…`.
+Docker-in-Docker volumes, what an environment started on the host daemon, and
+per-environment images when an assertion fails halfway. Everything it creates is named `domo-live-test-…`.
 
 The shared runtime volume is deliberately *not* swept: it is the expensive part
 (a Node copy and an `npm install` of both adapters) and the point of it is that
@@ -84,7 +84,14 @@ the `start` that would end the wait queues behind it forever. And Node's default
 client half-closes after an attach, so a container's output silently never
 arrives and `docker run` prints nothing. Hence a byte splice that parses only
 the client's direction, and hence a separate compose spec: compose speaks the
-Engine API itself, so nothing the CLI proves carries over to it.
+Engine API itself, so nothing the CLI proves carries over to it. It found the
+third failure: `compose down` *inspects* a network before deleting it and, on
+seeing the environment's endpoint there, never sends the DELETE at all — so
+that spec uses a real stand-in container that really joins the network.
+
+**`dev-environments.spec.ts` mocks `server/lib/dood/manager`.** The real
+`ensureDoodProxy` listens on a real socket under `~/.domo/dood/`, and in a spec
+that never closes it that is a file left in the developer's home per test.
 
 **`browserTools` is off for the whole `docker-live` layer, and the two browser
 tests turn it on and back off in an `afterEach`.** Left on, every other test in
@@ -164,7 +171,7 @@ important case that nothing else exercises.
   reachable in both topologies: on a Docker Desktop host `host.docker.internal`
   forwards to the host's IPv4 loopback (and a listener on `[::1]` alone is
   refused), but when the suite itself runs **inside a dev environment** the
-  agent's container is a sibling under that environment's nested daemon and
+  agent's container is a sibling on whatever daemon that environment talks to and
   `host.docker.internal` is the bridge gateway instead. Bound to `127.0.0.1` the
   whole layer failed there, with nothing in the output naming the network as the
   cause — every mesh assertion simply saw no call arrive.

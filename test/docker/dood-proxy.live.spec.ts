@@ -123,7 +123,7 @@ describe.skipIf(!daemon)('DooD socket proxy', () => {
     const id = created.stdout.trim()
     const bindings = await run('docker', ['inspect', '--format', '{{json .HostConfig.PortBindings}}', id])
     expect(bindings.stdout).toBe('{}')
-    expect(dropped).toContainEqual({ containerPort: 3000, protocol: 'tcp' })
+    expect(dropped).toContainEqual({ containerPort: 3000, protocol: 'tcp', hostPort: 3000 })
     await run('docker', ['rm', '-f', id], { allowFailure: true })
   }, 120_000)
 

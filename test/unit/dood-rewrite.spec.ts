@@ -83,14 +83,17 @@ describe('rewriteContainerCreate — mounts', () => {
 describe('rewriteContainerCreate — ports', () => {
   it('drops host publishing and reports what was asked for', () => {
     const result = rewriteContainerCreate(
-      { HostConfig: { PortBindings: { '3000/tcp': [{ HostPort: '3000' }], '53/udp': [{ HostPort: '53' }] } } },
+      { HostConfig: { PortBindings: { '3000/tcp': [{ HostPort: '3001' }], '53/udp': [{ HostPort: '' }] } } },
       scope
     )
     expect((result.spec.HostConfig as { PortBindings: unknown }).PortBindings).toEqual({})
     expect(result.droppedPorts).toEqual([
-      { containerPort: 3000, protocol: 'tcp' },
-      { containerPort: 53, protocol: 'udp' }
+      { containerPort: 3000, protocol: 'tcp', hostPort: 3001 },
+      { containerPort: 53, protocol: 'udp', hostPort: null }
     ])
+    // Written on the container, for the port scanner to forward later.
+    expect(JSON.parse((result.spec.Labels as Record<string, string>)['domo.ports']!))
+      .toEqual(result.droppedPorts)
   })
 
   it('refuses to publish all exposed ports', () => {

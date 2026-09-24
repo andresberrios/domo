@@ -105,9 +105,60 @@ things that are easy to get wrong.
   volume (`domo-dev-<id>-workspace`, derived from the id, so no column). There is
   no host copy. It is described by the project's own `.domo.json`
   (`server/lib/dev-env/config.ts`) — nothing else is read — and `docker: true`
-  gives it a private DinD daemon. Multiple agent sessions may share one
-  environment. Their ACP adapters run through `docker exec`; legacy sessions
-  without `dev_environment_id` still run directly on the host.
+  gives it the *host's* Docker daemon through a proxied socket (next bullet).
+  Multiple agent sessions may share one environment. Their ACP adapters run
+  through `docker exec`; legacy sessions without `dev_environment_id` still run
+  directly on the host.
+- **`docker: true` means the host daemon, not a daemon of its own.** Each
+  environment used to run its own dockerd, and so its own copy of every image:
+  nine DinD volumes held ~18 GB, the Docker VM filled up, and Postgres could
+  not start. Now `server/lib/dood/` gives each environment a unix socket onto
+  the host daemon, bind-mounted at `/var/run/docker.sock`; the socket it
+  arrived on is the only identity a request has. It forwards everything
+  untouched except container create (workspace binds become the workspace
+  volume with a subpath, host publishing is dropped and written on a
+  `domo.ports` label, the network is joined by the environment's own container
+  too), network/volume create (labelled) and network inspect/delete (the
+  environment leaves first). Everything it makes carries `domo.env=<id>`, which
+  is what makes retirement exact: `sweepEnvironmentResources` removes those
+  containers, networks and volumes and nothing of anyone else's — never
+  `docker network prune`, which would take the developer's own. Stopping an
+  environment stops its containers (a daemon of its own used to do that by
+  dying). Only environments created since have it; existing ones keep the DinD
+  their mounts were fixed with, and a project listing docker-in-docker itself
+  still gets that. **Not a security boundary** — a container that reaches the
+  host daemon can take the host, which was already true. There is no
+  off-the-shelf alternative: a nested daemon cannot share the host's image
+  store (moby#29764, moby#40196), and every existing socket proxy is an HAProxy
+  ACL filter that cannot rewrite a body. The hard parts (ports, binds) are the
+  same under containerd, so this stays on Docker.
+- **The proxy is a byte splice, not an HTTP server.** A Docker client reuses one
+  connection and `POST /containers/{id}/wait` is a long poll, so an HTTP server
+  (which must answer in order) queues the `start` that would end the wait
+  behind it forever: every `docker run` deadlocked. Only the client→daemon
+  direction is parsed, to find request boundaries; responses are piped blind.
+  Both sockets need `allowHalfOpen: true` — a client with no stdin half-closes
+  after the attach, and Node's default then drops the container's output, so
+  `docker run` printed nothing and exited 0.
+- **A compose service's ports are found and forwarded through a helper in its
+  network namespace.** On a daemon of its own a service's port landed in the
+  environment's namespace, where `ss` saw it; as a sibling on the host daemon
+  it is invisible there and — measured — unreachable even by network name when
+  it listens on loopback, which Vite and Next do by default. So each running
+  service gets a long-lived `sleep` container sharing its namespace
+  (`server/lib/dev-env/service-ports.ts`): the scanner reads `/proc/net/tcp`
+  through it (distroless images have no shell) and the userland forwarder
+  `docker exec`s its relay in it, exactly as it does in the environment. A
+  helper does not follow its service through a restart — it keeps running in
+  the old, empty namespace — so it is keyed on the service's id *and* start
+  time and looked up per connection. A port the stack asked to publish is
+  forwarded the first time it is seen, on the host port it named if free; a
+  row is keyed by `service` too, because two services may both listen on 80.
+  **Do not reach services by name from the environment instead** (fails for
+  every loopback-bound dev server, after listing it as found), **and do not add
+  a reverse proxy** — the userland forwarder already makes collisions
+  impossible and gives the UI a port, and a Caddy/Traefik layer was proposed
+  and rejected for duplicating it.
 - **An environment is a namespace, not a security boundary, so the host user's
   login state is shared with it.** An agent in a container has to be able to
   `git push`, open a PR and reach whatever cloud the developer is already logged
@@ -472,7 +523,7 @@ things that are easy to get wrong.
   `updateProject` / `updateDevEnvironment` that `repo.ts` already had and that
   the voice agent and the mesh already called — the HTTP surface was simply
   missing. Only the display name is patchable: a project *is* its checkout, and
-  an environment's container, workspace volume and DinD volume are all named
+  an environment's container, workspace volume and Docker socket are all named
   from its id at creation and are never renamed with it.
 
 ## Gotchas (learned the hard way)
@@ -989,21 +1040,39 @@ things that are easy to get wrong.
   Feature and the config; `mergeImageMetadata()` honours only `entrypoint`,
   `privileged`, `init`, `capAdd`, `securityOpt`, `containerEnv`, volume `mounts`
   and `remoteUser`/`containerUser`. **Bind mounts are dropped with a warning** —
-  a Feature that mounts a host path (the docker-*outside*-of-docker one mounts
-  `/var/run/docker.sock`) would put the host filesystem back inside an
-  environment whose whole point is not having it. `${devcontainerId}` in a mount
-  source is substituted with the environment id.
+  a Feature that mounts a host path would put the host filesystem back inside
+  an environment whose whole point is not having it. `${devcontainerId}` in a
+  mount source is substituted with the environment id. The docker-outside-of-docker
+  Feature, which is what `docker: true` builds in for the CLI and compose,
+  contributes **nothing** past its binaries: its mount is the raw host socket,
+  and its entrypoint falls back to a `socat` relay whenever the socket's group
+  is root — always, on Docker Desktop — whose default 0.5 s half-close timeout
+  cuts attached output off.
 - **`--privileged` comes from the metadata, never from Domo.** In practice that
-  means the docker-in-docker Feature, which is injected only for
-  `"docker": true`. A `"docker": false` environment runs unprivileged, and
-  `test/unit/dev-env-container.spec.ts` asserts it.
+  means a project that listed the docker-in-docker Feature itself; `"docker":
+  true` no longer needs it, and `test/unit/dev-env-container.spec.ts` asserts
+  both.
 - **Feature entrypoints run on every `docker start`, so they live in the
   container's command.** `keepAliveScript()` mirrors what the CLI composes:
   `echo Container started` / `trap "exit 0" 15` / each entrypoint / `exec "$@"` /
   `while sleep 1 & wait $!; do :; done`, behind `--entrypoint /bin/sh` with
   `-c <script> -`. DinD's `/usr/local/share/docker-init.sh` is one of those
   entrypoints; run it once at creation instead and a stopped environment comes
-  back with no `dockerd`.
+  back with no `dockerd`. The same script `chmod 666`s the forwarded sockets
+  (SSH agent, Docker proxy) on every start: Docker Desktop presents a forwarded
+  socket as root:root 0660 whatever its host mode, and the mode set inside is
+  per container — measured to survive the host socket being re-created at the
+  same path, which is what every Domo restart does.
+- **The Docker proxy socket goes in with `-v`, never `--mount`, and not under
+  the data directory.** Measured on Docker Desktop 4.92: `--mount type=bind` of
+  a host socket fails with `bind source path does not exist: /socket_mnt/…`;
+  `-v` of the same path works (a directory holding it does not — `ENOTSUP`).
+  And a unix socket path must fit in `sun_path` (104 bytes on macOS): a
+  worktree's `.data/dood/env_<id>.sock` measured 117, so sockets live under
+  `~/.domo/dood/<hash of the data dir>/` (`NUXT_DOOD_SOCKET_DIR` overrides).
+  The path is derived from the id because the mount is fixed at creation: the
+  proxy must be listening at it before `docker run` *and* `docker start`, and
+  `restoreDockerProxies()` brings every one back at boot.
 - **Node and both ACP adapters live in one shared, read-only volume**
   (`server/lib/dev-env/runtime-volume.ts`, mounted at `/opt/domo`), not installed
   per environment. The volume's name is a hash of the pinned helper image, both
@@ -1033,8 +1102,9 @@ things that are easy to get wrong.
   that says what to do. It runs **before** the `chown` and `git config
   safe.directory`, because those are themselves things a missing `git` turns into
   a bare `exit 127`.
-- **`docker rm --volumes` does not remove the Docker-in-Docker volume.** The
-  Feature names it (`dind-var-lib-docker-<id>`), so `removeContainer()` reads the
+- **`docker rm --volumes` does not remove the Docker-in-Docker volume** of an
+  environment that has one (created before the host-daemon change, or asking
+  for docker-in-docker itself). The Feature names it (`dind-var-lib-docker-<id>`), so `removeContainer()` reads the
   container's named volumes first and removes exactly those. Not other named
   volumes: a project's own mounts may be shared.
 - **The "Open in VS Code" URL is a hex-encoded JSON authority.**
@@ -1480,6 +1550,23 @@ and permissions are end to end because a permission is a row.
   the textarea with nothing uploaded. What is still unexercised is a *real*
   system clipboard — whether macOS Chrome offers `text/plain` beside a Finder
   file copy is assumed, not measured.
+- **The host-daemon path was verified end to end in the running app**, over
+  the Caddy HTTPS address, against a separate database: a default environment
+  created through the API came up unprivileged with no DinD volume, `docker
+  compose up` as the remote user put both services on the host daemon (same
+  daemon ID inside and out) with nothing published, the Ports panel listed
+  `web :8080` and `cache :6379` by container, `web` was forwarded to
+  `127.0.0.1:8080` automatically and served the checkout's file, a manual
+  forward of Redis answered `+PONG`, a Nitro restart brought the proxy and the
+  forward back, stop stopped the stack, and retirement left no container,
+  network, volume or socket. That pass is what found the embedded-DNS listener
+  (`127.0.0.11`, a random port in every container on a user network), which
+  `parseListeningPorts` now ignores. `pnpm test:docker` covers the rest.
+  **Not verified:** a real agent driving compose, Linux (every measurement here
+  is Docker Desktop on macOS — the socket forwarding and `chmod` findings may
+  differ), and a stack with a `build:` section — the client streams the build
+  context through the proxy untouched, so it should work, but nothing has run
+  one.
 - The dev-environment path was verified against a real Docker daemon by
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no

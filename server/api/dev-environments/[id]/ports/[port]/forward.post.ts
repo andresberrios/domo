@@ -7,7 +7,9 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'A valid TCP port is required.' })
   }
   try {
-    return await forwardEnvironmentPort(id, port)
+    // Which container the port is in, when it is not the environment itself.
+    const service = String(getQuery(event).service ?? '') || null
+    return await forwardEnvironmentPort(id, port, service)
   } catch (error) {
     throw createError({
       statusCode: 500,

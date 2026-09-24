@@ -22,7 +22,8 @@ you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
 - **Projects and dev environments** — register a local checkout, then make any
   number of isolated containers from it, described by one `.domo.json` in the
   project. Each environment has a copied checkout, can host several parallel
-  agents, and can have a private Docker-in-Docker daemon for Compose stacks.
+  agents, and can run Compose stacks on the host's Docker daemon — sharing its
+  images and build cache — without colliding with other environments.
 - **Coding agents** — choose Claude Code, Codex or OpenCode for each session. Claude Code
   runs through Zed's official ACP adapter
   ([`@agentclientprotocol/claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp),
@@ -144,7 +145,7 @@ tell apart:
 
 | | what it does | what is left |
 | --- | --- | --- |
-| **Retire** an environment or project | Destroys the container, its copy of the checkout and any Docker-in-Docker volume. | Every record. The environment, and the full transcript of each agent that ran in it. |
+| **Retire** an environment or project | Destroys the container, its copy of the checkout, and every container, network and volume it started on the Docker daemon. | Every record. The environment, and the full transcript of each agent that ran in it. |
 | **Archive** a session | Stops its adapter and takes it off the lists. | Everything; it is one switch away and can be started again. |
 | **Delete permanently** a session | Destroys the session and every event in its transcript. | Nothing. Only offered on an archived session. |
 
@@ -199,8 +200,8 @@ are an error, not something quietly ignored.
     // Dev Container Features, baked into the image.
     "features": { "ghcr.io/devcontainers/features/python:1": {} },
 
-    // A private, nested Docker daemon (docker-in-docker). Default false.
-    // Only an environment with this runs privileged.
+    // `docker` and `docker compose`, talking to the host's daemon through a
+    // socket of the environment's own. Default false. Not privileged.
     "docker": true,
 
     "remoteUser": "dev",               // who agents and commands run as
@@ -267,12 +268,20 @@ Domo at it instead of duplicating anything:
   environment, so you can see them in the branch instead of finding them mixed
   into the agent's.
 - Multiple Claude Code and Codex ACP sessions can run against that same copy.
-- With `"docker": true` the environment is privileged and has its own nested
-  Docker daemon, so agents can use `docker compose` without sharing stacks with
-  the host or other environments. Without it the container is unprivileged.
-- The checkout and any nested containers persist across stop/start, and the
-  container, both volumes and the image are destroyed when the environment is
-  retired. **The checkout exists only in the volume**, so before retiring one,
+- With `"docker": true` agents can use `docker` and `docker compose`, and what
+  they run lands on the **host's** daemon, so images and build cache are shared
+  instead of copied into every environment. The environment's socket translates
+  on the way through: a bind mount of the checkout becomes a mount of the
+  environment's own copy, nothing publishes a host port (two environments
+  running the same stack would collide on it), and the environment joins the
+  stack's network, so its services are reachable by name. What a service
+  listens on shows up under **Ports**, and a port the stack asked to publish is
+  forwarded to `127.0.0.1` automatically. Everything it creates is labelled with
+  the environment. This is a convenience, **not isolation**: an agent that can
+  reach the host daemon can reach anything on the host.
+- The checkout persists across stop/start; stopping an environment stops the
+  containers it started. Retiring it destroys the container, its volume, its
+  image and everything it started on the daemon. **The checkout exists only in the volume**, so before retiring one,
   push what you want to keep — or bring the branch back with
   [Export branch](#getting-a-branch-out-of-an-environment).
 - The agent sessions that ran in it are **kept, not deleted**: their transcripts
@@ -481,7 +490,8 @@ configured providers are kept current automatically (see
 | `NUXT_DEV_ENV_RUNTIME_IMAGE` | Image the shared runtime volume takes its Node and adapters from (default `node:22-bookworm-slim`) |
 | `NUXT_DEV_ENV_HELPER_IMAGE` | Image used to copy a checkout into its volume (default `busybox:1.37`; set it for offline installs) |
 | `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix of the containers, images and volumes Domo creates (default `domo-dev-`) |
-| `NUXT_DEV_ENV_DOCKER_READY_MS` | How long a nested Docker daemon gets to start before creation fails (default `30000`) |
+| `NUXT_DEV_ENV_DOCKER_READY_MS` | How long Docker inside a new environment gets to answer before creation fails (default `30000`) |
+| `NUXT_DOOD_SOCKET_DIR` | Where each environment's Docker socket is created (default `~/.domo/dood/<install>`; a unix socket path must stay under ~100 bytes) |
 | `NUXT_CLAUDE_CONFIG_DIR` | Where the Claude config *copied* into a new environment is read from (defaults to `~/.claude`) |
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
 | `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts are read from (defaults to `$HOME`) |
@@ -658,7 +668,8 @@ server/
   lib/voice/compaction.ts folding old messages into the rolling summary
   lib/voice/tools.ts     the voice agent's tools over coding agents
   lib/acp/manager.ts     Claude Code / Codex ACP processes, one per session
-  lib/dev-environments   Docker/DinD environment lifecycle
+  lib/dev-environments   dev environment lifecycle
+  lib/dood/              each environment's socket onto the host Docker daemon
   lib/mesh/              the agent-mesh tools, MCP transport and tokens
   api/internal/mcp.ts    the agent-mesh MCP server every coding agent gets
   api/shape.get.ts       authorising proxy in front of Electric
@@ -699,9 +710,9 @@ your own `domo` database is never touched.
 - The coding agents run on your machine, with your files and your Claude or
   OpenAI account. "Auto-approve permission requests" in Settings really does mean the
   agent can edit and run things unattended.
-- Dev environments require a Docker host that permits privileged containers.
-  Treat an environment as a trusted development machine: its agents can fully
-  control its private nested Docker daemon.
+- Treat a dev environment as a trusted development machine, not a sandbox:
+  with `"docker": true` its agents drive the host's Docker daemon, which is as
+  good as the host.
 - Attachments are stored on disk under `<data dir>/uploads` and handed to agents as
   `file://` resource links.
 

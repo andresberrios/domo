@@ -156,6 +156,7 @@ function mapDevEnvironmentPort(r: any): DevEnvironmentPort {
   return {
     id: r.id,
     devEnvironmentId: r.dev_environment_id,
+    service: r.service || null,
     innerPort: Number(r.inner_port),
     protocol: r.protocol,
     appProtocol,
@@ -407,7 +408,7 @@ export async function updateDevEnvironment(
 export async function listDevEnvironmentPorts(environmentId: string): Promise<DevEnvironmentPort[]> {
   const rows = await query(
     `select * from dev_environment_ports where dev_environment_id = $1
-     order by inner_port, protocol`,
+     order by service, inner_port, protocol`,
     [environmentId]
   )
   return rows.map(mapDevEnvironmentPort)
@@ -415,6 +416,8 @@ export async function listDevEnvironmentPorts(environmentId: string): Promise<De
 
 export async function upsertDevEnvironmentPort(input: {
   environmentId: string
+  /** Null (the default) for the environment itself. */
+  service?: string | null
   innerPort: number
   protocol: DevEnvironmentPort['protocol']
   appProtocol?: DevEnvironmentPort['appProtocol']
@@ -428,9 +431,9 @@ export async function upsertDevEnvironmentPort(input: {
   const row = await queryOne(
     `insert into dev_environment_ports
        (id, dev_environment_id, inner_port, protocol, app_protocol, label, source,
-        host_port, listening, forwarded, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
-     on conflict (dev_environment_id, inner_port, protocol) do update set
+        host_port, listening, forwarded, created_at, updated_at, service)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12)
+     on conflict (dev_environment_id, service, inner_port, protocol) do update set
        app_protocol = coalesce(excluded.app_protocol, dev_environment_ports.app_protocol),
        label = coalesce(excluded.label, dev_environment_ports.label),
        source = case when dev_environment_ports.source = 'declared' then 'declared' else excluded.source end,
@@ -441,7 +444,7 @@ export async function upsertDevEnvironmentPort(input: {
      returning *`,
     [newId('port'), input.environmentId, input.innerPort, input.protocol,
       input.appProtocol ?? null, input.label ?? null, input.source, input.hostPort ?? null,
-      input.listening ?? false, input.forwarded ?? false, now]
+      input.listening ?? false, input.forwarded ?? false, now, input.service ?? '']
   )
   return mapDevEnvironmentPort(row)
 }
@@ -450,10 +453,11 @@ export async function updateDevEnvironmentPort(
   environmentId: string,
   innerPort: number,
   patch: { hostPort?: number | null, listening?: boolean, forwarded?: boolean },
-  protocol: DevEnvironmentPort['protocol'] = 'tcp'
+  protocol: DevEnvironmentPort['protocol'] = 'tcp',
+  service: string | null = null
 ): Promise<DevEnvironmentPort | null> {
-  const sets = ['updated_at = $4']
-  const params: any[] = [environmentId, innerPort, protocol, nowIso()]
+  const sets = ['updated_at = $5']
+  const params: any[] = [environmentId, innerPort, protocol, service ?? '', nowIso()]
   const push = (column: string, value: any) => {
     params.push(value)
     sets.push(`${column} = $${params.length}`)
@@ -463,7 +467,7 @@ export async function updateDevEnvironmentPort(
   if (patch.forwarded !== undefined) push('forwarded', patch.forwarded)
   const row = await queryOne(
     `update dev_environment_ports set ${sets.join(', ')}
-     where dev_environment_id = $1 and inner_port = $2 and protocol = $3 returning *`,
+     where dev_environment_id = $1 and inner_port = $2 and protocol = $3 and service = $4 returning *`,
     params
   )
   return row ? mapDevEnvironmentPort(row) : null

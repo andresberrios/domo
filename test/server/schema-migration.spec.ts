@@ -45,6 +45,22 @@ create table dev_environments (
   updated_at text not null
 );
 
+create table dev_environment_ports (
+  id text primary key,
+  dev_environment_id text not null references dev_environments(id) on delete cascade,
+  inner_port integer not null,
+  protocol text not null default 'tcp',
+  app_protocol text,
+  label text,
+  source text not null,
+  host_port integer,
+  listening boolean not null default false,
+  forwarded boolean not null default false,
+  created_at text not null,
+  updated_at text not null,
+  unique (dev_environment_id, inner_port, protocol)
+);
+
 insert into voice_sessions (id, title, model, voice, created_at, updated_at)
 values ('vs_untouched', 'New conversation', 'm', 'v', 'now', 'now'),
        ('vs_renamed', 'Payments', 'm', 'v', 'now', 'now');
@@ -57,6 +73,9 @@ values ('env_legacy', 'prj_1', 'api', 'domo-dev-env_legacy', 'now', 'now');
 
 insert into dev_environments (id, project_id, name, container_name, workspace_path, created_at, updated_at)
 values ('env_custom', 'prj_1', 'api2', 'domo-dev-env_custom', '/workspaces/api2', 'now', 'now');
+
+insert into dev_environment_ports (id, dev_environment_id, inner_port, source, created_at, updated_at)
+values ('port_legacy', 'env_legacy', 3000, 'declared', 'now', 'now');
 `
 
 beforeAll(async () => {
@@ -70,6 +89,24 @@ beforeAll(async () => {
 })
 
 describe('booting on top of a pre-title_source database', () => {
+  it('keys a port by its container too, so two services may share a port number', async () => {
+    // The old unique constraint would refuse the second row outright.
+    await query(
+      `insert into dev_environment_ports (id, dev_environment_id, service, inner_port, source, created_at, updated_at)
+       values ('port_web', 'env_legacy', 'stack-web-1', 3000, 'detected', 'now', 'now'),
+              ('port_api', 'env_legacy', 'stack-api-1', 3000, 'detected', 'now', 'now')`
+    )
+    const rows = await query<{ id: string, service: string }>(
+      `select id, service from dev_environment_ports where inner_port = 3000 order by id`
+    )
+
+    expect(rows).toEqual([
+      { id: 'port_api', service: 'stack-api-1' },
+      { id: 'port_legacy', service: '' },
+      { id: 'port_web', service: 'stack-web-1' }
+    ])
+  })
+
   it('treats the untouched placeholder as Domo\'s to rename', async () => {
     const rows = await query<{ id: string, title_source: string }>(
       'select id, title_source from voice_sessions order by id'
@@ -148,7 +185,6 @@ describe('booting on top of a pre-title_source database', () => {
   })
 
   it('creates the tables that did not exist yet', async () => {
-    await expect(query('select 1 from dev_environment_ports')).resolves.toEqual([])
     await expect(query('select 1 from agent_events')).resolves.toEqual([])
   })
 })
