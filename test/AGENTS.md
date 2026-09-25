@@ -50,12 +50,9 @@ dependency.
   only. This database is shared by every checkout on the machine, and two runs
   at once corrupt each other with foreign-key errors that look like real bugs.
   Before a long run, check `pgrep -f vitest`.
-- **`voice-live` runs on `domo_e2e` with the real Electric, not on `domo_test`
-  with the stub.** `test/helpers/electric-stub.ts` answers every shape with one
-  hardcoded `projects` row — fine for `test/e2e`, which renders no page, and
-  useless for a browser: the app loads with no conversation and no sidebar. It
-  shares the `electric` layer's database (neither runs in the default suite,
-  both reset on entry) and has its own port.
+- **`voice-live` runs on `domo_e2e` with the real Electric.** The stub in
+  `test/helpers/electric-stub.ts` returns one hardcoded row, which is enough
+  for `test/e2e` but leaves a browser with an empty app.
 - **Electric never replicates from `domo_test`.** The `electric` layer has its
   own database (`domo_e2e`) and its own instance (port 30001). A schema drop
   removes every table from Electric's publication without an error, and writes
@@ -91,36 +88,28 @@ dependency.
   `mockNuxtImport('useRouter')`. Spy on the real router.
 - happy-dom does not enforce CSP. To test a CSP change, load the production
   build in a real browser.
-- **A Chromium with no fontconfig dies as soon as it draws text**, and the
-  symptom names everything except fonts: the browser disconnects just after
-  `page.goto` resolves, and every locator then fails with "Target page,
-  context or browser has been closed". `DEBUG=pw:browser` shows the real
-  reason, `FATAL: SkFontMgr_FontConfigInterface … Not implemented`. A trivial
-  page survives it and the app does not, so a probe page proves nothing. The
-  browser volume's wrapper now supplies the environment, so point
-  `DOMO_TEST_CHROMIUM` at `/opt/domo-browser/bin/chrome-headless-shell` and set
-  no `LD_LIBRARY_PATH` — Playwright's own download exits 127 with one.
-- **Chromium fixes the fake microphone at launch**, so a spoken fixture means
-  one browser per question, and it *loops* the file. A test that only starts
-  the microphone is a user who never stops talking: GPT-Live marks no end of
-  turn, Domo's idle timer never expires, and nothing is ever written to
-  `voice_messages` while the live transcript fills the screen. Say it once,
-  then stop the microphone.
+- **If Chromium closes right after `page.goto`, suspect fontconfig.**
+  `DEBUG=pw:browser` shows the real error. Inside an environment, point
+  `DOMO_TEST_CHROMIUM` at `/opt/domo-browser/bin/chrome-headless-shell` and
+  set no `LD_LIBRARY_PATH`.
+- **Chromium fixes the fake microphone at launch and loops the file.** Use one
+  browser per spoken fixture, and stop the microphone after it plays once.
+  Otherwise the user never stops talking and nothing is written to
+  `voice_messages`.
 
 ## The Docker proxy (`dood-*` specs)
 
-- The translation is pure and tested in `test/unit/dood-*.spec.ts`. The rest
-  of the proxy is transport, and transport is where it broke (see
-  `docs/dev-environments.md`), so only a real client can test it. **`docker
-  run` passing is not evidence for `docker compose`**: compose speaks the
-  Engine API itself. The compose specs use a real stand-in container that
-  joins the network, or `compose down` behaves differently.
+- The translation is pure and tested in `test/unit/dood-*.spec.ts`. The
+  transport can only be tested with a real client. **`docker run` passing is
+  not evidence for `docker compose`**, because compose calls the Engine API
+  itself. The compose specs use a real stand-in container that joins the
+  network, or `compose down` behaves differently.
 - A live file that uses `ensureDoodProxy` sets its own
   `NUXT_DEV_ENV_RESOURCE_PREFIX`, takes each environment down with
   `removeEnvironmentResources(id)` (the sweep, with the test standing in for
   the retired row), and removes `portHelperName()` and `portHelperImage()` at
-  the end. Otherwise it drives, and leaves behind, the
-  developer's own port helper.
+  the end. Otherwise it drives, and leaves behind, the developer's own port
+  helper.
 - Keep the socket directory short (`mkdtemp('/tmp/ddX-')`). `$TMPDIR` alone is
   ~50 bytes, and past Docker Desktop's 88-byte limit `doodSocketPath` refuses,
   so the whole file fails in `beforeAll` and every test reports "skipped".
