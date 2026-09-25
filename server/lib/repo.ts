@@ -449,6 +449,20 @@ export async function upsertDevEnvironmentPort(input: {
   return mapDevEnvironmentPort(row)
 }
 
+/** A service's row, once the container it was found in no longer exists. */
+export async function deleteDevEnvironmentPort(
+  environmentId: string,
+  innerPort: number,
+  protocol: DevEnvironmentPort['protocol'],
+  service: string
+): Promise<void> {
+  await query(
+    `delete from dev_environment_ports
+     where dev_environment_id = $1 and inner_port = $2 and protocol = $3 and service = $4`,
+    [environmentId, innerPort, protocol, service]
+  )
+}
+
 export async function updateDevEnvironmentPort(
   environmentId: string,
   innerPort: number,

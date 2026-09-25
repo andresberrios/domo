@@ -18,6 +18,7 @@ import {
 import type { PortAttributes } from './dev-env/types'
 import { ENVIRONMENT_LABEL, publishedBindings, publishedHostPorts } from './dood/manager'
 import {
+  deleteDevEnvironmentPort,
   getDevEnvironment,
   listDevEnvironmentPorts,
   listDevEnvironments,
@@ -214,6 +215,34 @@ async function listeningTcpPorts(environment: DevEnvironment): Promise<Set<numbe
   return ports
 }
 
+/**
+ * Drop the rows of services whose container is gone, and the forwards they
+ * hold. A *stopped* service keeps both, since starting it again is expected to
+ * bring its port back; a removed one never comes back under that name, and its
+ * forward went on holding the host port — so the next stack's Postgres, asking
+ * for 5432 again, was forwarded on a random port while 5432 on the host led to
+ * a container that no longer existed (measured: an agent that replaced
+ * `acme-postgres-test` with `acme-postgres` got two rows for 5432). On a real
+ * host a published port goes with its container.
+ */
+async function forgetRemovedServices(environmentId: string): Promise<void> {
+  const rows = (await listDevEnvironmentPorts(environmentId)).filter(port => port.service)
+  if (!rows.length) return
+  // Not `allowFailure`: an answer that failed must not read as "none exist".
+  const listed = await run('docker', [
+    'ps', '--all', '--filter', `label=${ENVIRONMENT_LABEL}=${environmentId}`, '--format', '{{.Names}}'
+  ]).catch(() => null)
+  if (!listed) return
+  const names = new Set(listed.stdout.split('\n').map(line => line.trim()).filter(Boolean))
+  for (const port of rows) {
+    const service = port.service!
+    if (serviceReferences(environmentId, service).some(reference => names.has(reference))) continue
+    live.get(key(environmentId, service, port.innerPort))?.close()
+    live.delete(key(environmentId, service, port.innerPort))
+    await deleteDevEnvironmentPort(environmentId, port.innerPort, port.protocol, service)
+  }
+}
+
 function appProtocolFor(innerPort: number, attributes: PortAttributes | undefined): DevEnvironmentPort['appProtocol'] {
   return attributes?.protocol === 'http' || attributes?.protocol === 'https'
     ? attributes.protocol
@@ -233,6 +262,7 @@ export async function refreshEnvironmentPorts(environmentId: string): Promise<De
   // a daemon of its own has its services in its own namespace, where `ss`
   // above already found them.
   const services = hasDockerProxy(inspection) ? await scanServices(environmentId) : []
+  if (hasDockerProxy(inspection)) await forgetRemovedServices(environmentId)
   const existing = await listDevEnvironmentPorts(environmentId)
   // Port attributes travel on the container's own label, so they do not depend on the
   // project's config still saying what it said when the environment was created.
