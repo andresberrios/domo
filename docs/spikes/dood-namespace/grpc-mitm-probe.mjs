@@ -239,7 +239,7 @@ function bridge(client, upstream, id) {
 
 // ---- the splice, with /grpc taken out --------------------------------------
 let seq = 0
-try { fs.unlinkSync(socketPath) } catch {}
+try { fs.unlinkSync(socketPath) } catch { /* not there yet */ }
 net.createServer({ allowHalfOpen: true }, (client) => {
   const id = `#${++seq}`
   let head = Buffer.alloc(0)
