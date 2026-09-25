@@ -1,3 +1,8 @@
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 /**
@@ -36,7 +41,8 @@ vi.mock('../../server/lib/dood/network', () => ({
 }))
 vi.mock('../../server/lib/dev-env/docker', () => ({ run: vi.fn() }))
 
-const { doodSocketDir, doodSocketPath, ensureDoodProxy, stopDoodProxy } = await import('../../server/lib/dood/manager')
+const { doodSocketDir, doodSocketPath, ensureDoodProxy, stopDoodProxy, subpathCommand }
+  = await import('../../server/lib/dood/manager')
 
 const input = (environmentId: string) => ({
   environmentId,
@@ -124,5 +130,45 @@ describe('one environment\'s proxy', () => {
     await openNext()
     await Promise.all([slow, other])
     await Promise.all([stopDoodProxy('env_b'), stopDoodProxy('env_c'), openNext(), openNext()])
+  })
+})
+
+describe('the subpaths a bind needs in its volume', () => {
+  // Run for real with the local `sh`, against a directory standing in for the
+  // volume: the helper runs exactly this argv after its image name.
+  it('makes a missing one a directory and leaves an existing file alone', () => {
+    const root = mkdtempSync(join(tmpdir(), 'domo-subpaths-'))
+    try {
+      // compose's `./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql`
+      // resolves to this file, and `mkdir -p` on it failed the whole create
+      // with "File exists" — found by a real agent bringing up a Postgres.
+      mkdirSync(join(root, 'infra/db'), { recursive: true })
+      writeFileSync(join(root, 'infra/db/init.sql'), 'select 1;\n')
+      const [command, ...args] = subpathCommand(root, ['infra/db/init.sql', 'data/pg', 'infra/db'])
+      const result = spawnSync(command!, args, { encoding: 'utf8' })
+      expect(result.stderr).toBe('')
+      expect(result.status).toBe(0)
+      expect(readFileSync(join(root, 'infra/db/init.sql'), 'utf8')).toBe('select 1;\n')
+      expect(statSync(join(root, 'data/pg')).isDirectory()).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails when a path cannot be made', () => {
+    const root = mkdtempSync(join(tmpdir(), 'domo-subpaths-'))
+    try {
+      writeFileSync(join(root, 'file'), '')
+      const [command, ...args] = subpathCommand(root, ['file/below'])
+      expect(spawnSync(command!, args).status).not.toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('never names a path outside the volume', () => {
+    expect(subpathCommand('/volume', ['../etc', '/abs', '', 'ok/../..', 'fine'])).toEqual([
+      'sh', '-c', expect.any(String), 'sh', '/volume/fine'
+    ])
   })
 })

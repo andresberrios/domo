@@ -115,6 +115,22 @@ function safeSubpath(subpath: string): boolean {
 }
 
 /**
+ * The command that makes a bind's subpaths exist in the volume (mounted at
+ * `root`) before the create that mounts them. Only a *missing* path is made,
+ * and made a directory, which is what Docker does with a missing bind source.
+ * A path that exists is left alone: it is very often a file — compose's
+ * `./init.sql:/docker-entrypoint-initdb.d/init.sql` — and `mkdir -p` on a
+ * file fails the whole create with "File exists". A volume subpath may name a
+ * file (measured on Docker 29), so nothing else is needed for one to mount.
+ */
+export function subpathCommand(root: string, subpaths: string[]): string[] {
+  return [
+    'sh', '-c', 'for path do [ -e "$path" ] || mkdir -p -- "$path" || exit 1; done', 'sh',
+    ...subpaths.filter(safeSubpath).map(subpath => `${root}/${subpath}`)
+  ]
+}
+
+/**
  * Starting and stopping one environment's proxy never overlap. They share a
  * socket path: a `close()` that finishes after a new proxy has started
  * listening unlinks the *new* socket, and two starts racing each other unlink
@@ -156,12 +172,11 @@ async function startProxy(input: DoodProxyInput): Promise<DoodProxy> {
         engine,
         ownContainer: input.containerReference,
         ensureSubpaths: async (volume, subpaths) => {
-          const wanted = subpaths.filter(safeSubpath)
-          if (!wanted.length) return
+          if (!subpaths.some(safeSubpath)) return
           // One helper run per volume: a create waits on this.
           await run('docker', [
             'run', '--rm', '-v', `${volume}:/volume`, input.helperImage,
-            'mkdir', '-p', ...wanted.map(subpath => `/volume/${subpath}`)
+            ...subpathCommand('/volume', subpaths)
           ])
         },
         onDroppedPorts: input.onDroppedPorts,
