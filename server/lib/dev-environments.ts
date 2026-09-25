@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
-import type { DevEnvironment, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
+import type { DevEnvironment, Project, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
 import { seedClaudeHome } from './dev-env/claude-home'
@@ -38,6 +38,7 @@ import {
   stopEnvironmentContainers,
   sweepEnvironmentResources
 } from './dood/manager'
+import { keyedSerial } from './keyed-serial'
 import { dataDir } from './paths'
 import { getSettings } from './settings'
 import {
@@ -56,6 +57,17 @@ const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
 function dockerReadyTimeout(): number {
   return Number(process.env.NUXT_DEV_ENV_DOCKER_READY_MS) || 30_000
 }
+
+/**
+ * Every lifecycle operation on one environment runs alone: create, start,
+ * stop, ensure-running, retire and the boot-time proxy restore. They are
+ * reachable at once — the HTTP API, the voice agent, the mesh and an agent
+ * session attaching — and interleaved they undo each other: a retire racing a
+ * start removes the container the start is about to use, or stops the proxy
+ * the start just brought up. Queued behind a retire, a start finds the row
+ * retired and says so.
+ */
+const lifecycle = keyedSerial()
 
 export function safeEnvironmentName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase()
@@ -292,6 +304,14 @@ export async function createEnvironment(input: {
   await access(join(project.repoPath, '.git'))
 
   const id = newId('env')
+  return lifecycle(id, () => create(id, project, input))
+}
+
+async function create(
+  id: string,
+  project: Project,
+  input: { name: string, workingTree?: WorkingTreeMode }
+): Promise<DevEnvironment & { workspaceSeed: WorkspaceSeedReport }> {
   const workingTree = input.workingTree ?? 'discard'
   const name = input.name.trim()
   const safeName = safeEnvironmentName(name) || id
@@ -472,7 +492,11 @@ async function toolConfigDir(variable: string, fallbackName: string): Promise<st
   return access(configured).then(() => configured).catch(() => null)
 }
 
-export async function startEnvironment(id: string): Promise<DevEnvironment> {
+export function startEnvironment(id: string): Promise<DevEnvironment> {
+  return lifecycle(id, () => start(id))
+}
+
+async function start(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
   assertNotRetired(environment)
@@ -487,7 +511,11 @@ export async function startEnvironment(id: string): Promise<DevEnvironment> {
   return updated
 }
 
-export async function stopEnvironment(id: string): Promise<DevEnvironment> {
+export function stopEnvironment(id: string): Promise<DevEnvironment> {
+  return lifecycle(id, () => stop(id))
+}
+
+async function stop(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
   assertNotRetired(environment)
@@ -502,7 +530,11 @@ export async function stopEnvironment(id: string): Promise<DevEnvironment> {
   return (await updateDevEnvironment(id, { status: 'stopped' }))!
 }
 
-export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironment> {
+export function ensureEnvironmentRunning(id: string): Promise<DevEnvironment> {
+  return lifecycle(id, () => ensureRunning(id))
+}
+
+async function ensureRunning(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
   assertNotRetired(environment)
@@ -514,7 +546,7 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
     }
     return environment
   }
-  return startEnvironment(id)
+  return start(id)
 }
 
 /**
@@ -533,7 +565,11 @@ export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironme
  * `retireProjectEnvironment` in `projects.ts`, one layer up: importing
  * `acpManager` here would cycle back through this file.
  */
-export async function retireEnvironment(id: string): Promise<void> {
+export function retireEnvironment(id: string): Promise<void> {
+  return lifecycle(id, () => retire(id))
+}
+
+async function retire(id: string): Promise<void> {
   const environment = await getDevEnvironment(id)
   if (!environment) return
   stopEnvironmentForwarders(id)
@@ -567,15 +603,16 @@ function proxyTarget(environment: DevEnvironment) {
 export async function restoreDockerProxies(): Promise<void> {
   for (const environment of await listDevEnvironments()) {
     if (environment.retiredAt) continue
-    const inspection = await inspectContainer(containerReference(environment)).catch(() => null)
-    if (!hasDockerProxy(inspection)) continue
-    await ensureDockerProxy(proxyTarget(environment))
+    await lifecycle(environment.id, async () => {
+      const inspection = await inspectContainer(containerReference(environment)).catch(() => null)
+      if (!hasDockerProxy(inspection)) return
+      await ensureDockerProxy(proxyTarget(environment))
       // A running environment's published ports and its host.docker.internal
       // redirect died with the Domo that held them.
-      .then(() => inspection?.running ? ensureEnvironmentNetwork(environment.id) : undefined)
-      .catch(error =>
-        console.warn(`[dood] could not restore ${environment.id}:`, error instanceof Error ? error.message : error)
-      )
+      if (inspection?.running) await ensureEnvironmentNetwork(environment.id)
+    }).catch(error =>
+      console.warn(`[dood] could not restore ${environment.id}:`, error instanceof Error ? error.message : error)
+    )
   }
 }
 

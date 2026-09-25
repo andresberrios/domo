@@ -276,6 +276,59 @@ describe('start, stop and remove', () => {
     expect(dockerCalls()).toEqual([['stop', 'container-sha']])
   })
 
+  it('runs a retire only once a start in flight has finished, and a start queued behind it refuses', async () => {
+    let retired = false
+    repo.getDevEnvironment.mockImplementation(async () =>
+      environment({ status: 'stopped', retiredAt: retired ? '2026-01-02T00:00:00.000Z' : null }))
+    repo.updateDevEnvironment.mockResolvedValue(environment())
+    repo.retireDevEnvironmentRow.mockImplementation(async () => { retired = true })
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha', running: false, labels: { 'domo.dood': 'true' }, publishedPorts: [], namedVolumes: []
+    })
+    let releaseProxy!: () => void
+    const order: string[] = []
+    dood.ensureDoodProxy.mockImplementationOnce(async ({ environmentId }) => {
+      order.push('proxy:start')
+      await new Promise<void>((resolve) => { releaseProxy = resolve })
+      order.push('proxy:listening')
+      return { socketPath: `/sockets/${environmentId}.sock`, close: async () => {} }
+    })
+    dood.stopDoodProxy.mockImplementationOnce(async () => { order.push('proxy:stop') })
+
+    const starting = startEnvironment('env_1')
+    const retiring = retireEnvironment('env_1')
+    const late = startEnvironment('env_1')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    // The retire is waiting: it would otherwise stop, and unlink, the proxy
+    // the start is bringing up.
+    expect(order).toEqual(['proxy:start'])
+    expect(dood.stopDoodProxy).not.toHaveBeenCalled()
+
+    releaseProxy()
+    await starting
+    await retiring
+    expect(order).toEqual(['proxy:start', 'proxy:listening', 'proxy:stop'])
+    await expect(late).rejects.toThrow(/was retired/)
+    // Nothing started after the retire removed the container.
+    expect(dockerCalls().filter(args => args[0] === 'start')).toHaveLength(1)
+  })
+
+  it('does not hold one environment behind another', async () => {
+    repo.getDevEnvironment.mockImplementation(async (id: string) => environment({ id, status: 'stopped' }))
+    repo.updateDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha', running: false, labels: { 'domo.dood': 'true' }, publishedPorts: []
+    })
+    let release!: () => void
+    dood.ensureDoodProxy.mockImplementationOnce(({ environmentId }) =>
+      new Promise((resolve) => { release = () => resolve({ socketPath: `/sockets/${environmentId}.sock`, close: async () => {} }) }))
+
+    const held = startEnvironment('env_1')
+    await expect(startEnvironment('env_2')).resolves.toBeTruthy()
+    release()
+    await held
+  })
+
   it('asks for a recreate when the container is gone', async () => {
     repo.getDevEnvironment.mockResolvedValue(environment())
     inspectContainer.mockResolvedValue(null)

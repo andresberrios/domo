@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { run } from '../dev-env/docker'
+import { keyedSerial } from '../keyed-serial'
 import { dataDir } from '../paths'
 import { createEngineClient } from './engine'
 import { imageLayer, privateTagsOf } from './image-layer'
@@ -103,7 +104,20 @@ function safeSubpath(subpath: string): boolean {
     && !subpath.split('/').includes('..')
 }
 
-export async function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy> {
+/**
+ * Starting and stopping one environment's proxy never overlap. They share a
+ * socket path: a `close()` that finishes after a new proxy has started
+ * listening unlinks the *new* socket, and two starts racing each other unlink
+ * one another's. Either way the environment is left with a proxy that is
+ * listening on nothing any client can reach.
+ */
+const proxyLock = keyedSerial()
+
+export function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy> {
+  return proxyLock(input.environmentId, () => startProxy(input))
+}
+
+async function startProxy(input: DoodProxyInput): Promise<DoodProxy> {
   const existing = live.get(input.environmentId)
   if (existing) return existing
 
@@ -169,7 +183,11 @@ export async function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy>
   return proxy
 }
 
-export async function stopDoodProxy(environmentId: string): Promise<void> {
+export function stopDoodProxy(environmentId: string): Promise<void> {
+  return proxyLock(environmentId, () => stopProxy(environmentId))
+}
+
+async function stopProxy(environmentId: string): Promise<void> {
   const proxy = live.get(environmentId)
   const network = networks.get(environmentId)
   live.delete(environmentId)
