@@ -88,7 +88,12 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   }
   for (const environment of claimants) {
     const owed = remaining.get(environment.id) ?? []
-    await setEnvironmentLeftovers(environment.id, owed, health(environment, owed))
+    const wanted = health(environment, owed)
+    // Retired rows are kept for good, so most claimants owe nothing and say
+    // so already: no query for them, on every pass, for ever.
+    const settled = !owed.length && !environment.leftovers.length
+      && (!wanted || (environment.status === wanted.status && environment.lastError === wanted.lastError))
+    if (!settled) await setEnvironmentLeftovers(environment.id, owed, wanted)
   }
   return { removed: outcome.removed, leftovers: outcome.failed, unattributed }
 }
