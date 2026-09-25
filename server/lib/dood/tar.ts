@@ -87,7 +87,13 @@ export function archiveRewriter(names: ArchiveNames, onError?: (error: unknown) 
     | { kind: 'trailer' } = { kind: 'header' }
   /** Set by a PAX or GNU long-name header, for the entry after it. */
   let nextName: string | null = null
-  let nextSizeOverridden = false
+  /**
+   * Set by a PAX `size` record, for the entry after it. It replaces the
+   * header's own size field (which is then usually 0, or the 8 GiB cap), so
+   * skipping the entry by the header's field would read the middle of its
+   * data as the next header and lose the stream.
+   */
+  let nextSize: number | null = null
 
   const step = (out: Buffer[]): boolean => {
     if (state.kind === 'trailer') {
@@ -116,7 +122,8 @@ export function archiveRewriter(names: ArchiveNames, onError?: (error: unknown) 
         if (state.type === 'x') {
           const records = paxRecords(data)
           if (records.has('path')) nextName = records.get('path')!
-          if (records.has('size')) nextSizeOverridden = true
+          const paxSize = records.has('size') ? Number(records.get('size')) : Number.NaN
+          if (Number.isSafeInteger(paxSize) && paxSize >= 0) nextSize = paxSize
         } else if (state.type === 'L') {
           nextName = data.toString('utf8').replace(/\0.*$/s, '')
         }
@@ -149,16 +156,17 @@ export function archiveRewriter(names: ArchiveNames, onError?: (error: unknown) 
       state = { kind: 'trailer' }
       return true
     }
-    const size = readOctal(header.subarray(124, 136))
+    const headerSize = readOctal(header.subarray(124, 136))
     const type = String.fromCharCode(header[156]!)
     if (type === 'x' || type === 'g' || type === 'L') {
-      state = { kind: 'meta', header, size, type }
+      state = { kind: 'meta', header, size: headerSize, type }
       return true
     }
     const name = (nextName ?? entryName(header)).replace(/^\.\//, '')
-    const sizeOverridden = nextSizeOverridden
+    const sizeOverridden = nextSize !== null
+    const size = nextSize ?? headerSize
     nextName = null
-    nextSizeOverridden = false
+    nextSize = null
     const regular = type === '0' || type === '\0' || type === '7'
     if (regular && NAMED_FILES.has(name) && size <= MAX_REWRITTEN && !sizeOverridden) {
       state = { kind: 'rewrite', header, size, file: name }

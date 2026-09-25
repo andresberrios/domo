@@ -151,6 +151,30 @@ describe('image archives', () => {
     expect(errors).toHaveLength(1)
   })
 
+  it('skips an entry by the size its PAX header gives, not by its header\'s field', () => {
+    // A writer that restates a size in PAX (past 8 GiB, or simply by choice)
+    // may leave 0 in the header field. Skipping by that field would read the
+    // entry's data as the next header and never find the manifest after it.
+    const big = Buffer.concat([header('blobs/sha256/dddd', 0), pad(layer)])
+    const restated = Buffer.concat([
+      pax({ size: String(layer.length) }),
+      big,
+      entry('manifest.json', '[{"RepoTags":["app:dev"]}]'),
+      END
+    ])
+    for (const size of [1, 513, 4096, restated.length]) {
+      const out = run(restated, size)
+      // The layer passes byte for byte, and the manifest after it is still found and rewritten.
+      expect(out.subarray(0, 1536 + layer.length).equals(restated.subarray(0, 1536 + layer.length))).toBe(true)
+      const manifestAt = 1536 + pad(layer).length
+      const manifestHeader = out.subarray(manifestAt, manifestAt + 512)
+      const manifestSize = Number.parseInt(manifestHeader.subarray(124, 136).toString('latin1'), 8)
+      const data = out.subarray(manifestAt + 512, manifestAt + 512 + manifestSize).toString()
+      expect(JSON.parse(data)[0].RepoTags).toEqual(['renamed/app:dev'])
+      expect(out.subarray(-1024).equals(END)).toBe(true)
+    }
+  })
+
   it('hands back what it held when the archive is cut short', () => {
     const cut = archive.subarray(0, archive.length - 1024 - 300)
     expect(run(cut, 200).length).toBeGreaterThan(0)
