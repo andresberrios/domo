@@ -71,13 +71,8 @@ watch(() => props.environment.status, status => status === 'running' && void ref
 </script>
 
 <template>
-  <div v-if="environment.status === 'running'" class="mt-2 border-t border-default/70 pt-2">
-    <div class="mb-1 flex items-center gap-2 text-xs text-muted">
-      <UIcon name="i-lucide-radio-tower" class="size-3.5" />
-      <span>Ports</span>
-      <UIcon v-if="loading" name="i-lucide-loader-circle" class="size-3 animate-spin" />
-    </div>
-    <div v-if="visiblePorts.length" class="flex flex-wrap gap-2">
+  <div v-if="environment.status === 'running'">
+    <div v-if="visiblePorts.length" class="flex flex-wrap items-center gap-2">
       <div
         v-for="port in visiblePorts"
         :key="`${port.service ?? ''}-${port.innerPort}-${port.protocol}`"
