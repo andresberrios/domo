@@ -169,14 +169,16 @@ async function cleanup() {
   await run('docker', ['rm', '-f', portHelperName()], { allowFailure: true })
 }
 
-async function startEnvironment(env: Env) {
-  await run('docker', ['volume', 'create', env.volume])
-  // A stand-in for the environment's own container: the labels that mark it
-  // as one, a shell, and a Node for the agent's side of each check.
-  await run('docker', [
-    'run', '-d', '--name', env.container, '--label', 'domo.dood=true', '--label', `domo.envId=${env.id}`,
-    NODE, 'sleep', 'infinity'
-  ])
+async function startEnvironment(env: Env, options: { existing?: boolean } = {}) {
+  if (!options.existing) {
+    await run('docker', ['volume', 'create', env.volume])
+    // A stand-in for the environment's own container: the labels that mark it
+    // as one, a shell, and a Node for the agent's side of each check.
+    await run('docker', [
+      'run', '-d', '--name', env.container, '--label', 'domo.dood=true', '--label', `domo.envId=${env.id}`,
+      NODE, 'sleep', 'infinity'
+    ])
+  }
   env.socket = (await ensureDoodProxy({
     environmentId: env.id,
     containerReference: env.container,
@@ -407,6 +409,19 @@ describe.skipIf(!daemon)('publishing on the environment\'s own localhost', () =>
 
     const fromRun = await cli(A, ['run', '--rm', NODE, 'node', '-e', FETCH('http://host.docker.internal:5173')], true)
     expect(fromRun.stdout, fromRun.stderr).toBe('loopback')
+
+    // The Operea case twice over: the other environment runs the same stack
+    // and its own dev server on the same port, and each service reaches the
+    // dev server of its *own* environment.
+    await serveIn(B, 'require(\'http\').createServer((q, r) => r.end(\'loopback-b\')).listen(5173, \'127.0.0.1\')')
+    await compose(B, 'cb', 'callback.yaml', ['up', '-d'])
+    for (const service of ['plain', 'gateway']) {
+      await eventually(async () => {
+        const out = await compose(B, 'cb', 'callback.yaml', ['exec', '-T', service, 'node', '-e', FETCH('http://host.docker.internal:5173')], true)
+        expect(out.stdout).toBe('loopback-b')
+      })
+      expect((await fromService(service, 'http://host.docker.internal:5173')).stdout).toBe('loopback')
+    }
   }, 180_000)
 
   it('keeps the relays out of the Ports panel\'s own list, and still forwards published ports to the Mac', async () => {
@@ -441,11 +456,30 @@ describe.skipIf(!daemon)('publishing on the environment\'s own localhost', () =>
     await answers(B, 'http://localhost:8080', 'in-b:80')
   }, 180_000)
 
+  it('comes back when Domo restarts: the socket, the relays and the redirect', async () => {
+    // What a Domo restart does to a running environment: the proxy, its
+    // relays and the port helper's processes die with the server…
+    await stopDoodProxy(A.id)
+    await refused(A, 8080)
+    expect((await cli(A, ['ps'], true)).stderr).toMatch(/Cannot connect|connection refused|no such file/i)
+    // …and boot brings them back at the same path, which the running
+    // environment still has mounted.
+    await startEnvironment(A, { existing: true })
+    expect((await cli(A, ['ps', '--format', '{{.Names}}'])).stdout.split('\n')).toContain('same-app-1')
+    await answers(A, 'http://localhost:8080', 'in-a:80')
+    await eventually(async () => {
+      const out = await compose(A, 'cb', 'callback.yaml', ['exec', '-T', 'plain', 'node', '-e', FETCH('http://host.docker.internal:5173')], true)
+      expect(out.stdout).toBe('loopback again')
+    })
+    await answers(B, 'http://localhost:8080', 'in-b:80')
+  }, 180_000)
+
   it('takes the relays down with `compose down`', async () => {
     const port = Number((await compose(A, 'alloc', 'web.yaml', ['port', 'web', '80'])).stdout.split(':')[1])
     await compose(A, 'alloc', 'web.yaml', ['down'])
     await compose(A, 'same', 'same.yaml', ['down'])
     await compose(A, 'cb', 'callback.yaml', ['down'])
+    await compose(B, 'cb', 'callback.yaml', ['down'])
     await refused(A, 8080)
     await refused(A, port)
     await answers(B, 'http://localhost:8080', 'in-b:80')

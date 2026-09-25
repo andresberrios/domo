@@ -57,6 +57,7 @@ vi.mock('../../server/lib/repo', () => ({
     return row
   },
   getDevEnvironment: async (id: string) => state.rows.get(id) ?? null,
+  listDevEnvironments: async () => [...state.rows.values()],
   retireDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
   pruneRetiredRecords: async () => ({ environments: 0, projects: 0 }),
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
@@ -87,13 +88,16 @@ const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/li
 const {
   createEnvironment,
   readEnvironmentFile,
+  restoreDockerProxies,
   retireEnvironment,
+  startEnvironment,
+  stopEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
 const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
 const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
-const { doodSocketDir, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
+const { doodSocketDir, doodSocketPath, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
 const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
 
 const HOUR = 60 * 60 * 1000
@@ -426,6 +430,79 @@ describe('an environment for a project with no .domo.json', () => {
     }
     const image = await run('docker', ['images', '--quiet', environmentImageName(environment.id)])
     expect(image.stdout, 'the environment image outlived its environment').toBe('')
+  }, HOUR / 4)
+})
+
+describe('an environment\'s stack on the shared daemon, through stop, start and a Domo restart', () => {
+  it('keeps its Postgres at localhost:5432 and its own images, comes back after each, and retires to nothing', async () => {
+    const POSTGRES = 'postgres:17-alpine'
+    const repo = await checkout({
+      'compose.yaml': [
+        'services:',
+        '  db:',
+        `    image: ${POSTGRES}`,
+        '    environment: { POSTGRES_PASSWORD: pw }',
+        '    ports: ["5432:5432"]',
+        ''
+      ].join('\n'),
+      'Dockerfile.base': 'FROM busybox:1.37\nRUN echo from-the-base > /base\n',
+      'Dockerfile.app': 'FROM fixture-base:dev\nCMD ["cat", "/base"]\n'
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    const environment = await create('Live Stack')
+    const id = environment.id
+    const sh = (script: string) => run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, 'bash', '-c', script
+    ], { allowFailure: true })
+    // psql in the environment's own network namespace: `localhost` is the environment's.
+    const PSQL = `docker run --rm -e PGPASSWORD=pw --network container:$(hostname) ${POSTGRES} psql -h localhost -p 5432 -U postgres -tAc "select 40 + 2"`
+    const query = () => sh(`for i in $(seq 1 60); do out=$(${PSQL} 2>/dev/null) && [ -n "$out" ] && echo "$out" && exit 0; sleep 0.5; done; exit 1`)
+    const labelled = async (kind: 'ps' | 'network' | 'volume') => (await run('docker', [
+      ...(kind === 'ps' ? ['ps', '-aq'] : [kind, 'ls', '-q']), '--filter', `label=domo.env=${id}`
+    ])).stdout
+
+    expect((await sh('docker compose -p fixture up -d')).stderr).toMatch(/Started/)
+    expect((await query()).stdout).toBe('42')
+    expect((await sh('docker compose -p fixture port db 5432')).stdout).toBe('0.0.0.0:5432')
+
+    // An image built FROM an image built before it: private to the environment on the host.
+    const built = await sh('docker build -q -t fixture-base:dev -f Dockerfile.base . && docker build -q -t fixture-app:dev -f Dockerfile.app . && docker run --rm fixture-app:dev')
+    expect(built.stdout.split('\n').at(-1), built.stderr).toBe('from-the-base')
+    const hostTags = async () => (await run('docker', ['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'])).stdout.split('\n')
+    expect(await hostTags()).toContain(`domo-${id}/docker.io/library/fixture-app:dev`)
+    expect(await hostTags()).not.toContain('fixture-app:dev')
+    expect((await sh('docker image ls --format "{{.Repository}}:{{.Tag}}"')).stdout.split('\n')).toContain('fixture-app:dev')
+
+    // Stopping the environment stops its stack, which would otherwise run on unwatched.
+    await stopEnvironment(id)
+    expect((await run('docker', ['ps', '-q', '--filter', `label=domo.env=${id}`])).stdout).toBe('')
+    await startEnvironment(id)
+    expect((await sh('docker ps -a --format "{{.Names}} {{.State}}"')).stdout).toBe('fixture-db-1 exited')
+    await sh('docker compose -p fixture up -d')
+    expect((await query()).stdout).toBe('42')
+
+    // A Domo restart: the proxy and the relays die with the server, the
+    // environment keeps running, and boot brings them back at the same path.
+    await stopDoodProxy(id)
+    // A `docker` call made meanwhile does not fail: Docker Desktop holds the
+    // connection to the missing socket open, and it completes once Domo is back.
+    await run('docker', ['exec', '--detach', '--user', environment.remoteUser!, environment.containerId!,
+      'sh', '-c', 'timeout 120 docker ps --format "{{.Names}}" > /tmp/during-outage.txt 2>&1; echo "exit $?" >> /tmp/during-outage.txt'])
+    await new Promise(resolve => setTimeout(resolve, 2_000))
+    expect((await sh('cat /tmp/during-outage.txt')).stdout).toBe('')
+    await restoreDockerProxies()
+    expect((await sh('docker ps --format "{{.Names}}"')).stdout).toBe('fixture-db-1')
+    await expect.poll(async () => (await sh('cat /tmp/during-outage.txt')).stdout, { timeout: 30_000 })
+      .toBe('fixture-db-1\nexit 0')
+    expect((await query()).stdout).toBe('42')
+
+    const socket = doodSocketPath(id)
+    expect(await exists(socket)).toBe(true)
+    await retireEnvironment(id)
+    for (const kind of ['ps', 'network', 'volume'] as const) expect(await labelled(kind), kind).toBe('')
+    expect((await hostTags()).filter(tag => tag.startsWith(`domo-${id}/`))).toEqual([])
+    expect(await exists(socket)).toBe(false)
   }, HOUR / 4)
 })
 
