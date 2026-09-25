@@ -124,9 +124,10 @@ things that are easy to get wrong.
   every reference in a path, query or body is resolved *within* the
   environment — one it does not own is sent on prefixed, so the daemon answers
   its own "No such container" in its own words. Workspace binds become the
-  workspace volume with a subpath, host publishing is dropped (kept on
-  `domo.ports` / `domo.publishing`, and the binds on `domo.binds`, so inspect
-  shows what was asked for), named volumes are created labelled before the
+  workspace volume with a subpath, publishing is taken off the daemon's host
+  and done on the environment's own `localhost` instead (next-but-one bullet;
+  what was asked is kept on `domo.ports` / `domo.publishing`, and the binds on
+  `domo.binds`, so inspect shows it), named volumes are created labelled before the
   create that mounts them, and the environment's own container joins the
   networks its services do. What cannot be translated is refused with a
   Docker-shaped `{"message":"Domo: …"}` the CLI prints like any daemon error:
@@ -168,7 +169,9 @@ things that are easy to get wrong.
   it is invisible there and — measured — unreachable even by network name when
   it listens on loopback, which Vite and Next do by default. So one global
   *port helper* (`<prefix>port-helper`, `--pid=host` plus `SYS_ADMIN` and
-  `SYS_PTRACE`, measured to be enough without `--privileged`) `nsenter -n`s
+  `SYS_PTRACE`, measured to be enough without `--privileged`; `NET_ADMIN` and
+  `systempaths=unconfined` for the redirect in the bullet below, on an image of
+  `RUNTIME_IMAGE` plus iptables built once under a hashed tag) `nsenter -n`s
   into a service by the PID `docker inspect` reports
   (`server/lib/dev-env/service-ports.ts`): the scanner reads `/proc/net/tcp`
   that way (distroless images have no shell) and the userland forwarder runs
@@ -186,6 +189,41 @@ things that are easy to get wrong.
   add a reverse proxy** — the userland forwarder already makes collisions
   impossible and gives the UI a port, and a Caddy/Traefik layer was proposed
   and rejected for duplicating it.
+- **An environment's `-p` / `ports:` are published on the environment's own
+  `localhost`, and its `host.docker.internal` is the environment.** Both live
+  in the environment's network namespace, entered through the port helper by
+  the environment container's PID (`server/lib/dood/network.ts`, decisions in
+  `publish.ts`). Publishing is **one relay process per environment**
+  (`relay-script.ts`, the helper's `node` under `nsenter -n`, driven over stdin
+  with the *whole* desired state and exiting on EOF, so it dies with Domo),
+  forwarding to the container's address on a network the two share — real
+  publishing's semantics, so a service bound to its own loopback is not
+  reachable through its published port here either. Two environments can
+  therefore both have `localhost:5432`, and nothing is published on the
+  daemon's host at all. The ports are held **before** a `start` is forwarded:
+  a taken one refuses it with Docker's own words (`Bind for 0.0.0.0:5432
+  failed: port is already allocated` for another container,
+  `…userland proxy: listen tcp4 …: address already in use` for the agent's own
+  process — both measured wordings) and the container stays `created`.
+  Reconciled after start/stop/kill/rm and from one `GET /events` stream for
+  every container `start`/`die`/`destroy` (restart policies, `compose
+  restart`, Docker Desktop's buttons); the target address is re-read on every
+  reconcile, and a connection arriving before it is known waits instead of
+  being refused. Inspect, `docker ps`, `docker port` and `compose port` report
+  what the relay really holds, allocations included, both `0.0.0.0` and `::`
+  as Docker does. The Ports panel scanner subtracts the relay's ports from the
+  environment's own. **`host.docker.internal`**: Docker Desktop's DNS answers
+  it with the Mac in *any* container unless `/etc/hosts` says otherwise, so
+  every create gets `ExtraHosts` for it (and `gateway.docker.internal`, and
+  every `host-gateway`) pointing at the environment's address on the new
+  container's network; `route_localnet=1` plus one `nat PREROUTING` DNAT of
+  TCP/UDP to any local non-loopback address → `127.0.0.1` makes loopback-only
+  dev servers reachable, as Docker Desktop does for the Mac. That DNAT means a
+  server bound *only* to the environment's own `eth0` address is not reachable
+  from siblings. Both die with the namespace, so both are redone whenever the
+  PID changes (environment start, Domo boot). The `ExtraHosts` address is
+  fixed at create: an environment that comes back on another address leaves
+  running services pointing at the old one until they are recreated.
 - **An environment is a namespace, not a security boundary, so the host user's
   login state is shared with it.** An agent in a container has to be able to
   `git push`, open a PR and reach whatever cloud the developer is already logged

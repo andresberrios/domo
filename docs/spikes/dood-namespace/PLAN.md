@@ -78,6 +78,62 @@ What a later phase needs to know:
   `test/docker/dood-namespace.live.spec.ts` (two environments + bystanders,
   real CLI and compose, ~11 s).
 
+## Done: publishing on the environment's `localhost`, and `host.docker.internal`
+
+Landed on this branch. AGENTS.md has the load-bearing summary; what a later
+phase needs to know on top of it:
+
+- **Layer stack is now `[scopeLayer, publishLayer]`** (`manager.ts`). The
+  publish layer sits inside the scope layer: it reads the `domo.publishing`
+  label the scope layer wrote at create, and sees real ids in `start`/`stop`.
+  It **refuses a create whose `NetworkMode` is `container:` and that has
+  publishing** (Docker's own "conflicting options" wording, since the daemon no
+  longer sees the ports to refuse them). The `network_mode: host` phase
+  rewrites to `container:<env>`: it must drop `domo.publishing` (or run inside
+  the publish layer with the ports already gone), or every such service is
+  refused. A `container:` service also gets no `ExtraHosts` (Docker refuses
+  "custom host-to-IP mapping and the network mode"), which is right for it:
+  it shares the environment's `/etc/hosts`.
+- **`EnvironmentNetwork` (`network.ts`) is the per-environment hook for "the
+  environment's namespace changed"**: `environment()` notices a new PID on
+  every reconcile, and reconciles run on environment start, on Domo boot and on
+  the environment container's own `start`/`die` events. The `network_mode:
+  host` phase's "restart the running ones on environment start" belongs there.
+- **The port helper is now built, not pulled**: `RUNTIME_IMAGE` + `iptables`,
+  tagged `<prefix>port-helper:<hash of the Dockerfile>`
+  (`server/lib/dev-env/port-helper.ts`, which also owns `ensurePortHelper`
+  now). A failed build (offline) falls back to `RUNTIME_IMAGE` with a warning:
+  ports work, the redirect does not. It runs with `NET_ADMIN` and
+  `--security-opt systempaths=unconfined` in addition to before — still not
+  `--privileged` (asserted in `test/unit/service-ports.spec.ts`).
+- Measured: the `docker run` CLI with no `--network` sends `NetworkMode:
+  "default"` **and** `EndpointsConfig: {"default": {}}` — "default" means the
+  bridge. Docker's container netns uses the nft backend; the helper's Debian
+  `iptables` (1.8.9, nf_tables) coexists with Docker's embedded-DNS rules
+  there. One rule per protocol with `-m addrtype --dst-type LOCAL ! -d
+  127.0.0.0/8` covers every address the environment has, including networks it
+  joins later. `node:22-bookworm-slim` has IPv6 on loopback, so `::` dual-stack
+  works and the relay reports both families; it falls back to `0.0.0.0` where
+  there is none.
+- Measured on Docker 29: a refused start answers **500** with `failed to set
+  up container networking: driver failed programming external connectivity on
+  endpoint <name> (<id>): Bind for 0.0.0.0:<port> failed: port is already
+  allocated`, and leaves the container `created` with `NetworkSettings.Ports`
+  `{}`; a stopped container reports `{}` too, and `docker port` prints nothing
+  for it. Docker Desktop reports an `sctp` publish as `udp` (its bug) — we
+  refuse SCTP at create.
+- **Not done / not verified**: IPv6 targets (the relay forwards to the
+  container's IPv4 address; `ip6tables` is not touched, so a service calling
+  `host.docker.internal` over IPv6 is not redirected); SCTP; Linux hosts (all
+  measured on Docker Desktop). `-P` publishes only what the container/image
+  exposes, as Docker does; the Ports panel still auto-forwards to the Mac only
+  what `domo.ports` lists (explicit `-p` / `ports:`), not `-P`'s allocations.
+- Tests: `test/unit/dood-{publish,relay}.spec.ts` (the relay script runs for
+  real on loopback), `test/unit/dood-responses.spec.ts`;
+  `test/docker/dood-publish.live.spec.ts` (two stand-in environments, every
+  scenario in the brief, ~50 s); `dev-environment.live.spec.ts` now checks
+  `localhost:8080` and `host.docker.internal` in a real environment.
+
 ## The goal
 
 From inside an environment, Docker behaves like a normal machine whose
@@ -153,8 +209,8 @@ clients never pipeline: when request N+1 arrives, response N is complete.
      `--progress=plain` of the same build direct vs through the proxy, as the
      spike did. If the numbering cannot be made exact, the names alone are
      worth fixing.
-5. **Order of work**: ~~scoping + names → response rewriting~~ (done) → `localhost`
-   publishing + `host.docker.internal` → binds + `network_mode: host` →
+5. **Order of work**: ~~scoping + names → response rewriting~~ (done) → ~~`localhost`
+   publishing + `host.docker.internal`~~ (done) → binds + `network_mode: host` →
    images (the `/grpc` bridge, then the HTTP-side tag handling).
 
 ## Pieces, each with what was measured
@@ -171,7 +227,7 @@ clients never pipeline: when request N+1 arrives, response N is complete.
   and `builder prune` would empty the *shared* cache → refuse loudly.
   Swarm/services/nodes/secrets/configs/plugins mutations → refuse loudly.
 
-### Publishing into the environment (`localhost:<port>` from the agent)
+### Publishing into the environment (`localhost:<port>` from the agent) — done, see above
 - Measured: the port helper can `nsenter` the environment's netns and listen
   on `127.0.0.1:5432` relaying to the service's IP; the environment's
   `localhost:5432` answered, and the listener is invisible to the agent's
@@ -193,7 +249,7 @@ clients never pipeline: when request N+1 arrives, response N is complete.
 - The scanner must not list these relays as the environment's own ports.
 - Keep auto-forwarding published ports to the Mac (Ports panel).
 
-### `host.docker.internal` from a service → the environment (Operea: Restate → dev server)
+### `host.docker.internal` from a service → the environment (Operea: Restate → dev server) — done, see above
 - Measured: `ExtraHosts host.docker.internal:<environment IP on the service's
   network>` plus, in the environment's netns via the helper,
   `sysctl net.ipv4.conf.all.route_localnet=1` and an iptables `nat
