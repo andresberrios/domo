@@ -48,6 +48,9 @@ describe('the port helper', () => {
     const args = portHelperRunArgs('domo-dev-port-helper', 'node:22-bookworm-slim')
 
     expect(args).toEqual(expect.arrayContaining(['--pid', 'host', 'SYS_ADMIN', 'SYS_PTRACE', 'domo.role=port-helper']))
+    // For the host.docker.internal redirect: an iptables rule and route_localnet
+    // in an environment's namespace. Still not privileged.
+    expect(args).toEqual(expect.arrayContaining(['NET_ADMIN', 'systempaths=unconfined']))
     expect(args).not.toContain('--privileged')
     // No environment label: it serves them all, so no environment's sweep may take it.
     expect(args.join(' ')).not.toContain('domo.env')

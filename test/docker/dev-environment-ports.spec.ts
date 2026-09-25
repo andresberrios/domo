@@ -24,6 +24,7 @@ vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
 vi.mock('../../server/lib/repo', () => repo)
 
 const { refreshEnvironmentPorts, stopAllEnvironmentForwarders } = await import('../../server/lib/dev-environment-ports')
+const { portHelperImage } = await import('../../server/lib/dev-env/port-helper')
 
 const environment = {
   id: 'env_1',
@@ -107,7 +108,7 @@ describe('refreshEnvironmentPorts on the host daemon', () => {
     run.mockImplementation(async (_program, args) => {
       if (args[0] === 'ps') return { stdout: 'web-sha', stderr: '' }
       if (args[0] === 'inspect' && args.at(-1) === HELPER) {
-        return { stdout: options.helperRunning ? 'true node:22-bookworm-slim' : '', stderr: '' }
+        return { stdout: options.helperRunning ? `true ${portHelperImage()}` : '', stderr: '' }
       }
       // The per-connection PID lookup, owner label included.
       if (args[0] === 'inspect' && args.includes('--format')) return { stdout: '4242 env_1', stderr: '' }

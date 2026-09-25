@@ -3,12 +3,12 @@ import { createServer, type Server, type Socket } from 'node:net'
 
 import type { DevEnvironment, DevEnvironmentPort } from '../../shared/types'
 import { DOOD_CONTAINER_LABEL } from './dev-env/container'
-import { inspectContainer, resourcePrefix, run, type ContainerInspection } from './dev-env/docker'
-import { RUNTIME_IMAGE, RUNTIME_ROOT } from './dev-env/runtime-volume'
+import { inspectContainer, run, type ContainerInspection } from './dev-env/docker'
+import { ensurePortHelper, knownPortHelper } from './dev-env/port-helper'
+import { RUNTIME_ROOT } from './dev-env/runtime-volume'
 import {
   inServiceNetwork,
   parseListeningPorts,
-  portHelperRunArgs,
   requestedPorts,
   scannableServices,
   serviceReferences,
@@ -69,44 +69,6 @@ function detectedPortAttributes(
   return undefined
 }
 
-/** The one port helper, named by install so two Domos on one daemon do not share it. */
-function portHelperName(): string {
-  return `${resourcePrefix()}port-helper`
-}
-
-let helperReady: Promise<string> | null = null
-/** Set once a check has seen the helper running; a connection trusts it rather than paying for a check. */
-let helperKnown: string | null = null
-
-/**
- * Start the port helper if it is not running, once at a time. Checked on every
- * scan (one `docker inspect`), so a helper removed or stopped from outside, or
- * left on an image an upgrade moved away from, comes back on its own.
- */
-function ensurePortHelper(): Promise<string> {
-  helperReady ??= (async () => {
-    const name = portHelperName()
-    const found = await run('docker', [
-      'inspect', '--format', '{{.State.Running}} {{.Config.Image}}', name
-    ], { allowFailure: true })
-    const [running, image] = found.stdout.split(' ')
-    if (found.stdout && image !== RUNTIME_IMAGE) {
-      await run('docker', ['rm', '--force', name], { allowFailure: true })
-    } else if (running === 'true') {
-      return name
-    } else if (running === 'false') {
-      await run('docker', ['start', name])
-      return name
-    }
-    await run('docker', portHelperRunArgs(name, RUNTIME_IMAGE))
-    return name
-  })().then((name) => {
-    helperKnown = name
-    return name
-  }).finally(() => { helperReady = null })
-  return helperReady
-}
-
 /**
  * The PID of a service's first process, or null when it is not running — read
  * per connection, so a restarted service is simply found again. The label is
@@ -138,7 +100,7 @@ async function relayArgs(environment: DevEnvironment, port: DevEnvironmentPort):
   }
   const pid = await servicePid(environment.id, port.service)
   if (!pid) return null
-  return inServiceNetwork(helperKnown ?? await ensurePortHelper(), pid, ['node', ...relay], true)
+  return inServiceNetwork(await knownPortHelper(), pid, ['node', ...relay], true)
 }
 
 async function startUserlandForward(

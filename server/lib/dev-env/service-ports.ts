@@ -32,13 +32,18 @@ export const PORT_HELPER_ROLE = 'port-helper'
 /**
  * `docker run` for the helper. `--pid=host` to see every container's PID, and
  * `SYS_ADMIN` + `SYS_PTRACE` for `setns` into it — measured to be enough on
- * Docker Desktop, so it is not `--privileged`.
+ * Docker Desktop, so it is not `--privileged`. `NET_ADMIN` and an unmasked
+ * `/proc/sys` are for the `host.docker.internal` redirect it sets up in an
+ * environment's namespace (an iptables rule, and `route_localnet`): measured,
+ * `/proc/sys` is read-only without `systempaths=unconfined`, and that is
+ * still not `--privileged`.
  */
 export function portHelperRunArgs(name: string, image: string): string[] {
   return [
     'run', '--detach', '--init', '--name', name,
     '--pid', 'host',
-    '--cap-add', 'SYS_ADMIN', '--cap-add', 'SYS_PTRACE',
+    '--cap-add', 'SYS_ADMIN', '--cap-add', 'SYS_PTRACE', '--cap-add', 'NET_ADMIN',
+    '--security-opt', 'systempaths=unconfined',
     '--label', `${PORT_HELPER_ROLE_LABEL}=${PORT_HELPER_ROLE}`,
     image, 'sleep', 'infinity'
   ]
