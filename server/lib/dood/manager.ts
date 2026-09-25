@@ -51,8 +51,16 @@ export const doodLabels = (environmentId: string): Record<string, string> =>
  * at most **88** bytes. Measured on 29.8: 88 connects, 89 is `ECONNREFUSED`
  * inside the container, and nothing anywhere says why. Both the environment
  * and every service given `/var/run/docker.sock` (`binds.ts`) mount this path,
- * so it is held to that. `~/.domo/dood/<8 hex>/env_<20 hex>.sock` is 50 bytes
- * plus the home directory's own length.
+ * so it is held to that — and kept short enough that an ordinary home
+ * directory never reaches it: `~/.domo/s/<8 hex>/<12 hex>.sock` is 35 bytes
+ * plus the home directory, which leaves 53 for the home directory itself. The
+ * file is named by a hash of the environment id rather than the id (24 bytes)
+ * for the same reason; 48 bits among one install's environments cannot
+ * collide in practice, and the name is still derived, never stored.
+ *
+ * The path is fixed into an environment's mounts at creation, so changing
+ * this derivation strands every environment created before the change (its
+ * `docker` answers `ECONNREFUSED`): such an environment has to be recreated.
  */
 const SUN_PATH_MAX = 88
 
@@ -60,15 +68,17 @@ export function doodSocketDir(): string {
   const configured = process.env.NUXT_DOOD_SOCKET_DIR
   if (configured) return configured
   const install = createHash('sha256').update(dataDir()).digest('hex').slice(0, 8)
-  return join(homedir(), '.domo', 'dood', install)
+  return join(homedir(), '.domo', 's', install)
 }
 
 export function doodSocketPath(environmentId: string): string {
-  const path = join(doodSocketDir(), `${environmentId}.sock`)
+  const name = createHash('sha256').update(environmentId).digest('hex').slice(0, 12)
+  const path = join(doodSocketDir(), `${name}.sock`)
   if (Buffer.byteLength(path) > SUN_PATH_MAX) {
     throw new Error(
-      `The Docker socket path for ${environmentId} is too long for a unix socket a container can mount (${path}). `
-      + 'Set NUXT_DOOD_SOCKET_DIR to a shorter directory.'
+      `The Docker socket path for ${environmentId} is ${Buffer.byteLength(path)} bytes (${path}), and Docker Desktop `
+      + `only forwards a socket a container mounts from a path of at most ${SUN_PATH_MAX}. `
+      + 'Set NUXT_DOOD_SOCKET_DIR to a shorter directory (not under /tmp, which macOS cleans).'
     )
   }
   return path

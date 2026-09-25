@@ -491,7 +491,7 @@ configured providers are kept current automatically (see
 | `NUXT_DEV_ENV_HELPER_IMAGE` | Image used to copy a checkout into its volume (default `busybox:1.37`; set it for offline installs) |
 | `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix of the containers, images and volumes Domo creates (default `domo-dev-`) |
 | `NUXT_DEV_ENV_DOCKER_READY_MS` | How long Docker inside a new environment gets to answer before creation fails (default `30000`) |
-| `NUXT_DOOD_SOCKET_DIR` | Where each environment's Docker socket is created (default `~/.domo/dood/<install>`; a unix socket path must stay under ~100 bytes) |
+| `NUXT_DOOD_SOCKET_DIR` | Where each environment's Docker socket is created (default `~/.domo/s/<install>`; Docker Desktop only forwards a socket whose path is at most 88 bytes, so a home directory longer than 53 characters needs this set — not under `/tmp`, which macOS cleans) |
 | `NUXT_CLAUDE_CONFIG_DIR` | Where the Claude config *copied* into a new environment is read from (defaults to `~/.claude`) |
 | `NUXT_CODEX_CONFIG_DIR` | Codex config directory mounted into environments (defaults to `~/.codex`) |
 | `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts are read from (defaults to `$HOME`) |

@@ -248,10 +248,10 @@ describe('containerRunArgs', () => {
   })
 
   it('mounts the Docker proxy socket as a file, unprivileged, and labels the container for it', () => {
-    const args = runArgs({ dockerSocket: '/Users/dev/.domo/dood/abcd1234/env_1.sock' })
+    const args = runArgs({ dockerSocket: '/Users/dev/.domo/s/abcd1234/0123456789ab.sock' })
 
     // `-v`, because Docker Desktop refuses a host socket through `--mount`.
-    expect(values(args, '--volume')).toEqual(['/Users/dev/.domo/dood/abcd1234/env_1.sock:/var/run/docker.sock'])
+    expect(values(args, '--volume')).toEqual(['/Users/dev/.domo/s/abcd1234/0123456789ab.sock:/var/run/docker.sock'])
     expect(values(args, '--label')).toContain('domo.dood=true')
     expect(args).not.toContain('--privileged')
     expect(args.at(-2)).toContain('chmod 666 /var/run/docker.sock')

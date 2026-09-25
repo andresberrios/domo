@@ -129,7 +129,7 @@ of a second or two, not read back what an earlier test did — the events test i
 `dood-namespace.live.spec.ts` found out by failing only in the full run.
 
 **`dev-environments.spec.ts` mocks `server/lib/dood/manager`.** The real
-`ensureDoodProxy` listens on a real socket under `~/.domo/dood/`, and in a spec
+`ensureDoodProxy` listens on a real socket under `~/.domo/s/`, and in a spec
 that never closes it that is a file left in the developer's home per test.
 
 **`browserTools` is off for the whole `docker-live` layer, and the two browser

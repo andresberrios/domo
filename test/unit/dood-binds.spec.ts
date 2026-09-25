@@ -15,7 +15,7 @@ import { hostModes, rewriteContainerCreate, type CreateNames, type DoodScope } f
  * namespace when the host is the environment.
  */
 
-const SOCKET = '/Users/me/.domo/dood/abcd1234/env_abc.sock'
+const SOCKET = '/Users/me/.domo/s/abcd1234/0123456789ab.sock'
 const OWN_ID = 'e'.repeat(64)
 
 /** The mount table of a real environment, as `docker inspect` reports it. */
@@ -322,10 +322,10 @@ describe('doodSocketPath', () => {
     const previous = process.env.NUXT_DOOD_SOCKET_DIR
     try {
       // 88 bytes connects, 89 is ECONNREFUSED inside the container (measured).
-      process.env.NUXT_DOOD_SOCKET_DIR = `/${'d'.repeat(88 - '/'.length - '/env_abc.sock'.length)}`
+      process.env.NUXT_DOOD_SOCKET_DIR = `/${'d'.repeat(88 - '/'.length - '/0123456789ab.sock'.length)}`
       expect(doodSocketPath('env_abc')).toHaveLength(88)
       process.env.NUXT_DOOD_SOCKET_DIR += 'd'
-      expect(() => doodSocketPath('env_abc')).toThrow(/too long for a unix socket a container can mount/)
+      expect(() => doodSocketPath('env_abc')).toThrow(/Docker Desktop only forwards a socket a container mounts from a path of at most 88/)
     } finally {
       if (previous === undefined) delete process.env.NUXT_DOOD_SOCKET_DIR
       else process.env.NUXT_DOOD_SOCKET_DIR = previous

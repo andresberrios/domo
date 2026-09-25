@@ -1187,10 +1187,15 @@ things that are easy to get wrong.
   `-v` of the same path works (a directory holding it does not — `ENOTSUP`).
   And a unix socket path must fit in `sun_path` (104 bytes on macOS): a
   worktree's `.data/dood/env_<id>.sock` measured 117, so sockets live under
-  `~/.domo/dood/<hash of the data dir>/` (`NUXT_DOOD_SOCKET_DIR` overrides).
-  **Docker Desktop's own limit is tighter and silent: 88 bytes.** A longer
-  host path mounts fine and every connection inside answers `ECONNREFUSED`
-  (measured: 88 connects, 89 does not), so `doodSocketPath` refuses past it.
+  the home directory (`NUXT_DOOD_SOCKET_DIR` overrides; never `/tmp`, which
+  macOS cleans). **Docker Desktop's own limit is tighter and silent: 88
+  bytes.** A longer host path mounts fine and every connection inside answers
+  `ECONNREFUSED` (measured: 88 connects, 89 does not), so `doodSocketPath`
+  refuses past it, and the default is kept to `~/.domo/s/<8 hex of the data
+  dir>/<12 hex of the env id>.sock` — 35 bytes plus the home directory, so a
+  home of up to 53 characters works. The path is fixed into an environment's
+  mounts at creation: **changing the derivation strands every existing
+  environment** (its `docker` answers `ECONNREFUSED`) until it is recreated.
   **Docker Desktop cannot `docker restart` a container that mounts a host
   socket** — `failed to fulfil mount request: open /socket_mnt/…: no such file
   or directory`, container left stopped — while `stop` then `start` works

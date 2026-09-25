@@ -286,7 +286,7 @@ describe('binds outside the checkout and host namespaces, as the agent asked for
     HostConfig: {
       NetworkMode: `container:${'e'.repeat(64)}`,
       PidMode: `container:${'e'.repeat(64)}`,
-      Binds: ['/Users/me/.aws:/root/.aws:ro', '/Users/me/.domo/dood/x/env_abc.sock:/var/run/docker.sock'],
+      Binds: ['/Users/me/.aws:/root/.aws:ro', '/Users/me/.domo/s/abcd1234/0123456789ab.sock:/var/run/docker.sock'],
       Mounts: [
         { Type: 'bind', Source: '/Users/me/.config/gh', Target: '/gh' },
         { Type: 'volume', Source: 'caches', Target: '/x', VolumeOptions: { Subpath: 'x' } }
@@ -294,7 +294,7 @@ describe('binds outside the checkout and host namespaces, as the agent asked for
     },
     Mounts: [
       { Type: 'bind', Source: '/Users/me/.aws', Destination: '/root/.aws', Mode: 'ro', RW: false, Propagation: 'rprivate' },
-      { Type: 'bind', Source: '/Users/me/.domo/dood/x/env_abc.sock', Destination: '/var/run/docker.sock', Mode: '', RW: true, Propagation: 'rprivate' },
+      { Type: 'bind', Source: '/Users/me/.domo/s/abcd1234/0123456789ab.sock', Destination: '/var/run/docker.sock', Mode: '', RW: true, Propagation: 'rprivate' },
       { Type: 'bind', Source: '/Users/me/.config/gh', Destination: '/gh', Mode: '', RW: true, Propagation: 'rprivate' },
       { Type: 'volume', Name: 'caches', Source: '/var/lib/docker/volumes/caches/_data', Destination: '/x', RW: true },
       { Type: 'volume', Name: 'env_abc-data', Source: '/var/lib/docker/volumes/env_abc-data/_data', Destination: '/data', RW: true }
