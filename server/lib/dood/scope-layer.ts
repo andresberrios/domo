@@ -2,6 +2,7 @@ import type { DoodRequest } from './http'
 import { engineOk, type EngineClient } from './engine'
 import { answer, withResponse, type DoodLayer, type Next, type Outcome } from './layers'
 import { agentName, isNamespaced, stripNames, type Namespace } from './names'
+import type { Binding } from './publish'
 import {
   containerInspectForAgent,
   containerListForAgent,
@@ -57,6 +58,8 @@ export interface ScopeLayerOptions {
   ownContainer: string
   ensureSubpaths(subpaths: string[]): Promise<void>
   onDroppedPorts?(ports: PublishedPort[]): void
+  /** What a container really has published, for inspect and `docker ps` (see `ResponseScope`). */
+  published?(containerId: string): Binding[] | undefined
   onError?(error: unknown): void
 }
 
@@ -100,7 +103,7 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
   const [labelKey, labelValue] = Object.entries(options.scope.labels)[0] ?? ['domo.env', ns.environmentId]
   const environmentLabel: [string, string] = [labelKey, labelValue]
   const labelFilter = `${labelKey}=${labelValue}`
-  const responseScope: ResponseScope = { ns, workspaceVolume: options.scope.workspaceVolume }
+  const responseScope: ResponseScope = { ns, workspaceVolume: options.scope.workspaceVolume, published: options.published }
   const listFilter = encodeURIComponent(renderFilters({ label: [labelFilter] }))
 
   let ownCache: Candidate | null = null

@@ -6,7 +6,10 @@ import { run } from '../dev-env/docker'
 import { dataDir } from '../paths'
 import { createEngineClient } from './engine'
 import { namespaceFor } from './names'
+import { EnvironmentNetwork, watchContainerEvents, type EventWatcher } from './network'
 import { startDoodProxy, type DoodProxy } from './proxy'
+import type { Proto } from './publish'
+import { publishLayer } from './publish-layer'
 import type { PublishedPort } from './rewrite'
 import { errorRewriter, scopeLayer } from './scope-layer'
 
@@ -62,6 +65,8 @@ export function doodSocketPath(environmentId: string): string {
 }
 
 const live = new Map<string, DoodProxy>()
+const networks = new Map<string, EnvironmentNetwork>()
+let watcher: EventWatcher | null = null
 
 /** The host daemon. The proxy and its Engine API client both talk to it directly. */
 const DAEMON_SOCKET = '/var/run/docker.sock'
@@ -96,29 +101,42 @@ export async function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy>
   const ns = namespaceFor(input.environmentId)
   const report = (error: unknown) =>
     console.warn(`[dood] ${input.environmentId}:`, error instanceof Error ? error.message : error)
+  const engine = createEngineClient(DAEMON_SOCKET)
+  const network = new EnvironmentNetwork({
+    environmentId: input.environmentId,
+    ownContainer: input.containerReference,
+    engine,
+    labelFilter: labelFilter(input.environmentId),
+    onError: report
+  })
   const proxy = await startDoodProxy({
     socketPath: doodSocketPath(input.environmentId),
-    layers: [scopeLayer({
-      ns,
-      scope: {
-        workspacePath: input.workspacePath,
-        workspaceVolume: input.workspaceVolume,
-        labels: doodLabels(input.environmentId)
-      },
-      engine: createEngineClient(DAEMON_SOCKET),
-      ownContainer: input.containerReference,
-      ensureSubpaths: async (subpaths) => {
-        const wanted = subpaths.filter(safeSubpath)
-        if (!wanted.length) return
-        // One helper run for the lot: a create waits on this.
-        await run('docker', [
-          'run', '--rm', '-v', `${input.workspaceVolume}:/workspace`, input.helperImage,
-          'mkdir', '-p', ...wanted.map(subpath => `/workspace/${subpath}`)
-        ])
-      },
-      onDroppedPorts: input.onDroppedPorts,
-      onError: report
-    })],
+    layers: [
+      scopeLayer({
+        ns,
+        scope: {
+          workspacePath: input.workspacePath,
+          workspaceVolume: input.workspaceVolume,
+          labels: doodLabels(input.environmentId)
+        },
+        engine,
+        ownContainer: input.containerReference,
+        ensureSubpaths: async (subpaths) => {
+          const wanted = subpaths.filter(safeSubpath)
+          if (!wanted.length) return
+          // One helper run for the lot: a create waits on this.
+          await run('docker', [
+            'run', '--rm', '-v', `${input.workspaceVolume}:/workspace`, input.helperImage,
+            'mkdir', '-p', ...wanted.map(subpath => `/workspace/${subpath}`)
+          ])
+        },
+        onDroppedPorts: input.onDroppedPorts,
+        published: containerId => network.bindings(containerId),
+        onError: report
+      }),
+      // Inside the scope layer: it sees real ids, and the publishing label.
+      publishLayer({ ns, network })
+    ],
     rewriteError: errorRewriter(ns),
     dockerSocket: DAEMON_SOCKET,
     onError: report,
@@ -129,22 +147,48 @@ export async function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy>
     })
   })
 
+  networks.set(input.environmentId, network)
+  watcher ??= watchContainerEvents(DAEMON_SOCKET, () => networks.entries(), ENVIRONMENT_LABEL)
+  // A running environment gets its redirect and its relay back now; one that
+  // is stopped gets them from the event its start raises.
+  network.schedule(0)
   live.set(input.environmentId, proxy)
   return proxy
 }
 
 export async function stopDoodProxy(environmentId: string): Promise<void> {
   const proxy = live.get(environmentId)
-  if (!proxy) return
+  const network = networks.get(environmentId)
   live.delete(environmentId)
-  await proxy.close()
+  networks.delete(environmentId)
+  if (!networks.size) {
+    watcher?.stop()
+    watcher = null
+  }
+  await network?.close()
+  await proxy?.close()
 }
 
 export async function stopAllDoodProxies(): Promise<void> {
-  await Promise.all([...live.keys()].map(stopDoodProxy))
+  await Promise.all([...new Set([...live.keys(), ...networks.keys()])].map(stopDoodProxy))
 }
 
-const labelFilter = (environmentId: string) => `label=${ENVIRONMENT_LABEL}=${environmentId}`
+/**
+ * Re-establish what lives in the environment's network namespace — its
+ * published ports and its `host.docker.internal` redirect — for the namespace
+ * it has now. Called when Domo starts or creates an environment; the events
+ * stream would get there too, a moment later.
+ */
+export async function ensureEnvironmentNetwork(environmentId: string): Promise<void> {
+  await networks.get(environmentId)?.reconcile()
+}
+
+/** The host ports the environment's relay holds, which are its containers' and not its own. */
+export function publishedHostPorts(environmentId: string, proto: Proto = 'tcp'): Set<number> {
+  return networks.get(environmentId)?.hostPorts(proto) ?? new Set()
+}
+
+const labelFilter = (environmentId: string) => `${ENVIRONMENT_LABEL}=${environmentId}`
 
 const lines = (text: string) => text.split('\n').map(line => line.trim()).filter(Boolean)
 
@@ -156,7 +200,7 @@ const lines = (text: string) => text.split('\n').map(line => line.trim()).filter
  * first time.
  */
 export async function stopEnvironmentContainers(environmentId: string): Promise<void> {
-  const found = await run('docker', ['ps', '-q', '--filter', labelFilter(environmentId)], { allowFailure: true })
+  const found = await run('docker', ['ps', '-q', '--filter', `label=${labelFilter(environmentId)}`], { allowFailure: true })
   const ids = lines(found.stdout)
   if (ids.length) await run('docker', ['stop', ...ids], { allowFailure: true })
 }
@@ -174,7 +218,7 @@ export async function stopEnvironmentContainers(environmentId: string): Promise<
  * still has an endpoint and refuses to go.
  */
 export async function sweepEnvironmentResources(environmentId: string): Promise<void> {
-  const filter = labelFilter(environmentId)
+  const filter = `label=${labelFilter(environmentId)}`
   const containers = await run('docker', ['ps', '-aq', '--filter', filter], { allowFailure: true })
   if (lines(containers.stdout).length) {
     await run('docker', ['rm', '--force', '--volumes', ...lines(containers.stdout)], { allowFailure: true })

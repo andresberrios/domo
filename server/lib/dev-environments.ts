@@ -33,6 +33,7 @@ import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-
 import { carryMessage, readHostWorkingTree, reconcileArgs, seedReport } from './dev-env/workspace-seed'
 import {
   ensureDoodProxy,
+  ensureEnvironmentNetwork,
   stopDoodProxy,
   stopEnvironmentContainers,
   sweepEnvironmentResources
@@ -376,6 +377,9 @@ export async function createEnvironment(input: {
     // Before anything assumes the image can host an agent. `git config` below is itself
     // one of the things a preflight failure would otherwise report as a bare `exit 127`.
     await preflight(inspection.id, resolved.config.docker, browserVolume)
+    // Before `postCreateCommand`, which may already start a stack: its
+    // published ports and its `host.docker.internal` live in this namespace.
+    if (dockerSocket) await ensureEnvironmentNetwork(id)
 
     // The tar stream left the checkout owned by root; hand it to the user everything
     // else runs as, before anything else touches it.
@@ -476,6 +480,8 @@ export async function startEnvironment(id: string): Promise<DevEnvironment> {
   if (!inspection) throw new Error('The environment container no longer exists. Delete and recreate the environment.')
   if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment))
   if (!inspection.running) await run('docker', ['start', inspection.id])
+  // A new namespace: the relay and the redirect in the old one went with it.
+  if (hasDockerProxy(inspection)) await ensureEnvironmentNetwork(id)
   const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
   await refreshEnvironmentPorts(id)
   return updated
@@ -488,7 +494,11 @@ export async function stopEnvironment(id: string): Promise<DevEnvironment> {
   const inspection = await inspectContainer(containerReference(environment))
   stopEnvironmentForwarders(id)
   if (inspection?.running) await run('docker', ['stop', inspection.id])
-  if (hasDockerProxy(inspection)) await stopEnvironmentContainers(id)
+  if (hasDockerProxy(inspection)) {
+    await stopEnvironmentContainers(id)
+    // Drops the relay, which would otherwise hold a namespace nothing uses.
+    await ensureEnvironmentNetwork(id)
+  }
   return (await updateDevEnvironment(id, { status: 'stopped' }))!
 }
 
@@ -549,19 +559,23 @@ function proxyTarget(environment: DevEnvironment) {
 }
 
 /**
- * Bring every environment's Docker proxy back after a restart. Stopped ones
- * too: the proxy costs a listening socket, and without it a `docker start`
- * from anywhere but Domo — Docker Desktop's own button — fails on the missing
- * bind source.
+ * Bring every environment's Docker proxy back after a restart, and a running
+ * one's published ports and redirect with it. Stopped ones too: the proxy
+ * costs a listening socket, and without it a `docker start` from anywhere but
+ * Domo — Docker Desktop's own button — fails on the missing bind source.
  */
 export async function restoreDockerProxies(): Promise<void> {
   for (const environment of await listDevEnvironments()) {
     if (environment.retiredAt) continue
     const inspection = await inspectContainer(containerReference(environment)).catch(() => null)
     if (!hasDockerProxy(inspection)) continue
-    await ensureDockerProxy(proxyTarget(environment)).catch(error =>
-      console.warn(`[dood] could not restore ${environment.id}:`, error instanceof Error ? error.message : error)
-    )
+    await ensureDockerProxy(proxyTarget(environment))
+      // A running environment's published ports and its host.docker.internal
+      // redirect died with the Domo that held them.
+      .then(() => inspection?.running ? ensureEnvironmentNetwork(environment.id) : undefined)
+      .catch(error =>
+        console.warn(`[dood] could not restore ${environment.id}:`, error instanceof Error ? error.message : error)
+      )
   }
 }
 

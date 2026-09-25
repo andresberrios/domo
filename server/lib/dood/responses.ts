@@ -5,6 +5,7 @@ import {
   type RequestedBinds,
   type RequestedPublishing
 } from './rewrite'
+import { portListFromBindings, portsFromBindings, REQUESTED_HOSTS_LABEL, type Binding } from './publish'
 import { BUILTIN_NETWORKS } from './scope'
 
 /**
@@ -25,6 +26,11 @@ export interface ResponseScope {
   ns: Namespace
   /** The environment's workspace volume, whose mounts are shown as the binds they were asked as. */
   workspaceVolume: string
+  /**
+   * What a container really has published on the environment's `localhost`
+   * right now (`network.ts`), by full id. Undefined when it holds nothing.
+   */
+  published?(containerId: string): Binding[] | undefined
 }
 
 type Json = Record<string, any>
@@ -58,41 +64,22 @@ function endpointForAgent(endpoint: unknown, scope: ResponseScope): unknown {
 }
 
 /**
- * The *requested* publishing, as `NetworkSettings.Ports` would report it.
- *
- * This is the seam for publishing on the environment's `localhost`: until
- * that exists nothing is really bound, so a binding that named its host port
- * is reported as asked and one that left it to the daemon is reported as
- * exposed but unpublished (`null`), which is what `docker port` prints nothing
- * for. When the port is really bound, the allocation belongs here.
+ * `NetworkSettings.Ports` as the agent sees it: what the relay really holds for
+ * the container on the environment's `localhost` (`network.ts`), in Docker's
+ * own shape — both `0.0.0.0` and `::` for a dual-stack port, the allocated
+ * port for one that named none. A stopped container holds nothing and is shown
+ * as the daemon shows it (`{}`); a running one with exposed but unpublished
+ * ports keeps the daemon's `null` for those.
  */
-export function reportedPorts(actual: unknown, requested: RequestedPublishing | null): unknown {
-  if (!requested?.PortBindings) return actual
-  const ports: Json = isObject(actual) ? { ...actual } : {}
-  for (const [key, bindings] of Object.entries(requested.PortBindings)) {
-    const named = (bindings ?? []).filter(binding => binding?.HostPort)
-    ports[key] = named.length
-      ? named.map(binding => ({ HostIp: binding.HostIp || '0.0.0.0', HostPort: String(binding.HostPort) }))
-      : null
-  }
-  return ports
+export function reportedPorts(actual: unknown, requested: RequestedPublishing | null, bindings?: Binding[]): unknown {
+  if (!requested || !bindings?.length) return actual
+  return portsFromBindings(isObject(actual) ? actual : {}, bindings)
 }
 
-/** `docker ps`'s `Ports` list for the same seam. */
-function reportedPortList(actual: unknown, requested: RequestedPublishing | null): unknown {
-  if (!requested?.PortBindings) return actual
-  const list: Json[] = Array.isArray(actual) ? actual.filter(entry => !entry?.PublicPort) : []
-  for (const [key, bindings] of Object.entries(requested.PortBindings)) {
-    const [port, type = 'tcp'] = key.split('/')
-    const privatePort = Number(port)
-    if (!Number.isInteger(privatePort)) continue
-    for (const binding of (bindings ?? []).filter(binding => binding?.HostPort)) {
-      const publicPort = Number(binding.HostPort)
-      if (!Number.isInteger(publicPort)) continue
-      list.push({ IP: binding.HostIp || '0.0.0.0', PrivatePort: privatePort, PublicPort: publicPort, Type: type })
-    }
-  }
-  return list
+/** `docker ps`'s `Ports` list for the same. */
+function reportedPortList(actual: unknown, requested: RequestedPublishing | null, bindings?: Binding[]): unknown {
+  if (!requested || !bindings?.length) return actual
+  return portListFromBindings(Array.isArray(actual) ? actual : [], bindings)
 }
 
 /** Where each original bind put what, by target — to show a workspace volume mount as the bind it was asked as. */
@@ -138,7 +125,8 @@ function hostConfigForAgent(
   hostConfig: unknown,
   scope: ResponseScope,
   binds: RequestedBinds | null,
-  publishing: RequestedPublishing | null
+  publishing: RequestedPublishing | null,
+  hosts?: unknown
 ): unknown {
   if (!isObject(hostConfig)) return hostConfig
   const out: Json = { ...hostConfig }
@@ -150,6 +138,7 @@ function hostConfigForAgent(
     out.PortBindings = publishing.PortBindings ?? {}
     out.PublishAllPorts = !!publishing.PublishAllPorts
   }
+  if (hosts !== undefined) out.ExtraHosts = hosts
   if (typeof out.NetworkMode === 'string') out.NetworkMode = agentName(scope.ns, out.NetworkMode)
   for (const key of ['Links', 'VolumesFrom'] as const) {
     if (Array.isArray(out[key])) out[key] = out[key].map((value: string) => stripNames(scope.ns, String(value)))
@@ -169,16 +158,21 @@ export function containerInspectForAgent(body: unknown, scope: ResponseScope): u
   const labels = body.Config?.Labels
   const binds = parseLabel<RequestedBinds>(labels, REQUESTED_BINDS_LABEL)
   const publishing = parseLabel<RequestedPublishing>(labels, REQUESTED_PUBLISHING_LABEL)
+  // Absent when the proxy never touched the container's hosts; `null` when the client asked for none.
+  const hosts = isObject(labels) && typeof labels[REQUESTED_HOSTS_LABEL] === 'string'
+    ? parseLabel<unknown>(labels, REQUESTED_HOSTS_LABEL)
+    : undefined
+  const bindings = typeof body.Id === 'string' ? scope.published?.(body.Id) : undefined
   const out: Json = { ...body }
   if (typeof out.Name === 'string') out.Name = agentName(scope.ns, out.Name)
   if (isObject(out.Config)) out.Config = { ...out.Config, Labels: hideDomoLabels(out.Config.Labels) }
-  out.HostConfig = hostConfigForAgent(out.HostConfig, scope, binds, publishing)
+  out.HostConfig = hostConfigForAgent(out.HostConfig, scope, binds, publishing, hosts)
   out.Mounts = mountPointsForAgent(out.Mounts, scope, binds)
   if (isObject(out.NetworkSettings)) {
     out.NetworkSettings = {
       ...out.NetworkSettings,
       Networks: networksForAgent(out.NetworkSettings.Networks, scope),
-      Ports: reportedPorts(out.NetworkSettings.Ports, publishing)
+      Ports: reportedPorts(out.NetworkSettings.Ports, publishing, bindings)
     }
   }
   return out
@@ -192,7 +186,7 @@ export function containerSummaryForAgent(entry: unknown, scope: ResponseScope): 
   const out: Json = { ...entry, Labels: hideDomoLabels(entry.Labels) }
   if (Array.isArray(out.Names)) out.Names = out.Names.map((name: string) => stripNames(scope.ns, String(name)))
   out.Mounts = mountPointsForAgent(out.Mounts, scope, binds)
-  out.Ports = reportedPortList(out.Ports, publishing)
+  out.Ports = reportedPortList(out.Ports, publishing, typeof entry.Id === 'string' ? scope.published?.(entry.Id) : undefined)
   if (isObject(out.HostConfig) && typeof out.HostConfig.NetworkMode === 'string') {
     out.HostConfig = { ...out.HostConfig, NetworkMode: agentName(scope.ns, out.HostConfig.NetworkMode) }
   }

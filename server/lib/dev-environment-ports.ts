@@ -16,7 +16,7 @@ import {
   type SiblingContainer
 } from './dev-env/service-ports'
 import type { PortAttributes } from './dev-env/types'
-import { ENVIRONMENT_LABEL } from './dood/manager'
+import { ENVIRONMENT_LABEL, publishedHostPorts } from './dood/manager'
 import {
   getDevEnvironment,
   listDevEnvironmentPorts,
@@ -201,9 +201,17 @@ async function scanServices(environmentId: string): Promise<Array<{ service: Sib
   }))
 }
 
+/**
+ * What the environment itself is listening on. The ports its containers
+ * publish on its `localhost` are held in the same namespace by the DooD relay
+ * (`server/lib/dood/network.ts`) and would show up here too; they are the
+ * containers' ports, found and forwarded as those, so they are left out.
+ */
 async function listeningTcpPorts(environment: DevEnvironment): Promise<Set<number>> {
   const output = await run('docker', ['exec', reference(environment), 'sh', '-c', LISTENING_SCRIPT], { allowFailure: true })
-  return parseListeningPorts(output.stdout)
+  const ports = parseListeningPorts(output.stdout)
+  for (const port of publishedHostPorts(environment.id)) ports.delete(port)
+  return ports
 }
 
 function appProtocolFor(innerPort: number, attributes: PortAttributes | undefined): DevEnvironmentPort['appProtocol'] {

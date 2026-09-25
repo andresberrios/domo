@@ -34,6 +34,7 @@ const dood = {
   ensureDoodProxy: vi.fn(async ({ environmentId }: { environmentId: string }) =>
     ({ socketPath: `/sockets/${environmentId}.sock`, close: async () => {} })),
   stopDoodProxy: vi.fn(async () => undefined),
+  ensureEnvironmentNetwork: vi.fn(async () => undefined),
   stopEnvironmentContainers: vi.fn(async () => undefined),
   sweepEnvironmentResources: vi.fn(async () => undefined)
 }

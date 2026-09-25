@@ -14,7 +14,17 @@ import {
 } from '../../server/lib/dood/responses'
 
 const ns = namespaceFor('env_abc')
-const scope = { ns, workspaceVolume: 'domo-dev-env_abc-workspace' }
+/** What the relay holds for `c1`: 80 dual-stack on 8080, 53/udp on an allocated port. */
+const held = [
+  { containerPort: 80, proto: 'tcp' as const, hostIp: '0.0.0.0', hostPort: 8080 },
+  { containerPort: 80, proto: 'tcp' as const, hostIp: '::', hostPort: 8080 },
+  { containerPort: 53, proto: 'udp' as const, hostIp: '0.0.0.0', hostPort: 40001 }
+]
+const scope = {
+  ns,
+  workspaceVolume: 'domo-dev-env_abc-workspace',
+  published: (id: string) => id === 'c1' ? held : undefined
+}
 const LABEL: [string, string] = ['domo.env', 'env_abc']
 
 const labels = {
@@ -74,9 +84,30 @@ describe('containerInspectForAgent', () => {
     ])
   })
 
-  it('restores the publishing asked for, and reports only the ports that named a host port', () => {
+  it('restores the publishing asked for, and reports what the relay really holds', () => {
     expect(out.HostConfig.PortBindings).toEqual({ '80/tcp': [{ HostIp: '', HostPort: '8080' }], '53/udp': [{ HostPort: '' }] })
-    expect(out.NetworkSettings.Ports).toEqual({ '80/tcp': [{ HostIp: '0.0.0.0', HostPort: '8080' }], '53/udp': null })
+    // Docker's own shape: both families for a dual-stack port, the allocated port for one that named none.
+    expect(out.NetworkSettings.Ports).toEqual({
+      '80/tcp': [{ HostIp: '0.0.0.0', HostPort: '8080' }, { HostIp: '::', HostPort: '8080' }],
+      '53/udp': [{ HostIp: '0.0.0.0', HostPort: '40001' }]
+    })
+  })
+
+  it('reports a container that holds nothing — a stopped one — the way the daemon does', () => {
+    const stopped = containerInspectForAgent({ ...inspected, Id: 'c2', NetworkSettings: { ...inspected.NetworkSettings, Ports: {} } }, scope) as any
+    expect(stopped.NetworkSettings.Ports).toEqual({})
+    expect(stopped.HostConfig.PortBindings).toEqual({ '80/tcp': [{ HostIp: '', HostPort: '8080' }], '53/udp': [{ HostPort: '' }] })
+  })
+
+  it('shows the extra hosts the client asked for, not the environment address they were pointed at', () => {
+    const withHosts = (asked: unknown) => containerInspectForAgent({
+      ...inspected,
+      Config: { Labels: { ...labels, 'domo.hosts': JSON.stringify(asked) } },
+      HostConfig: { ...inspected.HostConfig, ExtraHosts: ['host.docker.internal:172.17.0.4', 'gateway.docker.internal:172.17.0.4'] }
+    }, scope) as any
+    expect(withHosts(null).HostConfig.ExtraHosts).toBeNull()
+    expect(withHosts(['host.docker.internal:host-gateway']).HostConfig.ExtraHosts).toEqual(['host.docker.internal:host-gateway'])
+    expect(withHosts(null).Config.Labels).not.toHaveProperty('domo.hosts')
   })
 
   it('leaves a container created before the labels existed as it is', () => {
@@ -99,13 +130,24 @@ describe('containerSummaryForAgent', () => {
     expect(out.Names).toEqual(['/web'])
     expect(out.Labels).toEqual({ 'com.docker.compose.project': 'stack' })
     expect(out.Ports).toEqual([
-      { PrivatePort: 80, Type: 'tcp' },
-      { PrivatePort: 53, Type: 'udp' },
-      { IP: '0.0.0.0', PrivatePort: 80, PublicPort: 8080, Type: 'tcp' }
+      { IP: '0.0.0.0', PrivatePort: 80, PublicPort: 8080, Type: 'tcp' },
+      { IP: '::', PrivatePort: 80, PublicPort: 8080, Type: 'tcp' },
+      { IP: '0.0.0.0', PrivatePort: 53, PublicPort: 40001, Type: 'udp' }
     ])
     expect(out.Mounts[0].Name).toBe('data')
     expect(out.HostConfig.NetworkMode).toBe('stack_default')
     expect(Object.keys(out.NetworkSettings.Networks)).toEqual(['stack_default'])
+  })
+
+  it('keeps an exposed port nothing publishes, and lists a container holding nothing as the daemon did', () => {
+    const exposed = containerSummaryForAgent({
+      Id: 'c1', Names: ['/env_abc-web'], Labels: labels,
+      Ports: [{ PrivatePort: 80, Type: 'tcp' }, { PrivatePort: 9000, Type: 'tcp' }]
+    }, scope) as any
+    expect(exposed.Ports).toContainEqual({ PrivatePort: 9000, Type: 'tcp' })
+    expect(exposed.Ports).not.toContainEqual({ PrivatePort: 80, Type: 'tcp' })
+    const stopped = containerSummaryForAgent({ Id: 'c9', Names: ['/env_abc-db'], Labels: labels, Ports: [] }, scope) as any
+    expect(stopped.Ports).toEqual([])
   })
 })
 
