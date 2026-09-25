@@ -142,14 +142,15 @@ things that are easy to get wrong.
   create that mounts them, and the environment's own container joins the
   networks its services do. What cannot be translated is refused with a
   Docker-shaped `{"message":"Domo: …"}` the CLI prints like any daemon error:
-  swarm/plugin mutations, `image prune -a`, the HTTP build-cache prune, and
+  swarm/plugin mutations, `image prune -a`, the build-cache prune (HTTP and
+  buildx's gRPC `Control/Prune` alike), and
   stopping/removing/renaming the environment's own container (which is
   resolvable, for `--network container:$(hostname)`, but never listed).
-  **`docker builder prune` is not refused yet**: it goes through buildx and
-  BuildKit's gRPC, which only the `/grpc` bridge can see into. Everything it
-  makes carries `domo.env=<id>`, which
+  Images are the one thing shared on purpose, with private tags (the bullet
+  after next). Everything it makes carries `domo.env=<id>`, which
   is what makes retirement exact: `sweepEnvironmentResources` removes those
-  containers, networks and volumes and nothing of anyone else's — never
+  containers, networks and volumes, then the environment's private image tags,
+  and nothing of anyone else's — never
   `docker network prune`, which would take the developer's own. Stopping an
   environment stops its containers (a daemon of its own used to do that by
   dying). Only environments created since have it; existing ones keep the DinD
@@ -174,6 +175,43 @@ things that are easy to get wrong.
   from `network inspect`**: `compose down` inspects a network before deleting
   it and, seeing any endpoint, never sends the DELETE — measured — so the
   environment leaves on the DELETE instead.
+- **Images are shared; the tags an environment produces are its own.** A pull
+  stays in the shared cache (that is the point), but a build, `tag`, `commit`,
+  `load` or `import` creates `domo-<envId>/<registry>/<path>:<tag>`
+  (`server/lib/dood/images.ts`: the registry is always spelled, `docker.io`
+  included, with a port's `:` as `__`, so the name round-trips; an IPv6
+  registry has no spelling and is refused), and every name the environment
+  *uses* means its private tag first, else the shared one — so two agents
+  building `app:dev` at once each run their own. Everything shown back is
+  unprefixed and another environment's private tags are hidden
+  (`image-layer.ts`, `image-responses.ts`). A build is not `POST /build` but
+  `POST /grpc` upgraded to h2c: the proxy hands that connection to
+  `grpc-bridge.ts`, which is an HTTP/2 server to the CLI and a client to the
+  daemon (so each side keeps its flow control, ~15–20 ms per build), and edits
+  three BuildKit messages by hand-rolled protobuf (`buildkit.ts`): the
+  exporter's `name` in `Control/Solve`, the private name back out of
+  `Control/Status` and the solve response, and a refused `Control/Prune`.
+  `FROM` a private image works through a **source policy** (`CONVERT` rules on
+  the solve), **not** named build contexts as the spike did: BuildKit looks a
+  named context up for every *stage name* too, so an environment holding
+  `app:latest` would have had any `FROM … AS app` stage silently replaced by
+  that image. The policy only converts image sources, and the frontend still
+  names the vertex after the Dockerfile, so `--progress=plain` reads exactly as
+  a direct build's. **Forward gRPC metadata from the raw header list**: Node
+  joins a repeated header into one `a, b` value, and BuildKit's session lists
+  the methods it serves as a repeated header — joined, compose's builds of two
+  targets sharing a context failed with `no local sources enabled`. A load is
+  rewritten *on the way in* (the archive's `index.json`, `manifest.json`,
+  `repositories`, streamed through `tar.ts`), so it never moves a shared tag;
+  a save the other way. `rmi` of a shared name is allowed unforced, and refused
+  when any container outside the environment runs on that image: the daemon's
+  own conflict check does not cover it, because untagging a name an image has
+  other names for always succeeds, and on a shared daemon the other name may be
+  another environment's private tag (measured: `rmi alpine:3` took the tag
+  from the host's own containers). What is *not* rewritten: provenance
+  (buildx reads it from a content-addressed blob), buildx build history, and
+  FROM a private image under the legacy builder or `POST /build?version=2`
+  (no policy there).
 - **A compose service's ports are found and forwarded by entering its network
   namespace.** On a daemon of its own a service's port landed in the
   environment's namespace, where `ss` saw it; as a sibling on the host daemon
@@ -1655,9 +1693,8 @@ and permissions are end to end because a permission is a row.
   `parseListeningPorts` now ignores. `pnpm test:docker` covers the rest.
   **Not verified:** a real agent driving compose, Linux (every measurement here
   is Docker Desktop on macOS — the socket forwarding and `chmod` findings may
-  differ). A plain `docker build` through the proxy is covered by
-  `dood-namespace.live.spec.ts`; a compose `build:` section only by the image
-  spike (`docs/spikes/dood-namespace/`).
+  differ). Builds, compose `build:`, and every image command are covered by
+  `dood-images.live.spec.ts`, not yet by a pass in the running app.
 - The dev-environment path was verified against a real Docker daemon by
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no

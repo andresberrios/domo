@@ -3,7 +3,8 @@
 Settled with the user on 2026-09-25. This is the working plan for the next
 stretch of `worktree-dood-shared-daemon`; delete it (or fold what survives into
 `AGENTS.md`) when the work lands. The image-tag question is being settled by
-the spike in `README.md` beside this file — **done: viable**, see decision 4.
+the spike in `README.md` beside this file — **done: viable**, and built, see
+"Done: images".
 
 ## Where things stand (committed)
 
@@ -218,6 +219,97 @@ phase needs on top of it:
   `test/docker/dood-binds.live.spec.ts` (one stand-in environment, every
   scenario in the brief, ~20 s).
 
+## Done: images (decision 4)
+
+Landed on this branch. AGENTS.md has the load-bearing summary ("Images are
+shared; the tags an environment produces are its own"); what a later phase
+needs on top of it:
+
+- **Layer stack is `[scopeLayer, publishLayer, imageLayer]`** (`manager.ts`).
+  The image layer sits inside the scope layer so its transforms read the
+  `domo.image` label (the name a container was created from, when the proxy
+  gave the daemon a private one) before the scope layer hides `domo.*`.
+- **Naming** (`images.ts`): `domo-<envId>/<registry>/<path>:<tag>`, registry
+  always spelled (`docker.io` too), lowercased, `:port` → `__port` (a hostname
+  has no `_`, so it round-trips). `app` → `domo-env_x/docker.io/library/app:latest`,
+  `ghcr.io/o/a:1` → `domo-env_x/ghcr.io/o/a:1`, `localhost:5000/a` →
+  `domo-env_x/localhost__5000/a:latest`. Every one is a valid Docker Hub name
+  and the containerd store lists it as `docker.io/domo-env_x/…`. No spelling
+  for an IPv6 registry, a digest, or past 255 characters: refused with a
+  `Domo:` error where a name is produced (`tag`, `commit`, `import`, a build's
+  exporter as gRPC `INVALID_ARGUMENT`).
+- **`FROM` resolves through a source policy, not named contexts** — a
+  deliberate departure from the spike. Measured: BuildKit's `dockerfile2llb`
+  asks `NamedContext(st.Name)` for every `FROM … AS <name>`, so a
+  `context:app` injected for a private `app:latest` replaces any stage called
+  `app` (read in `convert.go`; the live spec builds that case and gets the
+  stage). A `CONVERT` rule per private name on `Control/Solve` field 12
+  (`^docker-image://docker\.io/library/app:dev(@sha256:…)?$` →
+  `docker-image://docker.io/domo-env_x/docker.io/library/app:dev${1}`,
+  appended after any rules the client sent) applies to every source the
+  gateway frontend resolves, `COPY --from=<image>` included. No policy is sent
+  when the environment holds no private image.
+- **The cosmetic target is met exactly**: with the policy the vertices read
+  `[internal] load metadata for docker.io/library/X` and `[1/n] FROM
+  docker.io/library/X`, numbering included (the frontend names them after the
+  Dockerfile; only the `docker.io/domo-env_x/…` in `FROM` and `naming to` needs
+  the Status rewrite). Diffed `--progress=plain` of the same build direct and
+  proxied: identical after timings and digests. One trap in the comparison,
+  not the proxy's: whether BuildKit prints a `FROM` of a local image as
+  `CACHED` or `DONE` depends on what it solved before, so both sides are run
+  once first.
+- **Found and fixed in the bridge**: Node's `http2` joins a repeated header
+  into `a, b`; BuildKit's session announces each method it serves as a
+  repeated `x-docker-expose-session-grpc-method`, and joined they name none.
+  Symptom: `compose build` of two targets sharing a context →
+  `no local sources enabled` (only with a source policy present, which is why
+  the spike never saw it). Headers are forwarded from `rawHeaders`. The probe
+  has the same latent bug. The spike's `VertexLog` field was also wrong
+  (`msg` is 4; 3 is a stream number).
+- **Push** (`docker push`, private image): the real name is tagged for the
+  push and put back after (untagged, or moved back to the image a shared tag
+  of that name had). `--all-tags` of a repository the environment holds is
+  refused. A build with `push=true` keeps the registry name in the exporter
+  and tags the private name from `containerimage.config.digest` before the
+  solve's answer reaches the client; the local tag the push made is removed or
+  put back the same way.
+- **Pull** stays shared, and moves the environment's own tag of that name to
+  what was pulled once it succeeded (no `error` line) — what a pull means on a
+  machine of its own.
+- **Load/save** rewrite the three naming files of the archive
+  (`index.json`, `manifest.json`, `repositories`) as it streams (`tar.ts`):
+  in on a load, so no shared tag is ever created or moved; out on a save. A
+  request body the proxy streams can now be transformed (`Outcome.requestBody`,
+  re-sent chunked), and so can a response body (`ResponseTransform.stream`).
+- **`rmi`**: own tag as asked; a shared name unforced, refused (409) when any
+  container outside the environment runs on that image; by id, only an image
+  nothing else names. Measured why the daemon's check is not enough: `rmi
+  alpine:3` from one environment succeeded while the host's containers ran on
+  it, because another environment's private tag on the same image made it a
+  mere untag.
+- **Legacy `POST /build`**: `t` privatised, `cachefrom` resolved,
+  `networkmode` translated in the scope layer (network / `container:` resolved,
+  `host` → `container:<env>`; BuildKit's `version=2` keeps `host`). BuildKit
+  builds never send a custom network — buildx refuses one itself — and
+  `--network host` there stays the daemon VM's (BuildKit has no `container:`
+  mode). `FROM` a private image does **not** work on the legacy builder or
+  `/build?version=2` (no policy there).
+- **`system df -v` on API ≥ 1.52** answers `{ContainerUsage, VolumeUsage,
+  ImageUsage: {Items}}` and the phase-1 transform only knew the old shape, so
+  it listed every environment's containers; both shapes are narrowed now. The
+  counts are still the daemon's.
+- **Not rewritten, documented**: provenance in `--metadata-file` names a
+  private base by its private name (buildx reads it from a content-addressed
+  blob through `Content/Read`); `docker buildx history` shows every
+  environment's builds; a `docker-container` buildx builder (a separate
+  buildkitd) resolves `FROM` from registries only.
+- Measured: ~15–20 ms per cached build through the bridge (167–172 ms direct,
+  187–193 ms proxied).
+- Tests: `test/unit/dood-{images,buildkit,tar,image-responses,image-layer,grpc-bridge}.spec.ts`
+  (the bridge with real HTTP/2 on both sides over local sockets), additions to
+  `dood-{http,responses,scope-layer}.spec.ts`; `test/docker/dood-images.live.spec.ts`
+  (two stand-in environments, every scenario in the brief, ~40 s).
+
 ## The goal
 
 From inside an environment, Docker behaves like a normal machine whose
@@ -259,7 +351,8 @@ clients never pipeline: when request N+1 arrives, response N is complete.
    network names, `PortBindings` and `NetworkSettings.Ports` (so `docker
    port` / `docker compose port` / `docker ps` PORTS are right), and hides
    `domo.*` labels.
-4. **Images** (mechanism settled by the spike, `README.md`): pulls and pulled
+4. **Images** — done, see above (the `FROM` mechanism became a source
+   policy). As planned: pulls and pulled
    tags stay shared (the cache is the point). Tags an environment *produces*
    become private, `domo-<envId>/<original name>`:
    - builds: the proxy terminates `/grpc` with `node:http2` on both sides and
@@ -295,7 +388,7 @@ clients never pipeline: when request N+1 arrives, response N is complete.
      worth fixing.
 5. **Order of work**: ~~scoping + names → response rewriting~~ (done) → ~~`localhost`
    publishing + `host.docker.internal`~~ (done) → ~~binds + `network_mode: host`~~
-   (done) → images (the `/grpc` bridge, then the HTTP-side tag handling).
+   (done) → ~~images~~ (done).
 
 ## Pieces, each with what was measured
 

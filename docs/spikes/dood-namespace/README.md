@@ -1,5 +1,12 @@
 # Spike: can an environment's image builds get private tags?
 
+> **Historical.** Built in `server/lib/dood/` (see "Done: images" in
+> `PLAN.md`), with two changes this probe does not have: `FROM` resolves
+> through a BuildKit source policy instead of named contexts (a named context
+> also replaces a *stage* of the same name), and gRPC metadata is forwarded
+> from the raw header list (Node joins a repeated header, which broke compose
+> builds of targets sharing a context).
+
 **Answer: yes, cleanly, by terminating BuildKit's `/grpc` HTTP/2 channel in
 the proxy.** Measured 2026-09-25 on Docker Desktop 4.92 (Engine 29.8, buildx
 0.37.1, Compose 5.5.1) with `grpc-mitm-probe.mjs` beside this file.
