@@ -24,6 +24,7 @@ function container(overrides: Partial<SiblingContainer> & { id: string }): Sibli
     pid: 4242,
     labels: { 'domo.env': 'env_1' },
     networkMode: 'stack_default',
+    exposedPorts: [],
     ...overrides
   }
 }
@@ -104,11 +105,35 @@ describe('requestedPorts and siblingFromInspect', () => {
       Id: 'abc',
       Name: '/stack-web-1',
       State: { Running: true, Pid: 4242 },
-      Config: { Labels: { a: 'b' } },
+      Config: { Labels: { a: 'b' }, ExposedPorts: { '80/tcp': {} } },
       HostConfig: { NetworkMode: 'stack_default' }
     })).toEqual({
-      id: 'abc', name: 'stack-web-1', running: true, pid: 4242, labels: { a: 'b' }, networkMode: 'stack_default'
+      id: 'abc', name: 'stack-web-1', running: true, pid: 4242, labels: { a: 'b' }, networkMode: 'stack_default',
+      exposedPorts: ['80/tcp']
     })
+  })
+
+  it('forwards what -P published as well, on the port the relay allocated when it has one', () => {
+    const labels = {
+      'domo.ports': '[{"containerPort":80,"protocol":"tcp","hostPort":8080}]',
+      'domo.publishing': '{"PortBindings":{"80/tcp":[{"HostPort":"8080"}]},"PublishAllPorts":true}'
+    }
+    const bindings = [
+      { containerPort: 443, proto: 'tcp' as const, hostIp: '0.0.0.0', hostPort: 32768 },
+      { containerPort: 443, proto: 'tcp' as const, hostIp: '::', hostPort: 32768 }
+    ]
+    expect(requestedPorts(labels, ['80/tcp', '443/tcp', '9000/tcp', '53/udp'], bindings)).toEqual([
+      // The explicit one keeps the host port it named.
+      { containerPort: 80, protocol: 'tcp', hostPort: 8080 },
+      { containerPort: 443, protocol: 'tcp', hostPort: 32768 },
+      // Not held (yet): any free port on the Mac.
+      { containerPort: 9000, protocol: 'tcp', hostPort: null },
+      { containerPort: 53, protocol: 'udp', hostPort: null }
+    ])
+    // Without -P, exposing is not publishing.
+    expect(requestedPorts({ 'domo.ports': labels['domo.ports'] }, ['80/tcp', '443/tcp'])).toEqual([
+      { containerPort: 80, protocol: 'tcp', hostPort: 8080 }
+    ])
   })
 
   it('names a service the way the agent named it, without the environment\'s prefix', () => {

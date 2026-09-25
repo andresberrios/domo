@@ -9,7 +9,10 @@ import {
   bindingsFor,
   conflictingNetworkMode,
   environmentAddress,
+  extraHostAddress,
   extraHostsFor,
+  managedHostNames,
+  rewriteHostsFile,
   listenerSpecs,
   normalizeHostIp,
   parseHostPort,
@@ -292,5 +295,49 @@ describe('publishLayer', () => {
       await (outcome as any).response.after(204)
     }
     expect(network.schedule).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('host.docker.internal after the environment moves', () => {
+  it('knows which names Domo pointed at the environment, and which the client mapped itself', () => {
+    expect(managedHostNames(null)).toEqual(['host.docker.internal', 'gateway.docker.internal'])
+    expect(managedHostNames(['host.docker.internal:10.0.0.9'])).toEqual(['gateway.docker.internal'])
+    expect(managedHostNames(['host.docker.internal:host-gateway', 'api=host-gateway']))
+      .toEqual(['gateway.docker.internal', 'host.docker.internal', 'api'])
+  })
+
+  it('reads the address ExtraHosts gives a name, in either separator', () => {
+    const extraHosts = ['host.docker.internal:172.18.0.2', 'api=10.0.0.1']
+    expect(extraHostAddress(extraHosts, 'host.docker.internal')).toBe('172.18.0.2')
+    expect(extraHostAddress(extraHosts, 'api')).toBe('10.0.0.1')
+    expect(extraHostAddress(extraHosts, 'nope')).toBeNull()
+    expect(extraHostAddress(undefined, 'api')).toBeNull()
+  })
+
+  it('rewrites only the lines that map Domo\'s names, and keeps the rest byte for byte', () => {
+    const before = [
+      '127.0.0.1\tlocalhost',
+      '::1\tlocalhost ip6-localhost ip6-loopback',
+      '10.0.0.1\tapi',
+      '172.18.0.2\thost.docker.internal',
+      '172.18.0.2\tgateway.docker.internal',
+      '172.18.0.5\t50a59eedca18',
+      ''
+    ].join('\n')
+    expect(rewriteHostsFile(before, ['host.docker.internal', 'gateway.docker.internal'], '172.18.0.4')).toBe([
+      '127.0.0.1\tlocalhost',
+      '::1\tlocalhost ip6-localhost ip6-loopback',
+      '10.0.0.1\tapi',
+      '172.18.0.5\t50a59eedca18',
+      '172.18.0.4\thost.docker.internal',
+      '172.18.0.4\tgateway.docker.internal',
+      ''
+    ].join('\n'))
+  })
+
+  it('is idempotent', () => {
+    const names = ['host.docker.internal']
+    const once = rewriteHostsFile('127.0.0.1\tlocalhost\n172.18.0.2\thost.docker.internal\n', names, '172.18.0.4')
+    expect(rewriteHostsFile(once, names, '172.18.0.4')).toBe(once)
   })
 })

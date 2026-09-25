@@ -16,7 +16,7 @@ import {
   type SiblingContainer
 } from './dev-env/service-ports'
 import type { PortAttributes } from './dev-env/types'
-import { ENVIRONMENT_LABEL, publishedHostPorts } from './dood/manager'
+import { ENVIRONMENT_LABEL, publishedBindings, publishedHostPorts } from './dood/manager'
 import {
   getDevEnvironment,
   listDevEnvironmentPorts,
@@ -266,7 +266,7 @@ export async function refreshEnvironmentPorts(environmentId: string): Promise<De
     })
   }
   for (const { service, ports } of services) {
-    const requested = requestedPorts(service.labels)
+    const requested = requestedPorts(service.labels, service.exposedPorts, publishedBindings(environmentId, service.id))
     for (const innerPort of ports) {
       if (known(service.name, innerPort)) continue
       const attributes = detectedPortAttributes(innerPort, configured)

@@ -297,3 +297,51 @@ export function conflictingNetworkMode(hostConfig: Record<string, unknown>, requ
   }
   return null
 }
+
+/**
+ * The host names Domo pointed at the environment when it created a container
+ * (`extraHostsFor`): every name in `HOST_NAMES` the client did not map itself,
+ * and every name it mapped to `host-gateway`. `requested` is what the client
+ * asked for, as `REQUESTED_HOSTS_LABEL` holds it.
+ */
+export function managedHostNames(requested: unknown): string[] {
+  const entries = Array.isArray(requested) ? requested.filter((entry): entry is string => typeof entry === 'string') : []
+  const explicit = new Set<string>()
+  const gateway: string[] = []
+  for (const entry of entries) {
+    const separator = entry.includes('=') ? '=' : ':'
+    const index = entry.indexOf(separator)
+    if (index <= 0) continue
+    const name = entry.slice(0, index)
+    if (entry.slice(index + 1) === 'host-gateway') gateway.push(name)
+    else explicit.add(name)
+  }
+  return [...new Set([...HOST_NAMES.filter(name => !explicit.has(name) && !gateway.includes(name)), ...gateway])]
+}
+
+/** The address `ExtraHosts` gives a name, or null. Docker writes these into `/etc/hosts` on every start. */
+export function extraHostAddress(extraHosts: unknown, name: string): string | null {
+  for (const entry of Array.isArray(extraHosts) ? extraHosts : []) {
+    if (typeof entry !== 'string') continue
+    const separator = entry.includes('=') ? '=' : ':'
+    const index = entry.indexOf(separator)
+    if (index > 0 && entry.slice(0, index) === name) return entry.slice(index + 1)
+  }
+  return null
+}
+
+/**
+ * A container's `/etc/hosts` with `names` pointed at `address`: every line
+ * that maps only those names is dropped, and one line per name appended —
+ * the shape Docker writes `ExtraHosts` in. Anything else in the file, the
+ * container's own name included, is left exactly as it was.
+ */
+export function rewriteHostsFile(content: string, names: string[], address: string): string {
+  const managed = new Set(names)
+  const kept = content.split('\n').filter((line) => {
+    const fields = line.replace(/#.*/, '').trim().split(/\s+/).filter(Boolean)
+    return fields.length < 2 || !fields.slice(1).every(name => managed.has(name))
+  })
+  while (kept.length && kept[kept.length - 1] === '') kept.pop()
+  return `${[...kept, ...names.map(name => `${address}\t${name}`)].join('\n')}\n`
+}

@@ -8,7 +8,12 @@ import { engineOk, type EngineClient } from './engine'
 import {
   bindingsFor,
   environmentAddress,
+  extraHostAddress,
   listenerSpecs,
+  managedHostNames,
+  primaryNetwork,
+  REQUESTED_HOSTS_LABEL,
+  rewriteHostsFile,
   targetAddress,
   type Binding,
   type BoundListener,
@@ -46,6 +51,24 @@ import { REQUESTED_PUBLISHING_LABEL, type RequestedPublishing } from './rewrite'
  *   that arrives for any of the environment's own addresses to `127.0.0.1`,
  *   so a service calling `host.docker.internal:5173` reaches a dev server the
  *   agent bound to loopback — which is what Docker Desktop does for the Mac.
+ *
+ * And two things that follow the environment when *it* restarts:
+ *
+ * - **Services in its namespace** (`network_mode: host`, which the proxy makes
+ *   `container:<environment>`, or the agent's own `--network
+ *   container:$(hostname)`) keep running in the old one, which has only a
+ *   loopback left — measured. Each one still running that started before the
+ *   environment did is stopped and started again, which joins the new one. Compared by start
+ *   time rather than by noticing the restart, so a restart that happened
+ *   while Domo was down is caught on boot as well.
+ * - **`host.docker.internal`** in a service is an address in its `/etc/hosts`,
+ *   fixed at create. Docker gives a restarted container its old address back
+ *   when it is free, but not when something took it meanwhile (measured: the
+ *   environment came back on `.4`, and `.2` was another container's). Docker
+ *   rewrites the file from `ExtraHosts` on every start and the API cannot
+ *   change `ExtraHosts`, so a service whose entry no longer names the
+ *   environment has its `/etc/hosts` rewritten in place, through the helper
+ *   (`/proc/<pid>/root/etc/hosts`, measured to work on a running container).
  */
 
 const RELAY_ANSWER_MS = 15_000
@@ -196,6 +219,17 @@ function parsePublishing(labels: unknown): RequestedPublishing | null {
 
 const ACTIVE_STATES = new Set(['running', 'restarting', 'paused'])
 
+interface EnvironmentState {
+  id: string
+  pid: number
+  networkIds: Set<string>
+  /** `NetworkSettings.Networks`, by network name. */
+  networks: Record<string, { IPAddress?: string, NetworkID?: string }>
+  startedAt: string
+  /** A namespace this network has not set anything up in before: a restart, or the first look since Domo started. */
+  fresh: boolean
+}
+
 export class EnvironmentNetwork {
   private relay: Relay | null = null
   /** The environment PID the relay and the redirect were set up for. */
@@ -208,6 +242,8 @@ export class EnvironmentNetwork {
   private closed = false
   /** The environment container's full id, once seen — how its own events are recognised. */
   ownId: string | null = null
+  /** Per container, the PID and address its `/etc/hosts` was last pointed at, so it is rewritten once per start. */
+  private readonly hostsPointed = new Map<string, string>()
 
   constructor(private readonly options: EnvironmentNetworkOptions) {}
 
@@ -319,7 +355,7 @@ export class EnvironmentNetwork {
    * relay dropped when its namespace is a new one. Null when it is not running,
    * in which case there is nothing to hold anything in.
    */
-  private async environment(): Promise<{ pid: number, networkIds: Set<string> } | null> {
+  private async environment(): Promise<EnvironmentState | null> {
     const own = await this.options.engine.request('GET', `/containers/${encodeURIComponent(this.options.ownContainer)}/json`)
     const running = own.status === 200 && own.body?.State?.Running && Number(own.body.State.Pid) > 0
     if (!running) {
@@ -330,7 +366,8 @@ export class EnvironmentNetwork {
     }
     this.ownId = String(own.body.Id)
     const pid = Number(own.body.State.Pid)
-    if (pid !== this.pid) {
+    const fresh = pid !== this.pid
+    if (fresh) {
       // The old relay listens in a namespace nothing uses any more.
       this.stopRelay()
       this.bound.clear()
@@ -339,9 +376,83 @@ export class EnvironmentNetwork {
       )))
       this.pid = pid
     }
-    const networkIds = new Set<string>(Object.values(own.body.NetworkSettings?.Networks ?? {})
+    const networks = own.body.NetworkSettings?.Networks ?? {}
+    const networkIds = new Set<string>(Object.values(networks)
       .map((endpoint: any) => String(endpoint?.NetworkID ?? '')).filter(Boolean))
-    return { pid, networkIds }
+    return { pid, networkIds, networks, startedAt: String(own.body.State.StartedAt ?? ''), fresh, id: this.ownId }
+  }
+
+  /**
+   * Restart what shares the environment's namespace but still runs in the one
+   * it had before (see the top of this file). Not awaited by the reconcile: a
+   * restart waits out the service's stop timeout, and its `start` event brings
+   * the next reconcile anyway.
+   */
+  private restartStranded(list: any[], environment: EnvironmentState) {
+    const mode = `container:${environment.id}`
+    for (const entry of list) {
+      if (entry?.HostConfig?.NetworkMode !== mode || entry?.State !== 'running') continue
+      const id = String(entry.Id)
+      this.options.engine.request('GET', `/containers/${id}/json`).then(async (inspected) => {
+        const startedAt = String(inspected.body?.State?.StartedAt ?? '')
+        if (inspected.status !== 200 || !inspected.body?.State?.Running) return
+        if (!startedAt || !environment.startedAt || Date.parse(startedAt) >= Date.parse(environment.startedAt)) return
+        // A stop and a start, not a restart: Docker Desktop cannot restart a
+        // container that mounts a host socket (see `restartAsStop` in
+        // `scope-layer.ts`), and a service given the Docker socket does.
+        for (const step of ['stop', 'start']) {
+          const answered = await this.options.engine.request('POST', `/containers/${id}/${step}`)
+          if (answered.status >= 400) throw new Error(answered.body?.message ?? `${step}: status ${answered.status}`)
+        }
+      }).catch(error => this.report(new Error(
+        `could not move ${id.slice(0, 12)} into the environment's new network namespace: ${error instanceof Error ? error.message : error}`
+      )))
+    }
+  }
+
+  /** Point `host.docker.internal` back at the environment in every running service where it no longer does. */
+  private async repointHosts(list: any[], environment: EnvironmentState) {
+    const running = new Set<string>()
+    for (const entry of list) {
+      const requested = entry?.Labels?.[REQUESTED_HOSTS_LABEL]
+      if (entry?.State !== 'running' || typeof requested !== 'string') continue
+      const id = String(entry.Id)
+      running.add(id)
+      let names: string[]
+      try {
+        names = managedHostNames(JSON.parse(requested))
+      } catch {
+        continue
+      }
+      if (!names.length) continue
+      const inspected = await this.options.engine.request('GET', `/containers/${id}/json`)
+      const body = inspected.body
+      if (inspected.status !== 200 || !body?.State?.Running) continue
+      const network = primaryNetwork(body.HostConfig ?? {}, body.NetworkSettings?.Networks)
+      const address = network ? environmentAddress(environment.networks, network) : null
+      if (!address) continue
+      const pid = Number(body.State.Pid)
+      // What Docker wrote at this start is right: nothing to do.
+      if (extraHostAddress(body.HostConfig?.ExtraHosts, names[0]!) === address) {
+        this.hostsPointed.delete(id)
+        continue
+      }
+      const key = `${pid}:${address}`
+      if (this.hostsPointed.get(id) === key) continue
+      try {
+        const helper = await ensurePortHelper()
+        const file = `/proc/${pid}/root/etc/hosts`
+        const current = await run('docker', ['exec', helper, 'cat', file], { trimOutput: false })
+        // Written in place, not renamed over: the file is a bind mount.
+        await run('docker', ['exec', '--interactive', helper, 'sh', '-c', 'cat > "$1"', 'sh', file], {
+          input: rewriteHostsFile(current.stdout, names, address)
+        })
+        this.hostsPointed.set(id, key)
+      } catch (error) {
+        this.report(new Error(`could not point host.docker.internal in ${id.slice(0, 12)} at the environment: ${error instanceof Error ? error.message : error}`))
+      }
+    }
+    for (const id of this.hostsPointed.keys()) if (!running.has(id)) this.hostsPointed.delete(id)
   }
 
   private async redirect(pid: number) {
@@ -377,6 +488,8 @@ export class EnvironmentNetwork {
 
     const filters = encodeURIComponent(JSON.stringify({ label: [this.options.labelFilter] }))
     const list = await engineOk(this.options.engine, 'GET', `/containers/json?all=1&filters=${filters}`) as any[]
+    if (environment.fresh) this.restartStranded(list, environment)
+    await this.repointHosts(list, environment)
     const specs: ListenerSpec[] = []
     const targets = new Map<string, string | null>()
     const byContainer = new Map<string, ListenerSpec[]>()

@@ -1,5 +1,6 @@
 import { agentName, hostName, namespaceFor } from '../dood/names'
-import { REQUESTED_PORTS_LABEL, type PublishedPort } from '../dood/rewrite'
+import type { Binding } from '../dood/publish'
+import { REQUESTED_PORTS_LABEL, REQUESTED_PUBLISHING_LABEL, type PublishedPort } from '../dood/rewrite'
 
 /**
  * The pure half of finding ports in the containers an environment started on
@@ -69,6 +70,8 @@ export interface SiblingContainer {
   pid: number
   labels: Record<string, string>
   networkMode: string
+  /** `Config.ExposedPorts` keys (`80/tcp`), which the daemon has merged with the image's: what `-P` publishes. */
+  exposedPorts: string[]
 }
 
 export function siblingFromInspect(raw: any, environmentId?: string): SiblingContainer {
@@ -79,7 +82,8 @@ export function siblingFromInspect(raw: any, environmentId?: string): SiblingCon
     running: !!raw?.State?.Running,
     pid: Number(raw?.State?.Pid) || 0,
     labels: raw?.Config?.Labels ?? {},
-    networkMode: String(raw?.HostConfig?.NetworkMode ?? '')
+    networkMode: String(raw?.HostConfig?.NetworkMode ?? ''),
+    exposedPorts: Object.keys(raw?.Config?.ExposedPorts ?? {})
   }
 }
 
@@ -130,14 +134,39 @@ export function parseListeningPorts(output: string): Set<number> {
   return ports
 }
 
-/** What a service asked to publish, as the DooD proxy wrote it down. */
-export function requestedPorts(labels: Record<string, string>): PublishedPort[] {
+/**
+ * What a service asked to publish, as the DooD proxy wrote it down: each
+ * explicit `-p` / `ports:` entry (`domo.ports`), and — when it asked for
+ * `-P` (`PublishAllPorts` on `domo.publishing`) — every exposed port that has
+ * no entry of its own, on the port the environment's relay allocated for it
+ * when there is one. `-P` is as much a request to reach the service from the
+ * host as `-p` is; it just leaves the port to chance.
+ */
+export function requestedPorts(
+  labels: Record<string, string>,
+  exposedPorts: string[] = [],
+  bindings: Binding[] = []
+): PublishedPort[] {
+  let explicit: PublishedPort[] = []
   try {
     const parsed = JSON.parse(labels[REQUESTED_PORTS_LABEL] ?? '[]')
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
+    if (Array.isArray(parsed)) explicit = parsed
+  } catch { /* nothing asked for explicitly */ }
+  let publishAll = false
+  try {
+    publishAll = JSON.parse(labels[REQUESTED_PUBLISHING_LABEL] ?? '{}')?.PublishAllPorts === true
+  } catch { /* no `-P` */ }
+  if (!publishAll) return explicit
+  const ports = [...explicit]
+  for (const key of exposedPorts) {
+    const [rawPort, protocol = 'tcp'] = key.split('/')
+    const containerPort = Number(rawPort)
+    if (!Number.isInteger(containerPort) || containerPort <= 0) continue
+    if (ports.some(port => port.containerPort === containerPort && port.protocol === protocol)) continue
+    const allocated = bindings.find(binding => binding.containerPort === containerPort && binding.proto === protocol)
+    ports.push({ containerPort, protocol, hostPort: allocated?.hostPort ?? null })
   }
+  return ports
 }
 
 /**
