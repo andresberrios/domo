@@ -8,7 +8,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { run } from '../../server/lib/dev-env/docker'
 import { portHelperImage, portHelperName } from '../../server/lib/dev-env/port-helper'
-import { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } from '../../server/lib/dood/manager'
+import { ensureDoodProxy, stopDoodProxy } from '../../server/lib/dood/manager'
+import { removeEnvironmentResources } from '../../server/lib/dev-env/leftovers'
 
 /**
  * Images on the shared daemon, with the real `docker` CLI, real buildx and
@@ -136,7 +137,7 @@ async function cleanup() {
   for (const env of envs) {
     await stopDoodProxy(env.id).catch(() => {})
     await run('docker', ['rm', '-f', env.container], { allowFailure: true })
-    await sweepEnvironmentResources(env.id).catch(() => {})
+    await removeEnvironmentResources(env.id).catch(() => {})
     await run('docker', ['volume', 'rm', '-f', env.volume], { allowFailure: true })
   }
   await run('docker', ['rm', '-f', REGISTRY, portHelperName()], { allowFailure: true })
@@ -512,7 +513,7 @@ describe.skipIf(!daemon)('an environment\'s own image tags on the shared daemon'
   })
 
   it('sweeps an environment\'s private tags when it is retired, and only its own', async () => {
-    await sweepEnvironmentResources(A.id)
+    await removeEnvironmentResources(A.id)
     const tags = await hostTags()
     expect(tags.filter(tag => tag.startsWith(`domo-${A.id}/`))).toEqual([])
     expect(tags.filter(tag => tag.startsWith(`domo-${B.id}/`)).length).toBeGreaterThan(0)

@@ -65,6 +65,14 @@ dependency.
 - An argv assertion cannot prove Docker accepts the argv. After a change to
   the environment lifecycle, run `pnpm test:docker`. Inside a VS Code dev
   container, set `DOCKER_CONFIG` to a scratch directory that holds `{}`.
+- **A fake daemon for the leftover sweep has to keep state.** The sweep
+  decides by observing, and an empty stdout is what a real daemon answers both
+  for a clean machine and for one it cannot reach. `daemon()` in
+  `dev-environments.spec.ts` answers the listings from what it still holds,
+  removes on `rm`, and can refuse a name. Only a real daemon proves a refusal,
+  so `dev-environment.live.spec.ts` has one. **`docker image rm` of an image
+  with a second tag only removes the tag and succeeds**, even while a container
+  runs from it, so an image-refusal test must build a singly-tagged image.
 - A fake ACP agent must behave like the real one: answer based on whether a
   turn is running, and fail with `acp.RequestError`, not `Error`. Otherwise the
   test checks the fake.
@@ -86,8 +94,10 @@ dependency.
   Engine API itself. The compose specs use a real stand-in container that
   joins the network, or `compose down` behaves differently.
 - A live file that uses `ensureDoodProxy` sets its own
-  `NUXT_DEV_ENV_RESOURCE_PREFIX` and removes `portHelperName()` and
-  `portHelperImage()` at the end. Otherwise it drives, and leaves behind, the
+  `NUXT_DEV_ENV_RESOURCE_PREFIX`, takes each environment down with
+  `removeEnvironmentResources(id)` (the sweep, with the test standing in for
+  the retired row), and removes `portHelperName()` and `portHelperImage()` at
+  the end. Otherwise it drives, and leaves behind, the
   developer's own port helper.
 - Keep the socket directory short (`mkdtemp('/tmp/ddX-')`). `$TMPDIR` alone is
   ~50 bytes, and past Docker Desktop's 88-byte limit `doodSocketPath` refuses,

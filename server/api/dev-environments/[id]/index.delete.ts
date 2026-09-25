@@ -16,6 +16,7 @@ export default defineEventHandler(async (event) => {
     sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title })),
     cronJobsDisabled: retirement.cronJobsDisabled,
     subscriptionsRemoved: retirement.subscriptionsRemoved,
-    permissionsCancelled: retirement.permissionsCancelled
+    permissionsCancelled: retirement.permissionsCancelled,
+    leftovers: retirement.leftovers
   }
 })

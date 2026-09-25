@@ -462,9 +462,3 @@ export function imageLayer(options: ImageLayerOptions): DoodLayer {
     }
   }
 }
-
-/** Every tag an environment made, for the retirement sweep. */
-export function privateTagsOf(ns: Namespace, tags: Iterable<string>): string[] {
-  const prefix = privatePrefix(ns)
-  return [...new Set([...tags].filter(tag => tag.startsWith(prefix) || tag.startsWith(`docker.io/${prefix}`)))]
-}

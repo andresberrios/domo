@@ -152,16 +152,45 @@ fixed:
 
 ## Lifecycle
 
-- **Retirement checks the daemon afterwards and refuses, before the row
-  changes, if anything is left.** Retiring again finishes it.
-  `sweepEnvironmentResources` removes what carries the environment's label and
-  its private image tags, and nothing else. Never use `docker network prune`:
-  it would take the developer's own networks.
-- **Boot removes only what already-retired rows left behind.** A volume with no
-  row may belong to another Domo on the same daemon, such as a worktree's dev
-  server, so nothing is removed by name pattern alone.
-- **A retired environment's row is kept for good.** Only a retired project
-  that no environment ever lived in is dropped (`pruneRetiredProjects`).
+- **Retirement is done when Docker no longer has the resources, not when
+  `docker` exited.** `docker volume rm` fails the same way for a volume in use
+  and for one that never existed, and an unreachable daemon lists nothing, just
+  like a clean one. So removal is one sweep (`dev-env/reconcile.ts`): observe
+  what Docker has, remove what a row claims, write what survived to
+  `dev_environments.leftovers`. It runs after every retirement and every
+  failed creation, once at boot, and when someone asks
+  (`POST /api/dev-environments/[id]/cleanup`, the `retry_environment_cleanup`
+  mesh and voice tools, the button on the environment page). There is **no
+  timer**, on purpose. What survives one attempt does not go away by itself (a
+  container that mounts the volume, a container made from the image, a child
+  image). So a refusal names the blocking container and the command that
+  removes it (`explainRefusal`), and a retry is someone's decision.
+- **Attribution is positive, and that is the whole safety argument**
+  (`dev-env/leftovers.ts`). A resource is removed only when a row claims it. A
+  retired row claims the names derived from its id (container, workspace
+  volume, image, `dind-var-lib-docker-<id>`) and everything its proxy labelled
+  `domo.env=<id>` or tagged `domo-<id>/…`. Any row claims what a cleanup
+  recorded as owed, which is how a failed creation's wreckage is claimed.
+  A live environment's stack, the port helper and its image, the runtime and
+  browser volumes, and anything of another install are never candidates. A
+  resource that looks like this install's but that no row accounts for is
+  logged and left in place. Never sweep by prefix: the workspace volume is the
+  only copy of an agent's work. Never use `docker network prune`: it would take
+  the developer's own networks.
+- **A retired environment's row is kept for good**, because it is what claims
+  its leftovers. Only a retired project that no environment ever lived in is
+  dropped (`pruneRetiredProjects`).
+- **`retired_at` is lifecycle and `status` is health. They are independent.**
+  The row is retired before the sweep, not after Docker agrees: the container
+  must go first, the sessions can never run again, and `retired_at` is what
+  makes the row claim its resources. A retired row that still owes something is
+  `error`, with the leftovers in `last_error`. If Docker cannot be reached, the
+  derived names are recorded as unconfirmed, so the retirement does not report
+  a clean result. Anything that renders it keys on `status === 'error'`, never
+  on `lastError`. `last_error` is history.
+- Relays and the `host.docker.internal` redirect are processes of the Domo that
+  started them (a relay exits when its stdin closes). They are not resources on
+  the daemon, so the sweep does not look for them.
 - `docker rm --volumes` does not remove a DinD volume
   (`dind-var-lib-docker-<id>`), so `removeContainer()` removes the container's
   named volumes by name.

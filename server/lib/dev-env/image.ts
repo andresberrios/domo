@@ -102,7 +102,3 @@ export async function buildEnvironmentImage(input: {
     await rm(scratch, { recursive: true, force: true })
   }
 }
-
-export async function removeImage(imageName: string): Promise<void> {
-  await run('docker', ['image', 'rm', imageName], { allowFailure: true }).catch(() => {})
-}

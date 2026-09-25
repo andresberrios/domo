@@ -7,7 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { run } from '../../server/lib/dev-env/docker'
 import { portHelperImage, portHelperName } from '../../server/lib/dev-env/port-helper'
 import { createEngineClient } from '../../server/lib/dood/engine'
-import { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } from '../../server/lib/dood/manager'
+import { ensureDoodProxy, stopDoodProxy } from '../../server/lib/dood/manager'
+import { removeEnvironmentResources } from '../../server/lib/dev-env/leftovers'
 
 /**
  * Two environments on one daemon, each seeing only itself — with the real
@@ -345,7 +346,7 @@ async function cleanup() {
   for (const env of envs) {
     await stopDoodProxy(env.id)
     await run('docker', ['rm', '-f', env.container], { allowFailure: true })
-    await sweepEnvironmentResources(env.id)
+    await removeEnvironmentResources(env.id)
     await run('docker', ['volume', 'rm', '-f', env.volume], { allowFailure: true })
   }
   await run('docker', ['rm', '-f', BYSTANDER, `${BYSTANDER}-2`], { allowFailure: true })

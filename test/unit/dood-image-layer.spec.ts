@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { EngineClient } from '../../server/lib/dood/engine'
 import { parseRequestHead, type DoodRequest } from '../../server/lib/dood/http'
-import { imageLayer, privateTagsOf } from '../../server/lib/dood/image-layer'
+import { imageLayer } from '../../server/lib/dood/image-layer'
 import { privateName } from '../../server/lib/dood/images'
 import { runLayers, type Outcome } from '../../server/lib/dood/layers'
 import { namespaceFor } from '../../server/lib/dood/names'
@@ -250,9 +250,4 @@ describe('pull', () => {
     const { engine } = fakeEngine(IMAGES)
     expect(forwarded(await handle(engine, request('POST /images/create?fromImage=redis&tag=7'))).response).toBeUndefined()
   })
-})
-
-it('finds every tag an environment made, for the retirement sweep', () => {
-  expect(privateTagsOf(ns, [own('a:1'), `docker.io/${own('b:1')}`, theirs('a:1'), 'alpine:3', own('a:1')]))
-    .toEqual([own('a:1'), `docker.io/${own('b:1')}`])
 })

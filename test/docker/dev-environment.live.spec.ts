@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -43,6 +44,8 @@ vi.mock('../../server/lib/repo', () => ({
       remoteUser: null,
       status: 'creating',
       lastError: null,
+      retiredAt: null,
+      leftovers: [],
       createdAt: now,
       updatedAt: now,
       ...input
@@ -57,8 +60,26 @@ vi.mock('../../server/lib/repo', () => ({
     return row
   },
   getDevEnvironment: async (id: string) => state.rows.get(id) ?? null,
-  listDevEnvironments: async () => [...state.rows.values()],
-  retireDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
+  // Retiring keeps the row and marks it, exactly as the table does: it is what
+  // claims the Docker names a failed cleanup left behind, so a mock that
+  // deleted it would make the sweep below attribute nothing.
+  retireDevEnvironmentRow: async (id: string) => {
+    const row = state.rows.get(id)
+    if (row) row.retiredAt = new Date().toISOString()
+    return row ?? null
+  },
+  listDevEnvironments: async (projectId?: string, includeRetired = false) =>
+    [...state.rows.values()].filter(row =>
+      (!projectId || row.projectId === projectId) && (includeRetired || !row.retiredAt)),
+  setEnvironmentLeftovers: async (id: string, leftovers: any[], health: any = null) => {
+    const row = state.rows.get(id)
+    if (!row) return null
+    row.leftovers = leftovers
+    // The real column writes health in the same statement: a retirement that
+    // owes Docker something reads as broken, and a cleanup that worked does not.
+    if (health) Object.assign(row, { status: health.status, lastError: health.lastError })
+    return row
+  },
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
   // The import tells every agent session in the environment where the changes
   // are; this project has no Postgres, and no session ever runs in these.
@@ -85,6 +106,7 @@ const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
 const { environmentImageName } = await import('../../server/lib/dev-env/image')
 const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
 const {
+  cleanupEnvironment,
   createEnvironment,
   readEnvironmentFile,
   restoreDockerProxies,
@@ -93,10 +115,12 @@ const {
   stopEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
+const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
 const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
 const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
-const { doodSocketDir, doodSocketPath, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
+const { doodSocketDir, doodSocketPath, stopDoodProxy } = await import('../../server/lib/dood/manager')
+const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
 const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
 
 const HOUR = 60 * 60 * 1000
@@ -229,9 +253,7 @@ afterEach(async () => {
       for (const volume of named) await run('docker', ['volume', 'rm', '--force', volume], { allowFailure: true })
     }
     await stopDoodProxy(id)
-    await sweepEnvironmentResources(id)
-    await run('docker', ['volume', 'rm', '--force', workspaceVolumeName(id)], { allowFailure: true })
-    await run('docker', ['image', 'rm', '--force', environmentImageName(id)], { allowFailure: true })
+    await removeEnvironmentResources(id)
   }
   for (const volume of volumes.splice(0)) {
     await run('docker', ['volume', 'rm', '--force', volume], { allowFailure: true })
@@ -936,4 +958,253 @@ describe('populateWorkspaceVolume', () => {
     // macOS `tar` adds AppleDouble companions unless told not to.
     expect(listing.filter(path => path.split('/').pop()!.startsWith('._'))).toEqual([])
   }, 5 * 60 * 1000)
+})
+
+/**
+ * A cleanup step that Docker refuses, against a real daemon.
+ *
+ * This is the failure the reconciliation exists for, and it is the one thing
+ * about it no mock can vouch for: `docker volume rm` really is refused while
+ * another container has the volume mounted, and `allowFailure` really does turn
+ * that into a silent success. Measured once as a workspace volume holding a
+ * full checkout, left on a machine, referenced by nothing, permanently.
+ *
+ * The environment here is made by hand out of busybox rather than by
+ * `createEnvironment` — this is about what happens to the resources on the way
+ * out, and a real image build would add minutes and nothing else.
+ */
+describe('a retirement whose volume removal is refused', () => {
+  it('names the container holding it, and removes it when asked again', async () => {
+    const id = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(id)
+    const volume = workspaceVolumeName(id)
+    const containerName = `${PREFIX}${id}`
+    const holder = `${PREFIX}holder-${id}`
+    await run('docker', ['volume', 'create', '--label', `domo.envId=${id}`, volume])
+    const { stdout: containerId } = await run('docker', [
+      'run', '--detach', '--name', containerName, '--label', `domo.envId=${id}`,
+      '--volume', `${volume}:/workspace`, HELPER_IMAGE, 'sleep', '600'
+    ])
+    // Whatever happened to have it mounted at that moment. In the incident this
+    // was written for it was an unrelated container, and it had gone an hour later.
+    await run('docker', [
+      'run', '--detach', '--name', holder, '--volume', `${volume}:/workspace`,
+      HELPER_IMAGE, 'sleep', '600'
+    ])
+    state.rows.set(id, {
+      id,
+      projectId: 'prj_live',
+      name: 'leftovers',
+      containerName,
+      containerId,
+      workspacePath: '/workspace',
+      status: 'running',
+      lastError: null,
+      retiredAt: null,
+      leftovers: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+
+    const exists = async () => (await run('docker', [
+      'volume', 'ls', '--quiet', '--filter', `name=^${volume}$`
+    ])).stdout
+
+    try {
+      const report = await retireEnvironment(id)
+
+      // The container went; the volume did not, and the retirement says so
+      // instead of reporting a clean sweep.
+      expect(await inspectContainer(containerId)).toBeNull()
+      expect(await exists()).toBe(volume)
+      // The part only a real daemon can prove: Docker's own refusal names
+      // nothing, and `docker ps --filter volume=` turns it into the container
+      // whoever reads this has to remove.
+      expect(report.leftovers).toEqual([
+        expect.objectContaining({
+          kind: 'volume',
+          name: volume,
+          error: `Container ${holder} still has it mounted. `
+            + `Remove it (docker rm -f ${holder}) and run the cleanup again.`
+        })
+      ])
+      // Written to the row, which is kept for good and is the only thing that
+      // can name this volume again later.
+      expect(state.rows.get(id).leftovers).toEqual([
+        expect.objectContaining({ kind: 'volume', name: volume })
+      ])
+      // And it reads as broken rather than as a quiet field: `error` is the
+      // state anything showing this environment keys on.
+      expect(state.rows.get(id)).toMatchObject({
+        status: 'error',
+        lastError: expect.stringContaining(`docker rm -f ${holder}`)
+      })
+    } finally {
+      await run('docker', ['rm', '--force', '--volumes', holder], { allowFailure: true })
+    }
+
+    // Exactly what the message told them to do, and then the retry it named.
+    const swept = await cleanupEnvironment(id)
+
+    expect(swept.removed.map(leftover => leftover.name)).toContain(volume)
+    expect(await exists()).toBe('')
+    expect(state.rows.get(id)).toMatchObject({ leftovers: [], status: 'stopped', lastError: null })
+  }, 5 * 60 * 1000)
+
+  it('names the container an image was made from, which is the other refusal', async () => {
+    // The second cause the owner named: somebody ran a container from the
+    // environment's image by hand. Docker refuses the image removal and, again,
+    // says nothing about what to do; `--filter ancestor=` does.
+    const id = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(id)
+    const image = environmentImageName(id)
+    const holder = `${PREFIX}ancestor-${id}`
+    // Built rather than tagged: `docker image rm` on an image that still has
+    // another tag only removes the tag, and succeeds even while a container is
+    // running from it. One tag is what makes the daemon refuse.
+    await run('docker', ['build', '--tag', image, '-'], {
+      input: `FROM ${HELPER_IMAGE}\nRUN touch /leftover-marker\n`
+    })
+    await run('docker', [
+      'run', '--detach', '--name', holder, image, 'sleep', '600'
+    ])
+    state.rows.set(id, {
+      id,
+      projectId: 'prj_live',
+      name: 'leftover-image',
+      containerName: `${PREFIX}${id}`,
+      containerId: null,
+      workspacePath: '/workspace',
+      status: 'running',
+      lastError: null,
+      retiredAt: new Date().toISOString(),
+      leftovers: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+
+    try {
+      const report = await cleanupEnvironment(id)
+
+      expect(report.leftovers).toEqual([
+        expect.objectContaining({
+          kind: 'image',
+          name: image,
+          error: `Container ${holder} was made from it. `
+            + `Remove it (docker rm -f ${holder}) and run the cleanup again.`
+        })
+      ])
+    } finally {
+      await run('docker', ['rm', '--force', '--volumes', holder], { allowFailure: true })
+    }
+
+    await expect(cleanupEnvironment(id)).resolves.toMatchObject({ leftovers: [] })
+    expect((await run('docker', ['images', '--quiet', image])).stdout).toBe('')
+  }, 5 * 60 * 1000)
+
+  it('leaves a live environment\'s workspace volume alone while it does it', async () => {
+    const live = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(live)
+    const retired = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(retired)
+    for (const id of [live, retired]) {
+      await run('docker', ['volume', 'create', '--label', `domo.envId=${id}`, workspaceVolumeName(id)])
+      state.rows.set(id, {
+        id,
+        projectId: 'prj_live',
+        name: id,
+        containerName: `${PREFIX}${id}`,
+        containerId: null,
+        workspacePath: '/workspace',
+        status: 'running',
+        lastError: null,
+        retiredAt: id === retired ? new Date().toISOString() : null,
+        leftovers: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      })
+    }
+
+    await reconcileEnvironmentResources()
+
+    // The one thing this change could do real harm with: a live environment's
+    // workspace volume is the only copy of whatever an agent has written in it.
+    const listed = (await run('docker', ['volume', 'ls', '--quiet'])).stdout.split('\n')
+    expect(listed).toContain(workspaceVolumeName(live))
+    expect(listed).not.toContain(workspaceVolumeName(retired))
+  }, 60 * 1000)
+
+  it('takes what a retired environment made on the host daemon, and nothing a live one made', async () => {
+    // What an agent made through its Docker proxy is named by the agent, so it
+    // is found by the `domo.env` label and the `domo-<id>/` tag the proxy put
+    // on it — made here by hand with exactly those, since this is about the
+    // way out and not about the proxy.
+    const live = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    const retired = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(live, retired)
+    const made = (id: string) => ({
+      container: `${id}-web`,
+      network: `${id}-default`,
+      volume: `${id}-data`,
+      image: `domo-${id}/docker.io/library/app:dev`
+    })
+    for (const id of [live, retired]) {
+      const names = made(id)
+      await run('docker', ['network', 'create', '--label', `domo.env=${id}`, names.network])
+      await run('docker', ['volume', 'create', '--label', `domo.env=${id}`, names.volume])
+      await run('docker', ['tag', HELPER_IMAGE, names.image])
+      await run('docker', [
+        'run', '--detach', '--name', names.container, '--label', `domo.env=${id}`,
+        '--network', names.network, '--volume', `${names.volume}:/data`, HELPER_IMAGE, 'sleep', '600'
+      ])
+      state.rows.set(id, {
+        id,
+        projectId: 'prj_live',
+        name: id,
+        containerName: `${PREFIX}${id}`,
+        containerId: null,
+        workspacePath: '/workspace',
+        status: 'running',
+        lastError: null,
+        retiredAt: id === retired ? new Date().toISOString() : null,
+        leftovers: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      })
+    }
+    const has = async (id: string) => {
+      const names = made(id)
+      const [containers, networks, volumes, images] = await Promise.all([
+        run('docker', ['ps', '--all', '--format', '{{.Names}}']),
+        run('docker', ['network', 'ls', '--format', '{{.Name}}']),
+        run('docker', ['volume', 'ls', '--format', '{{.Name}}']),
+        run('docker', ['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'])
+      ])
+      return [
+        containers.stdout.split('\n').includes(names.container),
+        networks.stdout.split('\n').includes(names.network),
+        volumes.stdout.split('\n').includes(names.volume),
+        images.stdout.split('\n').includes(names.image)
+      ]
+    }
+
+    try {
+      const report = await reconcileEnvironmentResources()
+
+      expect(await has(retired)).toEqual([false, false, false, false])
+      expect(await has(live)).toEqual([true, true, true, true])
+      expect(report.removed.map(leftover => `${leftover.kind} ${leftover.name}`)).toEqual(expect.arrayContaining([
+        `container ${made(retired).container}`,
+        `network ${made(retired).network}`,
+        `volume ${made(retired).volume}`,
+        // Listed as `repo` for `:latest` only, so this one keeps its tag.
+        `image ${made(retired).image}`
+      ]))
+      // A live environment's stack is accounted for, not "unattributed".
+      expect(report.unattributed.filter(entry => entry.includes(live))).toEqual([])
+    } finally {
+      await removeEnvironmentResources(live)
+    }
+    expect(await has(live)).toEqual([false, false, false, false])
+  }, 60 * 1000)
 })

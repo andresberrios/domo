@@ -5,7 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { run } from '../../server/lib/dev-env/docker'
 import { portHelperImage, portHelperName } from '../../server/lib/dev-env/port-helper'
-import { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } from '../../server/lib/dood/manager'
+import { ensureDoodProxy, stopDoodProxy } from '../../server/lib/dood/manager'
+import { removeEnvironmentResources } from '../../server/lib/dev-env/leftovers'
 import type { DoodProxy } from '../../server/lib/dood/proxy'
 import type { PublishedPort } from '../../server/lib/dood/rewrite'
 
@@ -101,7 +102,7 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     if (proxy) await compose(['down', '-v', '--remove-orphans'], true).catch(() => {})
     await stopDoodProxy(ENV_ID)
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
-    await sweepEnvironmentResources(ENV_ID)
+    await removeEnvironmentResources(ENV_ID)
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
     await run('docker', ['rm', '-f', portHelperName()], { allowFailure: true })
     await run('docker', ['rmi', portHelperImage()], { allowFailure: true })
@@ -155,7 +156,7 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     await run('docker', ['network', 'create', bystander], { allowFailure: true })
     try {
       await run('docker', ['rm', '-f', ENV_CONTAINER])
-      await sweepEnvironmentResources(ENV_ID)
+      await removeEnvironmentResources(ENV_ID)
 
       const left = await run('docker', ['ps', '-aq', '--filter', `label=domo.env=${ENV_ID}`])
       expect(left.stdout).toBe('')

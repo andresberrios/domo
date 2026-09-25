@@ -62,7 +62,8 @@ const PORT_HELPER = 'domo-dood-ports-test-port-helper'
 const { run } = await import('../../server/lib/dev-env/docker')
 const { RUNTIME_IMAGE } = await import('../../server/lib/dev-env/runtime-volume')
 const { portHelperImage } = await import('../../server/lib/dev-env/port-helper')
-const { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
+const { ensureDoodProxy, stopDoodProxy } = await import('../../server/lib/dood/manager')
+const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
 const { refreshEnvironmentPorts, stopAllEnvironmentForwarders } = await import('../../server/lib/dev-environment-ports')
 
 const ENV_ID = 'env_portsprobe'
@@ -137,7 +138,7 @@ describe.skipIf(!daemon)('ports in a stack on the host daemon', () => {
     stopAllEnvironmentForwarders()
     await stopDoodProxy(ENV_ID)
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
-    await sweepEnvironmentResources(ENV_ID)
+    await removeEnvironmentResources(ENV_ID)
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
     await run('docker', ['rm', '-f', PORT_HELPER], { allowFailure: true })
     await run('docker', ['rmi', portHelperImage()], { allowFailure: true })
@@ -171,7 +172,7 @@ describe.skipIf(!daemon)('ports in a stack on the host daemon', () => {
   it('leaves nothing of the environment behind once it is swept, and the helper for the next one', async () => {
     stopAllEnvironmentForwarders()
     await run('docker', ['rm', '-f', ENV_CONTAINER])
-    await sweepEnvironmentResources(ENV_ID)
+    await removeEnvironmentResources(ENV_ID)
 
     const left = await run('docker', ['ps', '-aq', '--filter', `label=domo.env=${ENV_ID}`])
     expect(left.stdout).toBe('')

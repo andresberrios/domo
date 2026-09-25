@@ -7,7 +7,7 @@ import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev
 import { importBranchIntoEnvironment } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
-import { createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
+import { cleanupEnvironment, createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import {
@@ -313,6 +313,19 @@ export const MESH_TOOLS = [
       'Retire a development environment: its container and its copy of the checkout are destroyed. The records '
       + 'are kept — the environment and the full transcript of every coding agent that ran in it stay readable — '
       + 'but those agents can never be started again, and nothing inside the container can be brought back.',
+    inputSchema: {
+      type: 'object',
+      properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
+      required: ['environmentId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'retry_environment_cleanup',
+    description:
+      'Try again to remove the Docker resources a retirement could not. Domo never retries on a timer: a refused '
+      + 'removal names the container that is in the way, and this is what you call once you have removed it. '
+      + 'Answers with what went and what is still blocked.',
     inputSchema: {
       type: 'object',
       properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
@@ -632,8 +645,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (caller.devEnvironmentId && environments.some(environment => environment.id === caller.devEnvironmentId)) {
         throw new Error('Refusing to retire the project this agent session is running in. Ask the user or another agent to do it.')
       }
-      await retireProjectCascade(args.projectId)
-      return { id: args.projectId, retired: true }
+      const { leftovers } = await retireProjectCascade(args.projectId)
+      return { id: args.projectId, retired: true, leftovers }
     }
 
     case 'create_dev_environment': {
@@ -671,7 +684,21 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         retired: true,
         // Named rather than counted: the caller may well have been talking to
         // one of them a moment ago, and it is still readable.
-        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title }))
+        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title })),
+        // Empty unless Docker refused something. Nothing retries it: each names
+        // what is in the way, and retry_environment_cleanup is the second ask.
+        leftovers: retirement.leftovers
+      }
+    }
+
+    case 'retry_environment_cleanup': {
+      const report = await cleanupEnvironment(args.environmentId)
+      return {
+        id: args.environmentId,
+        removed: report.removed.map(leftover => `${leftover.kind} ${leftover.name}`),
+        // Each carries the container that is in the way and the command that
+        // deals with it, so the caller can do exactly that and call again.
+        leftovers: report.leftovers.map(({ kind, name, error }) => ({ resource: `${kind} ${name}`, error }))
       }
     }
 

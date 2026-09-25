@@ -58,8 +58,8 @@ process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = 'domo-dood-binds-test-'
 
 const { run } = await import('../../server/lib/dev-env/docker')
 const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
-const { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources, ensureEnvironmentNetwork }
-  = await import('../../server/lib/dood/manager')
+const { ensureDoodProxy, stopDoodProxy, ensureEnvironmentNetwork } = await import('../../server/lib/dood/manager')
+const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
 const { refreshEnvironmentPorts, stopAllEnvironmentForwarders } = await import('../../server/lib/dev-environment-ports')
 
 const NODE = 'node:22-bookworm-slim'
@@ -149,7 +149,7 @@ async function cleanup() {
   stopAllEnvironmentForwarders()
   await stopDoodProxy(ENV_ID).catch(() => {})
   await run('docker', ['rm', '-f', ENV, BYSTANDER, THIEF], { allowFailure: true })
-  await sweepEnvironmentResources(ENV_ID).catch(() => {})
+  await removeEnvironmentResources(ENV_ID).catch(() => {})
   await run('docker', ['volume', 'rm', '-f', WORKSPACE_VOLUME, CACHE_VOLUME], { allowFailure: true })
   await run('docker', ['rm', '-f', portHelperName()], { allowFailure: true })
 }
@@ -432,7 +432,7 @@ describe.skipIf(!daemon)('binds outside the checkout, the socket, and host netwo
   it('leaves nothing of the environment behind once it is swept', async () => {
     stopAllEnvironmentForwarders()
     await run('docker', ['rm', '-f', ENV])
-    await sweepEnvironmentResources(ENV_ID)
+    await removeEnvironmentResources(ENV_ID)
     expect((await run('docker', ['ps', '-aq', '--filter', `label=domo.env=${ENV_ID}`])).stdout).toBe('')
     expect((await run('docker', ['network', 'ls', '-q', '--filter', `label=domo.env=${ENV_ID}`])).stdout).toBe('')
   }, 120_000)

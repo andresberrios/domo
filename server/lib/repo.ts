@@ -15,6 +15,8 @@ import type {
   CronRun,
   DevEnvironment,
   DevEnvironmentPort,
+  DevEnvironmentStatus,
+  EnvironmentLeftover,
   McpServer,
   MessageDelivery,
   MessageOrigin,
@@ -147,7 +149,8 @@ function mapDevEnvironment(r: any): DevEnvironment {
     lastError: r.last_error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    retiredAt: r.retired_at ?? null
+    retiredAt: r.retired_at ?? null,
+    leftovers: r.leftovers ?? []
   }
 }
 
@@ -511,21 +514,56 @@ export async function retireDevEnvironmentRow(id: string): Promise<DevEnvironmen
 }
 
 /**
- * Drop the retired rows nothing points at any more.
+ * Record the Docker resources a cleanup could not remove — or that it finally
+ * did, with an empty list.
  *
- * A retired environment exists to say where its sessions ran, so it has earned
- * its keep only for as long as one still references it. Purging the last
- * session that ran in an environment takes the environment with it, and the
- * project above it once that is empty too — which is what keeps "never delete
- * anything" from meaning "accumulate rows for ever".
+ * Written on change only, like every other column of a table Electric streams:
+ * a sweep that finds the same thing it found ten minutes ago must not re-stream
+ * the whole row to every browser. There is no timestamp to keep honest here,
+ * which is what makes this the opposite case from `usage_limits.updated_at` —
+ * the value *is* the whole of what this says.
  */
+export async function setEnvironmentLeftovers(
+  id: string,
+  leftovers: EnvironmentLeftover[],
+  /**
+   * What the row should now report about its health, or null to leave `status`
+   * and `last_error` exactly as they are — which is what a row that is broken
+   * for a better reason than this needs (a creation that failed halfway already
+   * says why, and its wreckage is a detail of that).
+   */
+  health: { status: DevEnvironmentStatus, lastError: string | null } | null = null
+): Promise<DevEnvironment | null> {
+  const sets = ['leftovers = $2::jsonb', 'updated_at = $3']
+  const changed = ['leftovers::text is distinct from $2::jsonb::text']
+  const params: any[] = [id, JSON.stringify(leftovers), nowIso()]
+  if (health) {
+    params.push(health.status)
+    sets.push(`status = $${params.length}`)
+    changed.push(`status is distinct from $${params.length}`)
+    params.push(health.lastError)
+    sets.push(`last_error = $${params.length}::text`)
+    changed.push(`last_error is distinct from $${params.length}::text`)
+  }
+  const row = await queryOne(
+    `update dev_environments set ${sets.join(', ')}
+      where id = $1 and (${changed.join(' or ')}) returning *`,
+    params
+  )
+  if (!row) return null
+  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
+  return mapDevEnvironment(row)
+}
+
 /**
  * Drop retired projects no environment ever lived in — nothing ran there, so
  * there is nothing to remember. A retired *environment's* row is never
- * removed: it is the record that the environment existed, where its sessions
- * ran, and what boot checks for leftovers on the daemon (`healRetiredEnvironments`).
- * It used to be deleted once no session named it, which made an environment
- * retired without ever having an agent vanish without trace.
+ * removed: it is the record that the environment existed and where its
+ * sessions ran, and it is what claims the Docker resources a retirement could
+ * not remove (`dev-env/leftovers.ts`) — without it they would be
+ * unattributable for ever. It used to be deleted once no session named it,
+ * which made an environment retired without ever having an agent vanish
+ * without trace.
  */
 export async function pruneRetiredProjects(): Promise<number> {
   const projects = await query<{ id: string }>(

@@ -44,7 +44,8 @@ const devEnvironments = {
   safeEnvironmentName: (name: string) => name,
   createEnvironment: vi.fn(),
   startEnvironment: vi.fn(),
-  stopEnvironment: vi.fn()
+  stopEnvironment: vi.fn(),
+  cleanupEnvironment: vi.fn()
 }
 // The sync itself is `test/server/git-sync.spec.ts`, against real git; what
 // matters here is which environment and which branch the spoken call picks.
@@ -551,7 +552,7 @@ describe('scheduled agent tasks', () => {
 describe('resolving which project or environment the user meant', () => {
   it('matches a project on a partial name', async () => {
     repo.listProjects.mockResolvedValue([project()])
-    projects.retireProjectCascade.mockResolvedValue(undefined)
+    projects.retireProjectCascade.mockResolvedValue({ leftovers: [] })
 
     await voiceTools.retire_project!.handler({ project: 'domo' }, ctx)
 
@@ -568,7 +569,7 @@ describe('resolving which project or environment the user meant', () => {
   it('matches an environment on a partial name', async () => {
     repo.listDevEnvironments.mockResolvedValue([environment()])
     projects.retireProjectEnvironment.mockResolvedValue({
-      sessions: [], cronJobsDisabled: 0, subscriptionsRemoved: 0, permissionsCancelled: 0
+      sessions: [], cronJobsDisabled: 0, subscriptionsRemoved: 0, permissionsCancelled: 0, leftovers: []
     })
 
     await voiceTools.retire_dev_environment!.handler({ environment: 'auth' }, ctx)
@@ -618,7 +619,7 @@ describe('retire_project', () => {
     repo.listProjects.mockResolvedValue([project()])
 
     await expect(voiceTools.retire_project!.handler({ project: 'prj_1' }, ctx))
-      .resolves.toEqual({ id: 'prj_1', retired: true })
+      .resolves.toEqual({ id: 'prj_1', retired: true, leftovers: [] })
     expect(projects.retireProjectCascade).toHaveBeenCalledWith('prj_1')
   })
 })
@@ -712,7 +713,8 @@ describe('retire_dev_environment', () => {
       sessions: [{ id: 'ag_1', title: 'Auth refactor' }],
       cronJobsDisabled: 0,
       subscriptionsRemoved: 0,
-      permissionsCancelled: 0
+      permissionsCancelled: 0,
+      leftovers: []
     })
 
     // Named rather than counted: the user may well have been talking about one
@@ -721,9 +723,59 @@ describe('retire_dev_environment', () => {
       .resolves.toEqual({
         id: 'env_1',
         retired: true,
-        sessionsStoodDown: [{ id: 'ag_1', title: 'Auth refactor' }]
+        sessionsStoodDown: [{ id: 'ag_1', title: 'Auth refactor' }],
+        leftovers: []
       })
     expect(projects.retireProjectEnvironment).toHaveBeenCalledWith('env_1')
+  })
+
+  it('tells the model what Docker would not remove, rather than claiming a clean retirement', async () => {
+    repo.listDevEnvironments.mockResolvedValue([environment()])
+    projects.retireProjectEnvironment.mockResolvedValue({
+      sessions: [],
+      cronJobsDisabled: 0,
+      subscriptionsRemoved: 0,
+      permissionsCancelled: 0,
+      leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'volume is in use' }]
+    })
+
+    // The whole point of the feature: a retirement that leaves gigabytes behind
+    // must not sound like one that did not.
+    await expect(voiceTools.retire_dev_environment!.handler({ environment: 'env_1' }, ctx))
+      .resolves.toMatchObject({
+        leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'volume is in use' }]
+      })
+  })
+})
+
+describe('retry_environment_cleanup', () => {
+  it('finds a retired environment, which is the only kind that has leftovers', async () => {
+    // `list_dev_environments` hides retired ones, and a retired one is exactly
+    // what this is for — so the lookup has to include them or the retry can
+    // never reach the environment that needs it.
+    repo.listDevEnvironments.mockResolvedValue([environment({ retiredAt: '2026-01-09T00:00:00.000Z' })])
+    devEnvironments.cleanupEnvironment.mockResolvedValue({
+      removed: [],
+      leftovers: [{
+        kind: 'volume',
+        name: 'domo-dev-env_1-workspace',
+        environmentId: 'env_1',
+        error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+      }],
+      unattributed: []
+    })
+
+    await expect(voiceTools.retry_environment_cleanup!.handler({ environment: 'auth' }, ctx))
+      .resolves.toEqual({
+        id: 'env_1',
+        removed: [],
+        leftovers: [{
+          resource: 'volume domo-dev-env_1-workspace',
+          error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+        }]
+      })
+    expect(repo.listDevEnvironments).toHaveBeenCalledWith(undefined, true)
+    expect(devEnvironments.cleanupEnvironment).toHaveBeenCalledWith('env_1')
   })
 })
 

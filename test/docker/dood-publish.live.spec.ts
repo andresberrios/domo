@@ -58,8 +58,8 @@ process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = 'domo-dood-pub-test-'
 
 const { run } = await import('../../server/lib/dev-env/docker')
 const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
-const { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources, ensureEnvironmentNetwork }
-  = await import('../../server/lib/dood/manager')
+const { ensureDoodProxy, stopDoodProxy, ensureEnvironmentNetwork } = await import('../../server/lib/dood/manager')
+const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
 const { refreshEnvironmentPorts, stopAllEnvironmentForwarders } = await import('../../server/lib/dev-environment-ports')
 
 const NODE = 'node:22-bookworm-slim'
@@ -163,7 +163,7 @@ async function cleanup() {
   for (const env of envs) {
     await stopDoodProxy(env.id).catch(() => {})
     await run('docker', ['rm', '-f', env.container], { allowFailure: true })
-    await sweepEnvironmentResources(env.id).catch(() => {})
+    await removeEnvironmentResources(env.id).catch(() => {})
     await run('docker', ['volume', 'rm', '-f', env.volume], { allowFailure: true })
   }
   await run('docker', ['rm', '-f', portHelperName()], { allowFailure: true })

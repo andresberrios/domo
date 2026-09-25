@@ -133,8 +133,10 @@ describe('projects', () => {
   it('retires a project and everything under it', async () => {
     const project = await $fetch<Project>('/api/projects', { method: 'POST', body: { repoPath: checkout } })
 
+    // `leftovers` is what Docker would not remove. Empty here and normally, and
+    // reported either way rather than folded into `ok: true`.
     await expect($fetch(`/api/projects/${project.id}`, { method: 'DELETE' }))
-      .resolves.toEqual({ ok: true, retired: true })
+      .resolves.toEqual({ ok: true, retired: true, leftovers: [] })
     await expect($fetch<Project[]>('/api/projects')).resolves.not.toContainEqual(
       expect.objectContaining({ id: project.id })
     )
@@ -206,7 +208,10 @@ describe('projects', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ branch: 'main' })
-      })
+      }),
+      // The retry for a cleanup Docker refused. Nothing retries on a timer, so
+      // this route is the whole of the second attempt on the HTTP surface.
+      fetch('/api/dev-environments/env_nope/cleanup', { method: 'POST' })
     ]) {
       const response = await request
       expect(response.status).toBe(500)
