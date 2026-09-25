@@ -61,7 +61,7 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
   beforeAll(async () => {
     // Its own port helper (the relay publishing `ports:` runs in it), not the developer's.
     process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = 'domo-dood-compose-test-'
-    socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-sock-'))
+    socketDir = await mkdtemp('/tmp/ddc-')
     process.env.NUXT_DOOD_SOCKET_DIR = socketDir
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })

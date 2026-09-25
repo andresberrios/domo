@@ -97,7 +97,7 @@ async function forwardedWeb() {
 
 describe.skipIf(!daemon)('ports in a stack on the host daemon', () => {
   beforeAll(async () => {
-    socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-ports-'))
+    socketDir = await mkdtemp('/tmp/ddo-')
     process.env.NUXT_DOOD_SOCKET_DIR = socketDir
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
     await run('docker', ['volume', 'create', VOLUME])

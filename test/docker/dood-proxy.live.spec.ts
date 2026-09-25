@@ -60,7 +60,7 @@ describe.skipIf(!daemon)('DooD socket proxy', () => {
         scope: { workspacePath: WORKSPACE, workspaceVolume: VOLUME, labels: { 'domo.env': ENV_ID } },
         engine: createEngineClient('/var/run/docker.sock'),
         ownContainer: ENV_CONTAINER,
-        ensureSubpaths: async (subpaths) => {
+        ensureSubpaths: async (_volume, subpaths) => {
           for (const subpath of subpaths) await inVolume(`mkdir -p ${JSON.stringify(`/w/${subpath}`)}`)
         },
         onDroppedPorts: (ports) => { dropped.push(...ports) }
@@ -123,13 +123,13 @@ describe.skipIf(!daemon)('DooD socket proxy', () => {
     expect(check.stdout).toBe('written')
   }, 120_000)
 
-  it('leaves a bind outside the workspace alone', async () => {
-    // Not ours to translate: it must reach the daemon as written and fail there.
+  it('refuses a bind of a path that exists only inside the environment', async () => {
+    // Not ours to translate, and not the daemon's to create an empty directory for.
     const output = await viaProxy(
       ['run', '--rm', '-v', '/definitely/not/shared/anywhere:/x', HELPER, 'ls', '/x'],
       true
     )
-    expect(`${output.stdout}${output.stderr}`).not.toBe('')
+    expect(output.stderr).toContain('Domo: /definitely/not/shared/anywhere exists only inside this dev environment')
   }, 120_000)
 
   it('drops host port publishing and reports it', async () => {

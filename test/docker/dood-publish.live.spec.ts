@@ -189,7 +189,7 @@ async function startEnvironment(env: Env) {
 
 describe.skipIf(!daemon)('publishing on the environment\'s own localhost', () => {
   beforeAll(async () => {
-    socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-pub-'))
+    socketDir = await mkdtemp('/tmp/ddp-')
     process.env.NUXT_DOOD_SOCKET_DIR = socketDir
     await cleanup()
     for (const image of [NODE, POSTGRES]) {

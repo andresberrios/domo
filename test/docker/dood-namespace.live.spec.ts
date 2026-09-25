@@ -77,7 +77,7 @@ describe.skipIf(!daemon)('an environment\'s own view of the shared daemon', () =
   beforeAll(async () => {
     // Its own port helper, not the developer's.
     process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = 'domo-dood-ns-test-'
-    socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-ns-'))
+    socketDir = await mkdtemp('/tmp/ddn-')
     process.env.NUXT_DOOD_SOCKET_DIR = socketDir
     await cleanup()
 
