@@ -3,8 +3,7 @@
 Settled with the user on 2026-09-25. This is the working plan for the next
 stretch of `worktree-dood-shared-daemon`; delete it (or fold what survives into
 `AGENTS.md`) when the work lands. The image-tag question is being settled by
-the spike in `README.md` beside this file *before* any of this is built,
-because it decides whether the path is viable at all.
+the spike in `README.md` beside this file — **done: viable**, see decision 4.
 
 ## Where things stand (committed)
 
@@ -62,18 +61,26 @@ clients never pipeline: when request N+1 arrives, response N is complete.
    network names, `PortBindings` and `NetworkSettings.Ports` (so `docker
    port` / `docker compose port` / `docker ps` PORTS are right), and hides
    `domo.*` labels.
-4. **Images**: pulls and pulled tags stay shared (the cache is the point).
-   Tags an environment *produces* (build, tag, commit, load) become private
-   (`domo-env-<envId>/<repo>:<tag>` or equivalent — the spike decides the
-   mechanism). Consuming an image name from environment X: X's private tag
-   first; else the verbatim tag, *unless* it is another environment's build
-   (then not found). `docker images` in X shows X's private tags unprefixed,
-   hides other environments' private tags. `FROM <locally built image>` must
-   resolve to X's copy (named build contexts, if the spike confirms).
-   Push of a private image: translate to the real name at push time (TBD).
+4. **Images** (mechanism settled by the spike, `README.md`): pulls and pulled
+   tags stay shared (the cache is the point). Tags an environment *produces*
+   become private, `domo-<envId>/<original name>`:
+   - builds: the proxy terminates `/grpc` with `node:http2` on both sides and
+     rewrites the exporter `name` in `Control/Solve` (not when it pushes —
+     keep the registry name, add the private tag from the response digest);
+     it injects `context:<name>=docker-image://<private>` into the
+     `LLBBridge/Solve` `FrontendOpt` for every private image of the
+     environment, so `FROM` / `COPY --from` resolve to them;
+   - `docker tag` (target), `commit ?repo=`, `load` (retag what the stream
+     reports): plain HTTP rewrites;
+   - consuming a name from X: X's private tag if present, else the verbatim
+     (shared) name. Builds never produce public tags, so nothing of another
+     environment's is ever visible under one;
+   - `docker images` / `image inspect` in X: X's private tags shown
+     unprefixed, other environments' private tags hidden;
+   - `docker push <name>` of a private image: tag the real name, push, untag.
 5. **Order of work**: scoping + names → response rewriting → `localhost`
    publishing + `host.docker.internal` → binds + `network_mode: host` →
-   images (per the spike).
+   images (the `/grpc` bridge, then the HTTP-side tag handling).
 
 ## Pieces, each with what was measured
 
