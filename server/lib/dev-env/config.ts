@@ -15,6 +15,12 @@ export const DOMO_CONFIG_FILE = '.domo.json'
 export const DEFAULT_IMAGE = process.env.NUXT_DEV_ENV_IMAGE
   || 'mcr.microsoft.com/devcontainers/base:ubuntu-24.04'
 export const DIND_FEATURE = 'ghcr.io/devcontainers/features/docker-in-docker:2'
+/**
+ * Where `"docker": true` gets its `docker` CLI, compose and buildx. Only the
+ * binaries: the Feature's entrypoint and its bind mount of the host socket are
+ * skipped (see `mergeImageMetadata`), because Domo mounts a socket of its own.
+ */
+export const DOOD_FEATURE = 'ghcr.io/devcontainers/features/docker-outside-of-docker:1'
 export const GITHUB_CLI_FEATURE = 'ghcr.io/devcontainers/features/github-cli:1'
 
 /**
@@ -210,13 +216,26 @@ export function validate(input: unknown, repoPath: string): DevEnvironmentConfig
 }
 
 /**
- * The Features handed to the image build: the project's own, plus docker-in-docker
- * when `docker` is on and the project has not asked for it itself.
+ * Whether the environment gets Domo's proxied socket onto the host daemon.
+ *
+ * `"docker": true` used to mean a private daemon (the docker-in-docker
+ * Feature); it now means the host's, through `server/lib/dood/`. A project
+ * that lists docker-in-docker among its own Features still gets exactly that,
+ * and then no proxy: its own dockerd owns `/var/run/docker.sock`.
+ */
+export function usesHostDaemon(config: Pick<DevEnvironmentConfig, 'docker' | 'features'>): boolean {
+  return config.docker && !Object.keys(config.features).some(key => key.includes('docker-in-docker'))
+}
+
+/**
+ * The Features handed to the image build: the project's own, plus the Docker
+ * CLI when the environment reaches the host daemon and the project has not
+ * brought one itself.
  */
 export function buildFeatures(config: DevEnvironmentConfig): Record<string, unknown> {
   const features = { ...config.features }
-  if (config.docker && !Object.keys(features).some(key => key.includes('docker-in-docker'))) {
-    features[DIND_FEATURE] = { version: 'latest' }
+  if (usesHostDaemon(config) && !Object.keys(features).some(key => key.includes('docker-outside-of-docker'))) {
+    features[DOOD_FEATURE] = { version: 'latest' }
   }
   return features
 }

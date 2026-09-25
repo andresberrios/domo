@@ -1,21 +1,30 @@
-import { access } from 'node:fs/promises'
+import { access, rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 
-import type { DevEnvironment, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
+import type { DevEnvironment, Project, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
 import { seedClaudeHome } from './dev-env/claude-home'
-import { resolveEnvironmentConfig, resolveForwardPorts } from './dev-env/config'
+import { resolveEnvironmentConfig, resolveForwardPorts, usesHostDaemon } from './dev-env/config'
 import {
   containerRunArgs,
+  DOOD_CONTAINER_LABEL,
   homeDirectory,
   postCreateArgs,
   readImageMetadata,
   resolveRemoteUser
 } from './dev-env/container'
-import { inspectContainer, populateWorkspaceVolume, resourcePrefix, run } from './dev-env/docker'
+import {
+  inspectContainer,
+  populateWorkspaceVolume,
+  resourcePrefix,
+  run,
+  type ContainerInspection
+} from './dev-env/docker'
+import { environmentResources, observeEnvironmentResources, ownedResources, workspaceVolumeName } from './dev-env/leftovers'
+import { sweepEnvironmentResources, type CleanupReport } from './dev-env/reconcile'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
-import { buildEnvironmentImage, environmentImageName, removeImage } from './dev-env/image'
+import { buildEnvironmentImage } from './dev-env/image'
 import {
   browserEnv,
   CHROME_EXECUTABLE,
@@ -24,32 +33,50 @@ import {
 } from './dev-env/browser-volume'
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { carryMessage, readHostWorkingTree, reconcileArgs, seedReport } from './dev-env/workspace-seed'
+import {
+  doodSocketPath,
+  ensureDoodProxy,
+  ensureEnvironmentNetwork,
+  stopDoodProxy,
+  stopEnvironmentContainers
+} from './dood/manager'
+import { keyedSerial } from './keyed-serial'
 import { dataDir } from './paths'
 import { getSettings } from './settings'
 import {
   createDevEnvironmentRow,
   getDevEnvironment,
   getProject,
-  pruneRetiredRecords,
+  listDevEnvironments,
   retireDevEnvironmentRow,
+  setEnvironmentLeftovers,
   updateDevEnvironment,
   upsertDevEnvironmentPort
 } from './repo'
 
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
-/** How long the nested daemon gets to answer `docker info` before creation is called failed. */
+/** How long the environment's Docker gets to answer `docker info` before creation is called failed. */
 function dockerReadyTimeout(): number {
   return Number(process.env.NUXT_DEV_ENV_DOCKER_READY_MS) || 30_000
 }
+
+/**
+ * Every lifecycle operation on one environment runs alone: create, start,
+ * stop, ensure-running, retire and the boot-time proxy restore. They are
+ * reachable at once — the HTTP API, the voice agent, the mesh and an agent
+ * session attaching — and interleaved they undo each other: a retire racing a
+ * start removes the container the start is about to use, or stops the proxy
+ * the start just brought up. Queued behind a retire, a start finds the row
+ * retired and says so.
+ */
+const lifecycle = keyedSerial()
 
 export function safeEnvironmentName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase()
 }
 
-/** The named volume that holds an environment's checkout. Derived from the id, so it needs no column. */
-export function workspaceVolumeName(environmentId: string): string {
-  return `${resourcePrefix()}${environmentId}-workspace`.toLowerCase()
-}
+/** Named from the id, like every Docker resource an environment owns — see `dev-env/leftovers.ts`. */
+export { workspaceVolumeName }
 
 function containerReference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
@@ -95,6 +122,29 @@ async function removeContainer(reference: string): Promise<void> {
     await run('docker', ['volume', 'rm', volume], { allowFailure: true }).catch(() => {})
   }
 }
+
+/**
+ * The environment's socket onto the host daemon (`server/lib/dood/`). It has to
+ * be listening before the container is created *or started*: the socket is
+ * bind-mounted as a file, and a bind whose source is missing fails the start.
+ */
+function ensureDockerProxy(environment: {
+  id: string
+  containerReference: string
+  workspacePath: string
+}) {
+  return ensureDoodProxy({
+    environmentId: environment.id,
+    containerReference: environment.containerReference,
+    workspacePath: environment.workspacePath,
+    workspaceVolume: workspaceVolumeName(environment.id),
+    helperImage: HELPER_IMAGE
+  })
+}
+
+/** Whether the container was created with the proxy mounted — fixed at creation, so it is on a label. */
+const hasDockerProxy = (inspection: ContainerInspection | null) =>
+  inspection?.labels[DOOD_CONTAINER_LABEL] === 'true'
 
 function execArgs(input: {
   containerId: string
@@ -161,8 +211,8 @@ async function preflight(
     if (ready) return
     if (Date.now() >= deadline) {
       throw new Error(
-        `The nested Docker daemon did not come up within ${Math.round(timeout / 1000)}s. `
-        + 'Check that this machine allows privileged containers.'
+        `Docker did not answer inside the environment within ${Math.round(timeout / 1000)}s. `
+        + 'Check that the image has the `docker` CLI and that the host\'s Docker daemon is running.'
       )
     }
     await new Promise(wait => setTimeout(wait, Math.min(1_000, timeout / 4)))
@@ -254,6 +304,14 @@ export async function createEnvironment(input: {
   await access(join(project.repoPath, '.git'))
 
   const id = newId('env')
+  return lifecycle(id, () => create(id, project, input))
+}
+
+async function create(
+  id: string,
+  project: Project,
+  input: { name: string, workingTree?: WorkingTreeMode }
+): Promise<DevEnvironment & { workspaceSeed: WorkspaceSeedReport }> {
   const workingTree = input.workingTree ?? 'discard'
   const name = input.name.trim()
   const safeName = safeEnvironmentName(name) || id
@@ -304,6 +362,10 @@ export async function createEnvironment(input: {
       workspacePath,
       paths: settings.homeMounts
     })
+    // Before `docker run`: the socket is mounted as a file, and it has to exist.
+    const dockerSocket = usesHostDaemon(resolved.config)
+      ? (await ensureDockerProxy({ id, containerReference: containerName, workspacePath })).socketPath
+      : null
     const { stdout: containerId } = await run('docker', containerRunArgs({
       environmentId: id,
       projectId: project.id,
@@ -318,7 +380,8 @@ export async function createEnvironment(input: {
       browserVolume,
       ports: declaredPorts,
       codexConfigDir,
-      homeOverlay: overlay
+      homeOverlay: overlay,
+      dockerSocket
     }))
     const inspection = await inspectContainer(containerId)
     if (!inspection) throw new Error('The environment container was created but could not be inspected.')
@@ -334,6 +397,9 @@ export async function createEnvironment(input: {
     // Before anything assumes the image can host an agent. `git config` below is itself
     // one of the things a preflight failure would otherwise report as a bare `exit 127`.
     await preflight(inspection.id, resolved.config.docker, browserVolume)
+    // Before `postCreateCommand`, which may already start a stack: its
+    // published ports and its `host.docker.internal` live in this namespace.
+    if (dockerSocket) await ensureEnvironmentNetwork(id)
 
     // The tar stream left the checkout owned by root; hand it to the user everything
     // else runs as, before anything else touches it.
@@ -400,6 +466,8 @@ export async function createEnvironment(input: {
     const message = error instanceof Error ? error.message : String(error)
     await updateDevEnvironment(id, { status: 'error', lastError: message })
     const current = await getDevEnvironment(id)
+    // By inspection, for a Docker-in-Docker volume named some other way; the
+    // sweep below claims the rest by name and by label.
     if (current?.containerId) {
       await removeContainer(current.containerId)
     } else {
@@ -410,10 +478,40 @@ export async function createEnvironment(input: {
         await removeContainer(containerId)
       }
     }
-    await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
-    await removeImage(environmentImageName(id))
+    // `postCreateCommand` may already have started a stack on the host daemon,
+    // and nothing may add to it while it is taken down.
+    await stopDoodProxy(id).catch(() => {})
+    // Same hazard as a retirement, and the same answer: any removal can fail
+    // for a reason that has nothing to do with this environment, and the row
+    // is what makes the leftover findable afterwards. It is not retired — a
+    // failed creation is not a retirement — so it has to claim the resources
+    // explicitly, and the sweep below is what removes each one and confirms it
+    // is really gone.
+    await claimResources(id)
+    await sweepEnvironmentResources()
     throw error
   }
+}
+
+/**
+ * Write down what a cleanup owes before it is confirmed, so a crash in the
+ * middle of one is still a row that knows what to look for.
+ *
+ * A retired environment needs none of this: `retired_at` claims everything
+ * named from its id or labelled with it on its own. This is for the rows that
+ * are *not* retired and still own resources nothing will ever use — the
+ * wreckage of a failed creation. So they are named: the four derived from the
+ * id, and whatever Docker says the environment made through its proxy
+ * (`postCreateCommand` can start a whole stack). If Docker cannot be asked,
+ * the derived names are still worth writing down.
+ */
+async function claimResources(id: string): Promise<void> {
+  const made = await observeEnvironmentResources()
+    .then(present => ownedResources(id, present))
+    .catch(() => [])
+  const owed = new Map([...environmentResources(id), ...made]
+    .map(({ kind, name }) => [`${kind} ${name}`, { kind, name, error: 'Cleanup after a failed creation has not been confirmed.' }]))
+  await setEnvironmentLeftovers(id, [...owed.values()])
 }
 
 async function toolConfigDir(variable: string, fallbackName: string): Promise<string | null> {
@@ -423,69 +521,235 @@ async function toolConfigDir(variable: string, fallbackName: string): Promise<st
   return access(configured).then(() => configured).catch(() => null)
 }
 
-export async function startEnvironment(id: string): Promise<DevEnvironment> {
+/**
+ * Record that an environment needs somebody, and hand back the error to throw.
+ *
+ * `error` is the one state that means "this is broken and you have to do
+ * something", and until now only a failed creation ever reached it — a
+ * container that had been removed underneath Domo, or one the daemon refuses to
+ * start, threw at the caller and left the row saying `stopped`, which is what a
+ * perfectly healthy environment says. Both of those are permanent until a
+ * person acts, which is exactly the bar for writing it.
+ *
+ * Deliberately not written for a failed `stop`: the container is still running,
+ * nothing is lost, and the next attempt is a button away.
+ */
+async function breakEnvironment(id: string, reason: string): Promise<Error> {
+  await updateDevEnvironment(id, { status: 'error', lastError: reason })
+  return new Error(reason)
+}
+
+export function startEnvironment(id: string): Promise<DevEnvironment> {
+  return lifecycle(id, () => start(id))
+}
+
+async function start(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
-  if (!inspection) throw new Error('The environment container no longer exists. Delete and recreate the environment.')
-  if (!inspection.running) await run('docker', ['start', inspection.id])
+  if (!inspection) {
+    throw await breakEnvironment(id, 'The environment container no longer exists. Delete and recreate the environment.')
+  }
+  if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment))
+  if (!inspection.running) {
+    await run('docker', ['start', inspection.id]).catch(async (error) => {
+      throw await breakEnvironment(
+        id,
+        `The environment container would not start: ${error instanceof Error ? error.message : String(error)}`
+      )
+    })
+  }
+  // A new namespace: the relay and the redirect in the old one went with it.
+  if (hasDockerProxy(inspection)) await ensureEnvironmentNetwork(id)
+  // A start that worked clears the field, for the reason the agent sessions
+  // clear theirs: `last_error` is history and `status` is state, and a banner
+  // keyed on the history outlives what it described.
   const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
   await refreshEnvironmentPorts(id)
   return updated
 }
 
-export async function stopEnvironment(id: string): Promise<DevEnvironment> {
+export function stopEnvironment(id: string): Promise<DevEnvironment> {
+  return lifecycle(id, () => stop(id))
+}
+
+async function stop(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   stopEnvironmentForwarders(id)
   if (inspection?.running) await run('docker', ['stop', inspection.id])
+  if (hasDockerProxy(inspection)) {
+    await stopEnvironmentContainers(id)
+    // Drops the relay, which would otherwise hold a namespace nothing uses.
+    await ensureEnvironmentNetwork(id)
+  }
   return (await updateDevEnvironment(id, { status: 'stopped' }))!
 }
 
-export async function ensureEnvironmentRunning(id: string): Promise<DevEnvironment> {
+export function ensureEnvironmentRunning(id: string): Promise<DevEnvironment> {
+  return lifecycle(id, () => ensureRunning(id))
+}
+
+async function ensureRunning(id: string): Promise<DevEnvironment> {
   const environment = await getDevEnvironment(id)
   if (!environment) throw new Error('Development environment not found')
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (inspection?.running) {
+    if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment))
     if (environment.status !== 'running') {
       return (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     }
     return environment
   }
-  return startEnvironment(id)
+  return start(id)
 }
 
 /**
- * Retire an environment: destroy its container, its workspace volume and its
- * image, and keep the row.
+ * Retire an environment: destroy everything it has on the daemon — its
+ * container, its workspace volume, its image, and whatever its agents made
+ * through its Docker proxy — and keep the row.
  *
- * The row outliving all three is the point. It is the only record of where the
- * agent sessions that ran here ran, and it is what makes every one of them
+ * The row outliving all of it is the point. It is the only record of where the
+ * agent sessions that ran here ran, it is what makes every one of them
  * unstartable — `sessionStartability` reads `retiredAt` rather than anything
- * written on the sessions themselves. Nothing about the environment is
- * recoverable, since the checkout only ever existed in the volume, so this is
- * never a thing to restart. The row is dropped for real by
- * `pruneRetiredRecords` once the last session naming it has been purged.
+ * written on the sessions themselves — and it is what claims whatever Docker
+ * would not remove, for as long as that takes. Nothing about the environment
+ * is recoverable, since the checkout only ever existed in the volume, so this
+ * is never a thing to restart. The row is kept for good
+ * (`pruneRetiredProjects` says why).
+ *
+ * **A removal that failed is not a retirement that succeeded.** Every step can
+ * fail for a reason that has nothing to do with this environment, and used to
+ * fail silently and for ever: what is still there afterwards is written to the
+ * row and returned to whoever asked, with the container that is blocking it
+ * named in the message. Nothing retries it on a timer — `cleanupEnvironment`
+ * below is the second ask, and `dev-env/reconcile.ts` says why.
  *
  * Standing those sessions down — stopping their adapters first — belongs to
  * `retireProjectEnvironment` in `projects.ts`, one layer up: importing
  * `acpManager` here would cycle back through this file.
  */
-export async function retireEnvironment(id: string): Promise<void> {
+export function retireEnvironment(id: string): Promise<CleanupReport> {
+  return lifecycle(id, () => retire(id))
+}
+
+async function retire(id: string): Promise<CleanupReport> {
   const environment = await getDevEnvironment(id)
-  if (!environment) return
+  if (!environment) return { removed: [], leftovers: [], unattributed: [] }
   stopEnvironmentForwarders(id)
+  // The proxy first: nothing may create anything in the environment's name
+  // while it is being taken apart. Its relay and its redirect go with it, and
+  // they are processes of this Domo rather than anything on the daemon.
+  await stopDoodProxy(id)
+  // Its socket, too, when no proxy was listening to close it (a restore that
+  // failed at boot): a file under ~/.domo/s that nothing would look at again.
+  await rm(doodSocketPath(id), { force: true }).catch(() => {})
+  // By inspection rather than by name, for a Docker-in-Docker Feature that
+  // named its volume something other than the id.
   await removeContainer(containerReference(environment))
-  await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
-  await removeImage(environmentImageName(id))
+  // Before the sweep, because `retired_at` is what makes the row claim
+  // everything named from its id and everything labelled with it: until it is
+  // set, a leftover of this environment is a resource the sweep is required to
+  // leave alone.
+  await retireDevEnvironmentRow(id)
+  // The sweep is the removal, not a check after one: it asks Docker what it
+  // has and takes what the row claims, container before network before volume
+  // before image. Whether anything went is decided by *observing*, never by an
+  // exit code — `docker volume rm` fails the same way for a volume something
+  // still has mounted and for one that was never created, and only the first
+  // of those is a leftover.
+  const report = await settle(id, await sweepEnvironmentResources())
+  // After the environment's container is gone, or its runtime volume is still
+  // in use.
   await collectRuntimeVolumes().catch(() => {})
   await collectBrowserVolumes().catch(() => {})
-  await retireDevEnvironmentRow(id)
-  await pruneRetiredRecords()
+  return report
+}
+
+/**
+ * The part of a sweep's report that is about one environment — and, when
+ * Docker could not be asked at all, a leftover per resource named from its id
+ * rather than a report of nothing.
+ *
+ * An unreachable daemon is the one failure the sweep cannot write down: it
+ * observed nothing, so it has nothing to record. Left like that, a retirement
+ * against a Docker that is down would answer that everything went. So the
+ * derived names are recorded as owed and *unconfirmed*, the row reads as
+ * `error`, and the next pass — at boot, or when somebody presses the button —
+ * rewrites them from what Docker actually has.
+ */
+async function settle(id: string, report: CleanupReport): Promise<CleanupReport> {
+  if (report.unreachable) {
+    const error = `Docker could not be reached to confirm it was removed (${report.unreachable}).`
+    const owed = environmentResources(id).map(resource => ({ ...resource, error }))
+    await setEnvironmentLeftovers(id, owed.map(({ kind, name }) => ({ kind, name, error })), {
+      status: 'error',
+      lastError: `Docker could not be reached to confirm this environment was removed: ${report.unreachable}`
+    })
+    return { ...report, removed: [], leftovers: owed }
+  }
+  return {
+    removed: report.removed.filter(leftover => leftover.environmentId === id),
+    leftovers: report.leftovers.filter(leftover => leftover.environmentId === id),
+    unattributed: report.unattributed
+  }
+}
+
+/**
+ * Try again to remove what a retirement — or a failed creation — could not.
+ *
+ * This is the other half of reporting a refusal rather than retrying it behind
+ * the user's back. Nothing Domo can do clears a container somebody else's tool
+ * left mounting the volume; what clears it is a person or an agent reading the
+ * `leftovers` error, removing the thing it names, and asking again. So the
+ * asking has to exist, on every surface that can retire something.
+ *
+ * It is the ordinary sweep, so it is bound by the same attribution rule: this
+ * removes what the *rows* claim and nothing else, and an environment with
+ * nothing owed answers that there was nothing to do. A daemon that cannot be
+ * reached is an error here rather than an empty report, which would read as
+ * "cleaned up".
+ */
+export async function cleanupEnvironment(id: string): Promise<CleanupReport> {
+  const environment = await getDevEnvironment(id)
+  if (!environment) throw new Error('Development environment not found')
+  const report = await sweepEnvironmentResources()
+  if (report.unreachable) throw new Error(`Docker could not be reached: ${report.unreachable}`)
+  return settle(id, report)
+}
+
+function proxyTarget(environment: DevEnvironment) {
+  return {
+    id: environment.id,
+    containerReference: containerReference(environment),
+    workspacePath: environment.workspacePath
+  }
+}
+
+/**
+ * Bring every environment's Docker proxy back after a restart, and a running
+ * one's published ports and redirect with it. Stopped ones too: the proxy
+ * costs a listening socket, and without it a `docker start` from anywhere but
+ * Domo — Docker Desktop's own button — fails on the missing bind source.
+ */
+export async function restoreDockerProxies(): Promise<void> {
+  for (const environment of await listDevEnvironments()) {
+    if (environment.retiredAt) continue
+    await lifecycle(environment.id, async () => {
+      const inspection = await inspectContainer(containerReference(environment)).catch(() => null)
+      if (!hasDockerProxy(inspection)) return
+      await ensureDockerProxy(proxyTarget(environment))
+      // A running environment's published ports and its host.docker.internal
+      // redirect died with the Domo that held them.
+      if (inspection?.running) await ensureEnvironmentNetwork(environment.id)
+    }).catch(error =>
+      console.warn(`[dood] could not restore ${environment.id}:`, error instanceof Error ? error.message : error)
+    )
+  }
 }
 
 export function containerExecArgs(environment: DevEnvironment, env: NodeJS.ProcessEnv = {}): string[] {

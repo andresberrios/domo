@@ -31,7 +31,8 @@ function environment(id: string, projectId: string, name: string, status: DevEnv
     lastError: null,
     createdAt: '2026-01-02T00:00:00.000Z',
     updatedAt: '2026-01-02T00:00:00.000Z',
-    retiredAt: null
+    retiredAt: null,
+    leftovers: []
   }
 }
 

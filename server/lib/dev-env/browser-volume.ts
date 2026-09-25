@@ -177,7 +177,10 @@ export function populateScript(): string {
     // is supposed to supply both, and a smoke test that set them itself would
     // pass just as happily with the old bare symlink in place.
     'node /tmp/smoke.mjs',
-    'touch "$ROOT/.ready"'
+    // On disk before the marker and after it — see the runtime volume.
+    'sync',
+    'touch "$ROOT/.ready"',
+    'sync'
   ].join('\n')
 }
 
@@ -267,7 +270,8 @@ async function build(): Promise<string> {
   await run('docker', ['volume', 'create', '--label', 'domo.browser=true', volume])
   const ready = await run('docker', [
     'run', '--rm', '--volume', `${volume}:${BROWSER_ROOT}`, RUNTIME_IMAGE,
-    'test', '-f', `${BROWSER_ROOT}/.ready`
+    // The marker and what it vouches for, as for the runtime volume.
+    'sh', '-c', `test -f ${BROWSER_ROOT}/.ready && test -x ${CHROME_EXECUTABLE} && test -s ${BROWSER_ROOT}/fontconfig/fonts.conf`
   ]).then(() => true, () => false)
   if (ready) return volume
   await run('docker', [

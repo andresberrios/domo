@@ -300,6 +300,29 @@ export interface DevEnvironment {
    * them unstartable. Never restorable.
    */
   retiredAt: string | null
+  /**
+   * The Docker resources a cleanup could not remove, and why.
+   *
+   * Empty is the normal state and the only one that means "done". A container
+   * another tool left mounting the volume, a container somebody ran from the
+   * image — any of those leaves gigabytes behind, and this is what stops that
+   * being invisible: it is what a retirement reports instead of claiming
+   * success, and what the environment page shows until a cleanup clears it.
+   *
+   * `error` is written to be acted on rather than merely read: it names the
+   * container in the way and the command that removes it, because nothing
+   * retries this in the background.
+   */
+  leftovers: EnvironmentLeftover[]
+}
+
+export type LeftoverKind = 'container' | 'network' | 'volume' | 'image'
+
+/** One Docker resource that should no longer exist and still does. */
+export interface EnvironmentLeftover {
+  kind: LeftoverKind
+  name: string
+  error: string
 }
 
 /**
@@ -323,6 +346,11 @@ export interface WorkspaceSeedReport {
 export interface DevEnvironmentPort {
   id: string
   devEnvironmentId: string
+  /**
+   * The container the port is in, when it is not the environment itself: a
+   * container the environment started on the host daemon (a compose service).
+   */
+  service: string | null
   innerPort: number
   protocol: 'tcp' | 'udp'
   appProtocol: 'http' | 'https' | 'tcp' | 'udp' | null

@@ -9,10 +9,12 @@ import {
   DEFAULT_IMAGE,
   defaultEnvironmentConfig,
   DIND_FEATURE,
+  DOOD_FEATURE,
   DOMO_CONFIG_FILE,
   parseForwardPort,
   resolveEnvironmentConfig,
-  resolveForwardPorts
+  resolveForwardPorts,
+  usesHostDaemon
 } from '../../server/lib/dev-env/config'
 
 /**
@@ -196,10 +198,12 @@ describe('validation', () => {
 })
 
 describe('buildFeatures', () => {
-  it('injects docker-in-docker when the environment asked for Docker', () => {
+  it('adds the Docker CLI, not a daemon, when the environment asked for Docker', () => {
     const features = buildFeatures({ ...defaultEnvironmentConfig(), docker: true })
 
-    expect(features).toHaveProperty(DIND_FEATURE)
+    expect(features).toHaveProperty(DOOD_FEATURE)
+    expect(features).not.toHaveProperty(DIND_FEATURE)
+    expect(usesHostDaemon({ ...defaultEnvironmentConfig(), docker: true })).toBe(true)
   })
 
   it('leaves the Features alone when it did not', () => {
@@ -211,11 +215,23 @@ describe('buildFeatures', () => {
     ])
   })
 
-  it('does not add a second one when the project pinned its own', () => {
-    const own = { 'ghcr.io/devcontainers/features/docker-in-docker:2': { moby: false } }
+  it('does not add a second CLI when the project pinned its own', () => {
+    const own = { 'ghcr.io/devcontainers/features/docker-outside-of-docker:1': { moby: false } }
     const features = buildFeatures({ ...defaultEnvironmentConfig(), docker: true, features: own })
 
     expect(features).toEqual(own)
+  })
+
+  it('leaves a project that chose docker-in-docker itself on its own daemon, with no proxy', () => {
+    const own = { 'ghcr.io/devcontainers/features/docker-in-docker:2': { moby: false } }
+    const config = { ...defaultEnvironmentConfig(), docker: true, features: own }
+
+    expect(buildFeatures(config)).toEqual(own)
+    expect(usesHostDaemon(config)).toBe(false)
+  })
+
+  it('gives an environment without Docker no proxy', () => {
+    expect(usesHostDaemon({ ...defaultEnvironmentConfig(), docker: false })).toBe(false)
   })
 })
 

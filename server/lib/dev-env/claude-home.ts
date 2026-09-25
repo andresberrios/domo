@@ -38,7 +38,7 @@ export async function presentEntries(source: string): Promise<string[]> {
  *
  * `claude-agent-acp` spawns it as a native binary out of an optional dependency
  * of `@anthropic-ai/claude-agent-sdk`, whose own package version is a different
- * number entirely (0.3.270 ships CLI 2.1.270), so it is asked rather than
+ * number entirely (0.3.280 ships CLI 2.1.280), so it is asked rather than
  * derived. A glob, because the package name carries the architecture.
  */
 export async function claudeCliVersion(containerId: string, user: string): Promise<string | null> {
@@ -46,7 +46,7 @@ export async function claudeCliVersion(containerId: string, user: string): Promi
     'exec', '--user', user, containerId,
     'sh', '-c', `exec ${RUNTIME_ROOT}/adapters/node_modules/@anthropic-ai/claude-agent-sdk-*/claude --version`
   ], { allowFailure: true }).catch(() => ({ stdout: '', stderr: '' }))
-  // "2.1.270 (Claude Code)"
+  // "2.1.280 (Claude Code)"
   return stdout.trim().split(/\s+/)[0] || null
 }
 

@@ -16,6 +16,28 @@ const { pending } = usePermissions()
 const environment = computed(() => environments.value.find(item => item.id === environmentId.value) ?? null)
 const project = computed(() => projects.value.find(item => item.id === environment.value?.projectId) ?? null)
 const retired = computed(() => !!environment.value?.retiredAt)
+/**
+ * Docker resources this environment still owns and should not. Normally empty;
+ * when it is not, the "everything was destroyed" line above it is not the whole
+ * truth, and gigabytes are the difference.
+ */
+const leftovers = computed(() => environment.value?.leftovers ?? [])
+/**
+ * Keyed on the **status**, never on `lastError`.
+ *
+ * The same rule as `AgentErrorBanner`, and for the same measured reason: a
+ * banner keyed on the field outlives what it described, because `last_error` is
+ * history and `status` is state. What the field is for is saying *what* is
+ * wrong once the state says something is.
+ */
+const broken = computed(() => environment.value?.status === 'error')
+const brokenTitle = computed(() => (
+  leftovers.value.length ? 'Not everything could be removed' : 'This environment needs attention'
+))
+/** Only a cleanup can be retried from here; every other failure needs its own action. */
+const brokenActions = computed(() => (leftovers.value.length
+  ? [{ label: 'Try again', color: 'error' as const, variant: 'outline' as const, loading: busy.value, onClick: retryCleanup }]
+  : undefined))
 const agents = computed(() => agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId.value))
 /** Every session that ran here, archived ones included: this page is their record. */
 const pastAgents = computed(() =>
@@ -65,13 +87,47 @@ async function retireEnvironment() {
   confirmingRetire.value = false
   busy.value = true
   try {
-    await $fetch(`/api/dev-environments/${environmentId.value}`, { method: 'DELETE' })
-    toast.add({ title: 'Environment retired', description: 'Its records stay readable.', color: 'neutral' })
+    const result = await $fetch(`/api/dev-environments/${environmentId.value}`, { method: 'DELETE' })
+    // Normally empty. When it is not, Docker refused to remove something and
+    // that is gigabytes still on the disk. Nothing retries it in the background,
+    // so the reason — which names what is in the way — has to be said here and
+    // stay on the page.
+    toast.add(result.leftovers.length
+      ? {
+          title: 'Environment retired, but not everything could be removed',
+          description: result.leftovers[0]!.error,
+          color: 'warning'
+        }
+      : { title: 'Environment retired', description: 'Its records stay readable.', color: 'neutral' })
     // The row is still here — it is the record — but the actions are not, so
     // the project is the more useful place to land.
     await router.push(project.value ? `/projects/${project.value.id}` : '/')
   } catch (error: any) {
     toast.add({ title: 'Could not retire the environment', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  } finally {
+    busy.value = false
+  }
+}
+
+/**
+ * Ask again, once whatever the error named has been dealt with.
+ *
+ * There is no timer behind this on the server: a refused removal is refused for
+ * a reason that does not clear on its own, so the button is the retry.
+ */
+async function retryCleanup() {
+  busy.value = true
+  try {
+    const result = await $fetch(`/api/dev-environments/${environmentId.value}/cleanup`, { method: 'POST' })
+    toast.add(result.leftovers.length
+      ? { title: 'Still blocked', description: result.leftovers[0]!.error, color: 'warning' }
+      : {
+          title: 'Cleaned up',
+          description: 'Nothing of this environment is left on the machine.',
+          color: 'success'
+        })
+  } catch (error: any) {
+    toast.add({ title: 'Could not run the cleanup', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     busy.value = false
   }
@@ -149,12 +205,13 @@ const importOpen = ref(false)
         />
 
         <UAlert
-          v-if="environment.lastError && !retired"
+          v-if="broken"
           color="error"
           variant="subtle"
           icon="i-lucide-triangle-alert"
-          title="The last operation failed"
-          :description="environment.lastError"
+          :title="brokenTitle"
+          :description="environment.lastError ?? 'Something about this environment needs looking at.'"
+          :actions="brokenActions"
         />
 
         <section class="rounded-lg border border-default">

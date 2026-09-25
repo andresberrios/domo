@@ -37,6 +37,7 @@ const environment = ref<DevEnvironment>({
   createdAt: '2026-01-02T00:00:00.000Z',
   updatedAt: '2026-01-02T00:00:00.000Z',
   retiredAt: null,
+  leftovers: [],
 })
 
 const agent: AgentSession = {
@@ -105,6 +106,13 @@ registerEndpoint('/api/dev-environments/env_1/stop', { method: 'POST', handler: 
 registerEndpoint('/api/dev-environments/env_1/start', { method: 'POST', handler: record('/api/dev-environments/env_1/start', 'POST') })
 registerEndpoint('/api/dev-environments/env_1', { method: 'PATCH', handler: record('/api/dev-environments/env_1', 'PATCH') })
 registerEndpoint('/api/dev-environments/env_1', { method: 'DELETE', handler: record('/api/dev-environments/env_1', 'DELETE') })
+registerEndpoint('/api/dev-environments/env_1/cleanup', {
+  method: 'POST',
+  handler: async (event: any) => {
+    calls.push({ method: 'POST', path: '/api/dev-environments/env_1/cleanup', body: await readBody(event).catch(() => undefined) })
+    return { ok: true, id: 'env_1', removed: [], leftovers: [] }
+  }
+})
 
 const Harness = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(EnvironmentPage) })
@@ -233,6 +241,65 @@ describe('environment details page', { timeout: 30_000 }, () => {
     expect(buttonWithText('New agent')).toBeFalsy()
 
     environment.value = { ...environment.value, retiredAt: null }
+    wrapper.unmount()
+  })
+
+  it('says what Docker would not remove, beside the line claiming it all went', async () => {
+    // The retired notice says the container, the checkout and the image were
+    // destroyed. When something refused to go, that is not the whole truth and
+    // the difference is gigabytes.
+    environment.value = {
+      ...environment.value,
+      retiredAt: '2026-01-09T00:00:00.000Z',
+      // Retired is lifecycle and error is health: a half-cleaned environment is
+      // both, and the banner reads the health.
+      status: 'error',
+      lastError: 'Docker still has volume domo-dev-env_1-workspace. '
+        + 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.',
+      leftovers: [{
+        kind: 'volume',
+        name: 'domo-dev-env_1-workspace',
+        error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+      }]
+    }
+    const wrapper = await mountSuspended(defineComponent({
+      setup: () => () => h(UApp, null, { default: () => h(EnvironmentPage) })
+    }), { attachTo: document.body })
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Not everything could be removed'))
+    expect(document.body.textContent).toContain('domo-dev-env_1-workspace')
+    // The whole point of the message: the container in the way, and what to do
+    // about it. Nothing retries this in the background.
+    expect(document.body.textContent).toContain('docker rm -f tidy-runner')
+
+    // And the retry, which is the other half of not retrying automatically.
+    buttonWithText('Try again')!.click()
+    await vi.waitFor(() => expect(calls).toContainEqual(
+      expect.objectContaining({ method: 'POST', path: '/api/dev-environments/env_1/cleanup' })
+    ))
+
+    environment.value = { ...environment.value, retiredAt: null, status: 'running', lastError: null, leftovers: [] }
+    wrapper.unmount()
+  })
+
+  it('shows nothing for a stale lastError, because the state is what says it is broken', async () => {
+    // Measured on the agent page and the same rule here: a banner keyed on the
+    // field outlives what it described. `last_error` is history; `status` is
+    // state.
+    environment.value = { ...environment.value, status: 'running', lastError: 'it would not start, an hour ago' }
+    const wrapper = await mountPage()
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('feature-auth'))
+    expect(document.body.textContent).not.toContain('an hour ago')
+
+    // And with the state to match, it says exactly that — with no retry, which
+    // belongs only to a cleanup.
+    environment.value = { ...environment.value, status: 'error' }
+    await vi.waitFor(() => expect(document.body.textContent).toContain('This environment needs attention'))
+    expect(document.body.textContent).toContain('it would not start, an hour ago')
+    expect(buttonWithText('Try again')).toBeFalsy()
+
+    environment.value = { ...environment.value, status: 'running', lastError: null }
     wrapper.unmount()
   })
 

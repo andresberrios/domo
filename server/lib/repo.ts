@@ -15,6 +15,8 @@ import type {
   CronRun,
   DevEnvironment,
   DevEnvironmentPort,
+  DevEnvironmentStatus,
+  EnvironmentLeftover,
   McpServer,
   MessageDelivery,
   MessageOrigin,
@@ -147,7 +149,8 @@ function mapDevEnvironment(r: any): DevEnvironment {
     lastError: r.last_error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    retiredAt: r.retired_at ?? null
+    retiredAt: r.retired_at ?? null,
+    leftovers: r.leftovers ?? []
   }
 }
 
@@ -157,6 +160,7 @@ function mapDevEnvironmentPort(r: any): DevEnvironmentPort {
   return {
     id: r.id,
     devEnvironmentId: r.dev_environment_id,
+    service: r.service || null,
     innerPort: Number(r.inner_port),
     protocol: r.protocol,
     appProtocol,
@@ -312,10 +316,10 @@ export async function updateProject(id: string, patch: { name: string }): Promis
  * Retire a project: its environments' containers are already gone, and what is
  * left is the name the records under it point at.
  *
- * There is deliberately no hard delete beside this one. `pruneRetiredRecords`
- * is the only thing that really removes a project or an environment row, and
- * only once nothing references it — an exported `deleteProject` would be an
- * open invitation to take a session's context away with it.
+ * There is deliberately no hard delete beside this one. `pruneRetiredProjects`
+ * is the only thing that really removes a project row, and only one no
+ * environment ever lived in — an exported `deleteProject` would be an open
+ * invitation to take a session's context away with it.
  */
 export async function retireProjectRow(id: string): Promise<Project | null> {
   const row = await queryOne(
@@ -408,7 +412,7 @@ export async function updateDevEnvironment(
 export async function listDevEnvironmentPorts(environmentId: string): Promise<DevEnvironmentPort[]> {
   const rows = await query(
     `select * from dev_environment_ports where dev_environment_id = $1
-     order by inner_port, protocol`,
+     order by service, inner_port, protocol`,
     [environmentId]
   )
   return rows.map(mapDevEnvironmentPort)
@@ -416,6 +420,8 @@ export async function listDevEnvironmentPorts(environmentId: string): Promise<De
 
 export async function upsertDevEnvironmentPort(input: {
   environmentId: string
+  /** Null (the default) for the environment itself. */
+  service?: string | null
   innerPort: number
   protocol: DevEnvironmentPort['protocol']
   appProtocol?: DevEnvironmentPort['appProtocol']
@@ -429,9 +435,9 @@ export async function upsertDevEnvironmentPort(input: {
   const row = await queryOne(
     `insert into dev_environment_ports
        (id, dev_environment_id, inner_port, protocol, app_protocol, label, source,
-        host_port, listening, forwarded, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
-     on conflict (dev_environment_id, inner_port, protocol) do update set
+        host_port, listening, forwarded, created_at, updated_at, service)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12)
+     on conflict (dev_environment_id, service, inner_port, protocol) do update set
        app_protocol = coalesce(excluded.app_protocol, dev_environment_ports.app_protocol),
        label = coalesce(excluded.label, dev_environment_ports.label),
        source = case when dev_environment_ports.source = 'declared' then 'declared' else excluded.source end,
@@ -442,19 +448,34 @@ export async function upsertDevEnvironmentPort(input: {
      returning *`,
     [newId('port'), input.environmentId, input.innerPort, input.protocol,
       input.appProtocol ?? null, input.label ?? null, input.source, input.hostPort ?? null,
-      input.listening ?? false, input.forwarded ?? false, now]
+      input.listening ?? false, input.forwarded ?? false, now, input.service ?? '']
   )
   return mapDevEnvironmentPort(row)
+}
+
+/** A service's row, once the container it was found in no longer exists. */
+export async function deleteDevEnvironmentPort(
+  environmentId: string,
+  innerPort: number,
+  protocol: DevEnvironmentPort['protocol'],
+  service: string
+): Promise<void> {
+  await query(
+    `delete from dev_environment_ports
+     where dev_environment_id = $1 and inner_port = $2 and protocol = $3 and service = $4`,
+    [environmentId, innerPort, protocol, service]
+  )
 }
 
 export async function updateDevEnvironmentPort(
   environmentId: string,
   innerPort: number,
   patch: { hostPort?: number | null, listening?: boolean, forwarded?: boolean },
-  protocol: DevEnvironmentPort['protocol'] = 'tcp'
+  protocol: DevEnvironmentPort['protocol'] = 'tcp',
+  service: string | null = null
 ): Promise<DevEnvironmentPort | null> {
-  const sets = ['updated_at = $4']
-  const params: any[] = [environmentId, innerPort, protocol, nowIso()]
+  const sets = ['updated_at = $5']
+  const params: any[] = [environmentId, innerPort, protocol, service ?? '', nowIso()]
   const push = (column: string, value: any) => {
     params.push(value)
     sets.push(`${column} = $${params.length}`)
@@ -464,7 +485,7 @@ export async function updateDevEnvironmentPort(
   if (patch.forwarded !== undefined) push('forwarded', patch.forwarded)
   const row = await queryOne(
     `update dev_environment_ports set ${sets.join(', ')}
-     where dev_environment_id = $1 and inner_port = $2 and protocol = $3 returning *`,
+     where dev_environment_id = $1 and inner_port = $2 and protocol = $3 and service = $4 returning *`,
     params
   )
   return row ? mapDevEnvironmentPort(row) : null
@@ -493,32 +514,66 @@ export async function retireDevEnvironmentRow(id: string): Promise<DevEnvironmen
 }
 
 /**
- * Drop the retired rows nothing points at any more.
+ * Record the Docker resources a cleanup could not remove — or that it finally
+ * did, with an empty list.
  *
- * A retired environment exists to say where its sessions ran, so it has earned
- * its keep only for as long as one still references it. Purging the last
- * session that ran in an environment takes the environment with it, and the
- * project above it once that is empty too — which is what keeps "never delete
- * anything" from meaning "accumulate rows for ever".
+ * Written on change only, like every other column of a table Electric streams:
+ * a sweep that finds the same thing it found ten minutes ago must not re-stream
+ * the whole row to every browser. There is no timestamp to keep honest here,
+ * which is what makes this the opposite case from `usage_limits.updated_at` —
+ * the value *is* the whole of what this says.
  */
-export async function pruneRetiredRecords(): Promise<{ environments: number, projects: number }> {
-  const environments = await query<{ id: string }>(
-    `delete from dev_environments
-      where retired_at is not null
-        and not exists (select 1 from agent_sessions where dev_environment_id = dev_environments.id)
-      returning id`
+export async function setEnvironmentLeftovers(
+  id: string,
+  leftovers: EnvironmentLeftover[],
+  /**
+   * What the row should now report about its health, or null to leave `status`
+   * and `last_error` exactly as they are — which is what a row that is broken
+   * for a better reason than this needs (a creation that failed halfway already
+   * says why, and its wreckage is a detail of that).
+   */
+  health: { status: DevEnvironmentStatus, lastError: string | null } | null = null
+): Promise<DevEnvironment | null> {
+  const sets = ['leftovers = $2::jsonb', 'updated_at = $3']
+  const changed = ['leftovers::text is distinct from $2::jsonb::text']
+  const params: any[] = [id, JSON.stringify(leftovers), nowIso()]
+  if (health) {
+    params.push(health.status)
+    sets.push(`status = $${params.length}`)
+    changed.push(`status is distinct from $${params.length}`)
+    params.push(health.lastError)
+    sets.push(`last_error = $${params.length}::text`)
+    changed.push(`last_error is distinct from $${params.length}::text`)
+  }
+  const row = await queryOne(
+    `update dev_environments set ${sets.join(', ')}
+      where id = $1 and (${changed.join(' or ')}) returning *`,
+    params
   )
+  if (!row) return null
+  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
+  return mapDevEnvironment(row)
+}
+
+/**
+ * Drop retired projects no environment ever lived in — nothing ran there, so
+ * there is nothing to remember. A retired *environment's* row is never
+ * removed: it is the record that the environment existed and where its
+ * sessions ran, and it is what claims the Docker resources a retirement could
+ * not remove (`dev-env/leftovers.ts`) — without it they would be
+ * unattributable for ever. It used to be deleted once no session named it,
+ * which made an environment retired without ever having an agent vanish
+ * without trace.
+ */
+export async function pruneRetiredProjects(): Promise<number> {
   const projects = await query<{ id: string }>(
     `delete from projects
       where retired_at is not null
         and not exists (select 1 from dev_environments where project_id = projects.id)
       returning id`
   )
-  for (const row of environments) {
-    bus.publish({ type: 'dev-environment-changed', devEnvironmentId: row.id })
-  }
   if (projects.length) bus.publish({ type: 'project-changed' })
-  return { environments: environments.length, projects: projects.length }
+  return projects.length
 }
 
 /* ------------------------------------------------------------------ */
