@@ -80,6 +80,15 @@ request and response, and `LLBBridge/Solve` request.
   and pulls stay public. `docker push <name>` of a private image needs the real
   name for the registry: tag, push, untag.
 
+## Afterwards: the output
+
+The progress stream (`Control/Status`) and the `Solve` response carried the
+private name (`naming to docker.io/domo-env-a/probechild:dev`, and the same in
+`--metadata-file`). Rewriting those strings back in the bridge made both read
+`docker.io/library/probechild:dev`; the probe now does it. What still differs
+from a direct build is how BuildKit labels a `FROM` served by a named context
+(`[context X] …`) and the step numbering after it — see `PLAN.md`.
+
 ## Not checked
 
 `docker buildx bake` directly (compose uses the same path); `--push` builds;

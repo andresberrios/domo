@@ -78,6 +78,23 @@ clients never pipeline: when request N+1 arrives, response N is complete.
    - `docker images` / `image inspect` in X: X's private tags shown
      unprefixed, other environments' private tags hidden;
    - `docker push <name>` of a private image: tag the real name, push, untag.
+   - the bridge also rewrites the private name back to the original in the
+     `Control/Status` stream (Vertex 3 name; VertexStatus 1 ID, 3 name;
+     VertexLog 3 msg; VertexWarning 3, 4) and in the `Solve` response's
+     `ExporterResponse` values, so progress output and `--metadata-file` show
+     `docker.io/library/<name>` — measured, both done in the probe;
+   - a CLI resetting its socket once every call is answered is its normal
+     hang-up: close the daemon side, log only if a call was still open —
+     measured, no errors logged;
+   - **still visible**: a `FROM` served by a named context is labelled
+     `[context X] load metadata for X` / `[context X] X` instead of
+     `[internal] load metadata for docker.io/library/X` / `[1/2] FROM
+     docker.io/library/X`, and the following steps number one lower
+     (`[1/2] RUN` instead of `[2/2] RUN`). Try rewriting those vertex names
+     and the `[i/n]` counters in the Status stream; judge it by diffing
+     `--progress=plain` of the same build direct vs through the proxy, as the
+     spike did. If the numbering cannot be made exact, the names alone are
+     worth fixing.
 5. **Order of work**: scoping + names → response rewriting → `localhost`
    publishing + `host.docker.internal` → binds + `network_mode: host` →
    images (the `/grpc` bridge, then the HTTP-side tag handling).

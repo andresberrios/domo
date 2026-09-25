@@ -123,6 +123,31 @@ function rewriteBridgeSolve(buf) {
   }
   return Buffer.concat(parts)
 }
+// Hiding the private name again on the way back. BuildKit spells a name the
+// way `docker` normalised it, so both the short and the docker.io forms go.
+function unprivate(text) {
+  if (!rewritePrefix) return text
+  return text
+    .replaceAll(`docker.io/${rewritePrefix}/`, 'docker.io/library/')
+    .replaceAll(`${rewritePrefix}/`, '')
+    .replaceAll('docker.io/library/docker.io/', 'docker.io/')
+}
+function rewriteStrings(buf, paths) {
+  // paths: { field: true } for a string to rewrite, { field: {...} } to recurse.
+  const out = []
+  for (const f of decode(buf)) {
+    const rule = paths[f.field]
+    if (f.wire === 2 && rule === true) out.push(lenField(f.field, Buffer.from(unprivate(f.value.toString()))))
+    else if (f.wire === 2 && rule && typeof rule === 'object') out.push(lenField(f.field, rewriteStrings(f.value, rule)))
+    else out.push(f.raw)
+  }
+  return Buffer.concat(out)
+}
+// StatusResponse: 1 Vertex{3 name}, 2 VertexStatus{1 ID, 3 name}, 3 VertexLog{3 msg},
+// 4 VertexWarning{3 short, 4 detail}.
+const STATUS_STRINGS = { 1: { 3: true }, 2: { 1: true, 3: true }, 3: { 3: true }, 4: { 3: true, 4: true } }
+// SolveResponse: 1 ExporterResponse map entries {1 key, 2 value}.
+const SOLVE_RESPONSE_STRINGS = { 1: { 2: true } }
 const grpcFrame = (msg) => { const h = Buffer.alloc(5); h.writeUInt32BE(msg.length, 1); return Buffer.concat([h, msg]) }
 /** Complete gRPC messages in a buffer; returns [messages, rest]. */
 function grpcMessages(buf) {
@@ -137,17 +162,23 @@ function grpcMessages(buf) {
 
 // ---- the h2 bridge -----------------------------------------------------------
 function bridge(client, upstream, id) {
-  client.on('end', () => log(id, 'client socket: FIN'))
-  client.on('close', () => log(id, 'client socket: closed'))
   const server = http2.createServer()
   const session = http2.connect('http://docker', { createConnection: () => upstream })
   session.on('error', e => log(id, 'upstream h2 error', e.message))
-  server.on('sessionError', e => log(id, 'client h2 error', e.code, e.message)); server.on('session', s => { s.on('goaway', (code, last) => log(id, 'client goaway', code, last)); s.on('frameError', (t, c, sid) => log(id, 'client frameError type', t, 'code', c, 'stream', sid)) })
+  // The CLI resets its socket once every call it made has been answered — no
+  // GOAWAY, no FIN. That is its way of hanging up, not a failure: close the
+  // daemon side cleanly, and say nothing unless a call was still open.
+  let open = 0
+  const hangUp = () => { if (!session.closed) session.close() }
+  client.on('close', hangUp)
+  server.on('sessionError', e => { if (open > 0) log(id, 'client h2 error with', open, 'calls open:', e.message); hangUp() }); server.on('session', s => { s.on('goaway', (code, last) => log(id, 'client goaway', code, last)); s.on('frameError', (t, c, sid) => log(id, 'client frameError type', t, 'code', c, 'stream', sid)) })
   server.on('stream', (stream, headers) => {
     const path = headers[':path']
     const forwarded = {}
     for (const [k, v] of Object.entries(headers)) if (!k.startsWith(':') || k === ':path' || k === ':method') forwarded[k] = v
     const req = session.request(forwarded)
+    open++
+    req.on('close', () => { open-- })
     const isSolve = path === '/moby.buildkit.v1.Control/Solve'
     const isBridgeSolve = path === '/moby.buildkit.v1.frontend.LLBBridge/Solve'
     log(id, '→', path)
@@ -183,18 +214,21 @@ function bridge(client, upstream, id) {
     })
     let trailers = null
     req.on('trailers', (t) => { trailers = t })
+    const isStatus = path === '/moby.buildkit.v1.Control/Status'
     let responseBuf = Buffer.alloc(0)
     req.on('data', (chunk) => {
-      if (isSolve) {
-        responseBuf = Buffer.concat([responseBuf, chunk])
-        const [msgs, rest] = grpcMessages(responseBuf); responseBuf = rest
-        for (const msg of msgs) {
+      if (!isSolve && !isStatus) { stream.write(chunk); return }
+      responseBuf = Buffer.concat([responseBuf, chunk])
+      const [msgs, rest] = grpcMessages(responseBuf); responseBuf = rest
+      for (const msg of msgs) {
+        const out = rewriteStrings(msg, isSolve ? SOLVE_RESPONSE_STRINGS : STATUS_STRINGS)
+        if (isSolve) {
           const exp = {}
-          for (const f of decode(msg)) if (f.field === 1) { const [k, v] = mapEntry(f.value); exp[k] = v.length > 100 ? v.slice(0, 100) + '…' : v }
+          for (const f of decode(out)) if (f.field === 1) { const [k, v] = mapEntry(f.value); exp[k] = v.length > 100 ? v.slice(0, 100) + '…' : v }
           log(id, '  Solve response', JSON.stringify(exp))
         }
+        stream.write(grpcFrame(out))
       }
-      stream.write(chunk)
     })
     stream.on('wantTrailers', () => stream.sendTrailers(trailers ?? {}))
     req.on('end', () => stream.end())
