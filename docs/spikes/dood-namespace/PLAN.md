@@ -571,3 +571,40 @@ the same moment on a cold machine failed with `Failed to download package for
 ghcr.io/devcontainers/features/node` from the Dev Container CLI; three
 concurrent creations afterwards all succeeded, so it is either a registry
 flake or a cold-cache race in the CLI — not reproduced.
+
+## Linux (rootful Docker Engine) — partial pass, 2026-09-25
+
+Lima `vz` VM, Ubuntu 26.04 (kernel 7.0, arm64), Docker Engine 29.8.1,
+compose 5.5.1, buildx 0.37.1, AppArmor + seccomp on, iptables 1.8.11
+(nf_tables), Node 26.8.1 / pnpm 12.6.0. `pnpm typecheck` and `pnpm test:unit`
+(1052) green as-is; `pnpm test` green after one test fix (`acp-stream.spec.ts`
+never created the sessions' working directory and passed only where an older
+run had left it). **`pnpm test:docker` was not completed**: the VM's disk grew
+past what the Mac had free and the run was aborted. What was measured by hand
+before that, and does **not** hold as it does on Docker Desktop:
+
+- **A running container does not see the socket re-created at the same host
+  path.** A bind mount of a file binds the inode: after the listener is closed
+  and a new one listens at the same path, the container gets `ECONNREFUSED`
+  until it is stopped and started (measured with a Node client in
+  `node:22-bookworm-slim`). So on Linux a Domo restart leaves every running
+  environment's `docker` refused — the opposite of the Desktop measurement in
+  `manager.ts`, `container.ts` (`keepAliveScript`) and "Measured in the pass"
+  above. Likely fix, Linux only: give each environment its own socket
+  *directory* and mount the directory (virtiofs is why Desktop cannot), with
+  `/var/run/docker.sock` a symlink into it made by the keep-alive script. A
+  *service* given `/var/run/docker.sock` (`binds.ts`) has the same problem and
+  no such way out; it needs a stop + start after a Domo restart.
+- **A container started while its socket is missing gets a root-owned
+  directory at the socket path**, created by the daemon, and then fails every
+  later start (`not a directory: Are you trying to mount a directory onto a
+  file`) until the directory is removed; Domo's `listen` there fails too.
+- **The keep-alive's `chmod 666` changes the host file** (on Linux it is the
+  same inode, and container root is host root), so the socket — full access to
+  the daemon — becomes world-writable on the host. Harmless on Desktop, where
+  the mode is per container. The socket directory should be `0700` so no other
+  local user can reach it.
+- Not reached: the port helper's `nsenter`/iptables under AppArmor,
+  `host-gateway`, `route_localnet`, `docker restart` of socket-mounting
+  containers, bind-mount ownership, the SSH-agent `socket` branch, rootless
+  Docker.
