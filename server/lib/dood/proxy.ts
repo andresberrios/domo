@@ -90,8 +90,17 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
     const upstream = connect({ path: dockerSocket, allowHalfOpen: true })
     upstream.on('error', (error) => { report(error); client.destroy() })
     client.on('error', () => upstream.destroy())
-    // Half-close is forwarded rather than escalated to a full close.
-    client.on('end', () => upstream.end())
+    // Half-close is forwarded rather than escalated to a full close — but only
+    // once every request before it has gone upstream: a layer may still be
+    // awaiting pre-work for the last one, and ending first would lose it.
+    let clientEnded = false
+    const forwardEnd = () => {
+      if (clientEnded && !busy && !upstream.writableEnded) upstream.end()
+    }
+    client.on('end', () => {
+      clientEnded = true
+      forwardEnd()
+    })
 
     // Backpressure both ways, which `pipe` used to give for free: an export or
     // a followed log to a slow reader must not pile up in memory here.
@@ -246,6 +255,7 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
       } finally {
         busy = false
       }
+      forwardEnd()
     }
 
     // Bytes arriving while a layer is awaited are picked up by the loop that
