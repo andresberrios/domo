@@ -20,6 +20,8 @@
  * environment here, and nothing in this file changes it.
  */
 
+import { resolveBindSource, type EnvironmentMount } from './binds'
+
 /** What an environment's containers are translated *into*. */
 export interface DoodScope {
   /** Where the checkout appears inside the environment, e.g. `/workspaces/domo`. */
@@ -28,6 +30,14 @@ export interface DoodScope {
   workspaceVolume: string
   /** Stamped on every container so retiring the environment can sweep by label. */
   labels: Record<string, string>
+  /**
+   * The environment container's own mount table (`binds.ts`), which every
+   * bind source is resolved against. The checkout is added when it is not in
+   * it, so a scope with none still translates the workspace.
+   */
+  mounts?: EnvironmentMount[]
+  /** This environment's proxy socket on the daemon's host: what `/var/run/docker.sock` means to a service. */
+  dockerSocket?: string
 }
 
 export interface PublishedPort {
@@ -47,13 +57,22 @@ export const REQUESTED_PORTS_LABEL = 'domo.ports'
 export interface RewriteResult {
   spec: Record<string, unknown>
   /**
-   * Subpaths that must exist inside the workspace volume before the create is
-   * forwarded. Docker refuses `volume-subpath` pointing at a path that is not
-   * there yet — measured: `cannot access path …: no such file or directory` —
-   * and a compose file bind-mounting a directory it expects to be created is
-   * ordinary, so the caller makes them first.
+   * Subpaths that must exist inside a volume before the create is forwarded.
+   * Docker refuses `volume-subpath` pointing at a path that is not there yet —
+   * measured: `cannot access path …: no such file or directory` — and a
+   * compose file bind-mounting a directory it expects to be created is
+   * ordinary, so the caller makes them first. Only for volumes the
+   * environment mounts writable: it could not have made one in the others
+   * either, and Docker's refusal is then the honest answer.
    */
-  requiredSubpaths: string[]
+  requiredSubpaths: RequiredSubpath[]
+  /**
+   * Why the create cannot be translated, when it cannot: a bind of a path that
+   * exists only inside the environment, or `network_mode: host` with no
+   * environment container to share. The caller answers with it and forwards
+   * nothing.
+   */
+  refusal?: string
   /**
    * Networks this container will join. The environment's own container has to
    * join them too or the agent cannot reach the services it just started by
@@ -68,6 +87,11 @@ export interface RewriteResult {
    * to be published; these are reported so they can be offered for forwarding.
    */
   droppedPorts: PublishedPort[]
+}
+
+export interface RequiredSubpath {
+  volume: string
+  subpath: string
 }
 
 interface MountSpec {
@@ -88,19 +112,43 @@ export function workspaceSubpath(source: string, workspacePath: string): string 
   return null
 }
 
-function volumeMount(scope: DoodScope, target: string, subpath: string, readOnly: boolean): MountSpec {
-  const mount: MountSpec = { Type: 'volume', Source: scope.workspaceVolume, Target: target, ReadOnly: readOnly }
+function volumeMount(volume: string, target: string, subpath: string, readOnly: boolean): MountSpec {
+  const mount: MountSpec = { Type: 'volume', Source: volume, Target: target, ReadOnly: readOnly }
   if (subpath) mount.VolumeOptions = { Subpath: subpath }
   return mount
 }
 
+interface ParsedBind {
+  source: string
+  target: string
+  options: string[]
+  readOnly: boolean
+}
+
 /** `src:dst[:opts]` — a source that is not absolute names a volume, and is left alone. */
-function parseBind(bind: string): { source: string, target: string, readOnly: boolean } | null {
+function parseBind(bind: string): ParsedBind | null {
   const parts = bind.split(':')
   if (parts.length < 2) return null
   const [source, target, options = ''] = parts
   if (!source?.startsWith('/') || !target) return null
-  return { source, target, readOnly: options.split(',').includes('ro') }
+  const list = options ? options.split(',') : []
+  return { source, target, options: list, readOnly: list.includes('ro') }
+}
+
+/** A bind entry again, with a new source, made read-only when the environment's own mount is. */
+function renderBind(bind: ParsedBind, source: string, forceReadOnly: boolean): string {
+  let options = bind.options
+  if (forceReadOnly && !bind.readOnly) options = [...options.filter(option => option !== 'rw'), 'ro']
+  return [source, bind.target, ...(options.length ? [options.join(',')] : [])].join(':')
+}
+
+/** The environment's mount table, with the checkout in it whether or not the caller read one. */
+function mountTable(scope: DoodScope): EnvironmentMount[] {
+  const table = [...(scope.mounts ?? [])]
+  if (!table.some(mount => mount.destination === scope.workspacePath)) {
+    table.push({ destination: scope.workspacePath, kind: 'volume', volume: scope.workspaceVolume, readOnly: false })
+  }
+  return table
 }
 
 function parsePortKey(key: string, bindings: unknown): PublishedPort | null {
@@ -123,6 +171,17 @@ export interface CreateNames {
   container(ref: string): string
   network(ref: string): string
   volume(ref: string): string
+  /**
+   * The environment's own container: what `host` means for a network, PID or
+   * IPC namespace (see `hostModes`). Null when it could not be found.
+   */
+  environment?: EnvironmentContainer | null
+}
+
+export interface EnvironmentContainer {
+  id: string
+  /** Whether its IPC namespace can be joined (`--ipc shareable`); fixed when it was created. */
+  ipcShareable: boolean
 }
 
 /** A named volume a create mounts, with what it would be created with. */
@@ -209,6 +268,8 @@ function asStrings(value: unknown): string[] {
  */
 export const REQUESTED_BINDS_LABEL = 'domo.binds'
 export const REQUESTED_PUBLISHING_LABEL = 'domo.publishing'
+/** The namespaces asked for as `host` and translated to the environment's, with what had to be dropped for them (`hostModes`). */
+export const REQUESTED_MODES_LABEL = 'domo.modes'
 
 export interface RequestedBinds {
   Binds?: string[]
@@ -220,14 +281,74 @@ export interface RequestedPublishing {
   PublishAllPorts?: boolean
 }
 
+/**
+ * What `host` means for a container's network, PID and IPC namespaces when
+ * the host is the environment: the environment container's own
+ * (`container:<id>`). Returns the translated modes and the HostConfig fields
+ * that had to go with them, as they were asked for, so inspect can show them.
+ *
+ * Joining another container's network namespace brings its hostname, DNS,
+ * `/etc/hosts` and interfaces with it, so Docker refuses everything that would
+ * set those (measured: `conflicting options: hostname and the network mode`,
+ * `… dns and the network mode`, `… port exposing and the container type network
+ * mode`). On a real host `-p` with `--network host` is discarded with a
+ * warning, and so it is here — nothing is published, because the service
+ * already listens on the environment's own `localhost`.
+ *
+ * IPC is only joined when the environment was created shareable (Docker's
+ * default is `private`, and joining one answers `non-shareable IPC`); an older
+ * environment leaves `--ipc host` meaning the daemon host's, as it always did.
+ */
+export function hostModes(
+  spec: Record<string, unknown>,
+  hostConfig: Record<string, unknown>,
+  environment: EnvironmentContainer | null | undefined
+): { requested: Record<string, unknown>, refusal?: string } {
+  const requested: Record<string, unknown> = {}
+  const target = environment ? `container:${environment.id}` : null
+  if (hostConfig.NetworkMode === 'host') {
+    if (!target) {
+      return {
+        requested,
+        refusal: 'network_mode: host shares the environment\'s own network, and this environment\'s container '
+          + 'could not be found. Start the environment again, or give the service a network of its own.'
+      }
+    }
+    requested.NetworkMode = 'host'
+    for (const field of ['ExtraHosts', 'Dns', 'DnsOptions', 'DnsSearch', 'PortBindings', 'PublishAllPorts'] as const) {
+      const value = hostConfig[field]
+      const meaningful = Array.isArray(value) ? value.length > 0 : isObject(value) ? Object.keys(value).length > 0 : !!value
+      if (meaningful) requested[field] = value
+      Reflect.deleteProperty(hostConfig, field)
+    }
+    for (const field of ['Hostname', 'Domainname', 'MacAddress', 'ExposedPorts'] as const) Reflect.deleteProperty(spec, field)
+    delete spec.NetworkingConfig
+    hostConfig.NetworkMode = target
+  }
+  if (hostConfig.PidMode === 'host' && target) {
+    requested.PidMode = 'host'
+    hostConfig.PidMode = target
+  }
+  if (hostConfig.IpcMode === 'host' && target && environment?.ipcShareable) {
+    requested.IpcMode = 'host'
+    hostConfig.IpcMode = target
+  }
+  return { requested }
+}
+
 export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?: CreateNames): RewriteResult {
   const spec = (input && typeof input === 'object' ? { ...input } : {}) as Record<string, unknown>
   const hostConfig = { ...(spec.HostConfig as Record<string, unknown> | undefined) }
-  const requiredSubpaths: string[] = []
+  const requiredSubpaths: RequiredSubpath[] = []
+  const refusals: string[] = []
   const originalBinds: RequestedBinds = {
     ...(Array.isArray(hostConfig.Binds) && hostConfig.Binds.length && { Binds: hostConfig.Binds as string[] }),
     ...(Array.isArray(hostConfig.Mounts) && hostConfig.Mounts.length && { Mounts: hostConfig.Mounts as unknown[] })
   }
+  // Before anything reads the publishing: with the host's network there is none.
+  const modes = names ? hostModes(spec, hostConfig, names.environment) : { requested: {} }
+  if (modes.refusal) refusals.push(modes.refusal)
+  const translatedModes = new Set(Object.keys(modes.requested).filter(key => key.endsWith('Mode')))
   const originalPublishing: RequestedPublishing = {
     ...(isObject(hostConfig.PortBindings) && Object.keys(hostConfig.PortBindings).length
       && { PortBindings: hostConfig.PortBindings as RequestedPublishing['PortBindings'] }),
@@ -236,45 +357,88 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?:
   const mounts: MountSpec[] = Array.isArray(hostConfig.Mounts)
     ? (hostConfig.Mounts as MountSpec[]).map(mount => ({ ...mount }))
     : []
+  const table = mountTable(scope)
+  const resolve = (source: string) => resolveBindSource(source, table, { dockerSocket: scope.dockerSocket }, scope.workspacePath)
 
-  const claim = (subpath: string) => {
-    if (subpath && !requiredSubpaths.includes(subpath)) requiredSubpaths.push(subpath)
+  const claim = (volume: string, subpath: string, envReadOnly: boolean) => {
+    if (!subpath || envReadOnly) return
+    if (!requiredSubpaths.some(entry => entry.volume === volume && entry.subpath === subpath)) {
+      requiredSubpaths.push({ volume, subpath })
+    }
   }
 
-  // Short syntax. A bind that is not ours stays a bind: it will fail loudly
-  // against the host daemon, which is better than being silently redirected.
-  // A named volume is renamed into the environment.
+  // Short syntax. Every absolute source is resolved against the environment's
+  // mounts (`binds.ts`); one backed by a volume becomes a volume mount, since
+  // `Binds` has no way to say "subpath". A named volume is renamed into the
+  // environment.
+  const binds: string[] = []
+  // Kept apart from the client's own `Mounts`: these already name the real
+  // volume, and must not be renamed into the environment's namespace below.
+  const fromBinds: MountSpec[] = []
   if (Array.isArray(hostConfig.Binds)) {
-    const kept: string[] = []
     for (const bind of hostConfig.Binds as string[]) {
       const parsed = parseBind(bind)
-      const subpath = parsed && workspaceSubpath(parsed.source, scope.workspacePath)
-      if (parsed && subpath !== null) {
-        mounts.push(volumeMount(scope, parsed.target, subpath, parsed.readOnly))
-        claim(subpath)
+      if (!parsed) {
+        const [source = '', ...rest] = bind.split(':')
+        binds.push(names && isNamedVolumeSource(source) ? [names.volume(source), ...rest].join(':') : bind)
         continue
       }
-      const [source = '', ...rest] = bind.split(':')
-      kept.push(names && isNamedVolumeSource(source) ? [names.volume(source), ...rest].join(':') : bind)
+      const resolved = resolve(parsed.source)
+      switch (resolved.kind) {
+        case 'volume':
+          fromBinds.push(volumeMount(resolved.volume, parsed.target, resolved.subpath, parsed.readOnly || resolved.readOnly))
+          claim(resolved.volume, resolved.subpath, resolved.readOnly)
+          break
+        case 'bind':
+          binds.push(renderBind(parsed, resolved.source, resolved.readOnly))
+          break
+        case 'socket':
+        case 'system':
+          binds.push(renderBind(parsed, resolved.source, false))
+          break
+        case 'refuse':
+          refusals.push(resolved.message)
+      }
     }
-    hostConfig.Binds = kept
   }
 
   // Long syntax.
-  for (let i = 0; i < mounts.length; i++) {
-    const mount = mounts[i]!
+  const longMounts: MountSpec[] = []
+  for (const mount of mounts) {
     if (mount.Type === 'volume' && names && typeof mount.Source === 'string' && isNamedVolumeSource(mount.Source)
       && mount.Source !== scope.workspaceVolume) {
-      mount.Source = names.volume(mount.Source)
+      longMounts.push({ ...mount, Source: names.volume(mount.Source) })
       continue
     }
-    if (mount.Type !== 'bind' || typeof mount.Source !== 'string' || !mount.Target) continue
-    const subpath = workspaceSubpath(mount.Source, scope.workspacePath)
-    if (subpath === null) continue
-    mounts[i] = volumeMount(scope, mount.Target, subpath, !!mount.ReadOnly)
-    claim(subpath)
+    if (mount.Type !== 'bind' || typeof mount.Source !== 'string' || !mount.Target || !mount.Source.startsWith('/')) {
+      longMounts.push(mount)
+      continue
+    }
+    const resolved = resolve(mount.Source)
+    switch (resolved.kind) {
+      case 'volume':
+        longMounts.push(volumeMount(resolved.volume, mount.Target, resolved.subpath, !!mount.ReadOnly || resolved.readOnly))
+        claim(resolved.volume, resolved.subpath, resolved.readOnly)
+        break
+      case 'bind':
+        longMounts.push({ ...mount, Source: resolved.source, ...((mount.ReadOnly || resolved.readOnly) && { ReadOnly: true }) })
+        break
+      case 'socket':
+        // A socket goes through `Binds`: measured on Docker Desktop, a
+        // `Mounts` bind of a host socket fails with `bind source path does not
+        // exist: /socket_mnt/…`, while `-v` of the same path works.
+        binds.push(`${resolved.source}:${mount.Target}${mount.ReadOnly ? ':ro' : ''}`)
+        break
+      case 'system':
+        longMounts.push(mount)
+        break
+      case 'refuse':
+        refusals.push(resolved.message)
+    }
   }
-  if (mounts.length) hostConfig.Mounts = mounts
+  if (Array.isArray(hostConfig.Binds) || binds.length) hostConfig.Binds = binds
+  longMounts.push(...fromBinds)
+  if (longMounts.length || Array.isArray(hostConfig.Mounts)) hostConfig.Mounts = longMounts
 
   const droppedPorts: PublishedPort[] = []
   const bindings = (hostConfig.PortBindings ?? {}) as Record<string, unknown>
@@ -290,7 +454,7 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?:
   if (names) {
     for (const field of CONTAINER_MODE_FIELDS) {
       const value = hostConfig[field]
-      if (typeof value !== 'string') continue
+      if (typeof value !== 'string' || translatedModes.has(field)) continue
       if (value.startsWith('container:')) hostConfig[field] = `container:${names.container(value.slice(10))}`
       else if (field === 'NetworkMode' && !NETWORK_MODES.has(value)) hostConfig.NetworkMode = names.network(value)
     }
@@ -346,10 +510,11 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?:
     ...scope.labels,
     ...(droppedPorts.length && { [REQUESTED_PORTS_LABEL]: JSON.stringify(droppedPorts) }),
     ...(Object.keys(originalBinds).length && { [REQUESTED_BINDS_LABEL]: JSON.stringify(originalBinds) }),
-    ...(Object.keys(originalPublishing).length && { [REQUESTED_PUBLISHING_LABEL]: JSON.stringify(originalPublishing) })
+    ...(Object.keys(originalPublishing).length && { [REQUESTED_PUBLISHING_LABEL]: JSON.stringify(originalPublishing) }),
+    ...(Object.keys(modes.requested).length && { [REQUESTED_MODES_LABEL]: JSON.stringify(modes.requested) })
   }
   spec.HostConfig = hostConfig
-  return { spec, requiredSubpaths, networksToJoin, droppedPorts }
+  return { spec, requiredSubpaths, networksToJoin, droppedPorts, ...(refusals.length && { refusal: refusals[0] }) }
 }
 
 /**

@@ -1,6 +1,7 @@
 import { agentName, stripNames, type Namespace } from './names'
 import {
   REQUESTED_BINDS_LABEL,
+  REQUESTED_MODES_LABEL,
   REQUESTED_PUBLISHING_LABEL,
   type RequestedBinds,
   type RequestedPublishing
@@ -24,8 +25,6 @@ import { BUILTIN_NETWORKS } from './scope'
 
 export interface ResponseScope {
   ns: Namespace
-  /** The environment's workspace volume, whose mounts are shown as the binds they were asked as. */
-  workspaceVolume: string
   /**
    * What a container really has published on the environment's `localhost`
    * right now (`network.ts`), by full id. Undefined when it holds nothing.
@@ -82,7 +81,11 @@ function reportedPortList(actual: unknown, requested: RequestedPublishing | null
   return portListFromBindings(Array.isArray(actual) ? actual : [], bindings)
 }
 
-/** Where each original bind put what, by target — to show a workspace volume mount as the bind it was asked as. */
+/**
+ * Where each original bind put what, by target — to show a mount the proxy
+ * translated (to a volume subpath, to the host's own source, to the
+ * environment's socket) as the bind it was asked as.
+ */
 function requestedBindSources(requested: RequestedBinds | null): Map<string, { source: string, readOnly: boolean }> {
   const sources = new Map<string, { source: string, readOnly: boolean }>()
   for (const bind of requested?.Binds ?? []) {
@@ -102,7 +105,7 @@ function mountPointsForAgent(mounts: unknown, scope: ResponseScope, requested: R
   const binds = requestedBindSources(requested)
   return mounts.map((mount: Json) => {
     if (!isObject(mount)) return mount
-    const bind = mount.Type === 'volume' && mount.Name === scope.workspaceVolume ? binds.get(mount.Destination) : undefined
+    const bind = mount.Type === 'volume' || mount.Type === 'bind' ? binds.get(mount.Destination) : undefined
     if (bind) {
       return {
         Type: 'bind',
@@ -126,7 +129,8 @@ function hostConfigForAgent(
   scope: ResponseScope,
   binds: RequestedBinds | null,
   publishing: RequestedPublishing | null,
-  hosts?: unknown
+  hosts?: unknown,
+  modes?: Json | null
 ): unknown {
   if (!isObject(hostConfig)) return hostConfig
   const out: Json = { ...hostConfig }
@@ -140,6 +144,8 @@ function hostConfigForAgent(
   }
   if (hosts !== undefined) out.ExtraHosts = hosts
   if (typeof out.NetworkMode === 'string') out.NetworkMode = agentName(scope.ns, out.NetworkMode)
+  // `host` asked, the environment's namespaces given (`hostModes` in `rewrite.ts`).
+  if (modes) Object.assign(out, modes)
   for (const key of ['Links', 'VolumesFrom'] as const) {
     if (Array.isArray(out[key])) out[key] = out[key].map((value: string) => stripNames(scope.ns, String(value)))
   }
@@ -166,7 +172,8 @@ export function containerInspectForAgent(body: unknown, scope: ResponseScope): u
   const out: Json = { ...body }
   if (typeof out.Name === 'string') out.Name = agentName(scope.ns, out.Name)
   if (isObject(out.Config)) out.Config = { ...out.Config, Labels: hideDomoLabels(out.Config.Labels) }
-  out.HostConfig = hostConfigForAgent(out.HostConfig, scope, binds, publishing, hosts)
+  const modes = parseLabel<Json>(labels, REQUESTED_MODES_LABEL)
+  out.HostConfig = hostConfigForAgent(out.HostConfig, scope, binds, publishing, hosts, modes)
   out.Mounts = mountPointsForAgent(out.Mounts, scope, binds)
   if (isObject(out.NetworkSettings)) {
     out.NetworkSettings = {
@@ -187,8 +194,12 @@ export function containerSummaryForAgent(entry: unknown, scope: ResponseScope): 
   if (Array.isArray(out.Names)) out.Names = out.Names.map((name: string) => stripNames(scope.ns, String(name)))
   out.Mounts = mountPointsForAgent(out.Mounts, scope, binds)
   out.Ports = reportedPortList(out.Ports, publishing, typeof entry.Id === 'string' ? scope.published?.(entry.Id) : undefined)
+  const modes = parseLabel<Json>(entry.Labels, REQUESTED_MODES_LABEL)
   if (isObject(out.HostConfig) && typeof out.HostConfig.NetworkMode === 'string') {
-    out.HostConfig = { ...out.HostConfig, NetworkMode: agentName(scope.ns, out.HostConfig.NetworkMode) }
+    out.HostConfig = {
+      ...out.HostConfig,
+      NetworkMode: typeof modes?.NetworkMode === 'string' ? modes.NetworkMode : agentName(scope.ns, out.HostConfig.NetworkMode)
+    }
   }
   if (isObject(out.NetworkSettings)) {
     out.NetworkSettings = { ...out.NetworkSettings, Networks: networksForAgent(out.NetworkSettings.Networks, scope) }

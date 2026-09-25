@@ -30,7 +30,19 @@ function fakeEngine() {
         return { status: 200, body: [{ Id: WEB_ID, Names: [`/${ENV}-web`] }] }
       }
       if (path === '/containers/domo-dev-env_abc/json') {
-        return { status: 200, body: { Id: OWN_ID, Name: '/domo-dev-env_abc' } }
+        return {
+          status: 200,
+          body: {
+            Id: OWN_ID,
+            Name: '/domo-dev-env_abc',
+            HostConfig: { IpcMode: 'shareable' },
+            Mounts: [
+              { Type: 'volume', Name: 'domo-dev-env_abc-workspace', Destination: '/workspaces/domo', RW: true },
+              { Type: 'volume', Name: 'caches', Destination: '/home/vscode/.cache', RW: true },
+              { Type: 'bind', Source: '/Users/me/.aws', Destination: '/home/vscode/.aws', RW: true }
+            ]
+          }
+        }
       }
       if (path === '/networks') {
         return {
@@ -54,19 +66,25 @@ function fakeEngine() {
 function setup() {
   const { engine, calls } = fakeEngine()
   const subpaths: string[][] = []
+  const volumes: string[] = []
   const layer = scopeLayer({
     ns,
-    scope: { workspacePath: '/workspaces/domo', workspaceVolume: 'domo-dev-env_abc-workspace', labels: { 'domo.env': ENV } },
+    scope: {
+      workspacePath: '/workspaces/domo',
+      workspaceVolume: 'domo-dev-env_abc-workspace',
+      labels: { 'domo.env': ENV },
+      dockerSocket: '/sock/env_abc.sock'
+    },
     engine,
     ownContainer: 'domo-dev-env_abc',
-    ensureSubpaths: async (list) => { subpaths.push(list) }
+    ensureSubpaths: async (volume, list) => { volumes.push(volume); subpaths.push(list) }
   })
   const send = (line: string, body?: unknown): Promise<Outcome> => {
     const request = parseRequestHead(`${line} HTTP/1.1\r\nHost: docker`)!
     if (body !== undefined) request.body = Buffer.from(JSON.stringify(body))
     return runLayers([layer], request)
   }
-  return { layer, calls, subpaths, send }
+  return { layer, calls, subpaths, volumes, send }
 }
 
 const forwarded = (outcome: Outcome): DoodRequest => {
@@ -184,5 +202,46 @@ describe('scope layer — lists and prunes', () => {
     const { send } = setup()
     const request = forwarded(await send('POST /networks/stack_default/connect', { Container: 'web' }))
     expect(bodyOf(request)).toEqual({ Container: `${ENV}-web`, EndpointConfig: { Aliases: ['web'] } })
+  })
+})
+
+describe('scope layer — binds and host namespaces', () => {
+  it('resolves binds against the environment\'s own mounts, and makes subpaths in the volume they belong to', async () => {
+    const { send, subpaths, volumes } = setup()
+    const spec = bodyOf(forwarded(await send('POST /containers/create', {
+      Image: 'alpine',
+      HostConfig: {
+        Binds: ['/home/vscode/.aws:/root/.aws:ro', '/home/vscode/.cache/pip:/pip', '/var/run/docker.sock:/var/run/docker.sock', '/workspaces/domo/app:/app']
+      }
+    })))
+    expect(spec.HostConfig.Binds).toEqual(['/Users/me/.aws:/root/.aws:ro', '/sock/env_abc.sock:/var/run/docker.sock'])
+    expect(spec.HostConfig.Mounts.map((mount: any) => [mount.Source, mount.VolumeOptions?.Subpath])).toEqual([
+      ['caches', 'pip'],
+      ['domo-dev-env_abc-workspace', 'app']
+    ])
+    expect(volumes).toEqual(['caches', 'domo-dev-env_abc-workspace'])
+    expect(subpaths).toEqual([['pip'], ['app']])
+  })
+
+  it('answers a bind of the environment\'s own filesystem itself, loudly, and forwards nothing', async () => {
+    const { send, calls } = setup()
+    const outcome = await send('POST /containers/create?name=bad', {
+      Image: 'alpine',
+      HostConfig: { NetworkMode: 'stack_default', Binds: ['/home/vscode/cache:/cache'] }
+    })
+    expect(outcome).toMatchObject({ kind: 'answer', status: 400 })
+    expect((outcome as any).body.message).toMatch(/^Domo: \/home\/vscode\/cache exists only inside this dev environment/)
+    // Refused before anything was done on the daemon for it.
+    expect(calls.filter(call => call.method === 'POST')).toEqual([])
+  })
+
+  it('puts a host-networked service in the environment\'s own namespace, by its real id', async () => {
+    const { send } = setup()
+    const spec = bodyOf(forwarded(await send('POST /containers/create', {
+      Image: 'alpine', HostConfig: { NetworkMode: 'host', PidMode: 'host', IpcMode: 'host' }
+    })))
+    expect(spec.HostConfig).toMatchObject({
+      NetworkMode: `container:${OWN_ID}`, PidMode: `container:${OWN_ID}`, IpcMode: `container:${OWN_ID}`
+    })
   })
 })

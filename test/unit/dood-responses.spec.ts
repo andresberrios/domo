@@ -22,7 +22,6 @@ const held = [
 ]
 const scope = {
   ns,
-  workspaceVolume: 'domo-dev-env_abc-workspace',
   published: (id: string) => id === 'c1' ? held : undefined
 }
 const LABEL: [string, string] = ['domo.env', 'env_abc']
@@ -255,5 +254,67 @@ describe('eventForAgent', () => {
 
   it('passes image events, which describe the shared cache', () => {
     expect(eventForAgent({ Type: 'image', Action: 'pull', Actor: { ID: 'alpine:3', Attributes: {} } }, eventScope())).not.toBeNull()
+  })
+})
+
+describe('binds outside the checkout and host namespaces, as the agent asked for them', () => {
+  const asked = {
+    Binds: ['/home/vscode/.aws:/root/.aws:ro', '/var/run/docker.sock:/var/run/docker.sock', '/home/vscode/.cache/x:/x'],
+    Mounts: [{ Type: 'bind', Source: '/home/vscode/.config/gh', Target: '/gh' }]
+  }
+  const inspected = {
+    Id: 'c9',
+    Name: '/env_abc-tools',
+    Config: {
+      Labels: {
+        'domo.env': 'env_abc',
+        'domo.binds': JSON.stringify(asked),
+        'domo.modes': JSON.stringify({ NetworkMode: 'host', PidMode: 'host', ExtraHosts: ['a:1.2.3.4'] })
+      }
+    },
+    HostConfig: {
+      NetworkMode: `container:${'e'.repeat(64)}`,
+      PidMode: `container:${'e'.repeat(64)}`,
+      Binds: ['/Users/me/.aws:/root/.aws:ro', '/Users/me/.domo/dood/x/env_abc.sock:/var/run/docker.sock'],
+      Mounts: [
+        { Type: 'bind', Source: '/Users/me/.config/gh', Target: '/gh' },
+        { Type: 'volume', Source: 'caches', Target: '/x', VolumeOptions: { Subpath: 'x' } }
+      ]
+    },
+    Mounts: [
+      { Type: 'bind', Source: '/Users/me/.aws', Destination: '/root/.aws', Mode: 'ro', RW: false, Propagation: 'rprivate' },
+      { Type: 'bind', Source: '/Users/me/.domo/dood/x/env_abc.sock', Destination: '/var/run/docker.sock', Mode: '', RW: true, Propagation: 'rprivate' },
+      { Type: 'bind', Source: '/Users/me/.config/gh', Destination: '/gh', Mode: '', RW: true, Propagation: 'rprivate' },
+      { Type: 'volume', Name: 'caches', Source: '/var/lib/docker/volumes/caches/_data', Destination: '/x', RW: true },
+      { Type: 'volume', Name: 'env_abc-data', Source: '/var/lib/docker/volumes/env_abc-data/_data', Destination: '/data', RW: true }
+    ]
+  }
+
+  it('shows every translated mount by the source the agent named', () => {
+    const out = containerInspectForAgent(inspected, scope) as any
+    expect(out.HostConfig.Binds).toEqual(asked.Binds)
+    expect(out.HostConfig.Mounts).toEqual(asked.Mounts)
+    expect(out.Mounts.map((mount: any) => [mount.Type, mount.Source ?? mount.Name, mount.Destination])).toEqual([
+      ['bind', '/home/vscode/.aws', '/root/.aws'],
+      ['bind', '/var/run/docker.sock', '/var/run/docker.sock'],
+      ['bind', '/home/vscode/.config/gh', '/gh'],
+      ['bind', '/home/vscode/.cache/x', '/x'],
+      // A named volume the agent asked for stays one, by its own name.
+      ['volume', '/var/lib/docker/volumes/data/_data', '/data']
+    ])
+    expect(out.Mounts[0]).toMatchObject({ Mode: 'ro', RW: false })
+  })
+
+  it('reports host networking and host PIDs, and what host networking dropped', () => {
+    const out = containerInspectForAgent(inspected, scope) as any
+    expect(out.HostConfig.NetworkMode).toBe('host')
+    expect(out.HostConfig.PidMode).toBe('host')
+    expect(out.HostConfig.ExtraHosts).toEqual(['a:1.2.3.4'])
+    expect(out.Config.Labels).toEqual({})
+    const summary = containerSummaryForAgent({
+      Id: 'c9', Names: ['/env_abc-tools'], Labels: inspected.Config.Labels,
+      HostConfig: { NetworkMode: `container:${'e'.repeat(64)}` }
+    }, scope) as any
+    expect(summary.HostConfig.NetworkMode).toBe('host')
   })
 })

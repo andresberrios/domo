@@ -45,7 +45,7 @@ describe('rewriteContainerCreate — mounts', () => {
       { Type: 'volume', Source: scope.workspaceVolume, Target: '/app', ReadOnly: false, VolumeOptions: { Subpath: 'app' } }
     ])
     expect((result.spec.HostConfig as { Binds: string[] }).Binds).toEqual([])
-    expect(result.requiredSubpaths).toEqual(['app'])
+    expect(result.requiredSubpaths).toEqual([{ volume: scope.workspaceVolume, subpath: 'app' }])
   })
 
   it('mounts the whole volume with no subpath for the workspace root', () => {
@@ -57,14 +57,20 @@ describe('rewriteContainerCreate — mounts', () => {
     expect(result.requiredSubpaths).toEqual([])
   })
 
-  it('leaves binds outside the workspace and named volumes untouched', () => {
+  it('leaves system paths and named volumes as they are', () => {
     const result = rewriteContainerCreate(
-      { HostConfig: { Binds: ['/etc/hosts:/etc/hosts:ro', 'pgdata:/var/lib/postgresql/data'] } },
+      { HostConfig: { Binds: ['/etc/localtime:/etc/localtime:ro', 'pgdata:/var/lib/postgresql/data'] } },
       scope
     )
     expect((result.spec.HostConfig as { Binds: string[] }).Binds)
-      .toEqual(['/etc/hosts:/etc/hosts:ro', 'pgdata:/var/lib/postgresql/data'])
+      .toEqual(['/etc/localtime:/etc/localtime:ro', 'pgdata:/var/lib/postgresql/data'])
     expect(mountsOf(result)).toEqual([])
+    expect(result.refusal).toBeUndefined()
+  })
+
+  it('refuses a bind of a path that exists only inside the environment', () => {
+    const result = rewriteContainerCreate({ HostConfig: { Binds: ['/etc/hosts:/etc/hosts:ro'] } }, scope)
+    expect(result.refusal).toMatch(/^\/etc\/hosts exists only inside this dev environment/)
   })
 
   it('rewrites long-syntax bind mounts too', () => {
@@ -75,7 +81,7 @@ describe('rewriteContainerCreate — mounts', () => {
     expect(mountsOf(result)).toEqual([
       { Type: 'volume', Source: scope.workspaceVolume, Target: '/srv', ReadOnly: true, VolumeOptions: { Subpath: 'server' } }
     ])
-    expect(result.requiredSubpaths).toEqual(['server'])
+    expect(result.requiredSubpaths).toEqual([{ volume: scope.workspaceVolume, subpath: 'server' }])
   })
 
   it('reports each required subpath once', () => {
@@ -83,7 +89,7 @@ describe('rewriteContainerCreate — mounts', () => {
       { HostConfig: { Binds: ['/workspaces/domo/app:/a', '/workspaces/domo/app:/b'] } },
       scope
     )
-    expect(result.requiredSubpaths).toEqual(['app'])
+    expect(result.requiredSubpaths).toEqual([{ volume: scope.workspaceVolume, subpath: 'app' }])
   })
 })
 
@@ -263,12 +269,12 @@ describe('rewriteContainerCreate — names', () => {
   it('renames named volumes in binds and mounts, and never the workspace', () => {
     const result = rewriteContainerCreate({
       HostConfig: {
-        Binds: ['pg:/var/lib/pg:rw', '/workspaces/domo/app:/app', '/etc/hosts:/etc/hosts:ro'],
+        Binds: ['pg:/var/lib/pg:rw', '/workspaces/domo/app:/app', '/etc/localtime:/etc/localtime:ro'],
         Mounts: [{ Type: 'volume', Source: 'cache', Target: '/c' }, { Type: 'volume', Target: '/anon' }]
       }
     }, scope, names())
     const hostConfig = result.spec.HostConfig as any
-    expect(hostConfig.Binds).toEqual(['env_abc-pg:/var/lib/pg:rw', '/etc/hosts:/etc/hosts:ro'])
+    expect(hostConfig.Binds).toEqual(['env_abc-pg:/var/lib/pg:rw', '/etc/localtime:/etc/localtime:ro'])
     expect(hostConfig.Mounts).toEqual([
       { Type: 'volume', Source: 'env_abc-cache', Target: '/c' },
       { Type: 'volume', Target: '/anon' },

@@ -8,7 +8,7 @@ import { createEngineClient } from './engine'
 import { namespaceFor } from './names'
 import { EnvironmentNetwork, watchContainerEvents, type EventWatcher } from './network'
 import { startDoodProxy, type DoodProxy } from './proxy'
-import type { Proto } from './publish'
+import type { Binding, Proto } from './publish'
 import { publishLayer } from './publish-layer'
 import type { PublishedPort } from './rewrite'
 import { errorRewriter, scopeLayer } from './scope-layer'
@@ -43,8 +43,16 @@ export const doodLabels = (environmentId: string): Record<string, string> =>
  * two installs (two worktrees) never share one. Not under `/tmp`: macOS
  * periodically deletes what nobody has touched there, and an idle
  * environment's socket is exactly that.
+ *
+ * The limit that bites first is tighter than that, and silent: Docker Desktop
+ * forwards a bind-mounted host socket into its VM only when the host path is
+ * at most **88** bytes. Measured on 29.8: 88 connects, 89 is `ECONNREFUSED`
+ * inside the container, and nothing anywhere says why. Both the environment
+ * and every service given `/var/run/docker.sock` (`binds.ts`) mount this path,
+ * so it is held to that. `~/.domo/dood/<8 hex>/env_<20 hex>.sock` is 50 bytes
+ * plus the home directory's own length.
  */
-const SUN_PATH_MAX = 103
+const SUN_PATH_MAX = 88
 
 export function doodSocketDir(): string {
   const configured = process.env.NUXT_DOOD_SOCKET_DIR
@@ -57,7 +65,7 @@ export function doodSocketPath(environmentId: string): string {
   const path = join(doodSocketDir(), `${environmentId}.sock`)
   if (Buffer.byteLength(path) > SUN_PATH_MAX) {
     throw new Error(
-      `The Docker socket path for ${environmentId} is too long for a unix socket (${path}). `
+      `The Docker socket path for ${environmentId} is too long for a unix socket a container can mount (${path}). `
       + 'Set NUXT_DOOD_SOCKET_DIR to a shorter directory.'
     )
   }
@@ -117,17 +125,18 @@ export async function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy>
         scope: {
           workspacePath: input.workspacePath,
           workspaceVolume: input.workspaceVolume,
-          labels: doodLabels(input.environmentId)
+          labels: doodLabels(input.environmentId),
+          dockerSocket: doodSocketPath(input.environmentId)
         },
         engine,
         ownContainer: input.containerReference,
-        ensureSubpaths: async (subpaths) => {
+        ensureSubpaths: async (volume, subpaths) => {
           const wanted = subpaths.filter(safeSubpath)
           if (!wanted.length) return
-          // One helper run for the lot: a create waits on this.
+          // One helper run per volume: a create waits on this.
           await run('docker', [
-            'run', '--rm', '-v', `${input.workspaceVolume}:/workspace`, input.helperImage,
-            'mkdir', '-p', ...wanted.map(subpath => `/workspace/${subpath}`)
+            'run', '--rm', '-v', `${volume}:/volume`, input.helperImage,
+            'mkdir', '-p', ...wanted.map(subpath => `/volume/${subpath}`)
           ])
         },
         onDroppedPorts: input.onDroppedPorts,
@@ -186,6 +195,11 @@ export async function ensureEnvironmentNetwork(environmentId: string): Promise<v
 /** The host ports the environment's relay holds, which are its containers' and not its own. */
 export function publishedHostPorts(environmentId: string, proto: Proto = 'tcp'): Set<number> {
   return networks.get(environmentId)?.hostPorts(proto) ?? new Set()
+}
+
+/** What one of the environment's containers has published on its `localhost` right now. */
+export function publishedBindings(environmentId: string, containerId: string): Binding[] {
+  return networks.get(environmentId)?.bindings(containerId) ?? []
 }
 
 const labelFilter = (environmentId: string) => `${ENVIRONMENT_LABEL}=${environmentId}`

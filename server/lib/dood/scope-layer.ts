@@ -2,6 +2,7 @@ import type { DoodRequest } from './http'
 import { engineOk, type EngineClient } from './engine'
 import { answer, withResponse, type DoodLayer, type Next, type Outcome } from './layers'
 import { agentName, isNamespaced, stripNames, type Namespace } from './names'
+import { mountTableFromInspect, type EnvironmentMount } from './binds'
 import type { Binding } from './publish'
 import {
   containerInspectForAgent,
@@ -56,7 +57,8 @@ export interface ScopeLayerOptions {
   engine: EngineClient
   /** The environment's own container, by name or id. */
   ownContainer: string
-  ensureSubpaths(subpaths: string[]): Promise<void>
+  /** Make these directories inside a volume, before a create mounts them as subpaths. */
+  ensureSubpaths(volume: string, subpaths: string[]): Promise<void>
   onDroppedPorts?(ports: PublishedPort[]): void
   /** What a container really has published, for inspect and `docker ps` (see `ResponseScope`). */
   published?(containerId: string): Binding[] | undefined
@@ -66,6 +68,12 @@ export interface ScopeLayerOptions {
 interface Owned {
   containers: Candidate[]
   own: Candidate | null
+}
+
+/** The environment's own container, with what a create is translated against: its mounts and its IPC mode. */
+interface OwnContainer extends Candidate {
+  mounts: EnvironmentMount[]
+  ipcShareable: boolean
 }
 
 const REFUSED_VERBS: Record<string, string> = {
@@ -103,15 +111,22 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
   const [labelKey, labelValue] = Object.entries(options.scope.labels)[0] ?? ['domo.env', ns.environmentId]
   const environmentLabel: [string, string] = [labelKey, labelValue]
   const labelFilter = `${labelKey}=${labelValue}`
-  const responseScope: ResponseScope = { ns, workspaceVolume: options.scope.workspaceVolume, published: options.published }
+  const responseScope: ResponseScope = { ns, published: options.published }
   const listFilter = encodeURIComponent(renderFilters({ label: [labelFilter] }))
 
-  let ownCache: Candidate | null = null
-  const ownContainer = async (): Promise<Candidate | null> => {
+  // Everything cached here is fixed when the container is created: its id,
+  // its name, its mounts and its IPC mode.
+  let ownCache: OwnContainer | null = null
+  const ownContainer = async (): Promise<OwnContainer | null> => {
     if (ownCache) return ownCache
     const response = await engine.request('GET', `/containers/${encodeURIComponent(options.ownContainer)}/json`)
     if (response.status !== 200) return null
-    ownCache = { id: String(response.body.Id), name: String(response.body.Name ?? '').replace(/^\//, '') }
+    ownCache = {
+      id: String(response.body.Id),
+      name: String(response.body.Name ?? '').replace(/^\//, ''),
+      mounts: mountTableFromInspect(response.body),
+      ipcShareable: response.body.HostConfig?.IpcMode === 'shareable'
+    }
     return ownCache
   }
 
@@ -203,6 +218,35 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
       .catch(options.onError)
   }
 
+  /**
+   * Docker Desktop cannot `restart` a container that bind-mounts a host
+   * socket: measured on 29.8, the restart fails with `failed to fulfil mount
+   * request: open /socket_mnt/<path>: no such file or directory`, and the
+   * container is left stopped — while `stop` then `start` of the same
+   * container works every time (its API proxy sets the socket up on a start,
+   * and a restart never passes through there). Every service given
+   * `/var/run/docker.sock` mounts this environment's proxy socket, so such a
+   * restart is done as a stop, here, and the request forwarded as the start.
+   * Null when the container mounts no such socket and the restart can go as
+   * it is.
+   */
+  const restartAsStop = async (id: string, query: URLSearchParams): Promise<{ answer: Outcome } | true | null> => {
+    const socket = options.scope.dockerSocket
+    if (!socket) return null
+    const inspected = await engine.request('GET', `/containers/${id}/json`)
+    const binds: unknown[] = Array.isArray(inspected.body?.HostConfig?.Binds) ? inspected.body.HostConfig.Binds : []
+    if (!binds.some(bind => typeof bind === 'string' && bind.startsWith(`${socket}:`))) return null
+    const stopQuery = new URLSearchParams()
+    for (const key of ['t', 'signal']) {
+      const value = query.get(key)
+      if (value !== null) stopQuery.set(key, value)
+    }
+    const suffix = stopQuery.size ? `?${stopQuery}` : ''
+    const stopped = await engine.request('POST', `/containers/${id}/stop${suffix}`)
+    if (stopped.status >= 400) return { answer: answer(stopped.status, stopped.body ?? { message: 'could not stop the container' }) }
+    return true
+  }
+
   const handlers = {
     async container(request: DoodRequest, next: Next, ref: string, action: string): Promise<Outcome> {
       const lookup = lookups()
@@ -217,6 +261,11 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
         ))
       }
       let forwarded = replaceRef(request, replacement)
+      if (action === 'restart' && resolution.found) {
+        const stopped = await restartAsStop(resolution.found.id, request.query)
+        if (stopped && stopped !== true) return stopped.answer
+        if (stopped) forwarded = { ...forwarded, path: forwarded.path.replace(/\/restart$/, '/start'), query: new URLSearchParams() }
+      }
       if (action === 'rename') {
         const name = request.query.get('name')
         if (name) forwarded = withQuery(forwarded, 'name', `${ns.prefix}${name.replace(/^\//, '')}`)
@@ -255,13 +304,18 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
         })
       ])
       const lookupName = (kind: ObjectKind) => (ref: string) => replacements.get(key(kind, ref)) ?? `${ns.prefix}${ref}`
-      const result = rewriteContainerCreate(spec, options.scope, {
+      const own = await ownContainer()
+      const result = rewriteContainerCreate(spec, { ...options.scope, ...(own && { mounts: own.mounts }) }, {
         name,
         container: lookupName('container'),
         network: lookupName('network'),
-        volume: lookupName('volume')
+        volume: lookupName('volume'),
+        environment: own && { id: own.id, ipcShareable: own.ipcShareable }
       })
-      await options.ensureSubpaths(result.requiredSubpaths)
+      if (result.refusal) return answer(400, domoError(result.refusal))
+      const byVolume = new Map<string, string[]>()
+      for (const { volume, subpath } of result.requiredSubpaths) byVolume.set(volume, [...(byVolume.get(volume) ?? []), subpath])
+      for (const [volume, subpaths] of byVolume) await options.ensureSubpaths(volume, subpaths)
       // Best effort: a service that cannot be reached by name is worse than
       // one that was never created, but not by enough to refuse the create.
       if (result.networksToJoin.length) await joinNetworks(result.networksToJoin)

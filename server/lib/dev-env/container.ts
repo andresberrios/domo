@@ -189,6 +189,10 @@ export function containerRunArgs(input: RunContainerInput): string[] {
     '--label', `domo.projectId=${input.projectId}`,
     '--label', `domo.portsAttributes=${JSON.stringify(input.config.portsAttributes ?? {})}`,
     '--add-host', 'host.docker.internal:host-gateway',
+    // So a service the agent starts with `--ipc host` can share it, the way
+    // `--network host` shares its network (`hostModes` in `dood/rewrite.ts`).
+    // Docker's default is `private`, which no other container can join.
+    '--ipc', 'shareable',
     ...mountArg({ source: input.workspaceVolume, target: input.workspacePath }),
     // Node and the ACP adapters, shared by every environment and never written to.
     ...mountArg({ source: input.runtimeVolume, target: '/opt/domo', readonly: true })
