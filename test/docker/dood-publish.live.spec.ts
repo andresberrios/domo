@@ -255,7 +255,7 @@ describe.skipIf(!daemon)('publishing on the environment\'s own localhost', () =>
     ])
     await eventually(async () => expect((await psql()).stdout).toBe('42'), 60_000)
     expect((await compose(A, 'pg', 'postgres.yaml', ['port', 'db', '5432'])).stdout).toBe('0.0.0.0:5432')
-    await compose(A, 'pg', 'postgres.yaml', ['down'])
+    await compose(A, 'pg', 'postgres.yaml', ['down', '--volumes'])
     await refused(A, 5432)
   }, 180_000)
 
