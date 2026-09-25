@@ -80,7 +80,12 @@ function populateScript(): string {
     + Object.values(ADAPTER_PACKAGES).map(entry => entry.spec).join(' '),
     ...wrappers,
     `chmod -R a+rX ${RUNTIME_ROOT}`,
-    `touch ${RUNTIME_ROOT}/.ready`
+    // On disk before the marker, and the marker on disk after it: a crash (a
+    // full disk took Docker Desktop down mid-build once) must not leave a
+    // marker in front of files that never made it out of the page cache.
+    'sync',
+    `touch ${RUNTIME_ROOT}/.ready`,
+    'sync'
   ].join('\n')
 }
 
@@ -99,12 +104,34 @@ export function ensureRuntimeVolume(): Promise<string> {
   return pending
 }
 
+/**
+ * What makes an existing volume trustworthy: the marker *and* its contents.
+ * Measured: after Docker Desktop crashed on a full disk mid-build, a volume
+ * carried `.ready` while its files had been cut short, and every environment
+ * mounting it would have failed. A volume that fails this is rebuilt — the
+ * populate script starts by clearing what it writes.
+ */
+export function readyCheckScript(): string {
+  const checks = [
+    `test -f ${RUNTIME_ROOT}/.ready`,
+    `${RUNTIME_ROOT}/node/bin/node --version >/dev/null`,
+    ...Object.values(ADAPTER_PACKAGES).flatMap(({ command, spec, entry }) => {
+      const packageName = spec.slice(0, spec.lastIndexOf('@'))
+      return [
+        `test -s ${RUNTIME_ROOT}/adapters/node_modules/${packageName}/${entry}`,
+        `test -x ${RUNTIME_ROOT}/bin/${command}`
+      ]
+    })
+  ]
+  return checks.join(' && ')
+}
+
 async function build(): Promise<string> {
   const volume = runtimeVolumeName(await dockerServerArch())
   await run('docker', ['volume', 'create', '--label', 'domo.runtime=true', volume])
   const ready = await run('docker', [
     'run', '--rm', '--volume', `${volume}:${RUNTIME_ROOT}`, RUNTIME_IMAGE,
-    'test', '-f', `${RUNTIME_ROOT}/.ready`
+    'sh', '-c', readyCheckScript()
   ]).then(() => true, () => false)
   if (ready) return volume
   await run('docker', [
