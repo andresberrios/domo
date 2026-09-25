@@ -9,21 +9,44 @@ import { REQUESTED_PORTS_LABEL, type PublishedPort } from '../dood/rewrite'
  * `127.0.0.1` reached it. On the shared daemon a service is a sibling with a
  * namespace of its own: invisible to `ss`, unreachable at `127.0.0.1`, and —
  * measured — unreachable by name as well when it listens on loopback, which is
- * what Vite and Next do by default. So each running service gets a small
- * long-lived *port helper* sharing its network namespace
- * (`--network container:<id>`): the scanner reads `/proc/net/tcp` through it,
- * whatever the service's own image has in it (often nothing — distroless), and
- * the userland forwarder `docker exec`s its relay in it exactly as it does in
- * the environment container. A helper does not follow its service through a
- * restart: measured, it keeps running in the old, empty namespace. So a helper
- * is keyed on the service's id *and* its start time, and replaced when either
- * moves.
+ * what Vite and Next do by default.
+ *
+ * So one *port helper* serves every service of every environment: a small
+ * long-lived container in the host's PID namespace, which `nsenter -n`s into a
+ * service's network namespace by the PID `docker inspect` reports. The scanner
+ * reads `/proc/net/tcp` that way, whatever the service's own image has in it
+ * (often nothing — distroless), and the userland forwarder runs its relay that
+ * way, with the helper's own Node. The PID is read fresh every time, so a
+ * restarted service needs nothing replaced. The alternative — a helper per
+ * service joined with `--network container:<id>` — needs no capabilities, but
+ * cannot follow its service through a restart (measured: it stays in the old,
+ * empty namespace), so it needed a container per service and a reconciler to
+ * keep them matched. An environment that can reach the host daemon can start
+ * this helper itself, so its capabilities give nobody anything new.
  */
 
 export const PORT_HELPER_ROLE_LABEL = 'domo.role'
 export const PORT_HELPER_ROLE = 'port-helper'
-export const PORT_HELPER_FOR_LABEL = 'domo.portsFor'
-export const PORT_HELPER_STARTED_LABEL = 'domo.portsStartedAt'
+
+/**
+ * `docker run` for the helper. `--pid=host` to see every container's PID, and
+ * `SYS_ADMIN` + `SYS_PTRACE` for `setns` into it — measured to be enough on
+ * Docker Desktop, so it is not `--privileged`.
+ */
+export function portHelperRunArgs(name: string, image: string): string[] {
+  return [
+    'run', '--detach', '--init', '--name', name,
+    '--pid', 'host',
+    '--cap-add', 'SYS_ADMIN', '--cap-add', 'SYS_PTRACE',
+    '--label', `${PORT_HELPER_ROLE_LABEL}=${PORT_HELPER_ROLE}`,
+    image, 'sleep', 'infinity'
+  ]
+}
+
+/** A command run inside a service's network namespace, through the helper. */
+export function inServiceNetwork(helper: string, pid: number, command: string[], interactive = false): string[] {
+  return ['exec', ...(interactive ? ['--interactive'] : []), helper, 'nsenter', '-t', String(pid), '-n', ...command]
+}
 
 /** The part of `docker inspect` the scanner reads. */
 export interface SiblingContainer {
@@ -31,7 +54,8 @@ export interface SiblingContainer {
   /** Without Docker's leading slash. */
   name: string
   running: boolean
-  startedAt: string
+  /** 0 when it is not running. */
+  pid: number
   labels: Record<string, string>
   networkMode: string
 }
@@ -41,51 +65,24 @@ export function siblingFromInspect(raw: any): SiblingContainer {
     id: String(raw?.Id ?? ''),
     name: String(raw?.Name ?? '').replace(/^\//, ''),
     running: !!raw?.State?.Running,
-    startedAt: String(raw?.State?.StartedAt ?? ''),
+    pid: Number(raw?.State?.Pid) || 0,
     labels: raw?.Config?.Labels ?? {},
     networkMode: String(raw?.HostConfig?.NetworkMode ?? '')
   }
 }
 
-export interface PortHelperPlan {
-  /** Running services, each with the helper that currently serves it, if any. */
-  services: Array<{ service: SiblingContainer, helper: string | null }>
-  /** Services that need a helper started. */
-  create: SiblingContainer[]
-  /** Helpers whose service is gone, stopped or restarted since. */
-  remove: string[]
-}
-
-const isHelper = (container: SiblingContainer) =>
-  container.labels[PORT_HELPER_ROLE_LABEL] === PORT_HELPER_ROLE
-
 /**
- * Which containers are services worth scanning, and which helpers to start and
- * remove. A container sharing another's namespace (`container:…`, a helper
- * included) has no ports of its own to find, and one on the host network or on
- * none has nothing a helper could reach.
+ * The containers worth scanning. One sharing another's namespace
+ * (`container:…`) has no ports of its own to find, and one on the host network
+ * or on none has nothing to reach.
  */
-export function planPortHelpers(containers: SiblingContainer[]): PortHelperPlan {
-  const helpers = containers.filter(isHelper)
-  const services = containers.filter(container => !isHelper(container)
-    && container.running
+export function scannableServices(containers: SiblingContainer[]): SiblingContainer[] {
+  return containers.filter(container => container.running
+    && container.pid > 0
+    && container.labels[PORT_HELPER_ROLE_LABEL] !== PORT_HELPER_ROLE
     && !container.networkMode.startsWith('container:')
     && container.networkMode !== 'host'
     && container.networkMode !== 'none')
-
-  const used = new Set<string>()
-  const plan: PortHelperPlan = { services: [], create: [], remove: [] }
-  for (const service of services) {
-    const helper = helpers.find(candidate => candidate.running
-      && !used.has(candidate.id)
-      && candidate.labels[PORT_HELPER_FOR_LABEL] === service.id
-      && candidate.labels[PORT_HELPER_STARTED_LABEL] === service.startedAt)
-    if (helper) used.add(helper.id)
-    else plan.create.push(service)
-    plan.services.push({ service, helper: helper?.id ?? null })
-  }
-  plan.remove = helpers.filter(helper => !used.has(helper.id)).map(helper => helper.id)
-  return plan
 }
 
 /**

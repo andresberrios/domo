@@ -3,16 +3,14 @@ import { createServer, type Server, type Socket } from 'node:net'
 
 import type { DevEnvironment, DevEnvironmentPort } from '../../shared/types'
 import { DOOD_CONTAINER_LABEL } from './dev-env/container'
-import { inspectContainer, run, type ContainerInspection } from './dev-env/docker'
+import { inspectContainer, resourcePrefix, run, type ContainerInspection } from './dev-env/docker'
 import { RUNTIME_IMAGE, RUNTIME_ROOT } from './dev-env/runtime-volume'
 import {
+  inServiceNetwork,
   parseListeningPorts,
-  planPortHelpers,
-  PORT_HELPER_FOR_LABEL,
-  PORT_HELPER_ROLE,
-  PORT_HELPER_ROLE_LABEL,
-  PORT_HELPER_STARTED_LABEL,
+  portHelperRunArgs,
   requestedPorts,
+  scannableServices,
   siblingFromInspect,
   type SiblingContainer
 } from './dev-env/service-ports'
@@ -27,12 +25,6 @@ import {
 } from './repo'
 
 const live = new Map<string, Server>()
-/**
- * The helper currently serving each service, by environment and service name.
- * Read when a connection arrives rather than captured when the forward starts,
- * because a service restarted since has a new helper — see `service-ports.ts`.
- */
-const helpers = new Map<string, Map<string, string>>()
 const HTTP_PORTS = new Set([3000, 3001, 4000, 4173, 4200, 5000, 5173, 8000, 8080, 8888])
 const CONTAINER_PROXY_SCRIPT = [
   "const net = require('node:net')",
@@ -76,17 +68,72 @@ function detectedPortAttributes(
   return undefined
 }
 
+/** The one port helper, named by install so two Domos on one daemon do not share it. */
+function portHelperName(): string {
+  return `${resourcePrefix()}port-helper`
+}
+
+let helperReady: Promise<string> | null = null
+/** Set once a check has seen the helper running; a connection trusts it rather than paying for a check. */
+let helperKnown: string | null = null
+
 /**
- * Where a connection to this port is relayed from: the environment container
- * itself, or the helper sharing a service's network namespace. Both run the
- * same Node relay — the environment's from the runtime volume, because the
- * project picks that image and it need not have a Node of its own; a helper's
- * from its own image, which is the image the runtime volume's Node came from.
+ * Start the port helper if it is not running, once at a time. Checked on every
+ * scan (one `docker inspect`), so a helper removed or stopped from outside, or
+ * left on an image an upgrade moved away from, comes back on its own.
  */
-function relayTarget(environment: DevEnvironment, service: string | null): { container: string, node: string } | null {
-  if (!service) return { container: reference(environment), node: `${RUNTIME_ROOT}/node/bin/node` }
-  const helper = helpers.get(environment.id)?.get(service)
-  return helper ? { container: helper, node: 'node' } : null
+function ensurePortHelper(): Promise<string> {
+  helperReady ??= (async () => {
+    const name = portHelperName()
+    const found = await run('docker', [
+      'inspect', '--format', '{{.State.Running}} {{.Config.Image}}', name
+    ], { allowFailure: true })
+    const [running, image] = found.stdout.split(' ')
+    if (found.stdout && image !== RUNTIME_IMAGE) {
+      await run('docker', ['rm', '--force', name], { allowFailure: true })
+    } else if (running === 'true') {
+      return name
+    } else if (running === 'false') {
+      await run('docker', ['start', name])
+      return name
+    }
+    await run('docker', portHelperRunArgs(name, RUNTIME_IMAGE))
+    return name
+  })().then((name) => {
+    helperKnown = name
+    return name
+  }).finally(() => { helperReady = null })
+  return helperReady
+}
+
+/**
+ * The PID of a service's first process, or null when it is not running — read
+ * per connection, so a restarted service is simply found again. The label is
+ * checked too: the name comes from a row, and a container that merely took the
+ * same name is not this environment's to reach into.
+ */
+async function servicePid(environmentId: string, service: string): Promise<number | null> {
+  const found = await run('docker', [
+    'inspect', '--format', `{{.State.Pid}} {{index .Config.Labels "${ENVIRONMENT_LABEL}"}}`, service
+  ], { allowFailure: true })
+  const [pid, owner] = found.stdout.split(' ')
+  return Number(pid) > 0 && owner === environmentId ? Number(pid) : null
+}
+
+/**
+ * The `docker` argv relaying a connection to this port: in the environment
+ * container itself with the runtime volume's Node (the project picks that
+ * image and it need not have one), or in a service's namespace through the
+ * port helper, with the helper's Node — the image the runtime volume's came from.
+ */
+async function relayArgs(environment: DevEnvironment, port: DevEnvironmentPort): Promise<string[] | null> {
+  const relay = ['--eval', CONTAINER_PROXY_SCRIPT, String(port.innerPort)]
+  if (!port.service) {
+    return ['exec', '--interactive', reference(environment), `${RUNTIME_ROOT}/node/bin/node`, ...relay]
+  }
+  const pid = await servicePid(environment.id, port.service)
+  if (!pid) return null
+  return inServiceNetwork(helperKnown ?? await ensurePortHelper(), pid, ['node', ...relay], true)
 }
 
 async function startUserlandForward(
@@ -100,32 +147,30 @@ async function startUserlandForward(
     current.close()
     live.delete(forwardKey)
   }
-  if (!relayTarget(environment, port.service)) {
-    throw new Error(port.service
-      ? `${port.service} is not running.`
-      : 'The development environment is not running.')
-  }
-  if (!port.service) {
+  if (port.service) {
+    if (!await servicePid(environment.id, port.service)) throw new Error(`${port.service} is not running.`)
+  } else {
     const inspection = await inspectContainer(reference(environment))
     if (!inspection?.running) throw new Error('The development environment is not running.')
   }
   const server = createServer((client: Socket) => {
-    const target = relayTarget(environment, port.service)
-    if (!target) {
-      client.destroy()
-      return
-    }
-    const proxy = spawn('docker', [
-      'exec', '--interactive', target.container,
-      target.node, '--eval', CONTAINER_PROXY_SCRIPT, String(port.innerPort)
-    ], { stdio: ['pipe', 'pipe', 'pipe'] })
-    proxy.stderr.resume()
-    client.pipe(proxy.stdin)
-    proxy.stdout.pipe(client)
-    client.on('error', () => proxy.kill())
-    client.on('close', () => proxy.kill())
-    proxy.on('error', () => client.destroy())
-    proxy.on('close', () => client.destroy())
+    // Whatever the client sends while the relay is being found waits in the
+    // socket's buffer: nothing reads it until it is piped.
+    client.on('error', () => client.destroy())
+    void relayArgs(environment, port).then((args) => {
+      if (!args || client.destroyed) {
+        client.destroy()
+        return
+      }
+      const proxy = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] })
+      proxy.stderr.resume()
+      client.pipe(proxy.stdin)
+      proxy.stdout.pipe(client)
+      client.on('error', () => proxy.kill())
+      client.on('close', () => proxy.kill())
+      proxy.on('error', () => client.destroy())
+      proxy.on('close', () => client.destroy())
+    }, () => client.destroy())
   })
   server.on('error', error => console.error(`[ports] ${forwardKey}`, error))
   await new Promise<void>((resolve, reject) => {
@@ -163,68 +208,30 @@ async function restoreUserlandForward(environment: DevEnvironment, port: DevEnvi
   }
 }
 
-/** One scan at a time per environment: a scan may start helpers, and two would start two. */
-const scanning = new Map<string, Promise<unknown>>()
-
-function serially<T>(environmentId: string, task: () => Promise<T>): Promise<T> {
-  const previous = scanning.get(environmentId) ?? Promise.resolve()
-  const next = previous.catch(() => {}).then(task)
-  scanning.set(environmentId, next)
-  void next.finally(() => { if (scanning.get(environmentId) === next) scanning.delete(environmentId) })
-  return next
-}
-
-async function startPortHelper(environmentId: string, service: SiblingContainer): Promise<string> {
-  const { stdout } = await run('docker', [
-    'run', '--detach', '--rm', '--init',
-    '--network', `container:${service.id}`,
-    // Labelled with the environment, so stopping and retiring it take the
-    // helpers along with the services they serve.
-    '--label', `${ENVIRONMENT_LABEL}=${environmentId}`,
-    '--label', `${PORT_HELPER_ROLE_LABEL}=${PORT_HELPER_ROLE}`,
-    '--label', `${PORT_HELPER_FOR_LABEL}=${service.id}`,
-    '--label', `${PORT_HELPER_STARTED_LABEL}=${service.startedAt}`,
-    RUNTIME_IMAGE, 'sleep', 'infinity'
-  ])
-  return stdout.trim()
-}
-
 /**
  * The services an environment started on the host daemon and what each is
- * listening on, reconciling one port helper per running service on the way.
+ * listening on, read inside each one's network namespace through the helper.
  */
 async function scanServices(environmentId: string): Promise<Array<{ service: SiblingContainer, ports: Set<number> }>> {
-  return serially(environmentId, async () => {
-    const ids = await run('docker', ['ps', '-aq', '--filter', `label=${ENVIRONMENT_LABEL}=${environmentId}`], {
+  const ids = await run('docker', ['ps', '-q', '--filter', `label=${ENVIRONMENT_LABEL}=${environmentId}`], {
+    allowFailure: true
+  })
+  const list = ids.stdout.split('\n').map(line => line.trim()).filter(Boolean)
+  if (!list.length) return []
+  let containers: SiblingContainer[] = []
+  const inspected = await run('docker', ['inspect', ...list], { allowFailure: true })
+  try {
+    containers = (JSON.parse(inspected.stdout || '[]') as unknown[]).map(siblingFromInspect)
+  } catch { /* a container removed between the two calls; the next scan sees it */ }
+  const services = scannableServices(containers)
+  if (!services.length) return []
+  const helper = await ensurePortHelper()
+  return Promise.all(services.map(async (service) => {
+    const output = await run('docker', inServiceNetwork(helper, service.pid, ['cat', '/proc/net/tcp', '/proc/net/tcp6']), {
       allowFailure: true
     })
-    const list = ids.stdout.split('\n').map(line => line.trim()).filter(Boolean)
-    let containers: SiblingContainer[] = []
-    if (list.length) {
-      const inspected = await run('docker', ['inspect', ...list], { allowFailure: true })
-      try {
-        containers = (JSON.parse(inspected.stdout || '[]') as unknown[]).map(siblingFromInspect)
-      } catch { /* a container removed between the two calls; the next scan sees it */ }
-    }
-    const plan = planPortHelpers(containers)
-    if (plan.remove.length) await run('docker', ['rm', '--force', ...plan.remove], { allowFailure: true })
-
-    const serving = new Map<string, string>()
-    const found = await Promise.all(plan.services.map(async ({ service, helper }) => {
-      const current = helper ?? await startPortHelper(environmentId, service).catch((error) => {
-        console.warn(`[ports] no helper for ${service.name}:`, error instanceof Error ? error.message : error)
-        return null
-      })
-      if (!current) return { service, ports: new Set<number>() }
-      serving.set(service.name, current)
-      const output = await run('docker', ['exec', current, 'cat', '/proc/net/tcp', '/proc/net/tcp6'], {
-        allowFailure: true
-      })
-      return { service, ports: parseListeningPorts(output.stdout) }
-    }))
-    helpers.set(environmentId, serving)
-    return found
-  })
+    return { service, ports: parseListeningPorts(output.stdout) }
+  }))
 }
 
 async function listeningTcpPorts(environment: DevEnvironment): Promise<Set<number>> {
@@ -364,7 +371,6 @@ export function stopEnvironmentForwarders(environmentId: string): void {
     server.close()
     live.delete(forwardKey)
   }
-  helpers.delete(environmentId)
 }
 
 export async function rebuildEnvironmentForwarders(): Promise<void> {
@@ -379,5 +385,4 @@ export async function rebuildEnvironmentForwarders(): Promise<void> {
 export function stopAllEnvironmentForwarders(): void {
   for (const server of live.values()) server.close()
   live.clear()
-  helpers.clear()
 }

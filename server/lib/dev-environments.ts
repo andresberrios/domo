@@ -488,10 +488,6 @@ export async function stopEnvironment(id: string): Promise<DevEnvironment> {
   const inspection = await inspectContainer(containerReference(environment))
   stopEnvironmentForwarders(id)
   if (inspection?.running) await run('docker', ['stop', inspection.id])
-  // After the environment itself: the port scanner only looks at a running
-  // environment, so this order keeps a scan from starting a helper for a
-  // service that is on its way down. Anything a scan still manages to start
-  // is removed by the next one, or by retirement.
   if (hasDockerProxy(inspection)) await stopEnvironmentContainers(id)
   return (await updateDevEnvironment(id, { status: 'stopped' }))!
 }

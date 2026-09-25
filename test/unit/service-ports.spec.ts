@@ -1,100 +1,62 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  inServiceNetwork,
   parseListeningPorts,
-  planPortHelpers,
+  portHelperRunArgs,
   requestedPorts,
+  scannableServices,
   siblingFromInspect,
   type SiblingContainer
 } from '../../server/lib/dev-env/service-ports'
 
 /**
- * Which of an environment's containers on the host daemon get a port helper,
- * and which helpers are stale. A helper shares its service's network
- * namespace, and — measured — does not follow it through a restart: it keeps
- * running in the old, empty one. So "the right helper" is one naming the
- * service's id *and* its start time.
+ * One port helper serves every service: it enters a service's network
+ * namespace by PID, read fresh each time, so a restarted service needs
+ * nothing replaced — the thing a helper per service could not do.
  */
 
 function container(overrides: Partial<SiblingContainer> & { id: string }): SiblingContainer {
   return {
     name: overrides.id,
     running: true,
-    startedAt: '2026-09-24T10:00:00Z',
+    pid: 4242,
     labels: { 'domo.env': 'env_1' },
     networkMode: 'stack_default',
     ...overrides
   }
 }
 
-function helper(id: string, forId: string, startedAt = '2026-09-24T10:00:00Z', running = true): SiblingContainer {
-  return container({
-    id,
-    running,
-    networkMode: `container:${forId}`,
-    labels: {
-      'domo.env': 'env_1',
-      'domo.role': 'port-helper',
-      'domo.portsFor': forId,
-      'domo.portsStartedAt': startedAt
-    }
-  })
-}
-
-describe('planPortHelpers', () => {
-  it('asks for a helper per running service that has none', () => {
-    const plan = planPortHelpers([container({ id: 'web' }), container({ id: 'db' })])
-
-    expect(plan.create.map(service => service.id)).toEqual(['web', 'db'])
-    expect(plan.remove).toEqual([])
-    expect(plan.services.map(entry => entry.helper)).toEqual([null, null])
-  })
-
-  it('keeps a helper that still serves its service', () => {
-    const plan = planPortHelpers([container({ id: 'web' }), helper('h1', 'web')])
-
-    expect(plan.create).toEqual([])
-    expect(plan.remove).toEqual([])
-    expect(plan.services).toEqual([{ service: expect.objectContaining({ id: 'web' }), helper: 'h1' }])
-  })
-
-  it('replaces a helper whose service restarted since', () => {
-    const plan = planPortHelpers([
-      container({ id: 'web', startedAt: '2026-09-24T11:00:00Z' }),
-      helper('h1', 'web', '2026-09-24T10:00:00Z')
-    ])
-
-    expect(plan.create.map(service => service.id)).toEqual(['web'])
-    expect(plan.remove).toEqual(['h1'])
-  })
-
-  it('removes a helper whose service is stopped or gone, and scans no stopped service', () => {
-    const plan = planPortHelpers([
-      container({ id: 'web', running: false }),
-      helper('h1', 'web'),
-      helper('h2', 'removed-long-ago')
-    ])
-
-    expect(plan.services).toEqual([])
-    expect(plan.create).toEqual([])
-    expect(plan.remove).toEqual(['h1', 'h2'])
-  })
-
-  it('skips what has no namespace of its own to scan', () => {
-    const plan = planPortHelpers([
+describe('scannableServices', () => {
+  it('keeps running services with a namespace of their own', () => {
+    const services = scannableServices([
+      container({ id: 'web' }),
+      container({ id: 'stopped', running: false, pid: 0 }),
       container({ id: 'sidecar', networkMode: 'container:web' }),
       container({ id: 'hostnet', networkMode: 'host' }),
-      container({ id: 'offline', networkMode: 'none' })
+      container({ id: 'offline', networkMode: 'none' }),
+      container({ id: 'helper', labels: { 'domo.role': 'port-helper' } })
     ])
 
-    expect(plan.services).toEqual([])
+    expect(services.map(service => service.id)).toEqual(['web'])
+  })
+})
+
+describe('the port helper', () => {
+  it('sees every PID and may enter a namespace, without being privileged', () => {
+    const args = portHelperRunArgs('domo-dev-port-helper', 'node:22-bookworm-slim')
+
+    expect(args).toEqual(expect.arrayContaining(['--pid', 'host', 'SYS_ADMIN', 'SYS_PTRACE', 'domo.role=port-helper']))
+    expect(args).not.toContain('--privileged')
+    // No environment label: it serves them all, so no environment's sweep may take it.
+    expect(args.join(' ')).not.toContain('domo.env')
   })
 
-  it('keeps one helper and drops a duplicate a race left behind', () => {
-    const plan = planPortHelpers([container({ id: 'web' }), helper('h1', 'web'), helper('h2', 'web')])
-
-    expect(plan.services[0]!.helper).toBe('h1')
-    expect(plan.remove).toEqual(['h2'])
+  it('runs a command inside a service\'s network namespace', () => {
+    expect(inServiceNetwork('h', 4242, ['cat', '/proc/net/tcp'])).toEqual(
+      ['exec', 'h', 'nsenter', '-t', '4242', '-n', 'cat', '/proc/net/tcp']
+    )
+    expect(inServiceNetwork('h', 4242, ['node'], true).slice(0, 3)).toEqual(['exec', '--interactive', 'h'])
   })
 })
 
@@ -137,11 +99,11 @@ describe('requestedPorts and siblingFromInspect', () => {
     expect(siblingFromInspect({
       Id: 'abc',
       Name: '/stack-web-1',
-      State: { Running: true, StartedAt: 't' },
+      State: { Running: true, Pid: 4242 },
       Config: { Labels: { a: 'b' } },
       HostConfig: { NetworkMode: 'stack_default' }
     })).toEqual({
-      id: 'abc', name: 'stack-web-1', running: true, startedAt: 't', labels: { a: 'b' }, networkMode: 'stack_default'
+      id: 'abc', name: 'stack-web-1', running: true, pid: 4242, labels: { a: 'b' }, networkMode: 'stack_default'
     })
   })
 })

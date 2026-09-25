@@ -140,23 +140,28 @@ things that are easy to get wrong.
   Both sockets need `allowHalfOpen: true` — a client with no stdin half-closes
   after the attach, and Node's default then drops the container's output, so
   `docker run` printed nothing and exited 0.
-- **A compose service's ports are found and forwarded through a helper in its
-  network namespace.** On a daemon of its own a service's port landed in the
+- **A compose service's ports are found and forwarded by entering its network
+  namespace.** On a daemon of its own a service's port landed in the
   environment's namespace, where `ss` saw it; as a sibling on the host daemon
   it is invisible there and — measured — unreachable even by network name when
-  it listens on loopback, which Vite and Next do by default. So each running
-  service gets a long-lived `sleep` container sharing its namespace
+  it listens on loopback, which Vite and Next do by default. So one global
+  *port helper* (`<prefix>port-helper`, `--pid=host` plus `SYS_ADMIN` and
+  `SYS_PTRACE`, measured to be enough without `--privileged`) `nsenter -n`s
+  into a service by the PID `docker inspect` reports
   (`server/lib/dev-env/service-ports.ts`): the scanner reads `/proc/net/tcp`
-  through it (distroless images have no shell) and the userland forwarder
-  `docker exec`s its relay in it, exactly as it does in the environment. A
-  helper does not follow its service through a restart — it keeps running in
-  the old, empty namespace — so it is keyed on the service's id *and* start
-  time and looked up per connection. A port the stack asked to publish is
-  forwarded the first time it is seen, on the host port it named if free; a
-  row is keyed by `service` too, because two services may both listen on 80.
-  **Do not reach services by name from the environment instead** (fails for
-  every loopback-bound dev server, after listing it as found), **and do not add
-  a reverse proxy** — the userland forwarder already makes collisions
+  that way (distroless images have no shell) and the userland forwarder runs
+  its relay that way, with the PID read per connection so a restarted service
+  needs nothing replaced. It replaced a helper *per service* joined with
+  `--network container:<id>`, which needs no capabilities but stays in the old,
+  empty namespace when its service restarts, and so needed a reconciler; an
+  environment that can reach the host daemon can start this helper itself, so
+  the capabilities give nobody anything new. It carries no environment label on
+  purpose — no environment's sweep may take it. A port the stack asked to
+  publish is forwarded the first time it is seen, on the host port it named if
+  free; a row is keyed by `service` too, because two services may both listen
+  on 80. **Do not reach services by name from the environment instead** (fails
+  for every loopback-bound dev server, after listing it as found), **and do not
+  add a reverse proxy** — the userland forwarder already makes collisions
   impossible and gives the UI a port, and a Caddy/Traefik layer was proposed
   and rejected for duplicating it.
 - **An environment is a namespace, not a security boundary, so the host user's

@@ -88,7 +88,7 @@ describe('refreshEnvironmentPorts on the host daemon', () => {
   const web = {
     Id: 'web-sha',
     Name: '/stack-web-1',
-    State: { Running: true, StartedAt: '2026-09-24T10:00:00Z' },
+    State: { Running: true, Pid: 4242 },
     Config: {
       Labels: {
         'domo.env': 'env_1',
@@ -100,28 +100,18 @@ describe('refreshEnvironmentPorts on the host daemon', () => {
     HostConfig: { NetworkMode: 'stack_default' }
   }
   const LOOPBACK_8080 = '   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 1 1\n'
+  const HELPER = 'domo-dev-port-helper'
 
-  function daemon(options: { withHelper?: boolean } = {}) {
-    const helper = {
-      Id: 'helper-sha',
-      Name: '/helper',
-      State: { Running: true, StartedAt: 't' },
-      Config: {
-        Labels: {
-          'domo.env': 'env_1',
-          'domo.role': 'port-helper',
-          'domo.portsFor': 'web-sha',
-          'domo.portsStartedAt': '2026-09-24T10:00:00Z'
-        }
-      },
-      HostConfig: { NetworkMode: 'container:web-sha' }
-    }
+  /** A daemon with one service, and the global helper running or not. */
+  function daemon(options: { helperRunning?: boolean } = {}) {
     run.mockImplementation(async (_program, args) => {
-      if (args[0] === 'ps') return { stdout: options.withHelper ? 'web-sha\nhelper-sha' : 'web-sha', stderr: '' }
-      if (args[0] === 'inspect') {
-        return { stdout: JSON.stringify(options.withHelper ? [web, helper] : [web]), stderr: '' }
+      if (args[0] === 'ps') return { stdout: 'web-sha', stderr: '' }
+      if (args[0] === 'inspect' && args.at(-1) === HELPER) {
+        return { stdout: options.helperRunning ? 'true node:22-bookworm-slim' : '', stderr: '' }
       }
-      if (args[0] === 'run') return { stdout: 'new-helper-sha\n', stderr: '' }
+      // The per-connection PID lookup, owner label included.
+      if (args[0] === 'inspect' && args.includes('--format')) return { stdout: '4242 env_1', stderr: '' }
+      if (args[0] === 'inspect') return { stdout: JSON.stringify([web]), stderr: '' }
       if (args[0] === 'exec' && args.includes('/proc/net/tcp')) return { stdout: LOOPBACK_8080, stderr: '' }
       return { stdout: '', stderr: '' }
     })
@@ -133,14 +123,16 @@ describe('refreshEnvironmentPorts on the host daemon', () => {
 
   afterEach(() => stopAllEnvironmentForwarders())
 
-  it('finds a loopback port in a sibling through a helper sharing its namespace', async () => {
+  it('finds a loopback port in a sibling by entering its namespace through the one helper', async () => {
     daemon()
 
     await refreshEnvironmentPorts('env_1')
 
     const started = run.mock.calls.find(([, args]) => args[0] === 'run')![1]
-    expect(started).toEqual(expect.arrayContaining(['--network', 'container:web-sha', 'domo.env=env_1']))
-    expect(run).toHaveBeenCalledWith('docker', ['exec', 'new-helper-sha', 'cat', '/proc/net/tcp', '/proc/net/tcp6'], expect.anything())
+    expect(started).toEqual(expect.arrayContaining(['--name', HELPER, '--pid', 'host']))
+    expect(run).toHaveBeenCalledWith(
+      'docker', ['exec', HELPER, 'nsenter', '-t', '4242', '-n', 'cat', '/proc/net/tcp', '/proc/net/tcp6'], expect.anything()
+    )
     expect(repo.upsertDevEnvironmentPort).toHaveBeenCalledWith(expect.objectContaining({
       service: 'stack-web-1',
       innerPort: 8080,
@@ -151,7 +143,7 @@ describe('refreshEnvironmentPorts on the host daemon', () => {
   })
 
   it('forwards a port the stack asked to publish, the first time it is seen', async () => {
-    daemon({ withHelper: true })
+    daemon({ helperRunning: true })
 
     await refreshEnvironmentPorts('env_1')
 
@@ -163,7 +155,7 @@ describe('refreshEnvironmentPorts on the host daemon', () => {
   })
 
   it('does not forward it again once the row exists', async () => {
-    daemon({ withHelper: true })
+    daemon({ helperRunning: true })
     repo.listDevEnvironmentPorts.mockResolvedValue([{
       id: 'port_1', devEnvironmentId: 'env_1', service: 'stack-web-1', innerPort: 8080, protocol: 'tcp',
       appProtocol: 'http', label: 'web', source: 'detected', hostPort: null, listening: true, forwarded: false, url: null

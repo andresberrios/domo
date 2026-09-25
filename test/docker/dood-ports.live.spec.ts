@@ -11,7 +11,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
  * so the old in-container `ss` stops seeing it and `127.0.0.1` stops reaching
  * it, and nothing errors. The service here listens on loopback only — what
  * Vite and Next do by default, and the case that rules out reaching a service
- * by name — so the only way this passes is through a helper in its namespace.
+ * by name — so the only way this passes is through the port helper entering
+ * its namespace.
  *
  * Postgres is replaced by an in-memory table; everything Docker is real.
  * Opt in with `pnpm test:docker`.
@@ -54,6 +55,10 @@ vi.mock('../../server/lib/repo', () => {
   }
 })
 
+// Its own port helper, not the developer's: the helper is one per install.
+process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = 'domo-dood-ports-test-'
+const PORT_HELPER = 'domo-dood-ports-test-port-helper'
+
 const { run } = await import('../../server/lib/dev-env/docker')
 const { RUNTIME_IMAGE } = await import('../../server/lib/dev-env/runtime-volume')
 const { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
@@ -76,9 +81,7 @@ const compose = (args: string[]) => run('docker', ['compose', '-p', PROJECT, ...
   env: { ...process.env, DOCKER_HOST: `unix://${socketPath}` }
 })
 
-const helpersRunning = async () => (await run('docker', [
-  'ps', '-q', '--filter', `label=domo.env=${ENV_ID}`, '--filter', 'label=domo.role=port-helper'
-])).stdout.split('\n').filter(Boolean)
+const helperId = async () => (await run('docker', ['inspect', '--format', '{{.Id}}', PORT_HELPER])).stdout
 
 /** Poll a scan until the service's port shows up forwarded: a server takes a moment to listen. */
 async function forwardedWeb() {
@@ -135,7 +138,9 @@ describe.skipIf(!daemon)('ports in a stack on the host daemon', () => {
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
     await sweepEnvironmentResources(ENV_ID)
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
+    await run('docker', ['rm', '-f', PORT_HELPER], { allowFailure: true })
     delete process.env.NUXT_DOOD_SOCKET_DIR
+    delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
     for (const dir of [workDir, socketDir]) if (dir) await rm(dir, { recursive: true, force: true })
   }, 180_000)
 
@@ -144,27 +149,30 @@ describe.skipIf(!daemon)('ports in a stack on the host daemon', () => {
 
     expect(web).toMatchObject({ source: 'detected', label: 'web', forwarded: true })
     expect(await (await fetch(web.url!)).text()).toBe('loopback-ok')
-    expect(await helpersRunning()).toHaveLength(1)
+    // The helper carries no environment label: it serves every one of them.
+    const labels = await run('docker', ['inspect', '--format', '{{json .Config.Labels}}', PORT_HELPER])
+    expect(JSON.parse(labels.stdout)).not.toHaveProperty('domo.env')
   }, 120_000)
 
-  it('follows the service through a restart with a new helper', async () => {
-    const before = await helpersRunning()
+  it('follows the service through a restart with nothing replaced', async () => {
+    const before = await helperId()
+    const url = (await forwardedWeb()).url!
     await compose(['restart', 'web'])
 
     const web = await forwardedWeb()
-    // The same host port: the forward outlives the helper it relays through.
+    // The same host port and the same helper: only the PID it enters moved.
+    expect(web.url).toBe(url)
     expect(await (await fetch(web.url!)).text()).toBe('loopback-ok')
-    const after = await helpersRunning()
-    expect(after).toHaveLength(1)
-    expect(after).not.toEqual(before)
+    expect(await helperId()).toBe(before)
   }, 120_000)
 
-  it('leaves nothing behind once the environment is swept', async () => {
+  it('leaves nothing of the environment behind once it is swept, and the helper for the next one', async () => {
     stopAllEnvironmentForwarders()
     await run('docker', ['rm', '-f', ENV_CONTAINER])
     await sweepEnvironmentResources(ENV_ID)
 
     const left = await run('docker', ['ps', '-aq', '--filter', `label=domo.env=${ENV_ID}`])
     expect(left.stdout).toBe('')
+    expect(await helperId()).not.toBe('')
   }, 120_000)
 })
