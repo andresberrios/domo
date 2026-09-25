@@ -4,8 +4,11 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { run } from '../../server/lib/dev-env/docker'
+import { createEngineClient } from '../../server/lib/dood/engine'
+import { namespaceFor } from '../../server/lib/dood/names'
 import { startDoodProxy, type DoodProxy } from '../../server/lib/dood/proxy'
 import type { PublishedPort } from '../../server/lib/dood/rewrite'
+import { errorRewriter, scopeLayer } from '../../server/lib/dood/scope-layer'
 
 /**
  * The proxy against a real daemon. The pure translation is covered in
@@ -21,6 +24,9 @@ import type { PublishedPort } from '../../server/lib/dood/rewrite'
 const VOLUME = 'domo-dood-test-workspace'
 const WORKSPACE = '/workspaces/probe'
 const HELPER = 'alpine:3'
+const ENV_ID = 'env_probe'
+/** A stand-in for the environment's own container: what joins the networks a service does. */
+const ENV_CONTAINER = 'domo-dood-test-env'
 
 const daemon = await run('docker', ['info', '--format', '{{.ServerVersion}}'], { allowFailure: true })
   .then(output => output.stdout.length > 0).catch(() => false)
@@ -28,7 +34,6 @@ const daemon = await run('docker', ['info', '--format', '{{.ServerVersion}}'], {
 let proxy: DoodProxy
 let socketDir: string
 let dropped: PublishedPort[] = []
-let joined: string[] = []
 
 /** Run the host `docker` CLI against the proxy instead of the daemon. */
 const viaProxy = (args: string[], allowFailure = false) =>
@@ -43,23 +48,33 @@ describe.skipIf(!daemon)('DooD socket proxy', () => {
     await run('docker', ['volume', 'create', VOLUME])
     await inVolume('mkdir -p /w/app && echo hello > /w/app/file.txt && echo root > /w/root.txt')
 
+    await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
+    await run('docker', ['run', '-d', '--name', ENV_CONTAINER, HELPER, 'sleep', '600'])
+
     socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-'))
+    const ns = namespaceFor(ENV_ID)
     proxy = await startDoodProxy({
       socketPath: join(socketDir, 'docker.sock'),
-      scope: { workspacePath: WORKSPACE, workspaceVolume: VOLUME, labels: { 'domo.env': 'env_probe' } },
-      ensureSubpaths: async subpaths => {
-        for (const subpath of subpaths) await inVolume(`mkdir -p ${JSON.stringify(`/w/${subpath}`)}`)
-      },
-      joinNetworks: async networks => { joined.push(...networks) },
-      onDroppedPorts: ports => { dropped.push(...ports) }
+      layers: [scopeLayer({
+        ns,
+        scope: { workspacePath: WORKSPACE, workspaceVolume: VOLUME, labels: { 'domo.env': ENV_ID } },
+        engine: createEngineClient('/var/run/docker.sock'),
+        ownContainer: ENV_CONTAINER,
+        ensureSubpaths: async (subpaths) => {
+          for (const subpath of subpaths) await inVolume(`mkdir -p ${JSON.stringify(`/w/${subpath}`)}`)
+        },
+        onDroppedPorts: (ports) => { dropped.push(...ports) }
+      })],
+      rewriteError: errorRewriter(ns)
     })
   }, 120_000)
 
   afterAll(async () => {
     await proxy?.close()
+    await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
     // By volume as well as by label: a `--rm` container from the last test may
     // still be unwinding, and the volume cannot go while anything references it.
-    for (const filter of ['label=domo.env=env_probe', `volume=${VOLUME}`]) {
+    for (const filter of [`label=domo.env=${ENV_ID}`, `volume=${VOLUME}`]) {
       const found = await run('docker', ['ps', '-aq', '--filter', filter], { allowFailure: true })
       if (found.stdout) await run('docker', ['rm', '-f', ...found.stdout.split('\n')], { allowFailure: true })
     }
@@ -135,12 +150,15 @@ describe.skipIf(!daemon)('DooD socket proxy', () => {
     await run('docker', ['rm', '-f', id], { allowFailure: true })
   }, 120_000)
 
-  it('reports the networks the environment container must join', async () => {
-    joined = []
-    await run('docker', ['network', 'create', 'domo-dood-test-net'], { allowFailure: true })
-    const created = await viaProxy(['create', '--network', 'domo-dood-test-net', HELPER, 'true'])
-    expect(joined).toContain('domo-dood-test-net')
-    await run('docker', ['rm', '-f', created.stdout.trim()], { allowFailure: true })
-    await run('docker', ['network', 'rm', 'domo-dood-test-net'], { allowFailure: true })
+  it('joins the environment to a network a service joins', async () => {
+    // Made through the proxy, so it is the environment's network and not the host's.
+    await viaProxy(['network', 'create', 'probe-net'])
+    const created = await viaProxy(['create', '--network', 'probe-net', HELPER, 'true'])
+    const networks = await run('docker', ['inspect', '--format', '{{json .NetworkSettings.Networks}}', ENV_CONTAINER])
+    expect(Object.keys(JSON.parse(networks.stdout))).toContain(`${ENV_ID}-probe-net`)
+    await viaProxy(['rm', '-f', created.stdout.trim()])
+    await viaProxy(['network', 'rm', 'probe-net'])
+    const left = await run('docker', ['network', 'ls', '-q', '--filter', `name=${ENV_ID}-probe-net`])
+    expect(left.stdout).toBe('')
   }, 120_000)
 })

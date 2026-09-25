@@ -4,16 +4,19 @@ import { join } from 'node:path'
 
 import { run } from '../dev-env/docker'
 import { dataDir } from '../paths'
+import { createEngineClient } from './engine'
+import { namespaceFor } from './names'
 import { startDoodProxy, type DoodProxy } from './proxy'
 import type { PublishedPort } from './rewrite'
+import { errorRewriter, scopeLayer } from './scope-layer'
 
 /**
  * The running proxies, one per dev environment, and the Docker work they need.
  *
- * `proxy.ts` is deliberately pure of Docker: it is handed `ensureSubpaths` and
- * `joinNetworks` and knows nothing about how they happen. This is where those
- * are, along with the socket's path and the registry that survives a Nitro
- * reload.
+ * `proxy.ts` is only transport and the layers above it take their Docker
+ * access as parameters. This is where those are made — the Engine API client
+ * on the daemon's socket, the helper run that creates workspace subpaths —
+ * along with the socket's path and the registry that survives a Nitro reload.
  *
  * The socket path is derived from the environment id rather than stored,
  * because it has to be the *same* path after a restart: mounts are fixed when a
@@ -60,6 +63,9 @@ export function doodSocketPath(environmentId: string): string {
 
 const live = new Map<string, DoodProxy>()
 
+/** The host daemon. The proxy and its Engine API client both talk to it directly. */
+const DAEMON_SOCKET = '/var/run/docker.sock'
+
 export interface DoodProxyInput {
   environmentId: string
   /** The environment's own container, which is what joins a new network. */
@@ -87,53 +93,40 @@ export async function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy>
   const existing = live.get(input.environmentId)
   if (existing) return existing
 
+  const ns = namespaceFor(input.environmentId)
+  const report = (error: unknown) =>
+    console.warn(`[dood] ${input.environmentId}:`, error instanceof Error ? error.message : error)
   const proxy = await startDoodProxy({
     socketPath: doodSocketPath(input.environmentId),
-    scope: {
-      workspacePath: input.workspacePath,
-      workspaceVolume: input.workspaceVolume,
-      labels: doodLabels(input.environmentId)
-    },
-    ensureSubpaths: async (subpaths) => {
-      const wanted = subpaths.filter(safeSubpath)
-      if (!wanted.length) return
-      // One helper run for the lot: a create waits on this.
-      await run('docker', [
-        'run', '--rm', '-v', `${input.workspaceVolume}:/workspace`, input.helperImage,
-        'mkdir', '-p', ...wanted.map(subpath => `/workspace/${subpath}`)
-      ])
-    },
-    joinNetworks: async (networks) => {
-      for (const network of networks) {
-        // Already-connected is the ordinary case once a stack has more than
-        // one service, and it is not worth distinguishing from a real failure
-        // the agent can see for itself.
-        await run('docker', ['network', 'connect', network, input.containerReference], {
-          allowFailure: true
-        })
-      }
-    },
-    leaveNetwork: async (network, { onlyIfAlone }) => {
-      if (onlyIfAlone) {
-        const inspected = await run('docker', [
-          'network', 'inspect', '--format', '{{json .Containers}}', network
-        ], { allowFailure: true })
-        let endpoints: Array<[string, { Name?: string }]>
-        try {
-          endpoints = Object.entries(JSON.parse(inspected.stdout || '{}') ?? {})
-        } catch { return }
-        const ours = ([id, endpoint]: [string, { Name?: string }]) =>
-          id.startsWith(input.containerReference) || endpoint.Name === input.containerReference
-        if (!endpoints.length || !endpoints.every(ours)) return
-      }
-      // Not joined is the ordinary case (a network the environment never
-      // needed), and the request that follows reports anything real.
-      await run('docker', ['network', 'disconnect', '--force', network, input.containerReference], {
-        allowFailure: true
-      })
-    },
-    onDroppedPorts: input.onDroppedPorts,
-    onError: error => console.warn(`[dood] ${input.environmentId}:`, error instanceof Error ? error.message : error)
+    layers: [scopeLayer({
+      ns,
+      scope: {
+        workspacePath: input.workspacePath,
+        workspaceVolume: input.workspaceVolume,
+        labels: doodLabels(input.environmentId)
+      },
+      engine: createEngineClient(DAEMON_SOCKET),
+      ownContainer: input.containerReference,
+      ensureSubpaths: async (subpaths) => {
+        const wanted = subpaths.filter(safeSubpath)
+        if (!wanted.length) return
+        // One helper run for the lot: a create waits on this.
+        await run('docker', [
+          'run', '--rm', '-v', `${input.workspaceVolume}:/workspace`, input.helperImage,
+          'mkdir', '-p', ...wanted.map(subpath => `/workspace/${subpath}`)
+        ])
+      },
+      onDroppedPorts: input.onDroppedPorts,
+      onError: report
+    })],
+    rewriteError: errorRewriter(ns),
+    dockerSocket: DAEMON_SOCKET,
+    onError: report,
+    // Every request line and what became of it, for working out what a client
+    // really sends — which is rarely what its documentation suggests.
+    ...(process.env.NUXT_DOOD_DEBUG && {
+      onRequest: ({ line, kind }) => console.info(`[dood] ${input.environmentId} ${kind}: ${line}`)
+    })
   })
 
   live.set(input.environmentId, proxy)

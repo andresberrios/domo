@@ -133,13 +133,13 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
 
     // And the environment's own container really joined the stack's network,
     // so the agent can reach `web` by name.
-    expect(await envNetworks()).toContain(`${PROJECT}_default`)
+    expect(await envNetworks()).toContain(`${ENV_ID}-${PROJECT}_default`)
   }, 180_000)
 
   it('can take the stack down although the environment joined its network', async () => {
     const down = await compose(['down'], true)
     expect(down.stderr).not.toMatch(/active endpoints/)
-    expect(await envNetworks()).not.toContain(`${PROJECT}_default`)
+    expect(await envNetworks()).not.toContain(`${ENV_ID}-${PROJECT}_default`)
     expect(await labelled('network')).toHaveLength(0)
   }, 180_000)
 

@@ -112,11 +112,130 @@ function parsePortKey(key: string, bindings: unknown): PublishedPort | null {
   return { containerPort, protocol, hostPort: Number.isInteger(hostPort) && hostPort > 0 ? hostPort : null }
 }
 
-export function rewriteContainerCreate(input: unknown, scope: DoodScope): RewriteResult {
+/**
+ * How the references in a create are to be replaced — already resolved by the
+ * caller against what the environment owns (see `scope.ts`), because
+ * resolving is I/O and this function is not.
+ */
+export interface CreateNames {
+  /** The name the agent asked for (`?name=`), unprefixed; null for a random one. */
+  name: string | null
+  container(ref: string): string
+  network(ref: string): string
+  volume(ref: string): string
+}
+
+/** A named volume a create mounts, with what it would be created with. */
+export interface VolumeReference {
+  name: string
+  driver?: string
+  driverOptions?: Record<string, string>
+  labels?: Record<string, string>
+}
+
+export interface CreateReferences {
+  containers: string[]
+  networks: string[]
+  volumes: VolumeReference[]
+}
+
+const NETWORK_MODES = new Set(['', 'default', 'bridge', 'host', 'none'])
+const CONTAINER_MODE_FIELDS = ['NetworkMode', 'PidMode', 'IpcMode', 'Cgroup'] as const
+
+const isNamedVolumeSource = (source: string) => !!source && !source.startsWith('/') && !source.startsWith('.')
+
+/** `ref[:alias]` for links, `ref[:ro|rw]` for volumes-from: the reference is the first part. */
+const firstPart = (value: string) => {
+  const bare = value.replace(/^\//, '')
+  const index = bare.indexOf(':')
+  return index === -1 ? bare : bare.slice(0, index)
+}
+
+/**
+ * Every container, network and volume a create refers to by name or id — the
+ * list the caller resolves before calling `rewriteContainerCreate`. Anything
+ * missed here would reach the daemon untranslated, and be resolved against
+ * the whole host.
+ */
+export function createReferences(input: unknown): CreateReferences {
+  const spec = (input && typeof input === 'object' ? input : {}) as Record<string, any>
+  const hostConfig = (spec.HostConfig ?? {}) as Record<string, any>
+  const containers = new Set<string>()
+  const networks = new Set<string>()
+  const volumes = new Map<string, VolumeReference>()
+
+  for (const field of CONTAINER_MODE_FIELDS) {
+    const value = hostConfig[field]
+    if (typeof value !== 'string') continue
+    if (value.startsWith('container:')) containers.add(value.slice('container:'.length))
+    else if (field === 'NetworkMode' && !NETWORK_MODES.has(value)) networks.add(value)
+  }
+  for (const link of asStrings(hostConfig.Links)) containers.add(firstPart(link))
+  for (const from of asStrings(hostConfig.VolumesFrom)) containers.add(firstPart(from))
+  const endpoints = spec.NetworkingConfig?.EndpointsConfig as Record<string, any> | undefined
+  for (const [network, endpoint] of Object.entries(endpoints ?? {})) {
+    if (!NETWORK_MODES.has(network)) networks.add(network)
+    for (const link of asStrings(endpoint?.Links)) containers.add(firstPart(link))
+  }
+  for (const bind of asStrings(hostConfig.Binds)) {
+    const source = bind.split(':')[0] ?? ''
+    if (isNamedVolumeSource(source) && !volumes.has(source)) volumes.set(source, { name: source })
+  }
+  for (const mount of Array.isArray(hostConfig.Mounts) ? hostConfig.Mounts : []) {
+    if (mount?.Type !== 'volume' || typeof mount.Source !== 'string' || !isNamedVolumeSource(mount.Source)) continue
+    const options = mount.VolumeOptions ?? {}
+    volumes.set(mount.Source, {
+      name: mount.Source,
+      ...(options.DriverConfig?.Name && { driver: options.DriverConfig.Name }),
+      ...(options.DriverConfig?.Options && { driverOptions: options.DriverConfig.Options }),
+      ...(options.Labels && { labels: options.Labels })
+    })
+  }
+  containers.delete('')
+  return { containers: [...containers], networks: [...networks], volumes: [...volumes.values()] }
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value)
+
+function asStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+/**
+ * Where the client's original mounts and publishing are written down, on the
+ * container itself, so an inspect can show the client exactly what it asked
+ * for rather than the volume subpaths and the empty publishing it really got.
+ */
+export const REQUESTED_BINDS_LABEL = 'domo.binds'
+export const REQUESTED_PUBLISHING_LABEL = 'domo.publishing'
+
+export interface RequestedBinds {
+  Binds?: string[]
+  Mounts?: unknown[]
+}
+
+export interface RequestedPublishing {
+  PortBindings?: Record<string, Array<{ HostIp?: string, HostPort?: string }> | null>
+  PublishAllPorts?: boolean
+}
+
+export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?: CreateNames): RewriteResult {
   const spec = (input && typeof input === 'object' ? { ...input } : {}) as Record<string, unknown>
   const hostConfig = { ...(spec.HostConfig as Record<string, unknown> | undefined) }
   const requiredSubpaths: string[] = []
-  const mounts: MountSpec[] = Array.isArray(hostConfig.Mounts) ? [...(hostConfig.Mounts as MountSpec[])] : []
+  const originalBinds: RequestedBinds = {
+    ...(Array.isArray(hostConfig.Binds) && hostConfig.Binds.length && { Binds: hostConfig.Binds as string[] }),
+    ...(Array.isArray(hostConfig.Mounts) && hostConfig.Mounts.length && { Mounts: hostConfig.Mounts as unknown[] })
+  }
+  const originalPublishing: RequestedPublishing = {
+    ...(isObject(hostConfig.PortBindings) && Object.keys(hostConfig.PortBindings).length
+      && { PortBindings: hostConfig.PortBindings as RequestedPublishing['PortBindings'] }),
+    ...(hostConfig.PublishAllPorts === true && { PublishAllPorts: true })
+  }
+  const mounts: MountSpec[] = Array.isArray(hostConfig.Mounts)
+    ? (hostConfig.Mounts as MountSpec[]).map(mount => ({ ...mount }))
+    : []
 
   const claim = (subpath: string) => {
     if (subpath && !requiredSubpaths.includes(subpath)) requiredSubpaths.push(subpath)
@@ -124,22 +243,32 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope): Rewrit
 
   // Short syntax. A bind that is not ours stays a bind: it will fail loudly
   // against the host daemon, which is better than being silently redirected.
+  // A named volume is renamed into the environment.
   if (Array.isArray(hostConfig.Binds)) {
     const kept: string[] = []
     for (const bind of hostConfig.Binds as string[]) {
       const parsed = parseBind(bind)
       const subpath = parsed && workspaceSubpath(parsed.source, scope.workspacePath)
-      if (!parsed || subpath === null) { kept.push(bind); continue }
-      mounts.push(volumeMount(scope, parsed.target, subpath, parsed.readOnly))
-      claim(subpath)
+      if (parsed && subpath !== null) {
+        mounts.push(volumeMount(scope, parsed.target, subpath, parsed.readOnly))
+        claim(subpath)
+        continue
+      }
+      const [source = '', ...rest] = bind.split(':')
+      kept.push(names && isNamedVolumeSource(source) ? [names.volume(source), ...rest].join(':') : bind)
     }
     hostConfig.Binds = kept
   }
 
   // Long syntax.
   for (let i = 0; i < mounts.length; i++) {
-    const mount = mounts[i]
-    if (mount?.Type !== 'bind' || typeof mount.Source !== 'string' || !mount.Target) continue
+    const mount = mounts[i]!
+    if (mount.Type === 'volume' && names && typeof mount.Source === 'string' && isNamedVolumeSource(mount.Source)
+      && mount.Source !== scope.workspaceVolume) {
+      mount.Source = names.volume(mount.Source)
+      continue
+    }
+    if (mount.Type !== 'bind' || typeof mount.Source !== 'string' || !mount.Target) continue
     const subpath = workspaceSubpath(mount.Source, scope.workspacePath)
     if (subpath === null) continue
     mounts[i] = volumeMount(scope, mount.Target, subpath, !!mount.ReadOnly)
@@ -158,21 +287,66 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope): Rewrit
   // published it would otherwise claim a random host port per exposed port.
   hostConfig.PublishAllPorts = false
 
-  const endpoints = (spec.NetworkingConfig as { EndpointsConfig?: Record<string, unknown> } | undefined)
-    ?.EndpointsConfig
-  const networksToJoin = Object.keys(endpoints ?? {})
+  if (names) {
+    for (const field of CONTAINER_MODE_FIELDS) {
+      const value = hostConfig[field]
+      if (typeof value !== 'string') continue
+      if (value.startsWith('container:')) hostConfig[field] = `container:${names.container(value.slice(10))}`
+      else if (field === 'NetworkMode' && !NETWORK_MODES.has(value)) hostConfig.NetworkMode = names.network(value)
+    }
+    const link = (value: string) => {
+      const ref = firstPart(value)
+      const alias = value.replace(/^\//, '').slice(ref.length + 1) || ref
+      return `${names.container(ref)}:${alias}`
+    }
+    if (Array.isArray(hostConfig.Links)) hostConfig.Links = asStrings(hostConfig.Links).map(link)
+    if (Array.isArray(hostConfig.VolumesFrom)) {
+      hostConfig.VolumesFrom = asStrings(hostConfig.VolumesFrom).map((value) => {
+        const ref = firstPart(value)
+        return `${names.container(ref)}${value.replace(/^\//, '').slice(ref.length)}`
+      })
+    }
+  }
+
+  const networkingConfig = { ...(spec.NetworkingConfig as Record<string, unknown> | undefined) }
+  const endpoints: Record<string, Record<string, unknown>> = {}
+  for (const [network, endpoint] of Object.entries((networkingConfig.EndpointsConfig ?? {}) as Record<string, any>)) {
+    const renamed = names && !NETWORK_MODES.has(network) ? names.network(network) : network
+    endpoints[renamed] = { ...(endpoint ?? {}) }
+    if (names && Array.isArray(endpoint?.Links)) {
+      endpoints[renamed]!.Links = asStrings(endpoint.Links).map((value) => {
+        const ref = firstPart(value)
+        return `${names.container(ref)}:${value.replace(/^\//, '').slice(ref.length + 1) || ref}`
+      })
+    }
+  }
   // `NetworkMode` names a network too, and compose uses it for the project's
   // default network even when EndpointsConfig is empty.
   const networkMode = typeof hostConfig.NetworkMode === 'string' ? hostConfig.NetworkMode : ''
-  if (networkMode && !['default', 'bridge', 'host', 'none'].includes(networkMode)
-    && !networkMode.startsWith('container:') && !networksToJoin.includes(networkMode)) {
-    networksToJoin.push(networkMode)
+  if (networkMode && !NETWORK_MODES.has(networkMode) && !networkMode.startsWith('container:') && !endpoints[networkMode]) {
+    endpoints[networkMode] = {}
+  }
+  const networksToJoin = Object.keys(endpoints).filter(network => !NETWORK_MODES.has(network))
+  // The name the agent chose is the one it will look up: the host's name for
+  // the container carries the prefix, so the agent's is added as an alias on
+  // every network that can hold one (the default bridge cannot — Docker
+  // refuses a network-scoped alias there).
+  if (names?.name) {
+    for (const network of networksToJoin) {
+      const aliases = asStrings(endpoints[network]!.Aliases)
+      if (!aliases.includes(names.name)) endpoints[network]!.Aliases = [...aliases, names.name]
+    }
+  }
+  if (Object.keys(endpoints).length || spec.NetworkingConfig) {
+    spec.NetworkingConfig = { ...networkingConfig, EndpointsConfig: endpoints }
   }
 
   spec.Labels = {
     ...(spec.Labels as Record<string, string> | undefined),
     ...scope.labels,
-    ...(droppedPorts.length && { [REQUESTED_PORTS_LABEL]: JSON.stringify(droppedPorts) })
+    ...(droppedPorts.length && { [REQUESTED_PORTS_LABEL]: JSON.stringify(droppedPorts) }),
+    ...(Object.keys(originalBinds).length && { [REQUESTED_BINDS_LABEL]: JSON.stringify(originalBinds) }),
+    ...(Object.keys(originalPublishing).length && { [REQUESTED_PUBLISHING_LABEL]: JSON.stringify(originalPublishing) })
   }
   spec.HostConfig = hostConfig
   return { spec, requiredSubpaths, networksToJoin, droppedPorts }
@@ -180,38 +354,19 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope): Rewrit
 
 /**
  * `POST /networks/create` and `POST /volumes/create`: stamp the scope's labels
- * and nothing else. Compose makes both for a stack, and on a daemon of its own
- * they went away with it; on the shared one only a label says whose they are,
- * so retirement can remove exactly them rather than pruning the host.
+ * and put the name in the environment's namespace. Compose makes both for a
+ * stack, and on a daemon of its own they went away with it; on the shared one
+ * only a label says whose they are, so retirement can remove exactly them
+ * rather than pruning the host. A volume created with no name gets a random
+ * one from the daemon, which is left as it is.
  */
-export function labelCreate(input: unknown, scope: Pick<DoodScope, 'labels'>): Record<string, unknown> {
+export function labelCreate(
+  input: unknown,
+  scope: Pick<DoodScope, 'labels'>,
+  prefix = ''
+): Record<string, unknown> {
   const spec = (input && typeof input === 'object' ? { ...input } : {}) as Record<string, unknown>
   spec.Labels = { ...(spec.Labels as Record<string, string> | undefined), ...scope.labels }
+  if (prefix && typeof spec.Name === 'string' && spec.Name) spec.Name = `${prefix}${spec.Name}`
   return spec
-}
-
-/** What the proxy does with one request line. */
-export type RequestRoute =
-  | { kind: 'container-create' }
-  | { kind: 'label-create' }
-  | { kind: 'network-delete', network: string }
-  | { kind: 'network-inspect', network: string }
-  | { kind: 'forward' }
-
-/**
- * Routes by request line alone. The API version prefix (`/v1.47`) is optional,
- * as the query string is. A network is deleted by id or by name, and whichever
- * it is is what `docker network disconnect` takes too.
- */
-export function routeRequest(line: string): RequestRoute {
-  const match = line.match(/^(\w+)\s+(\S+)\s+HTTP\/1\.[01]$/i)
-  if (!match) return { kind: 'forward' }
-  const method = match[1]!.toUpperCase()
-  const path = match[2]!.split('?')[0]!.replace(/^\/v[\d.]+(?=\/)/, '')
-  if (method === 'POST' && path === '/containers/create') return { kind: 'container-create' }
-  if (method === 'POST' && (path === '/networks/create' || path === '/volumes/create')) return { kind: 'label-create' }
-  const network = path.match(/^\/networks\/([^/]+)$/)?.[1]
-  if (network && method === 'DELETE') return { kind: 'network-delete', network: decodeURIComponent(network) }
-  if (network && method === 'GET') return { kind: 'network-inspect', network: decodeURIComponent(network) }
-  return { kind: 'forward' }
 }

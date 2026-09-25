@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { labelCreate, rewriteContainerCreate, routeRequest, workspaceSubpath, type DoodScope } from '../../server/lib/dood/rewrite'
+import {
+  createReferences,
+  labelCreate,
+  rewriteContainerCreate,
+  workspaceSubpath,
+  type CreateNames,
+  type DoodScope
+} from '../../server/lib/dood/rewrite'
 
 const scope: DoodScope = {
   workspacePath: '/workspaces/domo',
@@ -148,19 +155,145 @@ describe('labelCreate', () => {
   })
 })
 
-describe('routeRequest', () => {
-  it.each([
-    ['POST /v1.47/containers/create?name=web HTTP/1.1', { kind: 'container-create' }],
-    ['POST /containers/create HTTP/1.1', { kind: 'container-create' }],
-    ['POST /v1.47/networks/create HTTP/1.1', { kind: 'label-create' }],
-    ['POST /v1.47/volumes/create HTTP/1.1', { kind: 'label-create' }],
-    ['DELETE /v1.47/networks/stack_default HTTP/1.1', { kind: 'network-delete', network: 'stack_default' }],
-    ['DELETE /v1.47/containers/abc?force=1 HTTP/1.1', { kind: 'forward' }],
-    ['POST /v1.47/containers/abc/start HTTP/1.1', { kind: 'forward' }],
-    ['GET /v1.47/networks/stack_default HTTP/1.1', { kind: 'network-inspect', network: 'stack_default' }],
-    ['GET /v1.47/networks?filters=%7B%7D HTTP/1.1', { kind: 'forward' }],
-    ['POST /v1.47/networks/stack_default/connect HTTP/1.1', { kind: 'forward' }]
-  ])('%s', (line, expected) => {
-    expect(routeRequest(line)).toEqual(expected)
+describe('labelCreate — names', () => {
+  it('puts a named network or volume in the environment\'s namespace', () => {
+    expect(labelCreate({ Name: 'data' }, { labels: { 'domo.env': 'env_1' } }, 'env_1-'))
+      .toEqual({ Name: 'env_1-data', Labels: { 'domo.env': 'env_1' } })
+  })
+
+  it('leaves a volume with no name to the daemon\'s random one', () => {
+    expect(labelCreate({}, { labels: { 'domo.env': 'env_1' } }, 'env_1-')).toEqual({ Labels: { 'domo.env': 'env_1' } })
+  })
+})
+
+/** Resolution as the scope layer would do it, with every reference known and namespaced. */
+const names = (name: string | null = 'web'): CreateNames => ({
+  name,
+  container: ref => ref === 'env-own' ? 'f'.repeat(64) : `env_abc-${ref}`,
+  network: ref => `env_abc-${ref}`,
+  volume: ref => `env_abc-${ref}`
+})
+
+describe('createReferences', () => {
+  it('finds every container, network and volume a create names', () => {
+    const refs = createReferences({
+      HostConfig: {
+        NetworkMode: 'container:db',
+        PidMode: 'container:pid',
+        IpcMode: 'container:ipc',
+        Links: ['/cache:redis', 'queue'],
+        VolumesFrom: ['data:ro'],
+        Binds: ['pg:/var/lib/pg', '/workspaces/domo:/src', './rel:/x'],
+        Mounts: [
+          { Type: 'volume', Source: 'cache', Target: '/c', VolumeOptions: { DriverConfig: { Name: 'local', Options: { type: 'tmpfs' } }, Labels: { a: 'b' } } },
+          { Type: 'volume', Target: '/anonymous' },
+          { Type: 'bind', Source: '/etc', Target: '/etc' }
+        ]
+      },
+      NetworkingConfig: { EndpointsConfig: { backend: { Links: ['auth:a'] }, bridge: {} } }
+    })
+    expect(refs.containers.sort()).toEqual(['auth', 'cache', 'data', 'db', 'ipc', 'pid', 'queue'])
+    expect(refs.networks).toEqual(['backend'])
+    expect(refs.volumes).toEqual([
+      { name: 'pg' },
+      { name: 'cache', driver: 'local', driverOptions: { type: 'tmpfs' }, labels: { a: 'b' } }
+    ])
+  })
+
+  it('takes a network mode that names a network, and none of the builtins', () => {
+    expect(createReferences({ HostConfig: { NetworkMode: 'stack_default' } }).networks).toEqual(['stack_default'])
+    for (const mode of ['default', 'bridge', 'host', 'none']) {
+      expect(createReferences({ HostConfig: { NetworkMode: mode } }).networks).toEqual([])
+    }
+  })
+})
+
+describe('rewriteContainerCreate — names', () => {
+  it('renames networks and adds the agent\'s name as an alias on each', () => {
+    const result = rewriteContainerCreate({
+      HostConfig: { NetworkMode: 'stack_default' },
+      NetworkingConfig: { EndpointsConfig: { stack_default: { Aliases: ['web'] }, backend: {} } }
+    }, scope, names('stack-web-1'))
+    const endpoints = (result.spec.NetworkingConfig as any).EndpointsConfig
+    expect((result.spec.HostConfig as any).NetworkMode).toBe('env_abc-stack_default')
+    expect(endpoints).toEqual({
+      'env_abc-stack_default': { Aliases: ['web', 'stack-web-1'] },
+      'env_abc-backend': { Aliases: ['stack-web-1'] }
+    })
+    expect(result.networksToJoin).toEqual(['env_abc-stack_default', 'env_abc-backend'])
+  })
+
+  it('adds an endpoint for a network named only by the network mode', () => {
+    const result = rewriteContainerCreate({ HostConfig: { NetworkMode: 'mine' } }, scope, names('web'))
+    expect((result.spec.NetworkingConfig as any).EndpointsConfig).toEqual({ 'env_abc-mine': { Aliases: ['web'] } })
+  })
+
+  it('adds no alias on the default bridge, which refuses one', () => {
+    const result = rewriteContainerCreate({
+      HostConfig: { NetworkMode: 'bridge' },
+      NetworkingConfig: { EndpointsConfig: { bridge: {} } }
+    }, scope, names('web'))
+    expect((result.spec.NetworkingConfig as any).EndpointsConfig).toEqual({ bridge: {} })
+    expect(result.networksToJoin).toEqual([])
+  })
+
+  it('adds no alias for a container with a random name', () => {
+    const result = rewriteContainerCreate({ HostConfig: { NetworkMode: 'mine' } }, scope, names(null))
+    expect((result.spec.NetworkingConfig as any).EndpointsConfig).toEqual({ 'env_abc-mine': {} })
+  })
+
+  it('resolves container references in modes, links and volumes-from', () => {
+    const result = rewriteContainerCreate({
+      HostConfig: {
+        NetworkMode: 'container:env-own',
+        PidMode: 'container:db',
+        Links: ['/cache:redis', 'queue'],
+        VolumesFrom: ['data:ro', 'more']
+      }
+    }, scope, names())
+    const hostConfig = result.spec.HostConfig as any
+    expect(hostConfig.NetworkMode).toBe(`container:${'f'.repeat(64)}`)
+    expect(hostConfig.PidMode).toBe('container:env_abc-db')
+    // A link's alias is what the agent wrote, so DNS and the link env vars keep its name.
+    expect(hostConfig.Links).toEqual(['env_abc-cache:redis', 'env_abc-queue:queue'])
+    expect(hostConfig.VolumesFrom).toEqual(['env_abc-data:ro', 'env_abc-more'])
+    expect(result.networksToJoin).toEqual([])
+  })
+
+  it('renames named volumes in binds and mounts, and never the workspace', () => {
+    const result = rewriteContainerCreate({
+      HostConfig: {
+        Binds: ['pg:/var/lib/pg:rw', '/workspaces/domo/app:/app', '/etc/hosts:/etc/hosts:ro'],
+        Mounts: [{ Type: 'volume', Source: 'cache', Target: '/c' }, { Type: 'volume', Target: '/anon' }]
+      }
+    }, scope, names())
+    const hostConfig = result.spec.HostConfig as any
+    expect(hostConfig.Binds).toEqual(['env_abc-pg:/var/lib/pg:rw', '/etc/hosts:/etc/hosts:ro'])
+    expect(hostConfig.Mounts).toEqual([
+      { Type: 'volume', Source: 'env_abc-cache', Target: '/c' },
+      { Type: 'volume', Target: '/anon' },
+      { Type: 'volume', Source: scope.workspaceVolume, Target: '/app', ReadOnly: false, VolumeOptions: { Subpath: 'app' } }
+    ])
+  })
+
+  it('keeps what the client asked for on labels, for inspect to restore', () => {
+    const input = {
+      HostConfig: {
+        Binds: ['pg:/data', '/workspaces/domo/app:/app'],
+        PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '8080' }] },
+        PublishAllPorts: true
+      }
+    }
+    const labels = rewriteContainerCreate(input, scope, names()).spec.Labels as Record<string, string>
+    expect(JSON.parse(labels['domo.binds']!)).toEqual({ Binds: ['pg:/data', '/workspaces/domo/app:/app'] })
+    expect(JSON.parse(labels['domo.publishing']!)).toEqual({
+      PortBindings: { '80/tcp': [{ HostIp: '127.0.0.1', HostPort: '8080' }] },
+      PublishAllPorts: true
+    })
+  })
+
+  it('writes no bookkeeping labels when there was nothing to keep', () => {
+    const labels = rewriteContainerCreate({ Image: 'alpine' }, scope, names()).spec.Labels
+    expect(labels).toEqual({ 'domo.env': 'env_abc' })
   })
 })

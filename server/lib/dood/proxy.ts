@@ -2,20 +2,27 @@ import { mkdir, rm } from 'node:fs/promises'
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 
-import { labelCreate, rewriteContainerCreate, routeRequest, type DoodScope, type PublishedPort } from './rewrite'
+import {
+  ChunkedDecoder,
+  HEAD_END,
+  headerValue,
+  parseRequestHead,
+  renderLocalResponse,
+  renderRequestHead,
+  ResponseSplicer,
+  type DoodRequest
+} from './http'
+import { layersWantBody, runLayers, type DoodLayer } from './layers'
+import { domoError } from './scope'
 
 /**
  * The Docker socket an environment is given in place of a daemon of its own.
  *
- * Everything is forwarded to the host daemon untouched except three requests
- * (`routeRequest` in `rewrite.ts`): `POST /containers/create`, which is
- * translated; `POST /networks/create` and `/volumes/create`, which are
- * labelled; and `GET` / `DELETE /networks/…`, before which the
- * environment's own container leaves a network it joined, or `compose down`
- * could never remove it. One socket is
- * created per environment and bind-mounted at the container's
+ * One socket is created per environment and bind-mounted at the container's
  * `/var/run/docker.sock`, so *which* environment a request came from is the
- * socket it arrived on — there is nothing in a request body to trust.
+ * socket it arrived on — there is nothing in a request body to trust. What is
+ * done to a request is decided by a stack of layers (`layers.ts`); this file
+ * is only the transport under them.
  *
  * **This is a byte splice, not an HTTP server, and that is load-bearing.** An
  * earlier version used `http.createServer` and deadlocked every `docker run`:
@@ -26,11 +33,13 @@ import { labelCreate, rewriteContainerCreate, routeRequest, type DoodScope, type
  * in `Created`. Forcing `Connection: close` per response did not save it.
  * Measured against the same daemon, a pure byte splice runs it fine.
  *
- * So only the **client -> daemon** direction is parsed, and only far enough to
- * find request boundaries. The daemon -> client direction is never inspected:
- * responses are returned in order and nothing here alters them, so splicing
- * them blind is both correct and immune to whatever a response happens to be
- * (chunked logs, an event stream, a hijacked attach).
+ * Both directions are *framed* (`http.ts`) — every request's and every
+ * response's boundaries are found — but bytes are only held back where a layer
+ * asked for it: a JSON request body a layer rewrites, a JSON response a layer
+ * transforms, an error whose message names something. Everything else — logs,
+ * attach, build output, stats, an event stream (rewritten line by line as it
+ * flows) — passes as it arrives. A request that upgrades the connection, and
+ * a response that switches protocols, turn it into a raw pipe for good.
  *
  * A dev environment is a namespace, not a security boundary. A container that
  * can reach the host daemon can take the host; that is already true here, and
@@ -38,39 +47,18 @@ import { labelCreate, rewriteContainerCreate, routeRequest, type DoodScope, type
  */
 
 const DEFAULT_DOCKER_SOCKET = '/var/run/docker.sock'
-const HEAD_END = '\r\n\r\n'
 
 export interface DoodProxyOptions {
   /** Where this environment's socket is created. Bind-mount this *file*, not its directory. */
   socketPath: string
-  scope: DoodScope
+  /** Outermost first. See `layers.ts`. */
+  layers: DoodLayer[]
+  /** Applied to the `message` of every JSON error the daemon answers with. */
+  rewriteError?(message: string): string
   dockerSocket?: string
-  /**
-   * Create the workspace subpaths a rewritten mount needs. Docker refuses a
-   * `volume-subpath` that does not exist yet, and a compose file mounting a
-   * directory it expects to be created is ordinary.
-   */
-  ensureSubpaths(subpaths: string[]): Promise<void>
-  /**
-   * Attach the environment's own container to the networks a new container
-   * joins, so an agent can reach the services it just started by name.
-   */
-  joinNetworks(networks: string[]): Promise<void>
-  /**
-   * Detach the environment's own container from a network. It joined because
-   * of `joinNetworks`, so the stack's owner does not know it is there, and a
-   * network with an endpoint left cannot be removed. `onlyIfAlone` is the
-   * inspect case: `compose down` inspects a network before deleting it and,
-   * seeing any endpoint at all, says "Resource is still in use" and never
-   * sends the DELETE — measured — so the environment has to be gone by the
-   * time the inspect is answered. It leaves only a network nothing else is on
-   * any more, where it has nothing to reach; the next create rejoins it.
-   */
-  leaveNetwork?(network: string, options: { onlyIfAlone: boolean }): Promise<void>
-  onDroppedPorts?(ports: PublishedPort[]): void
   onError?(error: unknown): void
   /** Diagnostics. `kind` is how the request was handled, not what it was. */
-  onRequest?(entry: { line: string, kind: 'rewritten' | 'forwarded' | 'hijacked' }): void
+  onRequest?(entry: { line: string, kind: 'forwarded' | 'answered' | 'hijacked' }): void
 }
 
 export interface DoodProxy {
@@ -78,34 +66,9 @@ export interface DoodProxy {
   close(): Promise<void>
 }
 
-interface Head {
-  line: string
-  headers: [string, string][]
-  raw: string
-}
-
-function parseHead(raw: string): Head {
-  const [line = '', ...rest] = raw.split('\r\n')
-  const headers: [string, string][] = []
-  for (const entry of rest) {
-    const index = entry.indexOf(':')
-    if (index > 0) headers.push([entry.slice(0, index), entry.slice(index + 1).trim()])
-  }
-  return { line, headers, raw }
-}
-
-const headerValue = (head: Head, name: string): string | undefined =>
-  head.headers.find(([key]) => key.toLowerCase() === name)?.[1]
-
-/** Re-emit a head with its content-length restated for a body we rewrote. */
-function renderHead(head: Head, contentLength: number): string {
-  const kept = head.headers.filter(([key]) => {
-    const lower = key.toLowerCase()
-    return lower !== 'content-length' && lower !== 'transfer-encoding'
-  })
-  kept.push(['Content-Length', String(contentLength)])
-  return [head.line, ...kept.map(([key, value]) => `${key}: ${value}`), '', ''].join('\r\n')
-}
+type BodyState =
+  | { kind: 'length', remaining: number, discard: boolean }
+  | { kind: 'chunked', decoder: ChunkedDecoder, discard: boolean }
 
 export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodProxy> {
   const dockerSocket = options.dockerSocket ?? DEFAULT_DOCKER_SOCKET
@@ -125,87 +88,157 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
     // `docker run` prints nothing at all. Measured: identical command, empty
     // stdout through the proxy and correct output straight to the daemon.
     const upstream = connect({ path: dockerSocket, allowHalfOpen: true })
-    upstream.on('error', error => { report(error); client.destroy() })
+    upstream.on('error', (error) => { report(error); client.destroy() })
     client.on('error', () => upstream.destroy())
     // Half-close is forwarded rather than escalated to a full close.
     client.on('end', () => upstream.end())
-    upstream.on('end', () => client.end())
 
-    // Responses are never inspected.
-    upstream.pipe(client)
+    // Backpressure both ways, which `pipe` used to give for free: an export or
+    // a followed log to a slow reader must not pile up in memory here.
+    client.on('drain', () => upstream.resume())
+    upstream.on('drain', () => client.resume())
+    const responses = new ResponseSplicer({
+      write: (data) => {
+        if (!client.destroyed && !client.write(data)) upstream.pause()
+      },
+      rewriteError: options.rewriteError,
+      onError: report
+    })
+    upstream.on('data', (chunk: Buffer) => responses.feed(chunk))
+    upstream.on('end', () => {
+      responses.end()
+      client.end()
+    })
 
-    let buffer = Buffer.alloc(0)
+    let buffer: Buffer = Buffer.alloc(0)
     let raw = false
     let busy = false
+    let body: BodyState | null = null
 
-    /** The body of a request we are forwarding verbatim, and how much is left. */
-    let pending: { kind: 'length', remaining: number } | { kind: 'chunked', remaining: number } | null = null
+    const sendUpstream = (data: Buffer | string) => {
+      if (!upstream.destroyed && !upstream.write(data)) client.pause()
+    }
+
+    /** Move the current request body along, forwarding or dropping it. False means "need more bytes". */
+    const moveBody = (state: BodyState): boolean => {
+      if (state.kind === 'length') {
+        const take = Math.min(state.remaining, buffer.length)
+        if (!state.discard) sendUpstream(buffer.subarray(0, take))
+        buffer = buffer.subarray(take)
+        state.remaining -= take
+        if (state.remaining === 0) body = null
+        return take > 0
+      }
+      const { consumed } = state.decoder.push(buffer)
+      if (!state.discard) sendUpstream(buffer.subarray(0, consumed))
+      buffer = buffer.subarray(consumed)
+      if (state.decoder.done) body = null
+      return consumed > 0
+    }
+
+    /** The whole body of a request that is to be buffered, or null while it has not all arrived. */
+    const takeBody = (start: number, length: number, chunked: boolean): { body: Buffer, end: number } | null => {
+      if (!chunked) {
+        if (buffer.length < start + length) return null
+        return { body: buffer.subarray(start, start + length), end: start + length }
+      }
+      const decoder = new ChunkedDecoder()
+      const { consumed, data } = decoder.push(buffer.subarray(start))
+      if (!decoder.done) return null
+      return { body: Buffer.concat(data), end: start + consumed }
+    }
 
     const pump = async () => {
       if (busy) return
       busy = true
       try {
-        while (!raw && buffer.length) {
-          if (pending) {
-            if (pending.kind === 'length') {
-              const take = Math.min(pending.remaining, buffer.length)
-              upstream.write(buffer.subarray(0, take))
-              buffer = buffer.subarray(take)
-              pending.remaining -= take
-              if (pending.remaining === 0) pending = null
-              if (buffer.length === 0) break
-              continue
-            }
-            // Chunked: forward verbatim, tracking framing to find the end.
-            const consumed = forwardChunked(pending)
-            if (!consumed) break
+        while (!raw && buffer.length && !client.destroyed) {
+          if (body) {
+            if (!moveBody(body)) break
             continue
           }
 
           const end = buffer.indexOf(HEAD_END)
           if (end === -1) break
-          const head = parseHead(buffer.subarray(0, end).toString('latin1'))
           const afterHead = end + HEAD_END.length
-
-          if (headerValue(head, 'upgrade')) {
-            // Hijack: the rest of this connection is not HTTP.
-            options.onRequest?.({ line: head.line, kind: 'hijacked' })
-            upstream.write(buffer.subarray(0, afterHead))
-            buffer = buffer.subarray(afterHead)
+          const rawHead = buffer.subarray(0, end).toString('latin1')
+          const request = parseRequestHead(rawHead)
+          if (!request) {
+            // Not a request line we understand: stop interpreting, stay a pipe.
             raw = true
-            if (buffer.length) upstream.write(buffer)
+            sendUpstream(buffer)
             buffer = Buffer.alloc(0)
             break
           }
+          const line = rawHead.split('\r\n')[0]!
+          const length = Number.parseInt(headerValue(request.headers, 'content-length') ?? '', 10)
+          const chunked = (headerValue(request.headers, 'transfer-encoding') ?? '').toLowerCase().includes('chunked')
+          const hasBody = chunked || (Number.isInteger(length) && length > 0)
+          const upgrade = !!headerValue(request.headers, 'upgrade')
 
-          const length = Number.parseInt(headerValue(head, 'content-length') ?? '', 10)
-          const chunked = (headerValue(head, 'transfer-encoding') ?? '').toLowerCase().includes('chunked')
-
-          const route = routeRequest(head.line)
-          if ((route.kind === 'network-delete' || route.kind === 'network-inspect') && options.leaveNetwork) {
-            await options.leaveNetwork(route.network, { onlyIfAlone: route.kind === 'network-inspect' }).catch(report)
+          let buffered = false
+          if (hasBody && layersWantBody(options.layers, request)) {
+            const taken = takeBody(afterHead, Number.isInteger(length) ? length : 0, chunked)
+            if (!taken) break
+            request.body = taken.body
+            buffer = buffer.subarray(taken.end)
+            buffered = true
+          } else {
+            buffer = buffer.subarray(afterHead)
           }
-          if (route.kind === 'container-create' || route.kind === 'label-create') {
-            if (Number.isInteger(length)) {
-              if (buffer.length < afterHead + length) break
-              const body = buffer.subarray(afterHead, afterHead + length)
-              buffer = buffer.subarray(afterHead + length)
-              await rewriteAndForward(head, body, route.kind)
-              continue
+
+          let outcome
+          try {
+            outcome = await runLayers(options.layers, request)
+          } catch (error) {
+            report(error)
+            outcome = {
+              kind: 'answer' as const,
+              status: 500,
+              body: domoError(`could not translate ${request.method} ${request.path}: ${error instanceof Error ? error.message : String(error)}`)
             }
-            // Every Docker client sends this body from a buffer, so it always
-            // carries a content-length. If one ever does not, say so: the
-            // create would otherwise be forwarded untranslated, and a bind
-            // mount reaching the host daemon is exactly what must not happen
-            // quietly.
-            report(new Error(`create with no content-length, forwarded untranslated: ${head.line}`))
+          }
+          if (client.destroyed) break
+
+          const unbufferedBody = (discard: boolean): BodyState | null => {
+            if (buffered || !hasBody) return null
+            return chunked
+              ? { kind: 'chunked', decoder: new ChunkedDecoder(), discard }
+              : { kind: 'length', remaining: length, discard }
           }
 
-          options.onRequest?.({ line: head.line, kind: 'forwarded' })
-          upstream.write(buffer.subarray(0, afterHead))
-          buffer = buffer.subarray(afterHead)
-          if (chunked) pending = { kind: 'chunked', remaining: 0 }
-          else if (Number.isInteger(length) && length > 0) pending = { kind: 'length', remaining: length }
+          if (outcome.kind === 'answer') {
+            options.onRequest?.({ line, kind: 'answered' })
+            responses.answer(renderLocalResponse(outcome.status, outcome.body))
+            body = unbufferedBody(true)
+            continue
+          }
+
+          const forwarded: DoodRequest = outcome.request
+          responses.expect({ method: forwarded.method, upgrade, transform: outcome.response })
+          if (forwarded.body) {
+            sendUpstream(renderRequestHead(forwarded, forwarded.body.length))
+            sendUpstream(forwarded.body)
+            // A layer replaced a body it never asked to see: the original goes nowhere.
+            body = unbufferedBody(true)
+          } else {
+            sendUpstream(renderRequestHead(forwarded, null))
+            body = unbufferedBody(false)
+          }
+
+          if (upgrade) {
+            // Hijack: the rest of this connection is not HTTP (the body of an
+            // exec start included — it is forwarded verbatim with the rest).
+            // The Docker client dials a fresh connection for every hijack, so
+            // nothing after this is a request anyone expects interpreted.
+            options.onRequest?.({ line, kind: 'hijacked' })
+            raw = true
+            body = null
+            if (buffer.length) sendUpstream(buffer)
+            buffer = Buffer.alloc(0)
+            break
+          }
+          options.onRequest?.({ line, kind: 'forwarded' })
         }
       } catch (error) {
         report(error)
@@ -215,73 +248,11 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
       }
     }
 
-    /** Forward one chunked-body step; false means "need more bytes". */
-    const forwardChunked = (state: { kind: 'chunked', remaining: number }): boolean => {
-      if (state.remaining > 0) {
-        const take = Math.min(state.remaining, buffer.length)
-        upstream.write(buffer.subarray(0, take))
-        buffer = buffer.subarray(take)
-        state.remaining -= take
-        return take > 0
-      }
-      const lineEnd = buffer.indexOf('\r\n')
-      if (lineEnd === -1) return false
-      const size = Number.parseInt(buffer.subarray(0, lineEnd).toString('latin1').split(';')[0] ?? '', 16)
-      if (!Number.isInteger(size)) throw new Error('malformed chunked body')
-      if (size === 0) {
-        // Final chunk, then any trailers, then a blank line. Waiting for that
-        // terminator matters: stopping at the `0\r\n` would leave the trailing
-        // CRLF to be read as the start of the next request line.
-        const trailerEnd = buffer.indexOf(HEAD_END)
-        if (trailerEnd === -1) return false
-        const stop = trailerEnd + HEAD_END.length
-        upstream.write(buffer.subarray(0, stop))
-        buffer = buffer.subarray(stop)
-        pending = null
-        return true
-      }
-      // chunk size line + data + trailing CRLF
-      state.remaining = size + 2
-      upstream.write(buffer.subarray(0, lineEnd + 2))
-      buffer = buffer.subarray(lineEnd + 2)
-      return true
-    }
-
-    const rewriteAndForward = async (head: Head, body: Buffer, kind: 'container-create' | 'label-create') => {
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(body.toString('utf8') || '{}')
-      } catch {
-        // Not ours to translate; let the daemon's own error be the answer.
-        options.onRequest?.({ line: head.line, kind: 'forwarded' })
-        upstream.write(head.raw + HEAD_END)
-        upstream.write(body)
-        return
-      }
-      if (kind === 'label-create') {
-        const labelled = Buffer.from(JSON.stringify(labelCreate(parsed, options.scope)), 'utf8')
-        options.onRequest?.({ line: head.line, kind: 'rewritten' })
-        upstream.write(renderHead(head, labelled.length))
-        upstream.write(labelled)
-        return
-      }
-      const result = rewriteContainerCreate(parsed, options.scope)
-      await options.ensureSubpaths(result.requiredSubpaths)
-      if (result.networksToJoin.length) {
-        // Best effort: a service that cannot be reached by name is worse than
-        // one that was never created, but not by enough to refuse the create.
-        await options.joinNetworks(result.networksToJoin).catch(report)
-      }
-      if (result.droppedPorts.length) options.onDroppedPorts?.(result.droppedPorts)
-      const rewritten = Buffer.from(JSON.stringify(result.spec), 'utf8')
-      options.onRequest?.({ line: head.line, kind: 'rewritten' })
-      upstream.write(renderHead(head, rewritten.length))
-      upstream.write(rewritten)
-    }
-
-    client.on('data', (chunk) => {
-      if (raw) { upstream.write(chunk); return }
-      buffer = Buffer.concat([buffer, chunk])
+    // Bytes arriving while a layer is awaited are picked up by the loop that
+    // is already running: it re-reads `buffer` after every request.
+    client.on('data', (chunk: Buffer) => {
+      if (raw) { sendUpstream(chunk); return }
+      buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk
       void pump()
     })
   }
