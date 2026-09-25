@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { run } from '../../server/lib/dev-env/docker'
+import { portHelperImage, portHelperName } from '../../server/lib/dev-env/port-helper'
 import { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } from '../../server/lib/dood/manager'
 import type { DoodProxy } from '../../server/lib/dood/proxy'
 import type { PublishedPort } from '../../server/lib/dood/rewrite'
@@ -58,6 +59,8 @@ const labelled = async (kind: 'network' | 'volume') => (await run('docker', [
 
 describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
   beforeAll(async () => {
+    // Its own port helper (the relay publishing `ports:` runs in it), not the developer's.
+    process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = 'domo-dood-compose-test-'
     socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-sock-'))
     process.env.NUXT_DOOD_SOCKET_DIR = socketDir
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
@@ -100,6 +103,9 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
     await sweepEnvironmentResources(ENV_ID)
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
+    await run('docker', ['rm', '-f', portHelperName()], { allowFailure: true })
+    await run('docker', ['rmi', portHelperImage()], { allowFailure: true })
+    delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
     delete process.env.NUXT_DOOD_SOCKET_DIR
     for (const dir of [workDir, socketDir]) if (dir) await rm(dir, { recursive: true, force: true })
   }, 180_000)

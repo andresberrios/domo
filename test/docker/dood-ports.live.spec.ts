@@ -61,6 +61,7 @@ const PORT_HELPER = 'domo-dood-ports-test-port-helper'
 
 const { run } = await import('../../server/lib/dev-env/docker')
 const { RUNTIME_IMAGE } = await import('../../server/lib/dev-env/runtime-volume')
+const { portHelperImage } = await import('../../server/lib/dev-env/port-helper')
 const { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
 const { refreshEnvironmentPorts, stopAllEnvironmentForwarders } = await import('../../server/lib/dev-environment-ports')
 
@@ -139,6 +140,7 @@ describe.skipIf(!daemon)('ports in a stack on the host daemon', () => {
     await sweepEnvironmentResources(ENV_ID)
     await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
     await run('docker', ['rm', '-f', PORT_HELPER], { allowFailure: true })
+    await run('docker', ['rmi', portHelperImage()], { allowFailure: true })
     delete process.env.NUXT_DOOD_SOCKET_DIR
     delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
     for (const dir of [workDir, socketDir]) if (dir) await rm(dir, { recursive: true, force: true })

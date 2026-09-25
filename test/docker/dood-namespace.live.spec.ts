@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { run } from '../../server/lib/dev-env/docker'
+import { portHelperImage, portHelperName } from '../../server/lib/dev-env/port-helper'
 import { createEngineClient } from '../../server/lib/dood/engine'
 import { ensureDoodProxy, stopDoodProxy, sweepEnvironmentResources } from '../../server/lib/dood/manager'
 
@@ -74,6 +75,8 @@ const hostExists = async (kind: 'container' | 'volume' | 'network', name: string
 
 describe.skipIf(!daemon)('an environment\'s own view of the shared daemon', () => {
   beforeAll(async () => {
+    // Its own port helper, not the developer's.
+    process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = 'domo-dood-ns-test-'
     socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-ns-'))
     process.env.NUXT_DOOD_SOCKET_DIR = socketDir
     await cleanup()
@@ -123,6 +126,8 @@ describe.skipIf(!daemon)('an environment\'s own view of the shared daemon', () =
 
   afterAll(async () => {
     await cleanup()
+    await run('docker', ['rmi', portHelperImage()], { allowFailure: true })
+    delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
     delete process.env.NUXT_DOOD_SOCKET_DIR
     for (const dir of [workDir, socketDir]) if (dir) await rm(dir, { recursive: true, force: true })
   }, 300_000)
@@ -170,7 +175,8 @@ describe.skipIf(!daemon)('an environment\'s own view of the shared daemon', () =
 
     const web = JSON.parse((await cli(A, ['inspect', 'shared-web-1'])).stdout)[0]
     expect(web.Mounts).toContainEqual(expect.objectContaining({ Type: 'bind', Source: `${WORKSPACE}/site`, Destination: '/site', RW: false }))
-    expect((await cli(A, ['port', 'shared-web-1'])).stdout).toBe('80/tcp -> 0.0.0.0:8080')
+    // Really published, on the environment's own localhost: both families, as Docker reports them.
+    expect((await cli(A, ['port', 'shared-web-1'])).stdout.split('\n')).toEqual(['80/tcp -> 0.0.0.0:8080', '80/tcp -> [::]:8080'])
     expect((await cli(A, ['ps', '--filter', 'name=^db$', '--format', '{{.Ports}}'])).stdout).toContain('0.0.0.0:5432->5432/tcp')
 
     // …while on the host, nothing is published and the mount is the workspace volume.
@@ -289,7 +295,13 @@ describe.skipIf(!daemon)('an environment\'s own view of the shared daemon', () =
   }, 120_000)
 
   it('shows only the environment\'s own events', async () => {
-    const since = Math.floor(Date.now() / 1000) - 600
+    // Events of its own, the other environment's and a bystander's, in a
+    // window of their own: the daemon keeps only the last 256 events, and the
+    // other live files running beside this one fill that in seconds.
+    const since = Math.floor(Date.now() / 1000) - 1
+    await cli(B, ['restart', '-t', '0', 'db'])
+    await cli(A, ['restart', '-t', '0', 'db'])
+    await run('docker', ['restart', '-t', '0', BYSTANDER])
     const until = Math.floor(Date.now() / 1000) + 1
     const events = await cli(B, ['events', '--since', String(since), '--until', String(until), '--format', '{{json .}}'])
     const parsed = lines(events.stdout).map(line => JSON.parse(line))
@@ -339,4 +351,6 @@ async function cleanup() {
   await run('docker', ['rm', '-f', BYSTANDER, `${BYSTANDER}-2`], { allowFailure: true })
   await run('docker', ['volume', 'rm', '-f', BYSTANDER], { allowFailure: true })
   await run('docker', ['network', 'rm', BYSTANDER], { allowFailure: true })
+  // The relays publishing `ports:` on each environment's localhost run in it.
+  await run('docker', ['rm', '-f', portHelperName()], { allowFailure: true })
 }

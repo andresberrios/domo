@@ -94,6 +94,7 @@ const { exportBranch, listEnvironmentBranches } = await import('../../server/lib
 const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
 const { doodSocketDir, stopDoodProxy, sweepEnvironmentResources } = await import('../../server/lib/dood/manager')
+const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
 
 const HOUR = 60 * 60 * 1000
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
@@ -235,6 +236,10 @@ afterEach(async () => {
 })
 
 afterAll(async () => {
+  // The port helper serves every environment, so no environment's teardown
+  // takes it; this run's is named for the test prefix, image included.
+  await run('docker', ['rm', '--force', portHelperName()], { allowFailure: true })
+  await run('docker', ['image', 'rm', portHelperImage()], { allowFailure: true })
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
   // The proxies' sockets live under the home directory, in a folder named for
   // this run's scratch data directory.
@@ -318,6 +323,19 @@ describe('an environment for a project with no .domo.json', () => {
     // service by name because it joined the stack's network.
     await expect(inContainer(environment, 'sh', '-c', 'curl -s http://web:8080/index.html'))
       .resolves.toBe('from-the-checkout')
+    // …and at `localhost:8080`, where `ports:` published it: on the
+    // environment's own localhost, not the daemon's host.
+    await expect(inContainer(environment, 'sh', '-c',
+      'for i in $(seq 1 40); do curl -sf http://localhost:8080/index.html && exit 0; sleep 0.25; done; exit 1'))
+      .resolves.toBe('from-the-checkout')
+    // A service calling back to a dev server the agent bound to loopback.
+    await run('docker', [
+      'exec', '--detach', '--user', environment.remoteUser!, environment.containerId!,
+      'node', '-e', 'require("http").createServer((q, r) => r.end("dev-server")).listen(5173, "127.0.0.1")'
+    ])
+    await expect(inContainer(environment, 'sh', '-c',
+      'for i in $(seq 1 40); do docker compose -p livestack exec -T web wget -qO- http://host.docker.internal:5173 && exit 0; sleep 0.25; done; exit 1'))
+      .resolves.toBe('dev-server')
     // An attached run's output arrives, through the proxy, as the remote user.
     await expect(inContainer(environment, 'docker', 'run', '--rm', 'busybox:1.37', 'echo', 'attached-ok'))
       .resolves.toBe('attached-ok')
