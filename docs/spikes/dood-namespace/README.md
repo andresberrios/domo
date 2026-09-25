@@ -92,6 +92,4 @@ from a direct build is how BuildKit labels a `FROM` served by a named context
 ## Not checked
 
 `docker buildx bake` directly (compose uses the same path); `--push` builds;
-multi-platform builds; BuildKit's own progress output still names the private
-tag (`naming to docker.io/domo-env-a/probechild:dev`) — cosmetic, and fixable
-by the same bridge on the `Status` stream if it matters.
+multi-platform builds.
