@@ -1,4 +1,4 @@
-import type { DoodRequest, ResponseTransform } from './http'
+import type { DoodRequest, ResponseTransform, StreamTransform } from './http'
 
 /**
  * How a request is handled by the proxy: a stack of layers, outermost first,
@@ -23,7 +23,16 @@ import type { DoodRequest, ResponseTransform } from './http'
  */
 
 export type Outcome =
-  | { kind: 'forward', request: DoodRequest, response?: ResponseTransform }
+  | {
+    kind: 'forward'
+    request: DoodRequest
+    response?: ResponseTransform
+    /**
+     * Rewrite a body the proxy streams rather than buffers (an image archive
+     * being loaded): it is re-sent chunked, since its length changes.
+     */
+    requestBody?: StreamTransform
+  }
   | { kind: 'answer', status: number, body: unknown }
 
 export type Next = (request: DoodRequest) => Promise<Outcome>
@@ -52,6 +61,9 @@ export function combineTransforms(inner: ResponseTransform | undefined, outer: R
         return outer.line ? outer.line(first) : first
       }
     }),
+    // One owner each: two layers rewriting the same stream would have to agree on its framing.
+    ...((inner.stream || outer.stream) && { stream: (outer.stream ?? inner.stream)! }),
+    ...((inner.hijack || outer.hijack) && { hijack: (outer.hijack ?? inner.hijack)! }),
     ...((inner.after || outer.after) && {
       after: async (status: number) => {
         await inner.after?.(status)

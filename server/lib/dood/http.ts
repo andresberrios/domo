@@ -15,7 +15,15 @@
  * response still arriving from the daemon.
  */
 
+import type { Duplex } from 'node:stream'
+
 export const HEAD_END = '\r\n\r\n'
+
+/** A body rewritten as it streams: bytes in, bytes out, and whatever was held back at the end. */
+export interface StreamTransform {
+  push(chunk: Buffer): Buffer
+  end(): Buffer
+}
 
 export type Headers = [string, string][]
 
@@ -174,6 +182,17 @@ export interface ResponseTransform {
   line?(line: unknown): unknown | null
   /** Called once the response has been delivered, with its status. For reconciling after the fact. */
   after?(status: number): void | Promise<void>
+  /**
+   * Rewrite a 2xx body of any type as it streams (an image archive): bytes in,
+   * bytes out, re-sent chunked since its length changes.
+   */
+  stream?(): StreamTransform
+  /**
+   * Take over an upgraded connection once the daemon answers `101`: the two
+   * sockets are handed over with any bytes already read put back, and the
+   * proxy stops interpreting either. For the `/grpc` build channel.
+   */
+  hijack?(client: Duplex, daemon: Duplex): void
 }
 
 interface Pending {
@@ -187,12 +206,16 @@ interface Pending {
 
 export interface ResponseSplicerOptions {
   write(data: Buffer): void
+  /** A `101` to a request with a `hijack` transform: `rest` is what the daemon sent after the head. */
+  onHijack?(hijack: NonNullable<ResponseTransform['hijack']>, rest: Buffer): void
+  /** A request with a `hijack` transform was answered with something other than `101`. */
+  onHijackDeclined?(): void
   /** Applied to the `message` of every JSON error response, whatever the request. */
   rewriteError?(message: string): string
   onError?(error: unknown): void
 }
 
-type BodyMode = 'pass' | 'buffer' | 'lines'
+type BodyMode = 'pass' | 'buffer' | 'lines' | 'stream'
 
 /**
  * The daemon -> client direction. Fed raw bytes; writes what the client
@@ -217,7 +240,10 @@ export class ResponseSplicer {
     decoder: ChunkedDecoder | null
     collected: Buffer[]
     partialLine: string
+    stream: StreamTransform | null
   } | null = null
+  /** Handed to a hijack: nothing more is read here. */
+  private detached = false
 
   constructor(private readonly options: ResponseSplicerOptions) {}
 
@@ -237,6 +263,7 @@ export class ResponseSplicer {
   }
 
   feed(chunk: Buffer): void {
+    if (this.detached) return
     if (this.raw) {
       this.options.write(chunk)
       return
@@ -308,9 +335,19 @@ export class ResponseSplicer {
     }
     if (status === 101) {
       this.options.write(head)
+      const hijack = pending.transform?.hijack
+      if (hijack && this.options.onHijack) {
+        const rest = this.buffer
+        this.buffer = Buffer.alloc(0)
+        this.raw = true
+        this.detached = true
+        this.options.onHijack(hijack, rest)
+        return false
+      }
       this.goRaw()
       return false
     }
+    if (pending.transform?.hijack) this.options.onHijackDeclined?.()
     const noBody = pending.method === 'HEAD' || status === 204 || status === 304
     if (noBody) {
       this.options.write(head)
@@ -325,6 +362,7 @@ export class ResponseSplicer {
     if (json && status >= 400 && this.options.rewriteError) mode = 'buffer'
     else if (status >= 200 && status < 300 && pending.transform?.json && framing !== 'close') mode = 'buffer'
     else if (status >= 200 && status < 300 && pending.transform?.line) mode = 'lines'
+    else if (status >= 200 && status < 300 && pending.transform?.stream) mode = 'stream'
     // A hijack answered 200 with no framing is a raw stream from here on.
     if (framing === 'close' && pending.upgrade) mode = 'pass'
 
@@ -333,11 +371,14 @@ export class ResponseSplicer {
       remaining: framing === 'length' ? length : 0,
       decoder: framing === 'chunked' ? new ChunkedDecoder() : null,
       collected: [],
-      partialLine: ''
+      partialLine: '',
+      stream: mode === 'stream' ? pending.transform!.stream!() : null
     }
     // Whatever is not buffered is sent as it arrives, head first — `wait`
     // sends its head long before its body, and the client is waiting on it.
     if (mode === 'pass' || (mode === 'lines' && framing !== 'length')) this.options.write(head)
+    // A rewritten stream changes length: chunked, unless the daemon delimits it by closing.
+    if (mode === 'stream') this.options.write(Buffer.from(renderResponseHead(head.toString('latin1'), framing === 'close' ? null : 'chunked'), 'latin1'))
     if (framing === 'length' && length === 0) this.finishBody()
     else if (framing === 'close' && mode === 'pass') {
       this.current = null
@@ -373,10 +414,16 @@ export class ResponseSplicer {
 
     if (current.mode === 'pass') this.options.write(raw)
     else if (current.mode === 'buffer') current.collected.push(...data)
+    else if (current.mode === 'stream') this.streamBytes(current.stream!.push(Buffer.concat(data)))
     else this.streamLines(data)
 
     if (finished) this.finishBody()
     return true
+  }
+
+  private streamBytes(out: Buffer) {
+    if (!out.length) return
+    this.options.write(this.current!.framing === 'close' ? out : encodeChunk(out))
   }
 
   private streamLines(data: Buffer[]) {
@@ -413,6 +460,10 @@ export class ResponseSplicer {
       const rewritten = this.rewriteBody(current.status, current.pending, body)
       this.options.write(Buffer.from(renderResponseHead(current.head, rewritten.length), 'latin1'))
       this.options.write(rewritten)
+    } else if (current.mode === 'stream') {
+      const rest = current.stream!.end()
+      if (rest.length) this.options.write(current.framing === 'close' ? rest : encodeChunk(rest))
+      if (current.framing !== 'close') this.options.write(LAST_CHUNK)
     } else if (current.mode === 'lines') {
       if (current.framing === 'length') {
         const text = Buffer.concat(current.collected).toString('utf8')
@@ -463,10 +514,11 @@ export class ResponseSplicer {
   }
 }
 
-/** A response head re-emitted with a restated length, for a body that was rewritten. */
-function renderResponseHead(head: string, length: number): string {
+/** A response head re-emitted with a restated length (or chunked, or neither), for a body that was rewritten. */
+function renderResponseHead(head: string, length: number | 'chunked' | null): string {
   const [line = '', ...rest] = head.slice(0, -HEAD_END.length).split('\r\n')
   const kept = parseHeaders(rest).filter(([key]) => !['content-length', 'transfer-encoding'].includes(key.toLowerCase()))
-  kept.push(['Content-Length', String(length)])
+  if (length === 'chunked') kept.push(['Transfer-Encoding', 'chunked'])
+  else if (length !== null) kept.push(['Content-Length', String(length)])
   return [line, ...kept.map(([k, v]) => `${k}: ${v}`), '', ''].join('\r\n')
 }

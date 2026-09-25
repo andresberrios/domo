@@ -1,16 +1,20 @@
 import { mkdir, rm } from 'node:fs/promises'
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
+import type { Duplex } from 'node:stream'
 
 import {
   ChunkedDecoder,
+  encodeChunk,
   HEAD_END,
   headerValue,
+  LAST_CHUNK,
   parseRequestHead,
   renderLocalResponse,
   renderRequestHead,
   ResponseSplicer,
-  type DoodRequest
+  type DoodRequest,
+  type StreamTransform
 } from './http'
 import { layersWantBody, runLayers, type DoodLayer } from './layers'
 import { domoError } from './scope'
@@ -58,7 +62,7 @@ export interface DoodProxyOptions {
   dockerSocket?: string
   onError?(error: unknown): void
   /** Diagnostics. `kind` is how the request was handled, not what it was. */
-  onRequest?(entry: { line: string, kind: 'forwarded' | 'answered' | 'hijacked' }): void
+  onRequest?(entry: { line: string, kind: 'forwarded' | 'answered' | 'hijacked' | 'bridged' }): void
 }
 
 export interface DoodProxy {
@@ -67,8 +71,8 @@ export interface DoodProxy {
 }
 
 type BodyState =
-  | { kind: 'length', remaining: number, discard: boolean }
-  | { kind: 'chunked', decoder: ChunkedDecoder, discard: boolean }
+  | { kind: 'length', remaining: number, discard: boolean, transform?: StreamTransform }
+  | { kind: 'chunked', decoder: ChunkedDecoder, discard: boolean, transform?: StreamTransform }
 
 export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodProxy> {
   const dockerSocket = options.dockerSocket ?? DEFAULT_DOCKER_SOCKET
@@ -95,29 +99,66 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
     // awaiting pre-work for the last one, and ending first would lose it.
     let clientEnded = false
     const forwardEnd = () => {
-      if (clientEnded && !busy && !upstream.writableEnded) upstream.end()
+      if (clientEnded && !busy && !upstream.writableEnded && !handedOver) upstream.end()
     }
-    client.on('end', () => {
+    const onClientEnd = () => {
       clientEnded = true
       forwardEnd()
-    })
+    }
+    client.on('end', onClientEnd)
 
     // Backpressure both ways, which `pipe` used to give for free: an export or
     // a followed log to a slow reader must not pile up in memory here.
-    client.on('drain', () => upstream.resume())
-    upstream.on('drain', () => client.resume())
+    const onClientDrain = () => upstream.resume()
+    const onUpstreamDrain = () => client.resume()
+    client.on('drain', onClientDrain)
+    upstream.on('drain', onUpstreamDrain)
+
+    /**
+     * A layer took over an upgraded connection (the `/grpc` build channel):
+     * both sockets are handed to it, with what was already read of each put
+     * back, and nothing here touches either again. Bytes the client sent after
+     * the upgrade request were held back for exactly this.
+     */
+    let handedOver = false
+    let holding: Buffer[] | null = null
+    const handOver = (hijack: (client: Duplex, daemon: Duplex) => void, rest: Buffer) => {
+      handedOver = true
+      client.off('data', onClientData)
+      client.off('end', onClientEnd)
+      client.off('drain', onClientDrain)
+      upstream.off('data', onUpstreamData)
+      upstream.off('end', onUpstreamEnd)
+      upstream.off('drain', onUpstreamDrain)
+      client.pause()
+      upstream.pause()
+      if (rest.length) upstream.unshift(rest)
+      if (holding?.length) client.unshift(Buffer.concat(holding))
+      holding = null
+      hijack(client, upstream)
+    }
+
     const responses = new ResponseSplicer({
       write: (data) => {
         if (!client.destroyed && !client.write(data)) upstream.pause()
       },
       rewriteError: options.rewriteError,
-      onError: report
+      onError: report,
+      onHijack: handOver,
+      // Refused: the held bytes were meant for a protocol that never started.
+      onHijackDeclined: () => {
+        const held = holding
+        holding = null
+        if (held?.length) sendUpstream(Buffer.concat(held))
+      }
     })
-    upstream.on('data', (chunk: Buffer) => responses.feed(chunk))
-    upstream.on('end', () => {
+    const onUpstreamData = (chunk: Buffer) => responses.feed(chunk)
+    const onUpstreamEnd = () => {
       responses.end()
       client.end()
-    })
+    }
+    upstream.on('data', onUpstreamData)
+    upstream.on('end', onUpstreamEnd)
 
     let buffer: Buffer = Buffer.alloc(0)
     let raw = false
@@ -130,17 +171,34 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
 
     /** Move the current request body along, forwarding or dropping it. False means "need more bytes". */
     const moveBody = (state: BodyState): boolean => {
+      // A transformed body goes up chunked whatever it arrived as.
+      const forward = (raw: Buffer, data: Buffer[], done: boolean) => {
+        if (state.discard) return
+        if (!state.transform) {
+          sendUpstream(raw)
+          return
+        }
+        const out = state.transform.push(Buffer.concat(data))
+        if (out.length) sendUpstream(encodeChunk(out))
+        if (done) {
+          const rest = state.transform.end()
+          if (rest.length) sendUpstream(encodeChunk(rest))
+          sendUpstream(LAST_CHUNK)
+        }
+      }
       if (state.kind === 'length') {
         const take = Math.min(state.remaining, buffer.length)
-        if (!state.discard) sendUpstream(buffer.subarray(0, take))
+        const taken = buffer.subarray(0, take)
         buffer = buffer.subarray(take)
         state.remaining -= take
+        if (take > 0) forward(taken, [taken], state.remaining === 0)
         if (state.remaining === 0) body = null
         return take > 0
       }
-      const { consumed } = state.decoder.push(buffer)
-      if (!state.discard) sendUpstream(buffer.subarray(0, consumed))
+      const { consumed, data } = state.decoder.push(buffer)
+      const taken = buffer.subarray(0, consumed)
       buffer = buffer.subarray(consumed)
+      if (consumed > 0) forward(taken, data, state.decoder.done)
       if (state.decoder.done) body = null
       return consumed > 0
     }
@@ -223,18 +281,40 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
             continue
           }
 
-          const forwarded: DoodRequest = outcome.request
+          let forwarded: DoodRequest = outcome.request
           responses.expect({ method: forwarded.method, upgrade, transform: outcome.response })
+          const bodyTransform = !forwarded.body && !buffered && hasBody ? outcome.requestBody : undefined
           if (forwarded.body) {
             sendUpstream(renderRequestHead(forwarded, forwarded.body.length))
             sendUpstream(forwarded.body)
             // A layer replaced a body it never asked to see: the original goes nowhere.
             body = unbufferedBody(true)
+          } else if (bodyTransform) {
+            forwarded = {
+              ...forwarded,
+              headers: [
+                ...forwarded.headers.filter(([key]) => !['content-length', 'transfer-encoding'].includes(key.toLowerCase())),
+                ['Transfer-Encoding', 'chunked']
+              ]
+            }
+            sendUpstream(renderRequestHead(forwarded, null))
+            body = unbufferedBody(false)
+            if (body) body.transform = bodyTransform
           } else {
             sendUpstream(renderRequestHead(forwarded, null))
             body = unbufferedBody(false)
           }
 
+          if (upgrade && outcome.response?.hijack) {
+            // The layer takes this connection over once the daemon agrees to
+            // the upgrade; until then, what the client sends is held.
+            options.onRequest?.({ line, kind: 'bridged' })
+            raw = true
+            body = null
+            holding = buffer.length ? [buffer] : []
+            buffer = Buffer.alloc(0)
+            break
+          }
           if (upgrade) {
             // Hijack: the rest of this connection is not HTTP (the body of an
             // exec start included — it is forwarded verbatim with the rest).
@@ -260,11 +340,13 @@ export async function startDoodProxy(options: DoodProxyOptions): Promise<DoodPro
 
     // Bytes arriving while a layer is awaited are picked up by the loop that
     // is already running: it re-reads `buffer` after every request.
-    client.on('data', (chunk: Buffer) => {
+    const onClientData = (chunk: Buffer) => {
+      if (holding) { holding.push(chunk); return }
       if (raw) { sendUpstream(chunk); return }
       buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk
       void pump()
-    })
+    }
+    client.on('data', onClientData)
   }
 
   const server: Server = createServer({ allowHalfOpen: true }, handle)

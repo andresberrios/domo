@@ -216,4 +216,61 @@ describe('ResponseSplicer', () => {
     expect(Buffer.concat(out).toString()).toContain('{"a":1}')
     expect(errors).toHaveLength(1)
   })
+
+  it('rewrites a streamed body of any type, re-sending it chunked, across any split', () => {
+    // A stand-in for the archive rewriter: every byte upper-cased, and a marker at the end.
+    const stream = () => ({ push: (chunk: Buffer) => Buffer.from(chunk.toString('latin1').toUpperCase(), 'latin1'), end: () => Buffer.from('!') })
+    const archive = 'tar bytes '.repeat(50)
+    for (const [input, framing] of [
+      [`${head('200 OK', ['Content-Type: application/x-tar', `Content-Length: ${archive.length}`])}${archive}`, 'length'],
+      [chunked('200 OK', [archive.slice(0, 7), archive.slice(7)], 'application/x-tar'), 'chunked']
+    ] as const) {
+      for (const size of SIZES) {
+        const { text } = splice(input + jsonResponse({ next: true }), [{ transform: { stream } }, {}], size)
+        const [responseHead = '', rest = ''] = [text.slice(0, text.indexOf('\r\n\r\n') + 4), text.slice(text.indexOf('\r\n\r\n') + 4)]
+        expect(responseHead, framing).toContain('Transfer-Encoding: chunked')
+        expect(responseHead).not.toContain('Content-Length')
+        const decoder = new ChunkedDecoder()
+        const { data, consumed } = decoder.push(Buffer.from(rest, 'latin1'))
+        expect(decoder.done).toBe(true)
+        expect(Buffer.concat(data).toString()).toBe(`${archive.toUpperCase()}!`)
+        // The next response is framed as usual after it.
+        expect(rest.slice(consumed)).toBe(jsonResponse({ next: true }))
+      }
+    }
+  })
+
+  it('leaves an error to a streamed request as it is', () => {
+    const stream = () => ({ push: () => Buffer.from('X'), end: () => Buffer.alloc(0) })
+    const input = jsonResponse({ message: 'No such image: app' }, '404 Not Found')
+    expect(splice(input, [{ transform: { stream } }]).text).toBe(input)
+  })
+
+  it('hands an upgraded connection over on 101, with the bytes read past the head', () => {
+    const handed: Buffer[] = []
+    let hijacked = 0
+    const out: Buffer[] = []
+    const hijack = () => { hijacked++ }
+    const splicer = new ResponseSplicer({
+      write: data => out.push(Buffer.from(data)),
+      onHijack: (fn, rest) => { handed.push(rest); fn(null as any, null as any) }
+    })
+    splicer.expect({ method: 'POST', upgrade: true, transform: { hijack } })
+    const upgrade = head('101 Switching Protocols', ['Connection: Upgrade', 'Upgrade: h2c'])
+    splicer.feed(Buffer.from(`${upgrade}PRI * HTTP/2.0`, 'latin1'))
+    splicer.feed(Buffer.from('more h2 bytes', 'latin1'))
+    expect(Buffer.concat(out).toString('latin1')).toBe(upgrade)
+    expect(hijacked).toBe(1)
+    expect(handed.map(bytes => bytes.toString())).toEqual(['PRI * HTTP/2.0'])
+  })
+
+  it('says so when a connection it would have taken over was refused the upgrade', () => {
+    let declined = 0
+    const out: Buffer[] = []
+    const splicer = new ResponseSplicer({ write: data => out.push(data), onHijack: () => { throw new Error('not upgraded') }, onHijackDeclined: () => { declined++ } })
+    splicer.expect({ method: 'POST', upgrade: true, transform: { hijack: () => {} } })
+    splicer.feed(Buffer.from(jsonResponse({ message: 'no' }, '400 Bad Request'), 'latin1'))
+    expect(declined).toBe(1)
+    expect(Buffer.concat(out).toString()).toContain('{"message":"no"}')
+  })
 })
