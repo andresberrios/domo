@@ -31,6 +31,7 @@ const collectRuntimeVolumes = vi.fn(async () => undefined)
 // The proxy is a real listening socket and its own spec is live; here it is
 // only a step in the order of things.
 const dood = {
+  ENVIRONMENT_LABEL: 'domo.env',
   ensureDoodProxy: vi.fn(async ({ environmentId }: { environmentId: string }) =>
     ({ socketPath: `/sockets/${environmentId}.sock`, close: async () => {} })),
   stopDoodProxy: vi.fn(async () => undefined),
@@ -48,7 +49,8 @@ const repo = {
   getDevEnvironment: vi.fn(),
   getProject: vi.fn(),
   updateDevEnvironment: vi.fn(),
-  upsertDevEnvironmentPort: vi.fn()
+  upsertDevEnvironmentPort: vi.fn(),
+  listDevEnvironments: vi.fn(async (): Promise<DevEnvironment[]> => [])
 }
 
 vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
@@ -87,8 +89,10 @@ vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMo
 const {
   containerExecArgs,
   createEnvironment,
+  healRetiredEnvironments,
   readEnvironmentFile,
   retireEnvironment,
+  retirementLeftovers,
   startEnvironment,
   stopEnvironment,
   writeEnvironmentFile
@@ -404,6 +408,94 @@ describe('start, stop and remove', () => {
     // containers mount the workspace volume.
     expect(callAt('rm')).toBeLessThan(swept)
     expect(swept).toBeLessThan(callAt('volume', 'domo-dev-env_1-workspace'))
+  })
+
+  /** A daemon whose listings answer from `state`; removals succeed or not as the test says. */
+  function daemonWith(state: { volumes: string[], containers?: string[], images?: string[] }) {
+    run.mockImplementation(async (_program, args) => {
+      if (args[0] === 'volume' && args[1] === 'ls') return { stdout: state.volumes.join('\n'), stderr: '' }
+      if (args[0] === 'ps' && args.includes('--format')) return { stdout: (state.containers ?? []).join('\n'), stderr: '' }
+      if (args[0] === 'image' && args[1] === 'ls') return { stdout: (state.images ?? []).join('\n'), stderr: '' }
+      return { stdout: '', stderr: '' }
+    })
+  }
+
+  it('refuses to mark the environment retired while its volume is still there', async () => {
+    vi.useFakeTimers()
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({ id: 'container-sha', labels: {}, namedVolumes: [], publishedPorts: [] })
+    // `volume rm` "fails" every time: the listing keeps showing it.
+    daemonWith({ volumes: ['domo-dev-env_1-workspace'] })
+
+    const retiring = retireEnvironment('env_1')
+    const settled = expect(retiring).rejects.toThrow(
+      /Could not retire "api": volume domo-dev-env_1-workspace could not be removed\. It has not been marked retired/
+    )
+    await vi.runAllTimersAsync()
+    await settled
+    vi.useRealTimers()
+
+    // Tried more than once, and the row is untouched, so retiring again finishes it.
+    expect(dockerCalls().filter(args => args[0] === 'volume' && args[1] === 'rm' && args[2] === 'domo-dev-env_1-workspace'))
+      .toHaveLength(3)
+    expect(repo.retireDevEnvironmentRow).not.toHaveBeenCalled()
+  })
+
+  it('refuses when Docker cannot be reached at all', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue(null)
+    run.mockImplementation(async (_program, args) => {
+      if (args.includes('--format') || (args[0] === 'volume' && args[1] === 'ls')) {
+        throw new Error('docker ps failed: Cannot connect to the Docker daemon')
+      }
+      return { stdout: '', stderr: '' }
+    })
+
+    await expect(retireEnvironment('env_1')).rejects.toThrow(/Docker is not reachable/)
+    expect(repo.retireDevEnvironmentRow).not.toHaveBeenCalled()
+  })
+
+  it('retires once the daemon shows nothing of it left', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({ id: 'container-sha', labels: {}, namedVolumes: [], publishedPorts: [] })
+    // Someone else's volume, image and container are not ours to wait for.
+    daemonWith({
+      volumes: ['operea_restate-data', 'domo-dev-env_2-workspace'],
+      containers: ['abc\t"domo.envId=env_2"'],
+      images: ['domo-dev-env_2']
+    })
+
+    await retireEnvironment('env_1')
+
+    expect(repo.retireDevEnvironmentRow).toHaveBeenCalledWith('env_1')
+  })
+
+  it('removes what an already-retired environment left behind, and leaves clean ones alone', async () => {
+    repo.listDevEnvironments.mockResolvedValue([
+      environment({ id: 'env_leaky', retiredAt: '2026-09-22T23:25:38.874Z' }),
+      environment({ id: 'env_clean', retiredAt: '2026-09-20T10:00:00.000Z' }),
+      environment({ id: 'env_live' })
+    ])
+    inspectContainer.mockResolvedValue(null)
+    const volumes = ['domo-dev-env_leaky-workspace', 'domo-dev-env_live-workspace']
+    daemonWith({ volumes })
+    run.mockImplementation(async (_program, args) => {
+      if (args[0] === 'volume' && args[1] === 'rm') {
+        const index = volumes.indexOf(args[2]!)
+        if (index >= 0) volumes.splice(index, 1)
+      }
+      if (args[0] === 'volume' && args[1] === 'ls') return { stdout: volumes.join('\n'), stderr: '' }
+      return { stdout: '', stderr: '' }
+    })
+
+    await healRetiredEnvironments()
+
+    expect(repo.listDevEnvironments).toHaveBeenCalledWith(undefined, true)
+    const removed = dockerCalls().filter(args => args[0] === 'volume' && args[1] === 'rm').map(args => args[2])
+    expect(removed).toContain('domo-dev-env_leaky-workspace')
+    // Nothing of the clean retired one is touched, and a live one never is.
+    expect(removed.join(' ')).not.toMatch(/env_clean|env_live/)
+    expect(volumes).toEqual(['domo-dev-env_live-workspace'])
   })
 
   it('is a no-op for an environment that is not there', async () => {
@@ -909,5 +1001,25 @@ describe('createEnvironment', () => {
 
     await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow()
     expect(buildEnvironmentImage).not.toHaveBeenCalled()
+  })
+})
+
+describe('retirementLeftovers', () => {
+  it('names what of the environment is still on the daemon, and nothing of anyone else', () => {
+    expect(retirementLeftovers('env_1', {
+      containers: [
+        { id: 'a', labels: { 'domo.envId': 'env_1' } },
+        { id: 'b', labels: { 'domo.env': 'env_1' } },
+        { id: 'c', labels: { 'domo.envId': 'env_2' } }
+      ],
+      volumes: ['domo-dev-env_1-workspace', 'dind-var-lib-docker-env_1', 'domo-dev-env_2-workspace', 'mine'],
+      images: ['domo-dev-env_1', 'postgres']
+    })).toEqual([
+      '2 container(s)',
+      'volume domo-dev-env_1-workspace',
+      'volume dind-var-lib-docker-env_1',
+      'image domo-dev-env_1'
+    ])
+    expect(retirementLeftovers('env_1', { containers: [], volumes: ['mine'], images: [] })).toEqual([])
   })
 })

@@ -8,7 +8,7 @@ import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
 } from '../lib/dev-environment-ports'
-import { restoreDockerProxies } from '../lib/dev-environments'
+import { healRetiredEnvironments, restoreDockerProxies } from '../lib/dev-environments'
 import { stopAllDoodProxies } from '../lib/dood/manager'
 
 export default defineNitroPlugin(async (nitro) => {
@@ -35,6 +35,8 @@ export default defineNitroPlugin(async (nitro) => {
 
   // Before the ports: detecting a stack's services goes through the daemon,
   // and an environment's agent may be mid-`docker compose` right now.
+  // Not awaited: removing leftovers can take a while, and nothing waits on it.
+  void healRetiredEnvironments().catch(error => console.warn('[domo] retired environment cleanup failed', error))
   await restoreDockerProxies().catch(error => console.error('[domo] docker proxy restore failed', error))
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
   cronScheduler.start()

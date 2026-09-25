@@ -32,6 +32,7 @@ import {
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { carryMessage, readHostWorkingTree, reconcileArgs, seedReport } from './dev-env/workspace-seed'
 import {
+  ENVIRONMENT_LABEL,
   ensureDoodProxy,
   ensureEnvironmentNetwork,
   stopDoodProxy,
@@ -574,16 +575,116 @@ async function retire(id: string): Promise<void> {
   if (!environment) return
   stopEnvironmentForwarders(id)
   await stopDoodProxy(id)
-  await removeContainer(containerReference(environment))
-  // After the container, which may have joined the stack's networks; before
-  // the workspace volume, which the stack's containers mount.
-  await sweepEnvironmentResources(id).catch(() => {})
-  await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
-  await removeImage(environmentImageName(id))
+  const left = await destroyEnvironmentResources(environment)
+  // Refused before the row changes, so retiring again is the way to finish.
+  // Every removal used to be allowed to fail and the row was retired anyway:
+  // an environment retired while Docker Desktop's disk was full kept a
+  // 1.1 GB workspace volume nothing would ever look for again.
+  if (left.length) {
+    throw new Error(
+      `Could not retire "${environment.name}": ${left.join('; ')} could not be removed. `
+      + 'It has not been marked retired; retire it again once that is fixed.'
+    )
+  }
   await collectRuntimeVolumes().catch(() => {})
   await collectBrowserVolumes().catch(() => {})
   await retireDevEnvironmentRow(id)
   await pruneRetiredRecords()
+}
+
+/** Whatever of a retired environment is still on the daemon, by name. Pure. */
+export function retirementLeftovers(
+  environmentId: string,
+  daemon: { containers: Array<{ id: string, labels: Record<string, string> }>, volumes: string[], images: string[] }
+): string[] {
+  const left: string[] = []
+  const containers = daemon.containers.filter(container =>
+    container.labels['domo.envId'] === environmentId || container.labels[ENVIRONMENT_LABEL] === environmentId)
+  if (containers.length) left.push(`${containers.length} container(s)`)
+  const volumes = new Set([workspaceVolumeName(environmentId), `dind-var-lib-docker-${environmentId}`])
+  for (const volume of daemon.volumes) if (volumes.has(volume)) left.push(`volume ${volume}`)
+  if (daemon.images.includes(environmentImageName(environmentId))) {
+    left.push(`image ${environmentImageName(environmentId)}`)
+  }
+  return left
+}
+
+/** One read of the daemon for every leftover check. Throws when Docker cannot be reached. */
+async function readDaemon(): Promise<Parameters<typeof retirementLeftovers>[1]> {
+  const [containers, volumes, images] = await Promise.all([
+    run('docker', ['ps', '-a', '--format', '{{.ID}}\t{{json .Labels}}']),
+    run('docker', ['volume', 'ls', '--quiet']),
+    run('docker', ['image', 'ls', '--format', '{{.Repository}}'])
+  ])
+  const lines = (text: string) => text.split('\n').map(line => line.trim()).filter(Boolean)
+  return {
+    containers: lines(containers.stdout).map((line) => {
+      const [id = '', labels = ''] = line.split('\t')
+      // `docker ps` prints labels as `a=b,c=d`; the domo ones never hold a comma.
+      const parsed: Record<string, string> = {}
+      for (const pair of labels.replace(/^"|"$/g, '').split(',')) {
+        const index = pair.indexOf('=')
+        if (index > 0) parsed[pair.slice(0, index)] = pair.slice(index + 1)
+      }
+      return { id, labels: parsed }
+    }),
+    volumes: lines(volumes.stdout),
+    images: lines(images.stdout)
+  }
+}
+
+/**
+ * Remove everything an environment has on the daemon, and say what is left —
+ * checked against the daemon afterwards, not inferred from exit codes, because
+ * `rm` of something already gone and `rm` of something still in use look
+ * alike to a caller that allows failure. A volume can be briefly in use by a
+ * container still being torn down, so it tries three times.
+ */
+async function destroyEnvironmentResources(environment: DevEnvironment): Promise<string[]> {
+  const id = environment.id
+  let left: string[] = []
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise(resolve => setTimeout(resolve, 1_000))
+    await removeContainer(containerReference(environment))
+    // A half-made container the row never learnt the id of.
+    const labelled = await run('docker', ['ps', '-aq', '--filter', `label=domo.envId=${id}`], { allowFailure: true })
+      .catch(() => ({ stdout: '' }))
+    for (const container of labelled.stdout.split('\n').filter(Boolean)) await removeContainer(container)
+    // After the container, which may have joined the stack's networks; before
+    // the workspace volume, which the stack's containers mount.
+    await sweepEnvironmentResources(id).catch(() => {})
+    await run('docker', ['volume', 'rm', workspaceVolumeName(id)], { allowFailure: true }).catch(() => {})
+    await run('docker', ['volume', 'rm', `dind-var-lib-docker-${id}`], { allowFailure: true }).catch(() => {})
+    await removeImage(environmentImageName(id))
+    try {
+      left = retirementLeftovers(id, await readDaemon())
+    } catch (error) {
+      return [`Docker is not reachable (${error instanceof Error ? error.message : String(error)}), so nothing`]
+    }
+    if (!left.length) return []
+  }
+  return left
+}
+
+/**
+ * Remove what environments this database has already retired still left on
+ * the daemon — the leaks from before retirement checked its own work. Only
+ * rows it knows about: a workspace volume with no row at all may belong to
+ * another Domo on the same daemon (a worktree's dev server), so it is never
+ * guessed at. Runs in the background from boot.
+ */
+export async function healRetiredEnvironments(): Promise<void> {
+  const retired = (await listDevEnvironments(undefined, true)).filter(environment => environment.retiredAt)
+  if (!retired.length) return
+  const daemon = await readDaemon()
+  for (const environment of retired) {
+    if (!retirementLeftovers(environment.id, daemon).length) continue
+    await lifecycle(environment.id, async () => {
+      const left = await destroyEnvironmentResources(environment)
+      if (left.length) console.warn(`[dev-env] retired ${environment.id} still has ${left.join('; ')}`)
+      else console.info(`[dev-env] removed what retired environment ${environment.id} had left behind`)
+    })
+  }
 }
 
 function proxyTarget(environment: DevEnvironment) {
