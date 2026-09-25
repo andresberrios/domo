@@ -143,7 +143,7 @@ const scope: DoodScope = {
   dockerSocket: SOCKET
 }
 
-const names = (environment: CreateNames['environment'] = { id: OWN_ID, ipcShareable: true }): CreateNames => ({
+const names = (environment: CreateNames['environment'] = { id: OWN_ID }): CreateNames => ({
   name: null,
   container: ref => `env_abc-${ref}`,
   network: ref => `env_abc-${ref}`,
@@ -290,11 +290,6 @@ describe('rewriteContainerCreate — network_mode: host', () => {
     const shareable = hostConfigOf(rewriteContainerCreate({ HostConfig: { PidMode: 'host', IpcMode: 'host' } }, scope, names()))
     expect(shareable.PidMode).toBe(`container:${OWN_ID}`)
     expect(shareable.IpcMode).toBe(`container:${OWN_ID}`)
-    // An environment created before `--ipc shareable`: Docker would answer
-    // "non-shareable IPC", so `--ipc host` keeps meaning the daemon's host.
-    const legacy = rewriteContainerCreate({ HostConfig: { PidMode: 'host', IpcMode: 'host' } }, scope, names({ id: OWN_ID, ipcShareable: false }))
-    expect(hostConfigOf(legacy).IpcMode).toBe('host')
-    expect(JSON.parse((legacy.spec.Labels as Record<string, string>)['domo.modes']!)).toEqual({ PidMode: 'host' })
   })
 
   it('leaves a container: mode naming the environment itself resolved like any other reference', () => {
@@ -310,7 +305,7 @@ describe('rewriteContainerCreate — network_mode: host', () => {
   it('is a pure decision on its own', () => {
     const spec: Record<string, unknown> = { Hostname: 'x' }
     const hostConfig: Record<string, unknown> = { NetworkMode: 'bridge', PidMode: 'host' }
-    expect(hostModes(spec, hostConfig, { id: OWN_ID, ipcShareable: false })).toEqual({ requested: { PidMode: 'host' } })
+    expect(hostModes(spec, hostConfig, { id: OWN_ID })).toEqual({ requested: { PidMode: 'host' } })
     // Not host networking: the hostname stays.
     expect(spec.Hostname).toBe('x')
   })

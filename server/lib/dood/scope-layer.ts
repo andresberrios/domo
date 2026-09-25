@@ -71,10 +71,9 @@ interface Owned {
   own: Candidate | null
 }
 
-/** The environment's own container, with what a create is translated against: its mounts and its IPC mode. */
+/** The environment's own container, with what a create is translated against: its mounts. */
 interface OwnContainer extends Candidate {
   mounts: EnvironmentMount[]
-  ipcShareable: boolean
 }
 
 const REFUSED_VERBS: Record<string, string> = {
@@ -125,8 +124,7 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
     ownCache = {
       id: String(response.body.Id),
       name: String(response.body.Name ?? '').replace(/^\//, ''),
-      mounts: mountTableFromInspect(response.body),
-      ipcShareable: response.body.HostConfig?.IpcMode === 'shareable'
+      mounts: mountTableFromInspect(response.body)
     }
     return ownCache
   }
@@ -311,7 +309,7 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
         container: lookupName('container'),
         network: lookupName('network'),
         volume: lookupName('volume'),
-        environment: own && { id: own.id, ipcShareable: own.ipcShareable }
+        environment: own && { id: own.id }
       })
       if (result.refusal) return answer(400, domoError(result.refusal))
       const byVolume = new Map<string, string[]>()

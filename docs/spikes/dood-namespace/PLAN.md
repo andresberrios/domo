@@ -172,9 +172,9 @@ phase needs on top of it:
   …`); ports are discarded as a real host discards them, so no
   `domo.publishing` and no refusal from the publish layer. `PidMode: host` →
   `container:<env>` (measured: `ps` shows the environment's PID 1).
-  `IpcMode: host` → `container:<env>` only when the environment is
-  `--ipc shareable`, which new environments now are (`container.ts`); an older
-  one answers `non-shareable IPC`, so there it keeps meaning the daemon host's.
+  `IpcMode: host` → `container:<env>`; every environment is created
+  `--ipc shareable` (`container.ts`), since joining a `private` one answers
+  `non-shareable IPC`.
   `UTSMode`, `UsernsMode`, `CgroupnsMode` `host` pass through. What was asked
   is on `domo.modes` and inspect reports `host`. A service in the
   environment's network namespace keeps running in the old one when the

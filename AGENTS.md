@@ -132,8 +132,8 @@ things that are easy to get wrong.
   (`/etc/localtime`, `/dev`, `/proc`, `/run`, …) passes through, and anything
   else — the environment's own image layer — is refused by name rather than
   silently mounted as an empty directory on the daemon's host. `network_mode:
-  host` (and `--pid host`, and `--ipc host` for environments created
-  `--ipc shareable`) becomes `container:<environment>`, reported back as
+  host` (and `--pid host` and `--ipc host`, which is why environments are
+  created `--ipc shareable`) becomes `container:<environment>`, reported back as
   `host`, and such services are stopped and started again when the
   environment comes back in a new namespace. Publishing is taken off the daemon's host
   and done on the environment's own `localhost` instead (next-but-one bullet;

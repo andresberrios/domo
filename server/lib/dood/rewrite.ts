@@ -180,8 +180,6 @@ export interface CreateNames {
 
 export interface EnvironmentContainer {
   id: string
-  /** Whether its IPC namespace can be joined (`--ipc shareable`); fixed when it was created. */
-  ipcShareable: boolean
 }
 
 /** A named volume a create mounts, with what it would be created with. */
@@ -295,9 +293,8 @@ export interface RequestedPublishing {
  * warning, and so it is here — nothing is published, because the service
  * already listens on the environment's own `localhost`.
  *
- * IPC is only joined when the environment was created shareable (Docker's
- * default is `private`, and joining one answers `non-shareable IPC`); an older
- * environment leaves `--ipc host` meaning the daemon host's, as it always did.
+ * IPC can be joined because every environment is created `--ipc shareable`
+ * (Docker's default is `private`, and joining that answers `non-shareable IPC`).
  */
 export function hostModes(
   spec: Record<string, unknown>,
@@ -329,7 +326,7 @@ export function hostModes(
     requested.PidMode = 'host'
     hostConfig.PidMode = target
   }
-  if (hostConfig.IpcMode === 'host' && target && environment?.ipcShareable) {
+  if (hostConfig.IpcMode === 'host' && target) {
     requested.IpcMode = 'host'
     hostConfig.IpcMode = target
   }
