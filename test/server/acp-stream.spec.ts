@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable, Writable } from 'node:stream'
@@ -299,6 +300,10 @@ function textOf(events: AgentEvent[]): string[] {
 }
 
 beforeEach(async () => {
+  // Every session below runs "in" this directory, and a session whose working
+  // directory is missing is refused before its adapter is spawned. Nothing else
+  // makes it: a machine that never ran the suite before failed every test here.
+  await mkdir(join(tmpdir(), 'domo-test', 'acp-stream'), { recursive: true })
   await query('truncate agent_sessions cascade')
   // Account-wide, so it hangs off no session and no cascade reaches it.
   await query('truncate usage_limits')
