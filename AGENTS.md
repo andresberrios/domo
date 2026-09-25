@@ -552,7 +552,13 @@ things that are easy to get wrong.
   instead of repeating the sequence. The mesh's `retire_project` /
   `retire_dev_environment` refuse a target that contains the calling agent's own
   session — killing your own adapter process mid-tool-call leaves the response
-  undelivered.
+  undelivered. **Retirement checks the daemon afterwards and refuses before the
+  row changes if anything is left** (retiring again finishes it); it used to
+  allow every removal to fail and retire the row anyway, which is how a
+  workspace volume survived a retirement done while Docker's disk was full.
+  Boot removes what already-retired rows left behind — only rows this database
+  knows: a volume with no row at all may belong to another Domo on the same
+  daemon, such as a worktree's dev server, so it is never guessed at by name.
 - **Whether a session can start is derived, and the guard cannot live in one
   place.** A session has one stored visibility state, `archived`; whether it can
   *run* is a question about the place it ran — is its environment retired, is
