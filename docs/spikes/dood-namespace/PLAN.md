@@ -122,17 +122,101 @@ phase needs to know on top of it:
   `{}`; a stopped container reports `{}` too, and `docker port` prints nothing
   for it. Docker Desktop reports an `sctp` publish as `udp` (its bug) — we
   refuse SCTP at create.
-- **Not done / not verified**: IPv6 targets (the relay forwards to the
-  container's IPv4 address; `ip6tables` is not touched, so a service calling
-  `host.docker.internal` over IPv6 is not redirected); SCTP; Linux hosts (all
-  measured on Docker Desktop). `-P` publishes only what the container/image
-  exposes, as Docker does; the Ports panel still auto-forwards to the Mac only
-  what `domo.ports` lists (explicit `-p` / `ports:`), not `-P`'s allocations.
+- **Not done / not verified**: IPv6 targets (decided against, see the next
+  section); SCTP; Linux hosts (all measured on Docker Desktop). `-P` publishes
+  only what the container/image exposes, as Docker does (and is now forwarded
+  to the Mac as well, see the next section).
 - Tests: `test/unit/dood-{publish,relay}.spec.ts` (the relay script runs for
   real on loopback), `test/unit/dood-responses.spec.ts`;
   `test/docker/dood-publish.live.spec.ts` (two stand-in environments, every
   scenario in the brief, ~50 s); `dev-environment.live.spec.ts` now checks
   `localhost:8080` and `host.docker.internal` in a real environment.
+
+## Done: binds outside the checkout, `network_mode: host`, and the phase-2 leftovers
+
+Landed on this branch. AGENTS.md has the load-bearing summary; what the images
+phase needs on top of it:
+
+- **Binds** (`binds.ts`, pure; applied in `rewriteContainerCreate`, so in the
+  *scope* layer — the stack is still `[scopeLayer, publishLayer]`). The mount
+  table is the environment container's own `docker inspect` (`Mounts`, plus
+  `HostConfig.Mounts` for a volume mounted with a subpath), cached with the
+  own-container lookup — mounts are fixed at creation. Longest destination
+  wins: volume → volume + subpath (`requiredSubpaths` is now
+  `{ volume, subpath }[]`, made only in volumes the environment mounts
+  writable; `ensureSubpaths(volume, subpaths)`); bind → its host source
+  (Docker Desktop reports the plain path, `/private/var/…` resolved; the
+  `/host_mnt/…` form is accepted too and stripped); the socket → the proxy
+  socket, always in `Binds`, even when the client asked with `Mounts`; a system
+  path (`SYSTEM_PATHS`: `/etc/localtime`, `/etc/timezone`, `/usr/share/zoneinfo`,
+  `/dev`, `/sys`, `/proc`, `/lib/modules`, `/run`, `/var/run`,
+  `/var/lib/docker`) → unchanged; anything else → **400
+  `Domo: <path> exists only inside this dev environment, …`**, with a hint to
+  `<path>-host` when the home overlay mounted the host's copy beside it
+  (`~/.ssh` → `~/.ssh-host`, `~/.gitconfig` → `~/.gitconfig-host`). A mount is
+  never less read-only than the environment's. Sources are normalised
+  (`..`), so `../shared` outside the checkout lands in whatever mount it really
+  is in, or is refused by its real path. Inspect/`docker ps` show every
+  translated mount by the source asked for (`domo.binds`, by destination).
+  **Not translated**: a symlink inside the environment's filesystem that points
+  into a mount (the path is refused; resolving it would need an exec per
+  create). A *service* that mounts the socket and binds a path of its own gets
+  it resolved against the **environment's** table, not the service's.
+- **Host namespaces** (`hostModes` in `rewrite.ts`): `NetworkMode: host` →
+  `container:<env id>`, dropping `Hostname`, `Domainname`, `MacAddress`,
+  `ExposedPorts`, `ExtraHosts`, `Dns*`, `PortBindings`, `PublishAllPorts`,
+  `NetworkingConfig` — Docker refuses each beside a `container:` mode
+  (measured: `conflicting options: hostname …`, `… dns …`, `… port exposing
+  …`); ports are discarded as a real host discards them, so no
+  `domo.publishing` and no refusal from the publish layer. `PidMode: host` →
+  `container:<env>` (measured: `ps` shows the environment's PID 1).
+  `IpcMode: host` → `container:<env>` only when the environment is
+  `--ipc shareable`, which new environments now are (`container.ts`); an older
+  one answers `non-shareable IPC`, so there it keeps meaning the daemon host's.
+  `UTSMode`, `UsernsMode`, `CgroupnsMode` `host` pass through. What was asked
+  is on `domo.modes` and inspect reports `host`. A service in the
+  environment's network namespace keeps running in the old one when the
+  environment restarts (measured: only `lo` left); `EnvironmentNetwork`
+  stops and starts every running `container:<env>` service whose `StartedAt`
+  is before the environment's, on each fresh namespace (so also on Domo boot
+  after a restart it missed). A `--pid container:<env>` service dies with the
+  environment's PID 1 and is left stopped, like the rest of a stack after an
+  environment stop.
+- **`-P` is forwarded to the Mac** like `-p`: `requestedPorts(labels,
+  exposedPorts, bindings)` adds every exposed port of a `PublishAllPorts`
+  container, preferring the port the relay allocated in the environment.
+- **`host.docker.internal` after the environment moves**: measured, Docker
+  gives a restarted container its old address back when free, but not when
+  something took it while it was stopped (it came back on `.4`, `.2` was the
+  thief's). `ExtraHosts` cannot be updated through the API and a stable alias
+  address is not available (a static IP needs a user-configured subnet), so
+  every reconcile compares each running service's `ExtraHosts` entry with the
+  environment's current address on its network and, when they differ, rewrites
+  the service's `/etc/hosts` in place through the helper
+  (`/proc/<pid>/root/etc/hosts`, measured on a running container; written with
+  `cat >`, not renamed over, since it is a bind mount). Docker rewrites the
+  file from the stale `ExtraHosts` on every start, so it is redone per start
+  (keyed by PID + address); between a start and the reconcile its `start`
+  event triggers, the old address is visible for a moment.
+- **IPv6: nothing done, deliberately.** There is no IPv6 `route_localnet`: a
+  DNAT to `::1` of traffic arriving from another host is dropped as martian,
+  so the loopback redirect cannot be done for IPv6 at all, and the relay's
+  targets are the containers' IPv4 addresses. `host.docker.internal` is an
+  IPv4 entry, so a client resolving it never tries IPv6. Not cheap, not needed.
+- **Docker Desktop findings the images phase inherits** (both in AGENTS.md):
+  a host socket bind-mounted into a container only works from a host path of
+  **≤ 88 bytes** (`doodSocketPath` enforces it; live specs use
+  `mkdtemp('/tmp/ddX-')`), and **`docker restart` of a container that mounts a
+  host socket fails** (`open /socket_mnt/…: no such file or directory`) while
+  stop + start works — the proxy turns such a restart into a stop (via the
+  engine) and forwards the `start` (`restartAsStop`), and `restartStranded`
+  uses stop + start too. A restart *policy* on such a container fails the same
+  way (measured) and is not closable. Never `docker restart` an environment.
+- Tests: `test/unit/dood-binds.spec.ts` (mount table, resolution, refusals,
+  `..`, read-only, both syntaxes, host modes, the 88-byte check), additions to
+  `dood-{responses,publish,scope-layer}.spec.ts` and `service-ports.spec.ts`;
+  `test/docker/dood-binds.live.spec.ts` (one stand-in environment, every
+  scenario in the brief, ~20 s).
 
 ## The goal
 
@@ -210,8 +294,8 @@ clients never pipeline: when request N+1 arrives, response N is complete.
      spike did. If the numbering cannot be made exact, the names alone are
      worth fixing.
 5. **Order of work**: ~~scoping + names → response rewriting~~ (done) → ~~`localhost`
-   publishing + `host.docker.internal`~~ (done) → binds + `network_mode: host` →
-   images (the `/grpc` bridge, then the HTTP-side tag handling).
+   publishing + `host.docker.internal`~~ (done) → ~~binds + `network_mode: host`~~
+   (done) → images (the `/grpc` bridge, then the HTTP-side tag handling).
 
 ## Pieces, each with what was measured
 
@@ -267,7 +351,7 @@ clients never pipeline: when request N+1 arrives, response N is complete.
 - `network_mode: container:<env>` services share `/etc/hosts` with the
   environment; nothing to add there.
 
-### Binds outside the checkout
+### Binds outside the checkout — done, see above
 - Resolve the source against the environment container's own mounts, longest
   prefix: a volume → that volume + subpath (generalises the workspace case);
   a bind (`~/.aws`, `~/.ssh-host` …) → its source on the host (check whether
@@ -282,7 +366,7 @@ clients never pipeline: when request N+1 arrives, response N is complete.
   (`Domo: /home/vscode/cache exists only inside this environment and cannot
   be mounted by a container on the host daemon`).
 
-### `network_mode: host`
+### `network_mode: host` — done, see above
 - Rewrite to `container:<environment container id>` and drop what conflicts
   with it (`Hostname`, `Domainname`, `ExtraHosts`, `Dns*`, `MacAddress`,
   `PortBindings`, `NetworkingConfig`). On environment start, restart the

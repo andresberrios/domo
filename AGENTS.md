@@ -123,8 +123,19 @@ things that are easy to get wrong.
   narrowed to the `domo.env=<id>` label (networks also show the builtins), and
   every reference in a path, query or body is resolved *within* the
   environment — one it does not own is sent on prefixed, so the daemon answers
-  its own "No such container" in its own words. Workspace binds become the
-  workspace volume with a subpath, publishing is taken off the daemon's host
+  its own "No such container" in its own words. Bind sources are resolved
+  against the environment container's own mount table, longest destination
+  first (`binds.ts`): a volume becomes that volume with a subpath (the
+  checkout is only the common case), a bind becomes its source on the host,
+  `/var/run/docker.sock` becomes *this environment's* proxy socket (so a
+  service given it is scoped like the agent), a short list of system paths
+  (`/etc/localtime`, `/dev`, `/proc`, `/run`, …) passes through, and anything
+  else — the environment's own image layer — is refused by name rather than
+  silently mounted as an empty directory on the daemon's host. `network_mode:
+  host` (and `--pid host`, and `--ipc host` for environments created
+  `--ipc shareable`) becomes `container:<environment>`, reported back as
+  `host`, and such services are stopped and started again when the
+  environment comes back in a new namespace. Publishing is taken off the daemon's host
   and done on the environment's own `localhost` instead (next-but-one bullet;
   what was asked is kept on `domo.ports` / `domo.publishing`, and the binds on
   `domo.binds`, so inspect shows it), named volumes are created labelled before the
@@ -222,8 +233,12 @@ things that are easy to get wrong.
   server bound *only* to the environment's own `eth0` address is not reachable
   from siblings. Both die with the namespace, so both are redone whenever the
   PID changes (environment start, Domo boot). The `ExtraHosts` address is
-  fixed at create: an environment that comes back on another address leaves
-  running services pointing at the old one until they are recreated.
+  fixed at create and the API cannot change it, and Docker gives a restarted
+  environment its old address back only if nothing took it meanwhile — so a
+  reconcile rewrites a running service's `/etc/hosts` in place through the
+  helper (`/proc/<pid>/root/etc/hosts`) whenever the entry no longer names the
+  environment; Docker rewrites the file from `ExtraHosts` on every start, so it
+  is redone after each.
 - **An environment is a namespace, not a security boundary, so the host user's
   login state is shared with it.** An agent in a container has to be able to
   `git push`, open a PR and reach whatever cloud the developer is already logged
@@ -1135,6 +1150,17 @@ things that are easy to get wrong.
   And a unix socket path must fit in `sun_path` (104 bytes on macOS): a
   worktree's `.data/dood/env_<id>.sock` measured 117, so sockets live under
   `~/.domo/dood/<hash of the data dir>/` (`NUXT_DOOD_SOCKET_DIR` overrides).
+  **Docker Desktop's own limit is tighter and silent: 88 bytes.** A longer
+  host path mounts fine and every connection inside answers `ECONNREFUSED`
+  (measured: 88 connects, 89 does not), so `doodSocketPath` refuses past it.
+  **Docker Desktop cannot `docker restart` a container that mounts a host
+  socket** — `failed to fulfil mount request: open /socket_mnt/…: no such file
+  or directory`, container left stopped — while `stop` then `start` works
+  every time. Domo only ever stops and starts environments; a service
+  restarted through the proxy that mounts the socket is restarted as a stop
+  plus a start (`restartAsStop`). A restart *policy* fails the same way
+  (measured: `--restart always`, exited after its first automatic restart)
+  and goes nowhere near the proxy, so that one is not closable.
   The path is derived from the id because the mount is fixed at creation: the
   proxy must be listening at it before `docker run` *and* `docker start`, and
   `restoreDockerProxies()` brings every one back at boot.
