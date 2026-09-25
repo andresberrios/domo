@@ -8,17 +8,75 @@ the spike in `README.md` beside this file — **done: viable**, see decision 4.
 ## Where things stand (committed)
 
 - `server/lib/dood/`: per-environment unix socket onto the host daemon, a byte
-  splice parsing only client→daemon. Translates container create (workspace
+  splice framing both directions. Translates container create (workspace
   binds → workspace volume + subpath, host publishing dropped and written on a
   `domo.ports` label, networks joined by the environment), labels
   network/volume create with `domo.env=<id>`, detaches the environment from a
-  network on inspect/delete (compose down). Sweep by label on retire; stop
+  network on delete (compose down; hidden from inspect). Sweep by label on retire; stop
   stops the stack.
 - `docker: true` = docker-outside-of-docker Feature's CLI only + the proxy
   socket via `-v` at `/var/run/docker.sock`. Existing environments keep DinD.
 - Ports panel: one global port helper (`<prefix>port-helper`, `--pid=host`,
   `SYS_ADMIN` + `SYS_PTRACE`) `nsenter -n`s services by PID; scanner +
   userland forwarder to the Mac. Rows keyed by `service`.
+
+## Done: decisions 1–3 (scoping, names, response rewriting)
+
+Landed on this branch (`feat(dood): give each environment its own names…`).
+What a later phase needs to know:
+
+- **The extension API is a stack of layers** (`server/lib/dood/layers.ts`),
+  outermost first, passed to `startDoodProxy({ layers })`; `manager.ts` builds
+  the stack (today: `[scopeLayer(…)]`). A layer is
+  `{ wantsBody?(request), handle(request, next) }`:
+  - `wantsBody` is asked first, because a body has to be buffered before the
+    first layer runs. Only for JSON bodies you read or rewrite — never a build
+    context or an archive.
+  - `handle` may await pre-work, rewrite `request` (method, `path` without the
+    version prefix, `query`, `headers`, `body`), call `next(request)`, or
+    `answer(status, body)` itself (use `domoError('…')` for the loud refusal).
+  - `withResponse(outcome, { json, line, after })` registers a response
+    transform: `json` for a finite 2xx JSON body (buffered), `line` for an
+    NDJSON stream (events, rewritten while it streams), `after(status)` once the
+    response is delivered — the hook for reconciling relays after
+    `start`/`stop`/`kill`/`rm`/`restart`. Transforms compose inner-first.
+  - A layer placed **inside** the scope layer sees references already resolved
+    to real ids / host names, and names already prefixed; one placed outside
+    sees the agent's own names. Publishing, binds and `network_mode: host`
+    should go inside.
+  - Every JSON error has the prefix stripped (`rewriteError`), whatever layer
+    produced the request.
+- **Ports seam.** The client's original `PortBindings`/`PublishAllPorts` are
+  on the `domo.publishing` label (JSON), the dropped ports on `domo.ports`
+  (unchanged, the scanner reads it), the original `Binds`/`Mounts` on
+  `domo.binds`. Inspect and `docker ps` report publishing through
+  `reportedPorts()` / `reportedPortList()` in `responses.ts`: a binding that
+  named a host port is shown as asked, one that did not as `null` (exposed,
+  unpublished). The localhost-publishing phase records the allocation and
+  reports it there.
+- **Unresolved references are sent prefixed** (`replacementFor`), so the
+  daemon answers "No such container: env_x-foo" / "network … not found" /
+  "get …: no such volume" and the prefix is stripped on the way out — Docker's
+  own wording for every object type, for free.
+- **The environment's own container is hidden from `network inspect`/`ls`
+  endpoints** instead of leaving the network on inspect: compose then sends
+  the DELETE, and the environment leaves on the DELETE. `network prune`
+  disconnects it first from networks it is the only endpoint of.
+- **`docker builder prune` is buildx → BuildKit gRPC (`Control/Prune`)**, not
+  `POST /build/prune` (measured: `docker builder prune --help` is `docker
+  buildx prune` with buildx 0.37). Only the HTTP one is refused now; the
+  `/grpc` bridge (decision 4) must refuse `Control/Prune` too.
+- **Anonymous volumes carry no label** (the daemon makes them), so they are
+  invisible to the environment's `volume ls`/`prune`; they go with their
+  container (`--rm`, `rm -v`, the sweep's `rm --volumes`).
+- Not translated yet, left to the images phase: `POST /build?networkmode=<net>`
+  and the image-side of `commit` (`repo=`). Exec ids (`/exec/{id}`) are not
+  scoped — they are unguessable and per-container.
+- Objects an environment made **before** this change (unprefixed, labelled)
+  keep working: an unprefixed name resolves as itself.
+- Tests: `test/unit/dood-{http,names,responses,scope-layer,rewrite}.spec.ts`;
+  `test/docker/dood-namespace.live.spec.ts` (two environments + bystanders,
+  real CLI and compose, ~11 s).
 
 ## The goal
 
@@ -95,13 +153,13 @@ clients never pipeline: when request N+1 arrives, response N is complete.
      `--progress=plain` of the same build direct vs through the proxy, as the
      spike did. If the numbering cannot be made exact, the names alone are
      worth fixing.
-5. **Order of work**: scoping + names → response rewriting → `localhost`
+5. **Order of work**: ~~scoping + names → response rewriting~~ (done) → `localhost`
    publishing + `host.docker.internal` → binds + `network_mode: host` →
    images (the `/grpc` bridge, then the HTTP-side tag handling).
 
 ## Pieces, each with what was measured
 
-### Scoping and names (decisions 1–2)
+### Scoping and names (decisions 1–2) — done, see above
 - A small Engine API client to the daemon socket (Node `http` with
   `socketPath`), not the `docker` CLI: resolutions happen on the request path.
 - Rewrite: create `?name=`, rename `?name=`, `Links`, `VolumesFrom`,

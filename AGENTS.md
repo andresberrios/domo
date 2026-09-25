@@ -114,12 +114,28 @@ things that are easy to get wrong.
   nine DinD volumes held ~18 GB, the Docker VM filled up, and Postgres could
   not start. Now `server/lib/dood/` gives each environment a unix socket onto
   the host daemon, bind-mounted at `/var/run/docker.sock`; the socket it
-  arrived on is the only identity a request has. It forwards everything
-  untouched except container create (workspace binds become the workspace
-  volume with a subpath, host publishing is dropped and written on a
-  `domo.ports` label, the network is joined by the environment's own container
-  too), network/volume create (labelled) and network inspect/delete (the
-  environment leaves first). Everything it makes carries `domo.env=<id>`, which
+  arrived on is the only identity a request has. **Each environment sees the
+  daemon as its own**: every container, network and volume it names is created
+  as `<envId>-<name>` and shown back without the prefix (inspect, lists,
+  events, error messages), so two environments of one project run one compose
+  file with a `container_name:` side by side; the agent's name is added as a
+  network alias so DNS by name still works. Lists, events and prunes are
+  narrowed to the `domo.env=<id>` label (networks also show the builtins), and
+  every reference in a path, query or body is resolved *within* the
+  environment — one it does not own is sent on prefixed, so the daemon answers
+  its own "No such container" in its own words. Workspace binds become the
+  workspace volume with a subpath, host publishing is dropped (kept on
+  `domo.ports` / `domo.publishing`, and the binds on `domo.binds`, so inspect
+  shows what was asked for), named volumes are created labelled before the
+  create that mounts them, and the environment's own container joins the
+  networks its services do. What cannot be translated is refused with a
+  Docker-shaped `{"message":"Domo: …"}` the CLI prints like any daemon error:
+  swarm/plugin mutations, `image prune -a`, the HTTP build-cache prune, and
+  stopping/removing/renaming the environment's own container (which is
+  resolvable, for `--network container:$(hostname)`, but never listed).
+  **`docker builder prune` is not refused yet**: it goes through buildx and
+  BuildKit's gRPC, which only the `/grpc` bridge can see into. Everything it
+  makes carries `domo.env=<id>`, which
   is what makes retirement exact: `sweepEnvironmentResources` removes those
   containers, networks and volumes and nothing of anyone else's — never
   `docker network prune`, which would take the developer's own. Stopping an
@@ -135,11 +151,17 @@ things that are easy to get wrong.
 - **The proxy is a byte splice, not an HTTP server.** A Docker client reuses one
   connection and `POST /containers/{id}/wait` is a long poll, so an HTTP server
   (which must answer in order) queues the `start` that would end the wait
-  behind it forever: every `docker run` deadlocked. Only the client→daemon
-  direction is parsed, to find request boundaries; responses are piped blind.
-  Both sockets need `allowHalfOpen: true` — a client with no stdin half-closes
-  after the attach, and Node's default then drops the container's output, so
-  `docker run` printed nothing and exited 0.
+  behind it forever: every `docker run` deadlocked. Both directions are
+  *framed* (`server/lib/dood/http.ts`) but bytes are only held back where a
+  layer (`layers.ts`) asked for a JSON body; streams pass as they arrive and an
+  upgrade turns the connection raw. That, and answering a request locally, is
+  safe only because Docker clients never pipeline. Both sockets need
+  `allowHalfOpen: true` — a client with no stdin half-closes after the attach,
+  and Node's default then drops the container's output, so `docker run`
+  printed nothing and exited 0. **The environment's own container is hidden
+  from `network inspect`**: `compose down` inspects a network before deleting
+  it and, seeing any endpoint, never sends the DELETE — measured — so the
+  environment leaves on the DELETE instead.
 - **A compose service's ports are found and forwarded by entering its network
   namespace.** On a daemon of its own a service's port landed in the
   environment's namespace, where `ss` saw it; as a sibling on the host daemon
@@ -1569,9 +1591,9 @@ and permissions are end to end because a permission is a row.
   `parseListeningPorts` now ignores. `pnpm test:docker` covers the rest.
   **Not verified:** a real agent driving compose, Linux (every measurement here
   is Docker Desktop on macOS — the socket forwarding and `chmod` findings may
-  differ), and a stack with a `build:` section — the client streams the build
-  context through the proxy untouched, so it should work, but nothing has run
-  one.
+  differ). A plain `docker build` through the proxy is covered by
+  `dood-namespace.live.spec.ts`; a compose `build:` section only by the image
+  spike (`docs/spikes/dood-namespace/`).
 - The dev-environment path was verified against a real Docker daemon by
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no

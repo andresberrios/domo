@@ -16,10 +16,9 @@ import { BUILTIN_NETWORKS } from './scope'
  *
  * Three things are restored rather than merely renamed: the mounts and the
  * port publishing the client asked for (kept on labels at create, see
- * `rewrite.ts`), and the name. Compose depends on the first and last — it
- * decides whether to recreate a container by comparing `Mounts[].Name` and
- * `NetworkSettings.Networks` keys with its own names — and `docker port` /
- * `docker compose port` read the publishing.
+ * `rewrite.ts`), and the name. Compose reads all three back — a second `up`
+ * through the proxy recreating nothing is what the live spec checks — and
+ * `docker port` / `docker compose port` read the publishing.
  */
 
 export interface ResponseScope {
