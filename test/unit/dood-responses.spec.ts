@@ -209,6 +209,17 @@ describe('volumes and prunes', () => {
     expect(out.Containers.map((entry: any) => entry.Names)).toEqual([['/web']])
     expect(out.Volumes.map((entry: any) => entry.Name)).toEqual(['data'])
   })
+
+  it('narrows the lists of the newer `system df -v` shape too (API 1.52+)', () => {
+    const out = systemDfForAgent({
+      ContainerUsage: { TotalCount: 2, Items: [{ Id: 'c1', Names: ['/env_abc-web'], Labels: { 'domo.env': 'env_abc' } }, { Id: 'x', Labels: {} }] },
+      VolumeUsage: { TotalCount: 2, Items: [{ Name: 'env_abc-data', Labels: { 'domo.env': 'env_abc' } }, { Name: 'pg', Labels: null }] }
+    }, scope, LABEL) as any
+    expect(out.ContainerUsage.Items.map((entry: any) => entry.Names)).toEqual([['/web']])
+    expect(out.VolumeUsage.Items.map((entry: any) => entry.Name)).toEqual(['data'])
+    // The counts are the daemon's: global numbers are documented as not closable.
+    expect(out.ContainerUsage.TotalCount).toBe(2)
+  })
 })
 
 describe('eventForAgent', () => {

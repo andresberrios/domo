@@ -284,6 +284,13 @@ export function systemDfForAgent(body: unknown, scope: ResponseScope, environmen
   const out: Json = { ...body }
   if (Array.isArray(out.Containers)) out.Containers = out.Containers.filter(ours).map(entry => containerSummaryForAgent(entry, scope))
   if (Array.isArray(out.Volumes)) out.Volumes = out.Volumes.filter(ours).map(entry => volumeForAgent(entry, scope))
+  // API 1.52 and later: `{ ContainerUsage: { Items }, VolumeUsage: { Items }, … }`, when `verbose` asks for the lists.
+  if (isObject(out.ContainerUsage) && Array.isArray(out.ContainerUsage.Items)) {
+    out.ContainerUsage = { ...out.ContainerUsage, Items: out.ContainerUsage.Items.filter(ours).map(entry => containerSummaryForAgent(entry, scope)) }
+  }
+  if (isObject(out.VolumeUsage) && Array.isArray(out.VolumeUsage.Items)) {
+    out.VolumeUsage = { ...out.VolumeUsage, Items: out.VolumeUsage.Items.filter(ours).map(entry => volumeForAgent(entry, scope)) }
+  }
   return out
 }
 
