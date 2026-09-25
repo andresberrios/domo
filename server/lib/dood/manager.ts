@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { run } from '../dev-env/docker'
 import { dataDir } from '../paths'
 import { createEngineClient } from './engine'
+import { imageLayer, privateTagsOf } from './image-layer'
 import { namespaceFor } from './names'
 import { EnvironmentNetwork, watchContainerEvents, type EventWatcher } from './network'
 import { startDoodProxy, type DoodProxy } from './proxy'
@@ -144,7 +145,10 @@ export async function ensureDoodProxy(input: DoodProxyInput): Promise<DoodProxy>
         onError: report
       }),
       // Inside the scope layer: it sees real ids, and the publishing label.
-      publishLayer({ ns, network })
+      publishLayer({ ns, network }),
+      // Inside the scope layer too: its transforms read the `domo.image`
+      // label before the scope layer hides every `domo.*` one.
+      imageLayer({ ns, engine, onError: report })
     ],
     rewriteError: errorRewriter(ns),
     dockerSocket: DAEMON_SOCKET,
@@ -225,8 +229,9 @@ export async function stopEnvironmentContainers(environmentId: string): Promise<
  * through). This is the whole point of the label: with a daemon of its own,
  * retiring an environment threw all of it away with the DinD volume; on a
  * shared daemon it would outlive the environment, so it is removed by label —
- * exactly what this environment made and nothing of anyone else's. Images and
- * build cache are left on purpose: sharing them is why the daemon is shared.
+ * exactly what this environment made and nothing of anyone else's. So are the
+ * image tags it produced, which are private to it; shared images and the build
+ * cache are left on purpose: sharing them is why the daemon is shared.
  *
  * The environment's own container must be gone first, or a network it joined
  * still has an endpoint and refuses to go.
@@ -245,4 +250,10 @@ export async function sweepEnvironmentResources(environmentId: string): Promise<
   if (lines(volumes.stdout).length) {
     await run('docker', ['volume', 'rm', '--force', ...lines(volumes.stdout)], { allowFailure: true })
   }
+  // Its private tags (`images.ts`): an untag, or the image with it when it
+  // was the last name — never an image another environment or the host
+  // still names.
+  const images = await run('docker', ['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'], { allowFailure: true })
+  const tags = privateTagsOf(namespaceFor(environmentId), lines(images.stdout))
+  if (tags.length) await run('docker', ['image', 'rm', ...tags], { allowFailure: true })
 }

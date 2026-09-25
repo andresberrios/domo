@@ -1,6 +1,7 @@
 import type { DoodRequest } from './http'
 import { engineOk, type EngineClient } from './engine'
 import { answer, withResponse, type DoodLayer, type Next, type Outcome } from './layers'
+import { unprivateText } from './images'
 import { agentName, isNamespaced, stripNames, type Namespace } from './names'
 import { mountTableFromInspect, type EnvironmentMount } from './binds'
 import type { Binding } from './publish'
@@ -384,6 +385,31 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
       return request.method === 'GET' ? withResponse(outcome, { json: body => volumeForAgent(body, responseScope) }) : outcome
     },
 
+    /**
+     * The legacy builder's `networkmode` (`DOCKER_BUILDKIT=0`, API clients):
+     * a network or a `container:` is the environment's, like a create's, and
+     * `host` is the environment's own namespace. BuildKit builds never get
+     * here with anything but `host`/`none`/`default` — buildx refuses the rest
+     * itself (`network mode "x" not supported by buildkit`) — and a BuildKit
+     * `host` stays the daemon's, since BuildKit has no `container:` mode.
+     */
+    async build(request: DoodRequest, next: Next): Promise<Outcome> {
+      const mode = request.query.get('networkmode')
+      if (!mode || ['default', 'bridge', 'none'].includes(mode)) return next(request)
+      const buildkit = request.query.get('version') === '2'
+      let translated = mode
+      if (mode === 'host') {
+        if (buildkit) return next(request)
+        const own = await ownContainer()
+        if (own) translated = `container:${own.id}`
+      } else if (mode.startsWith('container:')) {
+        translated = `container:${(await lookups().resolve('container', mode.slice('container:'.length))).replacement}`
+      } else {
+        translated = (await lookups().resolve('network', mode)).replacement
+      }
+      return next(withQuery(request, 'networkmode', translated))
+    },
+
     async events(request: DoodRequest, next: Next): Promise<Outcome> {
       const lookup = lookups()
       const forwarded = await scopedList(request, 'container', false, {
@@ -475,6 +501,8 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
           return withResponse(await next(request), {
             json: body => systemDfForAgent(body, responseScope, environmentLabel)
           })
+        case 'build':
+          return handlers.build(request, next)
         case 'commit': {
           const ref = request.query.get('container')
           if (!ref) return next(request)
@@ -488,5 +516,5 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
   }
 }
 
-/** Every error message the daemon sends, with the environment's prefix taken out of the names in it. */
-export const errorRewriter = (ns: Namespace) => (message: string) => stripNames(ns, message)
+/** Every error message the daemon sends, with the environment's prefixes taken out of the names in it. */
+export const errorRewriter = (ns: Namespace) => (message: string) => stripNames(ns, unprivateText(ns, message))

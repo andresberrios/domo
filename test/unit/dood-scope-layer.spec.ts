@@ -132,6 +132,20 @@ describe('scope layer — references', () => {
   })
 })
 
+describe('scope layer — the legacy builder\'s network', () => {
+  it('means the environment\'s own networks, containers and namespace', async () => {
+    const { send } = setup()
+    const mode = async (line: string) => forwarded(await send(line)).query.get('networkmode')
+    expect(await mode('POST /build?networkmode=stack_default')).toBe(`${ENV}-stack_default`)
+    expect(await mode('POST /build?networkmode=container:web')).toBe(`container:${ENV}-web`)
+    expect(await mode('POST /build?networkmode=host')).toBe(`container:${OWN_ID}`)
+    // BuildKit has no `container:` mode: its `host` stays the daemon's.
+    expect(await mode('POST /build?networkmode=host&version=2')).toBe('host')
+    for (const kept of ['default', 'bridge', 'none']) expect(await mode(`POST /build?networkmode=${kept}`)).toBe(kept)
+    expect(await mode('POST /build?t=x')).toBeNull()
+  })
+})
+
 describe('scope layer — container create', () => {
   it('names, resolves, creates the named volume first, and joins the network', async () => {
     const { send, calls, subpaths } = setup()

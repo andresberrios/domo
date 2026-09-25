@@ -45,6 +45,7 @@ export type Classified =
   | { kind: 'events' }
   | { kind: 'system-df' }
   | { kind: 'commit' }
+  | { kind: 'build' }
   | { kind: 'forward' }
 
 /** The loud answer for what cannot be translated. Clients print `message` like any daemon error. */
@@ -89,6 +90,7 @@ export function classifyRequest(method: string, path: string, query: URLSearchPa
   if (path === '/events' && method === 'GET') return { kind: 'events' }
   if (path === '/system/df' && method === 'GET') return { kind: 'system-df' }
   if (path === '/commit' && method === 'POST') return { kind: 'commit' }
+  if (path === '/build' && method === 'POST') return { kind: 'build' }
   if (path === '/build/prune' && method === 'POST') {
     return {
       kind: 'refuse',
