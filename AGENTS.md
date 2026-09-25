@@ -1196,6 +1196,11 @@ things that are easy to get wrong.
   home of up to 53 characters works. The path is fixed into an environment's
   mounts at creation: **changing the derivation strands every existing
   environment** (its `docker` answers `ECONNREFUSED`) until it is recreated.
+  While Domo is down (a restart, a `server/` edit under `pnpm dev`) a
+  `docker` call inside an environment **hangs rather than fails** — Docker
+  Desktop holds the connection to the missing socket — and completes once
+  the proxy listens again (measured, and asserted in
+  `dev-environment.live.spec.ts`).
   **Docker Desktop cannot `docker restart` a container that mounts a host
   socket** — `failed to fulfil mount request: open /socket_mnt/…: no such file
   or directory`, container left stopped — while `stop` then `start` works
@@ -1696,10 +1701,17 @@ and permissions are end to end because a permission is a row.
   network, volume or socket. That pass is what found the embedded-DNS listener
   (`127.0.0.11`, a random port in every container on a user network), which
   `parseListeningPorts` now ignores. `pnpm test:docker` covers the rest.
-  **Not verified:** a real agent driving compose, Linux (every measurement here
-  is Docker Desktop on macOS — the socket forwarding and `chmod` findings may
-  differ). Builds, compose `build:`, and every image command are covered by
-  `dood-images.live.spec.ts`, not yet by a pass in the running app.
+  A second pass with an Operea-shaped stack in **two** environments of one
+  project (Postgres on 5432 with a `container_name`, a Restate stand-in built
+  `FROM` another built image calling back through `host.docker.internal` to a
+  loopback-only dev API) found each environment on its own `localhost:5432`,
+  each callback reaching its own environment, images private per
+  environment, the Ports panel forwarding both, everything back after a
+  server restart, and nothing left after retirement
+  (`docs/spikes/dood-namespace/PLAN.md` has the whole pass and the
+  scenario → test table). **Not verified:** a real agent driving compose (the
+  token available was rejected), Linux (every measurement here is Docker
+  Desktop on macOS — the socket forwarding and `chmod` findings may differ).
 - The dev-environment path was verified against a real Docker daemon by
   `pnpm test:docker`, including an ACP `initialize` answered by
   `/opt/domo/bin/claude-agent-acp` inside a `debian:bookworm-slim` image with no

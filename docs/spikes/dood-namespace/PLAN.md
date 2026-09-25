@@ -1,10 +1,11 @@
 # Plan: each environment sees the host daemon as its own Docker host
 
-Settled with the user on 2026-09-25. This is the working plan for the next
-stretch of `worktree-dood-shared-daemon`; delete it (or fold what survives into
-`AGENTS.md`) when the work lands. The image-tag question is being settled by
-the spike in `README.md` beside this file — **done: viable**, and built, see
-"Done: images".
+Settled with the user on 2026-09-25. **Status: every phase done**, including
+the final review fixes, the coverage audit and the end-to-end pass in the
+running app (see "Done: final phase" at the end). Delete this file (or fold
+what survives into `AGENTS.md`, which already carries the load-bearing parts)
+when the branch lands. The image-tag question was settled by the spike in
+`README.md` beside this file — viable, and built, see "Done: images".
 
 ## Where things stand (committed)
 
@@ -482,3 +483,91 @@ clients never pipeline: when request N+1 arrives, response N is complete.
   (`~/.aws`, docker.sock, refused path); `network_mode: host`.
 - End to end in the app (second dev server on `domo_e2e`, ports 3766/3767),
   ideally with the Operea stack.
+
+## Done: final phase (review fixes, socket path, coverage audit, end to end)
+
+- **Review fixes.** `tar.ts` skips an entry by the size a PAX header gives
+  (it used the header's octal field, which a PAX writer may leave at 0, and
+  lost its place in the stream). Lifecycle operations on one environment run
+  one at a time (`keyedSerial`, `dev-environments.ts`), and so do one
+  environment's proxy start/stop (`manager.ts`): a `close()` unlinks the
+  socket path after the server stops, and could unlink a proxy that had
+  started listening at the same path meanwhile.
+- **Socket path.** `~/.domo/s/<8 hex of the data dir>/<12 hex of the env
+  id>.sock`, 35 bytes plus the home directory (homes up to 53 characters fit
+  the 88-byte limit). No compatibility fallback: nothing shipped, and an
+  environment created by an earlier build of this branch must be recreated
+  (its `docker` answers `ECONNREFUSED`).
+- **Measured in the pass**: a `docker` call made in an environment while Domo
+  is down does not fail — Docker Desktop holds the connection to the missing
+  socket — and completes once Domo is back (`dev-environment.live.spec.ts`
+  asserts it). A tool with its own timeout (`timeout 5 docker ps`) sees a hang,
+  not a refusal.
+
+### Coverage: every scenario → the test that covers it
+
+| scenario | covered by |
+| --- | --- |
+| compose `ports:` Postgres, `psql localhost:5432` from the environment | `dood-publish.live` "reaches a compose postgres…"; `dev-environment.live` "an environment's stack on the shared daemon…" (real environment) |
+| plain `docker run -p` | `dood-publish.live` "reaches a plain `docker run -d -p 8080:80`…" |
+| TCP and UDP | `dood-publish.live` (TCP throughout, "relays UDP both ways"); `dood-relay.spec` |
+| `host.docker.internal` → dev server in the environment, loopback-only and all-interfaces, with and without `extra_hosts: host-gateway`, compose and `docker run` | `dood-publish.live` "points host.docker.internal at the environment…"; `dev-environment.live` (real environment) |
+| …with two environments running the same stack and the same dev-server port, each reaching its own | `dood-publish.live` (same test, second half) |
+| `host.docker.internal` after the environment comes back on another address | `dood-binds.live` "points host.docker.internal back at the environment…" |
+| two environments, one compose file: `container_name`, named volumes | `dood-namespace.live` "runs one compose file with a container_name and a named volume in both…" |
+| …same published ports | `dood-publish.live` "lets two environments publish the same host port at once…" |
+| …same image tags built with different content | `dood-images.live` "builds the same tag in two environments at once…" |
+| not seeing each other (lists, inspect, events) | `dood-namespace.live` "lists only the environment's own objects…", "shows only the environment's own events"; `dood-images.live` "shows another environment none of its image events" |
+| `docker ps` / `rm -f $(docker ps -aq)` / prunes sparing other environments and the developer's own containers | `dood-namespace.live` "removes everything with `rm -f $(docker ps -aq)` and the prunes…" (bystander container, volume, network) |
+| loud failures through the CLI and compose | `dood-namespace.live` "refuses loudly…"; `dood-binds.live` "refuses a path … through the CLI and through compose"; `dood-images.live` "refuses docker builder prune"; `dood-publish.live` "refuses a start whose port is taken…" |
+| `inspect` / `docker port` / `compose port` / `ps` looking like a normal machine | `dood-namespace.live` "shows inspect the name, the mounts and the publishing…"; `dood-publish.live` (port / compose port / allocation / `-P`); `dood-binds.live` "shows the sources the agent named…"; `dood-responses.spec` |
+| binds: checkout, home overlay paths, `docker.sock`, system paths, refused paths | `dood-binds.live` (every case); `dood-binds.spec` |
+| `network_mode: host` (and `--pid host`), and after an environment restart | `dood-binds.live` "runs a network_mode: host service…", "shares the environment's processes…", "moves host-networked services…" |
+| image builds, `FROM` chains, tag/commit/load/save/push/rmi | `dood-images.live` (every case); `dev-environment.live` (FROM chain in a real environment) |
+| environment stop / start / restart | `dood-publish.live` "re-establishes the relays and the redirect when the environment restarts"; `dev-environment.live` (real `stopEnvironment` / `startEnvironment`); `dev-environments.spec` (argv and order) |
+| Domo restart: proxies, relays, redirect restored | `dood-publish.live` "comes back when Domo restarts…"; `dev-environment.live` (`restoreDockerProxies`, a call made during the outage completing) |
+| lifecycle races (retire vs start, proxy stop vs start) | `dev-environments.spec` "runs a retire only once a start in flight has finished…"; `dood-manager.spec` |
+| retirement sweeping everything, private tags included | `dood-images.live` "sweeps an environment's private tags…"; `dood-binds.live`/`dood-compose.live` sweeps; `dev-environment.live` (real retire: no labelled object, tag or socket) |
+| the Ports panel (services by name, forwarding to the Mac, relays not listed as the environment's own) | `dood-ports.live`; `dood-publish.live` "keeps the relays out of the Ports panel's own list…"; `dev-environment-ports.spec`; the end-to-end pass below |
+
+Gaps found and filled in this phase: two environments' callbacks at once, a
+Domo restart, and a *real* environment (rather than a stand-in) through stop,
+start, restart of Domo and retirement — plus the race and path unit tests.
+
+### End to end in the running app
+
+A second dev server from this worktree (`domo_e2e`, Electric 30001, ports
+3766/3767, prefix `domo-dde2e-`), a fixture project shaped like Operea
+(Postgres `ports: 5432:5432` with `container_name: operea-db` and a named
+volume; a Restate stand-in built `FROM` another built image, calling
+`http://host.docker.internal:9080` — a loopback-only dev API the agent runs —
+with `extra_hosts: host-gateway`, and a worker without it calling an
+all-interfaces one on 9081). Two environments of it, created through the API:
+
+- inside each, as `vscode`: `docker compose build` then `up`, `psql -h
+  localhost` answered by its *own* Postgres (a row written in each
+  names that environment's container), the stand-in reached *its own* environment's dev API in
+  both modes, `docker ps` / `compose port` / `docker port` / inspect read as on
+  a normal machine with unprefixed names, and `docker run fixture-restate:dev`
+  ran each environment's own build (`base-alpha` vs `base-beta`);
+- on the Mac: the Ports panel listed `restate`, `worker` and `db` by service
+  plus the agent's own 9080/9081, forwarded automatically (alpha on 8081/8082/
+  5432, beta on free ports), and `psql` through each forward reached the right
+  database;
+- restarting the Domo server: during the outage `docker` in the environment
+  hung and every relay and forward was gone; after boot all of it answered
+  again on the same ports with nothing done inside;
+- stop/start of an environment through the API stopped its stack and kept its
+  data; `rm -f $(docker ps -aq)` and the prunes in one environment left the
+  other and the developer's own containers alone, and `image prune -a` was
+  refused with the Domo message;
+- retiring every environment left no container, network, volume, private tag
+  or socket of theirs on the daemon.
+
+**Not exercised**: a real coding agent — the `NUXT_CLAUDE_CODE_OAUTH_TOKEN`
+available answered `401 Invalid bearer token`, and the developer's own login
+was deliberately not used. Once, the first of two environments created at
+the same moment on a cold machine failed with `Failed to download package for
+ghcr.io/devcontainers/features/node` from the Dev Container CLI; three
+concurrent creations afterwards all succeeded, so it is either a registry
+flake or a cold-cache race in the CLI — not reproduced.

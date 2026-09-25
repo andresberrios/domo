@@ -269,19 +269,25 @@ Domo at it instead of duplicating anything:
   into the agent's.
 - Multiple Claude Code and Codex ACP sessions can run against that same copy.
 - With `"docker": true` agents can use `docker` and `docker compose`, and what
-  they run lands on the **host's** daemon, so images and build cache are shared
-  instead of copied into every environment. The environment's socket translates
-  on the way through: a bind mount of the checkout becomes a mount of the
-  environment's own copy, nothing publishes a host port (two environments
-  running the same stack would collide on it), and the environment joins the
-  stack's network, so its services are reachable by name. What a service
+  they run lands on the **host's** daemon, so pulled images and the build
+  cache are shared instead of copied into every environment. To the agent it
+  still looks like a machine of its own: it sees only its own containers,
+  networks, volumes and built images, under the names it gave them, so two
+  environments of one project can run the same compose file side by side
+  (same `container_name:`, same ports, same image tags). `-p` / `ports:`
+  publish on the environment's own `localhost` (`psql -h localhost` works as
+  usual), `host.docker.internal` inside a service means the environment (so a
+  service can call back to a dev server the agent runs there, even one bound
+  to `127.0.0.1`), and a bind mount of the checkout — or of `~/.aws`, or of the
+  Docker socket — is translated to what the environment really has. What
+  cannot be translated fails with an error starting `Domo:`. What a service
   listens on shows up under **Ports**, and a port the stack asked to publish is
-  forwarded to `127.0.0.1` automatically. Everything it creates is labelled with
-  the environment. This is a convenience, **not isolation**: an agent that can
-  reach the host daemon can reach anything on the host.
+  forwarded to `127.0.0.1` on your machine automatically. This is a
+  convenience, **not isolation**: an agent that can reach the host daemon can
+  reach anything on the host.
 - The checkout persists across stop/start; stopping an environment stops the
   containers it started. Retiring it destroys the container, its volume, its
-  image and everything it started on the daemon. **The checkout exists only in the volume**, so before retiring one,
+  image and everything it started or built on the daemon. **The checkout exists only in the volume**, so before retiring one,
   push what you want to keep — or bring the branch back with
   [Export branch](#getting-a-branch-out-of-an-environment).
 - The agent sessions that ran in it are **kept, not deleted**: their transcripts
