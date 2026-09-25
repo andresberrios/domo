@@ -6,6 +6,7 @@ import {
   portHelperRunArgs,
   requestedPorts,
   scannableServices,
+  serviceReferences,
   siblingFromInspect,
   type SiblingContainer
 } from '../../server/lib/dev-env/service-ports'
@@ -105,5 +106,13 @@ describe('requestedPorts and siblingFromInspect', () => {
     })).toEqual({
       id: 'abc', name: 'stack-web-1', running: true, pid: 4242, labels: { a: 'b' }, networkMode: 'stack_default'
     })
+  })
+
+  it('names a service the way the agent named it, without the environment\'s prefix', () => {
+    expect(siblingFromInspect({ Id: 'abc', Name: '/env_abc-stack-web-1' }, 'env_abc').name).toBe('stack-web-1')
+    // A random name carries no prefix, and is kept as it is.
+    expect(siblingFromInspect({ Id: 'abc', Name: '/bold_gauss' }, 'env_abc').name).toBe('bold_gauss')
+    // …and is found again from a row by either spelling.
+    expect(serviceReferences('env_abc', 'stack-web-1')).toEqual(['env_abc-stack-web-1', 'stack-web-1'])
   })
 })

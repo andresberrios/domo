@@ -11,6 +11,7 @@ import {
   portHelperRunArgs,
   requestedPorts,
   scannableServices,
+  serviceReferences,
   siblingFromInspect,
   type SiblingContainer
 } from './dev-env/service-ports'
@@ -113,11 +114,15 @@ function ensurePortHelper(): Promise<string> {
  * same name is not this environment's to reach into.
  */
 async function servicePid(environmentId: string, service: string): Promise<number | null> {
-  const found = await run('docker', [
-    'inspect', '--format', `{{.State.Pid}} {{index .Config.Labels "${ENVIRONMENT_LABEL}"}}`, service
-  ], { allowFailure: true })
-  const [pid, owner] = found.stdout.split(' ')
-  return Number(pid) > 0 && owner === environmentId ? Number(pid) : null
+  for (const reference of serviceReferences(environmentId, service)) {
+    const found = await run('docker', [
+      'inspect', '--type', 'container',
+      '--format', `{{.State.Pid}} {{index .Config.Labels "${ENVIRONMENT_LABEL}"}}`, reference
+    ], { allowFailure: true })
+    const [pid, owner] = found.stdout.split(' ')
+    if (owner === environmentId) return Number(pid) > 0 ? Number(pid) : null
+  }
+  return null
 }
 
 /**
@@ -221,7 +226,7 @@ async function scanServices(environmentId: string): Promise<Array<{ service: Sib
   let containers: SiblingContainer[] = []
   const inspected = await run('docker', ['inspect', ...list], { allowFailure: true })
   try {
-    containers = (JSON.parse(inspected.stdout || '[]') as unknown[]).map(siblingFromInspect)
+    containers = (JSON.parse(inspected.stdout || '[]') as unknown[]).map(raw => siblingFromInspect(raw, environmentId))
   } catch { /* a container removed between the two calls; the next scan sees it */ }
   const services = scannableServices(containers)
   if (!services.length) return []

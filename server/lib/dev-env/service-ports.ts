@@ -1,3 +1,4 @@
+import { agentName, hostName, namespaceFor } from '../dood/names'
 import { REQUESTED_PORTS_LABEL, type PublishedPort } from '../dood/rewrite'
 
 /**
@@ -51,7 +52,12 @@ export function inServiceNetwork(helper: string, pid: number, command: string[],
 /** The part of `docker inspect` the scanner reads. */
 export interface SiblingContainer {
   id: string
-  /** Without Docker's leading slash. */
+  /**
+   * As the agent knows it: without Docker's leading slash, and without the
+   * environment's namespace prefix (`server/lib/dood/names.ts`). This is what
+   * a port row is keyed by and what the Ports panel shows — the name the agent
+   * gave it, not the one it has on the shared daemon.
+   */
   name: string
   running: boolean
   /** 0 when it is not running. */
@@ -60,10 +66,11 @@ export interface SiblingContainer {
   networkMode: string
 }
 
-export function siblingFromInspect(raw: any): SiblingContainer {
+export function siblingFromInspect(raw: any, environmentId?: string): SiblingContainer {
+  const name = String(raw?.Name ?? '').replace(/^\//, '')
   return {
     id: String(raw?.Id ?? ''),
-    name: String(raw?.Name ?? '').replace(/^\//, ''),
+    name: environmentId ? agentName(namespaceFor(environmentId), name) : name,
     running: !!raw?.State?.Running,
     pid: Number(raw?.State?.Pid) || 0,
     labels: raw?.Config?.Labels ?? {},
@@ -126,4 +133,13 @@ export function requestedPorts(labels: Record<string, string>): PublishedPort[] 
   } catch {
     return []
   }
+}
+
+/**
+ * What to hand `docker inspect` for a service row: its namespaced name first,
+ * then the name as it is, for a container the daemon named at random (which
+ * carries no prefix). The caller still checks the label on whatever it finds.
+ */
+export function serviceReferences(environmentId: string, service: string): string[] {
+  return [hostName(namespaceFor(environmentId), service), service]
 }
