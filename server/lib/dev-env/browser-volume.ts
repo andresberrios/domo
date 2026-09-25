@@ -63,9 +63,16 @@ export const PLAYWRIGHT_MCP_ENTRY = `${BROWSER_ROOT}/js/node_modules/@playwright
  *
  * `LD_LIBRARY_PATH` because the libraries are in the volume and not in the
  * image; `FONTCONFIG_PATH` because fontconfig reads an absolute path by default
- * and the image may carry no fonts at all — without it the browser runs, and
- * answers every question about the DOM correctly, but draws no text, so the
- * screenshot that is the point of having it comes back blank.
+ * and the image may carry no fonts at all.
+ *
+ * **The wrapper at `CHROME_EXECUTABLE` now sets both**, so nothing has to call
+ * this to get a working browser; it stays for a caller that spawns the
+ * downloaded binary directly. Missing fonts are worth knowing by their
+ * symptom, because it is not "no fonts": a trivial page renders and the
+ * browser answers every question about the DOM correctly, while a real page
+ * kills it outright with `FATAL: SkFontMgr_FontConfigInterface … Not
+ * implemented` — which surfaces to the caller as the browser having closed,
+ * naming neither fonts nor Skia.
  */
 export function browserEnv(): Record<string, string> {
   return {
@@ -74,8 +81,29 @@ export function browserEnv(): Record<string, string> {
   }
 }
 
+/**
+ * Bumped whenever `populateScript` changes what the volume *contains* rather
+ * than which versions go into it.
+ *
+ * The name is a hash of the pins so that a version bump builds a new volume
+ * and a running environment keeps the one it mounted — but a fix to the layout
+ * moves no pin, so without this an existing install would go on mounting the
+ * broken volume forever and the fix would reach only brand-new machines.
+ *
+ * 2: `bin/chrome-headless-shell` became a wrapper that supplies
+ *    `LD_LIBRARY_PATH` and `FONTCONFIG_PATH`, instead of a bare symlink that
+ *    left every caller to know about them.
+ */
+const BROWSER_LAYOUT_REVISION = '2'
+
 export function browserVolumeName(arch: string): string {
-  const pins = [RUNTIME_IMAGE, BROWSER_PACKAGES.playwright, BROWSER_PACKAGES.mcp, arch].join('\n')
+  const pins = [
+    RUNTIME_IMAGE,
+    BROWSER_PACKAGES.playwright,
+    BROWSER_PACKAGES.mcp,
+    arch,
+    BROWSER_LAYOUT_REVISION
+  ].join('\n')
   return `${resourcePrefix()}browser-${createHash('sha256').update(pins).digest('hex').slice(0, 12)}`
 }
 
@@ -106,7 +134,14 @@ export function populateScript(): string {
     + '"$ROOT/js/node_modules/.bin/playwright-core" install --only-shell chromium',
     'SHELL_BIN=$(find "$ROOT/browsers" -name chrome-headless-shell -type f | head -1)',
     '[ -n "$SHELL_BIN" ] || { echo "no headless shell was downloaded" >&2; exit 1; }',
-    `ln -sfn "$SHELL_BIN" ${CHROME_EXECUTABLE}`,
+    // A wrapper, never a bare symlink to the downloaded binary. Chromium
+    // needs `LD_LIBRARY_PATH` and `FONTCONFIG_PATH` (see `browserEnv`), and a
+    // symlink carries neither — so anything that launched it by path rather
+    // than through Domo's own spawn got a browser that either would not start
+    // or, worse, started and crashed the moment it drew text. Same idiom as
+    // the `/opt/domo/bin/*` wrappers, which hard-code their interpreter for
+    // the same reason.
+    `cat > ${CHROME_EXECUTABLE} <<WRAP\n${chromeWrapper()}\nWRAP`,
     // Copy one library into the volume unless the image has to own it.
     'take() {',
     '  [ -f "$1" ] || return 0',
@@ -130,12 +165,22 @@ export function populateScript(): string {
     + '-exec cp -Ln {} "$ROOT/fonts/" \\; 2>/dev/null || true',
     `cat > "$ROOT/fontconfig/fonts.conf" <<'CONF'\n${fontsConf()}\nCONF`,
     'chmod -R a+rX "$ROOT"',
+    // By name and after the recursive pass: `a+rX` only adds execute to files
+    // that already had it somewhere, and a here-doc leaves none. The symptom
+    // of missing this is a bare `permission denied` from `runc`.
+    `chmod 0755 ${CHROME_EXECUTABLE}`,
     // Prove the thing works before calling the volume ready. Both failures this
     // catches are silent: a missing library kills the browser with a bare
     // loader error, and missing fonts leave it rendering nothing at all.
     `cat > /tmp/smoke.mjs <<'SMOKE'\n${smokeScript()}\nSMOKE`,
-    `LD_LIBRARY_PATH="$ROOT/lib" FONTCONFIG_PATH="$ROOT/fontconfig" node /tmp/smoke.mjs`,
-    'touch "$ROOT/.ready"'
+    // Deliberately no `LD_LIBRARY_PATH` and no `FONTCONFIG_PATH`: the wrapper
+    // is supposed to supply both, and a smoke test that set them itself would
+    // pass just as happily with the old bare symlink in place.
+    'node /tmp/smoke.mjs',
+    // On disk before the marker and after it — see the runtime volume.
+    'sync',
+    'touch "$ROOT/.ready"',
+    'sync'
   ].join('\n')
 }
 
@@ -161,6 +206,34 @@ function fontsConf(): string {
  * kilobyte, and a working one is several — the point is only to tell "drew
  * something" from "drew nothing", which is the failure fonts cause.
  */
+/**
+ * The wrapper that becomes `bin/chrome-headless-shell`.
+ *
+ * It exists so that the *path* is the whole contract: anything in the
+ * container that execs it — Playwright through `executablePath`, the bundled
+ * MCP server, a developer poking at it by hand, `pnpm test:voice` — gets a
+ * working browser without having to know what Domo put in the volume.
+ *
+ * `LD_LIBRARY_PATH` is *replaced* rather than extended, and set here rather
+ * than on the calling process. Both are deliberate: the volume's `lib` is
+ * searched before the system paths for every library a process loads, so
+ * confining it to the browser keeps it away from node and everything else in
+ * the container, and letting a caller's own path survive into it would
+ * reintroduce exactly the mismatch `IMAGE_OWNED_LIBRARIES` exists to prevent.
+ *
+ * `$SHELL_BIN` is expanded when the volume is built (the here-doc is
+ * unquoted); `$@` is escaped so it survives into the file and means the
+ * browser's own arguments at run time.
+ */
+function chromeWrapper(): string {
+  return [
+    '#!/bin/sh',
+    `export LD_LIBRARY_PATH="${BROWSER_ROOT}/lib"`,
+    `export FONTCONFIG_PATH="${BROWSER_ROOT}/fontconfig"`,
+    'exec "$SHELL_BIN" "\\$@"'
+  ].join('\n')
+}
+
 function smokeScript(): string {
   return [
     `const { chromium } = await import('${BROWSER_ROOT}/js/node_modules/playwright-core/index.mjs')`,
@@ -197,7 +270,8 @@ async function build(): Promise<string> {
   await run('docker', ['volume', 'create', '--label', 'domo.browser=true', volume])
   const ready = await run('docker', [
     'run', '--rm', '--volume', `${volume}:${BROWSER_ROOT}`, RUNTIME_IMAGE,
-    'test', '-f', `${BROWSER_ROOT}/.ready`
+    // The marker and what it vouches for, as for the runtime volume.
+    'sh', '-c', `test -f ${BROWSER_ROOT}/.ready && test -x ${CHROME_EXECUTABLE} && test -s ${BROWSER_ROOT}/fontconfig/fonts.conf`
   ]).then(() => true, () => false)
   if (ready) return volume
   await run('docker', [

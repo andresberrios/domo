@@ -14,7 +14,7 @@ import {
   createVoiceSession,
   deleteAgentSession,
   deleteInboxMessage,
-  pruneRetiredRecords,
+  pruneRetiredProjects,
   deleteVoiceSession,
   getAgentSession,
   enqueueInboxMessage,
@@ -110,7 +110,7 @@ describe('projects', () => {
     await expect(listDevEnvironments()).resolves.toEqual([
       expect.objectContaining({ name: 'api' })
     ])
-    await expect(pruneRetiredRecords()).resolves.toEqual({ environments: 0, projects: 0 })
+    await expect(pruneRetiredProjects()).resolves.toBe(0)
   })
 })
 
@@ -192,6 +192,19 @@ describe('dev environments', () => {
       })
 
       expect(port).toMatchObject({ url: null, listening: false, forwarded: false })
+    })
+
+    it('keeps the same port number apart in the environment and in each service', async () => {
+      const own = await upsertDevEnvironmentPort({ environmentId, innerPort: 3000, protocol: 'tcp', source: 'detected' })
+      const web = await upsertDevEnvironmentPort({
+        environmentId, service: 'stack-web-1', innerPort: 3000, protocol: 'tcp', source: 'detected'
+      })
+      await updateDevEnvironmentPort(environmentId, 3000, { hostPort: 54123, forwarded: true }, 'tcp', 'stack-web-1')
+
+      expect(own.service).toBeNull()
+      expect(web.service).toBe('stack-web-1')
+      const ports = await listDevEnvironmentPorts(environmentId)
+      expect(ports.map(port => [port.service, port.forwarded])).toEqual([[null, false], ['stack-web-1', true]])
     })
 
     it('never demotes a declared port to a detected one', async () => {

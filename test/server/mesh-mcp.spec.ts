@@ -83,7 +83,13 @@ const devEnvironments = vi.hoisted(() => ({
   environmentAdapterVersions: vi.fn(async (environment: any) => environment.adapterVersions ?? null),
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
-  retireEnvironment: vi.fn(async () => {})
+  // What a cleanup with a working daemon reports: nothing left over.
+  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [] })),
+  cleanupEnvironment: vi.fn(async (): Promise<{
+    removed: Array<{ kind: string, name: string, environmentId: string }>
+    leftovers: Array<{ kind: string, name: string, environmentId: string, error: string }>
+    unattributed: string[]
+  }> => ({ removed: [], leftovers: [], unattributed: [] }))
 }))
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
@@ -215,6 +221,7 @@ beforeEach(async () => {
   devEnvironments.startEnvironment.mockClear()
   devEnvironments.stopEnvironment.mockClear()
   devEnvironments.retireEnvironment.mockClear()
+  devEnvironments.cleanupEnvironment.mockClear()
   gitSync.exportBranch.mockClear()
   branchImport.importBranchIntoEnvironment.mockClear()
   gitSync.listEnvironmentBranches.mockClear()
@@ -275,6 +282,7 @@ describe('the agent-mesh MCP endpoint', () => {
       'get_dev_environment',
       'update_dev_environment',
       'retire_dev_environment',
+      'retry_environment_cleanup',
       'list_environment_ports',
       'forward_environment_port',
       'export_branch',
@@ -691,7 +699,7 @@ describe('projects and dev environments', () => {
       projectId: project.id
     })).body)
 
-    expect(body).toEqual({ id: project.id, retired: true })
+    expect(body).toEqual({ id: project.id, retired: true, leftovers: [] })
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
@@ -787,7 +795,10 @@ describe('projects and dev environments', () => {
       environmentId: environment.id
     })).body)
 
-    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [] })
+    // `leftovers` is what Docker would not remove: empty here and normally, and
+    // reported rather than swallowed, so a peer agent is not told a retirement
+    // was clean when gigabytes are still on the disk.
+    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [], leftovers: [] })
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
@@ -806,6 +817,48 @@ describe('projects and dev environments', () => {
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toMatch(/Refusing to retire the environment/)
     expect(devEnvironments.retireEnvironment).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Nothing retries a refused removal on a timer, so an agent that reads
+   * "Container X still has it mounted" has to be able to remove X and ask
+   * again. This is that second ask.
+   */
+  it('runs the cleanup again on demand, and says what is still blocked', async () => {
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+    const caller = await session('caller')
+    devEnvironments.cleanupEnvironment.mockResolvedValue({
+      removed: [{ kind: 'image', name: 'domo-dev-env_1', environmentId: environment.id }],
+      leftovers: [{
+        kind: 'volume',
+        name: 'domo-dev-env_1-workspace',
+        environmentId: environment.id,
+        error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+      }],
+      unattributed: []
+    })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'retry_environment_cleanup', {
+      environmentId: environment.id
+    })).body)
+
+    expect(devEnvironments.cleanupEnvironment).toHaveBeenCalledWith(environment.id)
+    expect(body).toEqual({
+      id: environment.id,
+      removed: ['image domo-dev-env_1'],
+      // The error carries the container to remove and the command for it, so
+      // the caller can do exactly that and come back.
+      leftovers: [{
+        resource: 'volume domo-dev-env_1-workspace',
+        error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
+      }]
+    })
   })
 })
 
@@ -1421,19 +1474,27 @@ describe('development environments, asynchronously', () => {
     const caller = await session('caller', { devEnvironmentId: environment.id })
     const token = mintMeshToken(caller.id)
     ports.refreshEnvironmentPorts.mockResolvedValueOnce([
-      { innerPort: 5173, protocol: 'tcp', label: 'vite', listening: true, forwarded: true, url: 'http://127.0.0.1:49153' },
+      { innerPort: 5173, service: null, protocol: 'tcp', label: 'vite', listening: true, forwarded: true, url: 'http://127.0.0.1:49153' },
+      { innerPort: 5432, service: 'db', protocol: 'tcp', label: null, listening: true, forwarded: false, url: null },
       { innerPort: 53, protocol: 'udp', listening: true, forwarded: false, url: null }
     ])
 
     const listed = resultOf((await callTool(token, 'list_environment_ports')).body)
-    expect(listed.ports).toEqual([{ port: 5173, label: 'vite', listening: true, forwarded: true, url: 'http://127.0.0.1:49153' }])
+    expect(listed.ports).toEqual([
+      { port: 5173, label: 'vite', listening: true, forwarded: true, url: 'http://127.0.0.1:49153' },
+      // A container the environment started on the host daemon, by its name.
+      { service: 'db', port: 5432, listening: true, forwarded: false }
+    ])
 
     const forwarded = resultOf((await callTool(token, 'forward_environment_port', { port: 3000 })).body)
     expect(forwarded).toMatchObject({ port: 3000, forwarded: true, url: 'http://127.0.0.1:49152' })
-    expect(ports.forwardEnvironmentPort).toHaveBeenCalledWith(environment.id, 3000)
+    expect(ports.forwardEnvironmentPort).toHaveBeenCalledWith(environment.id, 3000, null)
+
+    await callTool(token, 'forward_environment_port', { port: 5432, service: 'db' })
+    expect(ports.forwardEnvironmentPort).toHaveBeenLastCalledWith(environment.id, 5432, 'db')
 
     await callTool(token, 'forward_environment_port', { port: 3000, forward: false })
-    expect(ports.unforwardEnvironmentPort).toHaveBeenCalledWith(environment.id, 3000)
+    expect(ports.unforwardEnvironmentPort).toHaveBeenCalledWith(environment.id, 3000, null)
   })
 })
 

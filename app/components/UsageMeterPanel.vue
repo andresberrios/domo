@@ -12,14 +12,19 @@ import type { AgentUsage, UsageProviderId } from '~~/shared/types'
  * never coming.
  */
 const props = defineProps<{
-  context: { used: number, size: number | null }
+  context: { used: number, size: number | null, percent?: number | null }
   cost?: AgentUsage['cost'] | null
   provider?: UsageProviderId
+  /** Billed speech duration, for a provider that counts in seconds not tokens. */
+  audioSeconds?: number | null
 }>()
 
 const { forProvider, providerState } = useUsageLimits()
 
-const percent = computed(() => percentOf(props.context.used, props.context.size))
+// See `UsageMeter`: a reported ratio wins, and where there is one there are
+// no token counts to print beside it.
+const percent = computed(() => props.context.percent ?? percentOf(props.context.used, props.context.size))
+const countsTokens = computed(() => props.context.percent == null)
 const tone = computed(() => usageTone(percent.value))
 const limits = computed(() => (props.provider ? forProvider(props.provider) : []))
 const provider = computed(() => (props.provider ? providerState(props.provider) : null))
@@ -31,14 +36,22 @@ const provider = computed(() => (props.provider ? providerState(props.provider) 
       <div class="flex items-baseline gap-2">
         <span class="flex-1 text-sm font-medium">Context window</span>
         <span class="text-xs tabular-nums text-muted">
-          {{ formatTokens(context.used) }}<template v-if="context.size"> / {{ formatTokens(context.size) }}</template>
-          <template v-if="percent !== null"> ({{ formatPercent(percent) }})</template>
+          <template v-if="countsTokens">
+            {{ formatTokens(context.used) }}<template v-if="context.size"> / {{ formatTokens(context.size) }}</template>
+            <template v-if="percent !== null"> ({{ formatPercent(percent) }})</template>
+          </template>
+          <template v-else>{{ formatPercent(percent) }}</template>
         </span>
       </div>
       <UProgress v-if="percent !== null" :model-value="Math.min(100, percent)" :color="tone" size="sm" />
       <p v-else class="text-[11px] text-dimmed">
         No context size is known for this model, so only the token count is shown.
       </p>
+    </div>
+
+    <div v-if="audioSeconds != null" class="flex items-baseline gap-2">
+      <span class="flex-1 text-sm font-medium">Speech</span>
+      <span class="text-xs tabular-nums text-muted">{{ formatDuration(audioSeconds) }}</span>
     </div>
 
     <template v-if="provider || limits.length">

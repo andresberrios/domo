@@ -18,7 +18,10 @@ export interface DevEnvironmentConfig {
   image?: string
   build?: BuildConfig
   features: Record<string, unknown>
-  /** A private nested Docker daemon (the docker-in-docker Feature, and `--privileged`). */
+  /**
+   * Docker inside the environment, reaching the *host* daemon through a
+   * per-environment proxied socket (`server/lib/dood/`). Not a private daemon.
+   */
   docker: boolean
   remoteUser?: string
   containerEnv: Record<string, string>
@@ -46,6 +49,8 @@ export interface ResolvedPortConfig {
 
 /** One entry of an image's `devcontainer.metadata` label. Only the keys Domo honours. */
 export interface ImageMetadataEntry {
+  /** The Feature's id, when a Feature contributed the entry. */
+  id?: string
   entrypoint?: string
   privileged?: boolean
   init?: boolean

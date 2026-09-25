@@ -1,7 +1,7 @@
 {
   "name": "domo",
   "version": "1.0.0",
-  "description": "A voice-first control room for coding agents \u2014 talk to a Gemini Live agent that spawns, monitors and directs Claude Code and Codex sessions over ACP.",
+  "description": "A voice-first control room for coding agents — talk to a Gemini Live or OpenAI GPT-Live agent that spawns, monitors and directs Claude Code, Codex and OpenCode sessions over ACP.",
   "type": "module",
   "private": true,
   "license": "SEE LICENSE IN LICENSE.md",
@@ -19,6 +19,7 @@
     "test:electric": "vitest run --project electric",
     "test:docker": "vitest run --project unit --project docker-live test/docker",
     "test:agents": "vitest run --project agents-live",
+    "test:voice": "vitest run --project voice-live",
     "test:watch": "vitest --project unit --project nuxt"
   },
   "dependencies": {
@@ -43,6 +44,7 @@
     "shiki": "^4.4.3",
     "vue": "^3.5.42",
     "vue-router": "^5.3.1",
+    "ws": "^8.21.3",
     "zod": "^4.6.5"
   },
   "devDependencies": {
@@ -51,10 +53,12 @@
     "@nuxt/test-utils": "^4.3.2",
     "@types/node": "^22.20.3",
     "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.1",
     "@vue/test-utils": "^2.5.1",
     "ai": "^7.0.102",
     "eslint": "^10.10.0",
     "happy-dom": "^20.14.5",
+    "playwright-core": "1.63.0",
     "typescript": "^5.9.3",
     "vitest": "^5.0.1",
     "vue-tsc": "^3.3.11"

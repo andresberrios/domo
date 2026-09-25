@@ -106,7 +106,8 @@ describe('populateScript', () => {
     // cannot draw must not be handed to an agent as a way of looking at a UI.
     expect(script).toContain('rendered a blank page')
     expect(script).toContain('page.screenshot()')
-    expect(script.trim().endsWith('touch "$ROOT/.ready"')).toBe(true)
+    // The marker last, flushed on both sides of it.
+    expect(script.trim().split('\n').slice(-3)).toEqual(['sync', 'touch "$ROOT/.ready"', 'sync'])
   })
 
   it('asks for the headless shell only, not the full browser download', async () => {
@@ -119,7 +120,7 @@ describe('populateScript', () => {
 describe('ensureBrowserVolume', () => {
   it('populates a volume that has no .ready marker', async () => {
     run.mockImplementation(async (_program, args) => {
-      if (args.includes('test')) throw new Error('exit 1')
+      if (args.at(-1)?.startsWith('test -f')) throw new Error('exit 1')
       return { stdout: '', stderr: '' }
     })
     const { ensureBrowserVolume } = await load()

@@ -147,6 +147,73 @@ describe('getSettings', () => {
 
     await expect(getSettings()).resolves.toMatchObject({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
   })
+
+  /**
+   * Which live voice model speaks, and who thinks behind it. The two
+   * enumerated fields are sent verbatim into a GPT-Live `session.start`, where
+   * a value OpenAI does not recognise fails the whole connect rather than the
+   * one setting — so they are checked on the way out of the row, not trusted.
+   */
+  describe('the voice provider', () => {
+    it('is Gemini on a fresh install, so a version bump moves nobody to another bill', async () => {
+      expect(DEFAULTS.voiceProvider).toBe('gemini')
+      await expect(getSettings()).resolves.toMatchObject({ voiceProvider: 'gemini' })
+    })
+
+    it('follows the stored choice', async () => {
+      stored({ voiceProvider: 'openai' })
+
+      await expect(getSettings()).resolves.toMatchObject({ voiceProvider: 'openai' })
+    })
+
+    it('ignores a stored value that is not a provider', async () => {
+      stored({ voiceProvider: 'whisper' })
+
+      await expect(getSettings()).resolves.toMatchObject({ voiceProvider: 'gemini' })
+    })
+
+    it('delegates to a managed OpenAI model by default, which needs nothing else set up', async () => {
+      await expect(getSettings()).resolves.toMatchObject({
+        openaiDelegation: { target: 'responses', responsesModel: 'gpt-6-sol', reasoningEffort: '' }
+      })
+    })
+
+    it('keeps the fields a stored delegation does not name', async () => {
+      stored({ openaiDelegation: { target: 'agent', agentAdapter: 'codex' } })
+
+      await expect(getSettings()).resolves.toMatchObject({
+        openaiDelegation: {
+          target: 'agent',
+          agentAdapter: 'codex',
+          responsesModel: DEFAULTS.openaiDelegation.responsesModel,
+          agentSessionId: ''
+        }
+      })
+    })
+
+    it('drops values the API would refuse, rather than failing a whole connect on one', async () => {
+      stored({
+        openaiDelegation: {
+          target: 'nobody',
+          reasoningEffort: 'maximum',
+          agentAdapter: 'emacs',
+          responsesModel: 42
+        }
+      })
+
+      await expect(getSettings()).resolves.toMatchObject({
+        openaiDelegation: DEFAULTS.openaiDelegation
+      })
+    })
+
+    it('reads an empty agent session as "make one when it is first needed"', async () => {
+      stored({ openaiDelegation: { target: 'agent', agentSessionId: '   ' } })
+
+      await expect(getSettings()).resolves.toMatchObject({
+        openaiDelegation: { agentSessionId: '' }
+      })
+    })
+  })
 })
 
 /**

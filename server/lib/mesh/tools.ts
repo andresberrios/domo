@@ -7,10 +7,12 @@ import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev
 import { importBranchIntoEnvironment, previewImport } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { pinnedAdapterVersions } from '../dev-env/runtime-volume'
-import { inspectContainer } from '../dev-env/docker'
+import { inspectContainer, type ContainerInspection } from '../dev-env/docker'
+import { DOOD_CONTAINER_LABEL } from '../dev-env/container'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import {
   beginEnvironment,
+  cleanupEnvironment,
   environmentAdapterVersions,
   startEnvironment,
   stopEnvironment
@@ -221,6 +223,18 @@ function describeJob(job: CronJob) {
     runCount: job.runCount,
     createdBy: job.createdBy
   }
+}
+
+/**
+ * What `docker` means inside an environment: the host's daemon seen through
+ * Domo's per-environment proxy (the default now), a private daemon of its own
+ * (Docker-in-Docker, older environments or a project that asks for it), or
+ * none at all.
+ */
+function dockerAccess(inspection: ContainerInspection): 'host' | 'own' | 'none' {
+  if (inspection.labels[DOOD_CONTAINER_LABEL] === 'true') return 'host'
+  if (inspection.namedVolumes.some(name => name.includes('dind-var-lib-docker'))) return 'own'
+  return 'none'
 }
 
 const agentId = (description: string) => ({ type: 'string', description })
@@ -554,8 +568,9 @@ export const MESH_TOOLS = [
     name: 'get_dev_environment',
     description:
       'Details of a development environment: status (creating, running, stopped, error), lastError, workspace path, '
-      + 'the adapter versions it runs against the ones Domo installs today, whether it has Docker-in-Docker, its git '
-      + 'branches, and the agents in it.',
+      + 'the adapter versions it runs against the ones Domo installs today, what `docker` reaches from inside it '
+      + '(host: the host\'s daemon, shared; own: a private daemon; none), any Docker resources a cleanup could not '
+      + 'remove, its git branches, and the agents in it.',
     inputSchema: {
       type: 'object',
       properties: { environmentId },
@@ -589,10 +604,23 @@ export const MESH_TOOLS = [
     }
   },
   {
+    name: 'retry_environment_cleanup',
+    description:
+      'Try again to remove the Docker resources a retirement could not. Domo never retries on a timer: a refused '
+      + 'removal names the container that is in the way, and this is what you call once you have removed it. '
+      + 'Answers with what went and what is still blocked.',
+    inputSchema: {
+      type: 'object',
+      properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
+      required: ['environmentId'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'list_environment_ports',
     description:
-      'List the TCP ports listening in a development environment, and for each forwarded one the URL the human can '
-      + 'open on their machine.',
+      'List the TCP ports listening in a development environment and in the containers it started with docker (each '
+      + 'named by its service), and for each forwarded one the URL the human can open on their machine.',
     inputSchema: {
       type: 'object',
       properties: { environmentId },
@@ -607,7 +635,11 @@ export const MESH_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        port: { type: 'number', description: 'The port inside the environment.' },
+        port: { type: 'number', description: 'The port inside the environment, or inside the service.' },
+        service: {
+          type: 'string',
+          description: 'The container the port is in, when it is one the environment started (list_environment_ports names it). Omit for the environment itself.'
+        },
         forward: { type: 'boolean', description: 'false stops forwarding. Default true.' },
         environmentId
       },
@@ -1085,8 +1117,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (caller.devEnvironmentId && environments.some(environment => environment.id === caller.devEnvironmentId)) {
         throw new Error('Refusing to retire the project this agent session is running in. Ask the user or another agent to do it.')
       }
-      await retireProjectCascade(args.projectId)
-      return { id: args.projectId, retired: true }
+      const { leftovers } = await retireProjectCascade(args.projectId)
+      return { id: args.projectId, retired: true, leftovers }
     }
 
     case 'create_dev_environment': {
@@ -1152,7 +1184,12 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         adaptersCurrent: versions
           ? Object.entries(pinned).every(([adapter, version]) => versions[adapter as keyof typeof versions] === version)
           : null,
-        ...inspection ? { dockerInDocker: inspection.namedVolumes.some(name => name.includes('dind-var-lib-docker')) } : {},
+        ...inspection ? { docker: dockerAccess(inspection) } : {},
+        // Resources a retirement or a failed creation could not remove; empty
+        // is done. retry_environment_cleanup is the second ask.
+        ...environment.leftovers.length
+          ? { leftovers: environment.leftovers.map(({ kind, name, error }) => ({ resource: `${kind} ${name}`, error })) }
+          : {},
         branches: branches
           ? 'error' in branches
             ? branches
@@ -1186,7 +1223,21 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         retired: true,
         // Named rather than counted: the caller may well have been talking to
         // one of them a moment ago, and it is still readable.
-        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title }))
+        sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title })),
+        // Empty unless Docker refused something. Nothing retries it: each names
+        // what is in the way, and retry_environment_cleanup is the second ask.
+        leftovers: retirement.leftovers
+      }
+    }
+
+    case 'retry_environment_cleanup': {
+      const report = await cleanupEnvironment(args.environmentId)
+      return {
+        id: args.environmentId,
+        removed: report.removed.map(leftover => `${leftover.kind} ${leftover.name}`),
+        // Each carries the container that is in the way and the command that
+        // deals with it, so the caller can do exactly that and call again.
+        leftovers: report.leftovers.map(({ kind, name, error }) => ({ resource: `${kind} ${name}`, error }))
       }
     }
 
@@ -1196,6 +1247,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       return {
         environmentId: environment.id,
         ports: ports.filter(port => port.protocol === 'tcp').map(port => ({
+          ...port.service ? { service: port.service } : {},
           port: port.innerPort,
           ...port.label ? { label: port.label } : {},
           listening: port.listening,
@@ -1209,13 +1261,15 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const environment = await environmentFor(caller, args.environmentId)
       const port = Number(args.port)
       if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('port must be a TCP port number.')
+      const service = typeof args.service === 'string' && args.service.trim() ? args.service.trim() : null
       if (args.forward === false) {
-        await unforwardEnvironmentPort(environment.id, port)
-        return { environmentId: environment.id, port, forwarded: false }
+        await unforwardEnvironmentPort(environment.id, port, service)
+        return { environmentId: environment.id, ...service ? { service } : {}, port, forwarded: false }
       }
-      const forwarded = await forwardEnvironmentPort(environment.id, port)
+      const forwarded = await forwardEnvironmentPort(environment.id, port, service)
       return {
         environmentId: environment.id,
+        ...service ? { service } : {},
         port,
         forwarded: true,
         url: forwarded.url,

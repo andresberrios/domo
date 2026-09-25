@@ -2,7 +2,6 @@ import { acpManager } from './acp/manager'
 import {
   deleteAgentSession,
   getAgentSession,
-  pruneRetiredRecords,
   removeSubscriptionsHeldBy,
   updateAgentSession
 } from './repo'
@@ -63,6 +62,5 @@ export async function purgeAgentSession(id: string): Promise<boolean> {
   }
   acpManager.stop(id)
   await deleteAgentSession(id)
-  await pruneRetiredRecords()
   return true
 }

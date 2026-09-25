@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AppSettings } from '~~/shared/types'
+import { DEFAULT_VOICE_DELEGATION, DEFAULT_OPENAI_LIVE_MODEL, DEFAULT_OPENAI_VOICE } from '~~/shared/voice-providers'
 
 const toast = useToast()
 const { data: settings, refresh } = await useFetch<AppSettings & {
@@ -9,11 +10,6 @@ const { data: settings, refresh } = await useFetch<AppSettings & {
   hasOpenCodeAuth: boolean
   hasOpenCodeKey: boolean
 }>('/api/settings')
-const { data: modelList } = await useFetch<{
-  models: Array<{ name: string, displayName?: string, live: boolean }>
-  error?: string
-}>('/api/models', { lazy: true })
-
 /**
  * OpenCode has two credentials that do different jobs, and one being present
  * says nothing about the other: a host login runs host sessions and is all
@@ -30,8 +26,12 @@ const openCodeAuthSummary = computed(() => {
 })
 
 const form = reactive({
+  voiceProvider: 'gemini' as AppSettings['voiceProvider'],
   liveModel: '',
   voiceName: 'Puck',
+  openaiLiveModel: DEFAULT_OPENAI_LIVE_MODEL,
+  openaiVoiceName: DEFAULT_OPENAI_VOICE,
+  openaiDelegation: { ...DEFAULT_VOICE_DELEGATION },
   systemInstruction: '',
   proactiveNotifications: true,
   language: 'en-US',
@@ -41,8 +41,15 @@ const form = reactive({
 watchEffect(() => {
   if (!settings.value) return
   Object.assign(form, {
+    voiceProvider: settings.value.voiceProvider,
     liveModel: settings.value.liveModel,
     voiceName: settings.value.voiceName,
+    openaiLiveModel: settings.value.openaiLiveModel,
+    openaiVoiceName: settings.value.openaiVoiceName,
+    // Copied rather than shared: the form is written in place by the voice
+    // card, and mutating the fetched settings object would make a cancelled
+    // edit look saved.
+    openaiDelegation: { ...settings.value.openaiDelegation },
     systemInstruction: settings.value.systemInstruction,
     proactiveNotifications: settings.value.proactiveNotifications,
     language: settings.value.language,
@@ -50,11 +57,6 @@ watchEffect(() => {
   })
 })
 
-const modelItems = computed(() => {
-  const fromApi = (modelList.value?.models ?? []).filter(model => model.live).map(model => model.name)
-  return [...new Set([form.liveModel, ...fromApi].filter(Boolean))]
-})
-const voices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr']
 const saving = ref(false)
 
 async function save() {
@@ -119,16 +121,11 @@ async function save() {
 
     <section class="space-y-4">
       <h2 class="text-sm font-semibold">Voice agent</h2>
-      <UFormField label="Live model" hint="Gemini Live model id">
-        <UInputMenu v-model="form.liveModel" :items="modelItems" create-item class="w-full font-mono text-xs" @create="value => (form.liveModel = value)" />
-        <template #help>
-          <span v-if="modelList?.error" class="text-xs text-muted">Could not list models: {{ modelList.error }} — type the id manually.</span>
-        </template>
-      </UFormField>
-      <div class="grid gap-4 sm:grid-cols-2">
-        <UFormField label="Voice"><USelectMenu v-model="form.voiceName" :items="voices" class="w-full" /></UFormField>
-        <UFormField label="Spoken language"><UInput v-model="form.language" class="w-full" placeholder="en-US" /></UFormField>
-      </div>
+      <VoiceProviderSettings
+        v-model="form"
+        :has-gemini-key="settings?.hasGeminiKey"
+        :has-open-ai-key="settings?.hasOpenAiKey"
+      />
       <UFormField label="System instruction" hint="How the voice agent behaves">
         <UTextarea v-model="form.systemInstruction" :rows="10" class="w-full text-xs" />
       </UFormField>

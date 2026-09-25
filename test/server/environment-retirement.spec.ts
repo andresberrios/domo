@@ -25,7 +25,9 @@ import {
   listAgentSubscriptions,
   listDevEnvironments,
   listPermissions,
-  listProjects
+  listProjects,
+  retireDevEnvironmentRow,
+  setEnvironmentLeftovers
 } from '../../server/lib/repo'
 
 /**
@@ -61,9 +63,12 @@ vi.mock('../../server/lib/dev-environments', async (importOriginal) => {
   return {
     ...original,
     retireEnvironment: async (id: string) => {
-      const { retireDevEnvironmentRow, pruneRetiredRecords } = await import('../../server/lib/repo')
+      const { retireDevEnvironmentRow } = await import('../../server/lib/repo')
       await retireDevEnvironmentRow(id)
-      await pruneRetiredRecords()
+      // What a cleanup with a real daemon behind it reports: nothing left over.
+      // The failing case is `test/docker/dev-environments.spec.ts`, where the
+      // daemon is faked at the process boundary and can refuse.
+      return { removed: [], leftovers: [], unattributed: [] }
     },
     ensureEnvironmentRunning: async (id: string) => {
       const { getDevEnvironment: read } = await import('../../server/lib/repo')
@@ -194,8 +199,51 @@ describe('retiring an environment', () => {
 
     await retireProjectCascade(project.id)
 
-    // Nothing points at it, so `pruneRetiredRecords` drops it for real.
+    // No environment ever lived in it, so `pruneRetiredProjects` drops it for real.
     expect(await getProject(project.id)).toBeNull()
+  })
+
+  it('reads as broken while it owes Docker something, and stopped once it does not', async () => {
+    // A half-cleaned environment must not be a quiet field on a row: `error` is
+    // the state a banner keys on, and `last_error` is what it then says.
+    const { environment: env } = await environment()
+    await retireDevEnvironmentRow(env.id)
+
+    await setEnvironmentLeftovers(
+      env.id,
+      [{ kind: 'volume', name: 'domo-dev-env_x-workspace', error: 'Remove it (docker rm -f tidy-runner).' }],
+      { status: 'error', lastError: 'Docker still has volume domo-dev-env_x-workspace. Remove it (docker rm -f tidy-runner).' }
+    )
+
+    expect(await getDevEnvironment(env.id)).toMatchObject({
+      status: 'error',
+      lastError: expect.stringContaining('docker rm -f tidy-runner'),
+      // Independent of each other: retired is lifecycle, error is health.
+      retiredAt: expect.any(String)
+    })
+
+    await setEnvironmentLeftovers(env.id, [], { status: 'stopped', lastError: null })
+
+    expect(await getDevEnvironment(env.id)).toMatchObject({
+      status: 'stopped',
+      lastError: null,
+      retiredAt: expect.any(String)
+    })
+  })
+
+  it('writes the leftovers only when they change, because the row is synced', async () => {
+    const { environment: env } = await environment()
+    const owed = [{ kind: 'volume' as const, name: 'domo-dev-env_x-workspace', error: 'volume is in use' }]
+
+    expect(await setEnvironmentLeftovers(env.id, owed)).toMatchObject({ leftovers: owed })
+    // A sweep finds the same thing every time; `REPLICA IDENTITY FULL` means
+    // each write re-streams the whole row to every browser.
+    expect(await setEnvironmentLeftovers(env.id, owed)).toBeNull()
+    // …but a health that has drifted is still corrected, even with the same
+    // leftovers, or a row could never be put right.
+    expect(await setEnvironmentLeftovers(env.id, owed, { status: 'error', lastError: 'blocked' }))
+      .toMatchObject({ status: 'error', lastError: 'blocked' })
+    expect(await setEnvironmentLeftovers(env.id, [])).toMatchObject({ leftovers: [] })
   })
 })
 
@@ -308,7 +356,7 @@ describe('the permanent delete', () => {
     expect(await getAgentSession(session.id)).toBeTruthy()
   })
 
-  it('destroys the transcript, and the retired rows nothing points at any more', async () => {
+  it('destroys the transcript, and keeps the retired environment and its project', async () => {
     const { project, environment: env } = await environment()
     const session = await agent({ devEnvironmentId: env.id })
     await appendAgentEvent(session.id, 'agent_message', { text: 'what I did', streaming: false })
@@ -318,9 +366,17 @@ describe('the permanent delete', () => {
     await purgeAgentSession(session.id)
 
     expect(await getAgentSession(session.id)).toBeNull()
-    // Nothing names them now, so "never delete anything" stops meaning
-    // "accumulate rows for ever".
-    expect(await getDevEnvironment(env.id)).toBeNull()
-    expect(await getProject(project.id)).toBeNull()
+    // The environment's row is the record that it existed, whether or not a
+    // session still names it; it used to be deleted here.
+    expect(await getDevEnvironment(env.id)).toMatchObject({ retiredAt: expect.any(String) })
+    expect(await getProject(project.id)).toMatchObject({ retiredAt: expect.any(String) })
+  })
+
+  it('never takes the row of an environment retired without ever having an agent', async () => {
+    const { environment: env } = await environment()
+
+    await retireProjectEnvironment(env.id)
+
+    expect(await getDevEnvironment(env.id)).toMatchObject({ retiredAt: expect.any(String) })
   })
 })

@@ -109,6 +109,10 @@ where remote_user is null and container_id is null and workspace_path = '/worksp
 -- row is not. It is what makes every session that ran here unstartable, and it
 -- is also the only record left of where those sessions ran.
 alter table dev_environments add column if not exists retired_at text;
+-- The Docker resources a cleanup could not remove, and why. Empty is the normal
+-- state; each entry names what is blocking it, and the row is kept even once
+-- nothing else references it so that a later cleanup can still find them.
+alter table dev_environments add column if not exists leftovers jsonb not null default '[]'::jsonb;
 do $$ begin
   if exists (select 1 from information_schema.columns
               where table_name = 'dev_environments' and column_name = 'deleted_at') then
@@ -134,10 +138,19 @@ create table if not exists dev_environment_ports (
   listening boolean not null default false,
   forwarded boolean not null default false,
   created_at text not null,
-  updated_at text not null,
-  unique (dev_environment_id, inner_port, protocol)
+  updated_at text not null
 );
 create index if not exists dev_environment_ports_environment on dev_environment_ports(dev_environment_id);
+-- Which container the port is in: empty for the environment itself, otherwise
+-- the name of a container the environment started on the host daemon. Two
+-- services of one stack may well both listen on 80, so it is part of the key.
+-- The old key's name is what Postgres generated for it, cut to 63 bytes, which
+-- is why it ends in protoco_key: spelled out in full it matches nothing.
+alter table dev_environment_ports add column if not exists service text not null default '';
+alter table dev_environment_ports
+  drop constraint if exists dev_environment_ports_dev_environment_id_inner_port_protoco_key;
+create unique index if not exists dev_environment_ports_identity
+  on dev_environment_ports(dev_environment_id, service, inner_port, protocol);
 
 create table if not exists agent_sessions (
   id text primary key,

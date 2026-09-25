@@ -17,8 +17,21 @@ const props = defineProps<{
 }>()
 
 const context = computed(() => props.usage?.context ?? null)
-const percent = computed(() => (context.value ? percentOf(context.value.used, context.value.size) : null))
+// A provider that reports occupancy directly wins over the arithmetic: the
+// OpenAI Live API answers a ratio and no token counts at all, so `used` there
+// is zero and means "not reported" rather than "empty". See `VoiceUsage`.
+const percent = computed(() => {
+  const current = context.value
+  if (!current) return null
+  return ('percent' in current ? current.percent : null) ?? percentOf(current.used, current.size)
+})
 const tone = computed(() => usageTone(percent.value))
+
+/** Only a voice conversation has one, and only on a provider that bills by it. */
+const audioSeconds = computed(() => {
+  const usage = props.usage as VoiceUsage | null
+  return usage && 'audioSeconds' in usage ? usage.audioSeconds ?? null : null
+})
 
 /** The cost only exists on a coding session, and only once a turn has ended. */
 const cost = computed(() => {
@@ -52,7 +65,12 @@ const label = computed(() => {
     </UButton>
 
     <template #content>
-      <UsageMeterPanel :context="context" :cost="cost" :provider="provider" />
+      <UsageMeterPanel
+        :context="context"
+        :cost="cost"
+        :provider="provider"
+        :audio-seconds="audioSeconds"
+      />
     </template>
   </UPopover>
 </template>

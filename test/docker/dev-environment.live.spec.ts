@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -43,6 +44,8 @@ vi.mock('../../server/lib/repo', () => ({
       remoteUser: null,
       status: 'creating',
       lastError: null,
+      retiredAt: null,
+      leftovers: [],
       createdAt: now,
       updatedAt: now,
       ...input
@@ -57,8 +60,26 @@ vi.mock('../../server/lib/repo', () => ({
     return row
   },
   getDevEnvironment: async (id: string) => state.rows.get(id) ?? null,
-  retireDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
-  pruneRetiredRecords: async () => ({ environments: 0, projects: 0 }),
+  // Retiring keeps the row and marks it, exactly as the table does: it is what
+  // claims the Docker names a failed cleanup left behind, so a mock that
+  // deleted it would make the sweep below attribute nothing.
+  retireDevEnvironmentRow: async (id: string) => {
+    const row = state.rows.get(id)
+    if (row) row.retiredAt = new Date().toISOString()
+    return row ?? null
+  },
+  listDevEnvironments: async (projectId?: string, includeRetired = false) =>
+    [...state.rows.values()].filter(row =>
+      (!projectId || row.projectId === projectId) && (includeRetired || !row.retiredAt)),
+  setEnvironmentLeftovers: async (id: string, leftovers: any[], health: any = null) => {
+    const row = state.rows.get(id)
+    if (!row) return null
+    row.leftovers = leftovers
+    // The real column writes health in the same statement: a retirement that
+    // owes Docker something reads as broken, and a cleanup that worked does not.
+    if (health) Object.assign(row, { status: health.status, lastError: health.lastError })
+    return row
+  },
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
   // The import tells every agent session in the environment where the changes
   // are; this project has no Postgres, and no session ever runs in these.
@@ -85,14 +106,22 @@ const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
 const { environmentImageName } = await import('../../server/lib/dev-env/image')
 const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
 const {
+  cleanupEnvironment,
   createEnvironment,
   readEnvironmentFile,
+  restoreDockerProxies,
   retireEnvironment,
+  startEnvironment,
+  stopEnvironment,
   workspaceVolumeName
 } = await import('../../server/lib/dev-environments')
+const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
 const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
 const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
+const { doodSocketDir, doodSocketPath, stopDoodProxy } = await import('../../server/lib/dood/manager')
+const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
+const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
 
 const HOUR = 60 * 60 * 1000
 const HELPER_IMAGE = process.env.NUXT_DEV_ENV_HELPER_IMAGE || 'busybox:1.37'
@@ -223,8 +252,8 @@ afterEach(async () => {
       await run('docker', ['rm', '--force', '--volumes', container], { allowFailure: true })
       for (const volume of named) await run('docker', ['volume', 'rm', '--force', volume], { allowFailure: true })
     }
-    await run('docker', ['volume', 'rm', '--force', workspaceVolumeName(id)], { allowFailure: true })
-    await run('docker', ['image', 'rm', '--force', environmentImageName(id)], { allowFailure: true })
+    await stopDoodProxy(id)
+    await removeEnvironmentResources(id)
   }
   for (const volume of volumes.splice(0)) {
     await run('docker', ['volume', 'rm', '--force', volume], { allowFailure: true })
@@ -232,7 +261,14 @@ afterEach(async () => {
 })
 
 afterAll(async () => {
+  // The port helper serves every environment, so no environment's teardown
+  // takes it; this run's is named for the test prefix, image included.
+  await run('docker', ['rm', '--force', portHelperName()], { allowFailure: true })
+  await run('docker', ['image', 'rm', portHelperImage()], { allowFailure: true })
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
+  // The proxies' sockets live under the home directory, in a folder named for
+  // this run's scratch data directory.
+  await rm(doodSocketDir(), { recursive: true, force: true })
   delete process.env.NUXT_DATA_DIR
   delete process.env.NUXT_CLAUDE_CONFIG_DIR
   delete process.env.NUXT_CODEX_CONFIG_DIR
@@ -279,17 +315,63 @@ describe('an environment for a project with no .domo.json', () => {
     await inContainer(environment, 'sh', '-c', 'echo scribble > written-inside.txt')
     expect(await exists(join(repo, 'written-inside.txt'))).toBe(false)
 
-    // The default definition asks for Node and Docker, so both are there.
+    // The default definition asks for Node and Docker, so both are there —
+    // and Docker is the *host's* daemon, reached through Domo's proxy socket,
+    // so there is no privilege and no nested image store.
     await expect(inContainer(environment, 'node', '--version')).resolves.toMatch(/^v22\./)
-    expect(await isPrivileged(environment.containerId!)).toBe(true)
-    await expect(inContainer(environment, 'docker', 'info', '--format', '{{.ServerVersion}}'))
-      .resolves.toMatch(/^\d+\.\d+/)
+    expect(await isPrivileged(environment.containerId!)).toBe(false)
+    expect(all.map(mount => mount.Name ?? '').join('\n')).not.toContain('dind-var-lib-docker')
+    expect(all).toContainEqual(expect.objectContaining({ Type: 'bind', Destination: '/var/run/docker.sock' }))
+    const hostDaemon = await run('docker', ['info', '--format', '{{.ID}}'])
+    await expect(inContainer(environment, 'docker', 'info', '--format', '{{.ID}}'))
+      .resolves.toBe(hostDaemon.stdout)
+
+    // The case the proxy exists for, as the environment's own user: a compose
+    // stack mounting the checkout, brought up from inside the environment.
+    await inContainer(environment, 'sh', '-c', [
+      'mkdir -p site && echo from-the-checkout > site/index.html',
+      'printf "%s\\n" "services:" "  web:" "    image: busybox:1.37"'
+      + ' "    command: [\\"httpd\\", \\"-f\\", \\"-p\\", \\"8080\\", \\"-h\\", \\"/site\\"]"'
+      + ' "    volumes: [\\"./site:/site:ro\\"]" "    ports: [\\"8080:8080\\"]" > compose.yaml'
+    ].join(' && '))
+    const up = await run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, 'docker', 'compose', '-p', 'livestack', 'up', '-d'
+    ])
+    expect(up.stderr).toMatch(/Started/)
+    // On the host daemon, stamped with the environment, publishing nothing.
+    const stack = (await run('docker', ['ps', '-q', '--filter', `label=domo.env=${environment.id}`])).stdout
+    expect(stack.split('\n').filter(Boolean)).toHaveLength(1)
+    const bindings = await run('docker', ['inspect', '--format', '{{json .HostConfig.PortBindings}}', stack])
+    expect(bindings.stdout).toBe('{}')
+    // The checkout reached the service, and the environment can reach the
+    // service by name because it joined the stack's network.
+    await expect(inContainer(environment, 'sh', '-c', 'curl -s http://web:8080/index.html'))
+      .resolves.toBe('from-the-checkout')
+    // …and at `localhost:8080`, where `ports:` published it: on the
+    // environment's own localhost, not the daemon's host.
+    await expect(inContainer(environment, 'sh', '-c',
+      'for i in $(seq 1 40); do curl -sf http://localhost:8080/index.html && exit 0; sleep 0.25; done; exit 1'))
+      .resolves.toBe('from-the-checkout')
+    // A service calling back to a dev server the agent bound to loopback.
+    await run('docker', [
+      'exec', '--detach', '--user', environment.remoteUser!, environment.containerId!,
+      'node', '-e', 'require("http").createServer((q, r) => r.end("dev-server")).listen(5173, "127.0.0.1")'
+    ])
+    await expect(inContainer(environment, 'sh', '-c',
+      'for i in $(seq 1 40); do docker compose -p livestack exec -T web wget -qO- http://host.docker.internal:5173 && exit 0; sleep 0.25; done; exit 1'))
+      .resolves.toBe('dev-server')
+    // An attached run's output arrives, through the proxy, as the remote user.
+    await expect(inContainer(environment, 'docker', 'run', '--rm', 'busybox:1.37', 'echo', 'attached-ok'))
+      .resolves.toBe('attached-ok')
 
     // The host's login state is in there, at the container user's home.
     const home = `/home/${environment.remoteUser}`
     expect(all).toContainEqual(expect.objectContaining({
       Type: 'bind',
-      Source: join(process.env.NUXT_HOME_OVERLAY_DIR!, '.ssh'),
+      // By suffix: Docker Desktop reports a bind source as the VM sees it,
+      // `/host_mnt/private/var/folders/…` for a `/var/folders/…` temp dir.
+      Source: expect.stringMatching(new RegExp(`${join(process.env.NUXT_HOME_OVERLAY_DIR!, '.ssh').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)),
       Destination: `${home}/.ssh-host`
     }))
     // `.kube` was asked for and this host has none: skipped, not a failure.
@@ -356,6 +438,12 @@ describe('an environment for a project with no .domo.json', () => {
     await retireEnvironment(environment.id)
 
     expect(await inspectContainer(environment.containerId!)).toBeNull()
+    // What it made on the shared daemon went with it.
+    for (const kind of ['container', 'network'] as const) {
+      const left = await run('docker', [kind === 'container' ? 'ps' : 'network', ...(kind === 'container' ? ['-aq'] : ['ls', '-q']),
+        '--filter', `label=domo.env=${environment.id}`])
+      expect(left.stdout, `a ${kind} outlived its environment`).toBe('')
+    }
     for (const name of kept) {
       if (name.startsWith(`${PREFIX}runtime-`)) continue // shared, and deliberately kept
       const left = await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${name}$`])
@@ -363,6 +451,79 @@ describe('an environment for a project with no .domo.json', () => {
     }
     const image = await run('docker', ['images', '--quiet', environmentImageName(environment.id)])
     expect(image.stdout, 'the environment image outlived its environment').toBe('')
+  }, HOUR / 4)
+})
+
+describe('an environment\'s stack on the shared daemon, through stop, start and a Domo restart', () => {
+  it('keeps its Postgres at localhost:5432 and its own images, comes back after each, and retires to nothing', async () => {
+    const POSTGRES = 'postgres:17-alpine'
+    const repo = await checkout({
+      'compose.yaml': [
+        'services:',
+        '  db:',
+        `    image: ${POSTGRES}`,
+        '    environment: { POSTGRES_PASSWORD: pw }',
+        '    ports: ["5432:5432"]',
+        ''
+      ].join('\n'),
+      'Dockerfile.base': 'FROM busybox:1.37\nRUN echo from-the-base > /base\n',
+      'Dockerfile.app': 'FROM fixture-base:dev\nCMD ["cat", "/base"]\n'
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    const environment = await create('Live Stack')
+    const id = environment.id
+    const sh = (script: string) => run('docker', [
+      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
+      environment.containerId!, 'bash', '-c', script
+    ], { allowFailure: true })
+    // psql in the environment's own network namespace: `localhost` is the environment's.
+    const PSQL = `docker run --rm -e PGPASSWORD=pw --network container:$(hostname) ${POSTGRES} psql -h localhost -p 5432 -U postgres -tAc "select 40 + 2"`
+    const query = () => sh(`for i in $(seq 1 60); do out=$(${PSQL} 2>/dev/null) && [ -n "$out" ] && echo "$out" && exit 0; sleep 0.5; done; exit 1`)
+    const labelled = async (kind: 'ps' | 'network' | 'volume') => (await run('docker', [
+      ...(kind === 'ps' ? ['ps', '-aq'] : [kind, 'ls', '-q']), '--filter', `label=domo.env=${id}`
+    ])).stdout
+
+    expect((await sh('docker compose -p fixture up -d')).stderr).toMatch(/Started/)
+    expect((await query()).stdout).toBe('42')
+    expect((await sh('docker compose -p fixture port db 5432')).stdout).toBe('0.0.0.0:5432')
+
+    // An image built FROM an image built before it: private to the environment on the host.
+    const built = await sh('docker build -q -t fixture-base:dev -f Dockerfile.base . && docker build -q -t fixture-app:dev -f Dockerfile.app . && docker run --rm fixture-app:dev')
+    expect(built.stdout.split('\n').at(-1), built.stderr).toBe('from-the-base')
+    const hostTags = async () => (await run('docker', ['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'])).stdout.split('\n')
+    expect(await hostTags()).toContain(`domo-${id}/docker.io/library/fixture-app:dev`)
+    expect(await hostTags()).not.toContain('fixture-app:dev')
+    expect((await sh('docker image ls --format "{{.Repository}}:{{.Tag}}"')).stdout.split('\n')).toContain('fixture-app:dev')
+
+    // Stopping the environment stops its stack, which would otherwise run on unwatched.
+    await stopEnvironment(id)
+    expect((await run('docker', ['ps', '-q', '--filter', `label=domo.env=${id}`])).stdout).toBe('')
+    await startEnvironment(id)
+    expect((await sh('docker ps -a --format "{{.Names}} {{.State}}"')).stdout).toBe('fixture-db-1 exited')
+    await sh('docker compose -p fixture up -d')
+    expect((await query()).stdout).toBe('42')
+
+    // A Domo restart: the proxy and the relays die with the server, the
+    // environment keeps running, and boot brings them back at the same path.
+    await stopDoodProxy(id)
+    // A `docker` call made meanwhile does not fail: Docker Desktop holds the
+    // connection to the missing socket open, and it completes once Domo is back.
+    await run('docker', ['exec', '--detach', '--user', environment.remoteUser!, environment.containerId!,
+      'sh', '-c', 'timeout 120 docker ps --format "{{.Names}}" > /tmp/during-outage.txt 2>&1; echo "exit $?" >> /tmp/during-outage.txt'])
+    await new Promise(resolve => setTimeout(resolve, 2_000))
+    expect((await sh('cat /tmp/during-outage.txt')).stdout).toBe('')
+    await restoreDockerProxies()
+    expect((await sh('docker ps --format "{{.Names}}"')).stdout).toBe('fixture-db-1')
+    await expect.poll(async () => (await sh('cat /tmp/during-outage.txt')).stdout, { timeout: 30_000 })
+      .toBe('fixture-db-1\nexit 0')
+    expect((await query()).stdout).toBe('42')
+
+    const socket = doodSocketPath(id)
+    expect(await exists(socket)).toBe(true)
+    await retireEnvironment(id)
+    for (const kind of ['ps', 'network', 'volume'] as const) expect(await labelled(kind), kind).toBe('')
+    expect((await hostTags()).filter(tag => tag.startsWith(`domo-${id}/`))).toEqual([])
+    expect(await exists(socket)).toBe(false)
   }, HOUR / 4)
 })
 
@@ -797,4 +958,253 @@ describe('populateWorkspaceVolume', () => {
     // macOS `tar` adds AppleDouble companions unless told not to.
     expect(listing.filter(path => path.split('/').pop()!.startsWith('._'))).toEqual([])
   }, 5 * 60 * 1000)
+})
+
+/**
+ * A cleanup step that Docker refuses, against a real daemon.
+ *
+ * This is the failure the reconciliation exists for, and it is the one thing
+ * about it no mock can vouch for: `docker volume rm` really is refused while
+ * another container has the volume mounted, and `allowFailure` really does turn
+ * that into a silent success. Measured once as a workspace volume holding a
+ * full checkout, left on a machine, referenced by nothing, permanently.
+ *
+ * The environment here is made by hand out of busybox rather than by
+ * `createEnvironment` — this is about what happens to the resources on the way
+ * out, and a real image build would add minutes and nothing else.
+ */
+describe('a retirement whose volume removal is refused', () => {
+  it('names the container holding it, and removes it when asked again', async () => {
+    const id = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(id)
+    const volume = workspaceVolumeName(id)
+    const containerName = `${PREFIX}${id}`
+    const holder = `${PREFIX}holder-${id}`
+    await run('docker', ['volume', 'create', '--label', `domo.envId=${id}`, volume])
+    const { stdout: containerId } = await run('docker', [
+      'run', '--detach', '--name', containerName, '--label', `domo.envId=${id}`,
+      '--volume', `${volume}:/workspace`, HELPER_IMAGE, 'sleep', '600'
+    ])
+    // Whatever happened to have it mounted at that moment. In the incident this
+    // was written for it was an unrelated container, and it had gone an hour later.
+    await run('docker', [
+      'run', '--detach', '--name', holder, '--volume', `${volume}:/workspace`,
+      HELPER_IMAGE, 'sleep', '600'
+    ])
+    state.rows.set(id, {
+      id,
+      projectId: 'prj_live',
+      name: 'leftovers',
+      containerName,
+      containerId,
+      workspacePath: '/workspace',
+      status: 'running',
+      lastError: null,
+      retiredAt: null,
+      leftovers: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+
+    const exists = async () => (await run('docker', [
+      'volume', 'ls', '--quiet', '--filter', `name=^${volume}$`
+    ])).stdout
+
+    try {
+      const report = await retireEnvironment(id)
+
+      // The container went; the volume did not, and the retirement says so
+      // instead of reporting a clean sweep.
+      expect(await inspectContainer(containerId)).toBeNull()
+      expect(await exists()).toBe(volume)
+      // The part only a real daemon can prove: Docker's own refusal names
+      // nothing, and `docker ps --filter volume=` turns it into the container
+      // whoever reads this has to remove.
+      expect(report.leftovers).toEqual([
+        expect.objectContaining({
+          kind: 'volume',
+          name: volume,
+          error: `Container ${holder} still has it mounted. `
+            + `Remove it (docker rm -f ${holder}) and run the cleanup again.`
+        })
+      ])
+      // Written to the row, which is kept for good and is the only thing that
+      // can name this volume again later.
+      expect(state.rows.get(id).leftovers).toEqual([
+        expect.objectContaining({ kind: 'volume', name: volume })
+      ])
+      // And it reads as broken rather than as a quiet field: `error` is the
+      // state anything showing this environment keys on.
+      expect(state.rows.get(id)).toMatchObject({
+        status: 'error',
+        lastError: expect.stringContaining(`docker rm -f ${holder}`)
+      })
+    } finally {
+      await run('docker', ['rm', '--force', '--volumes', holder], { allowFailure: true })
+    }
+
+    // Exactly what the message told them to do, and then the retry it named.
+    const swept = await cleanupEnvironment(id)
+
+    expect(swept.removed.map(leftover => leftover.name)).toContain(volume)
+    expect(await exists()).toBe('')
+    expect(state.rows.get(id)).toMatchObject({ leftovers: [], status: 'stopped', lastError: null })
+  }, 5 * 60 * 1000)
+
+  it('names the container an image was made from, which is the other refusal', async () => {
+    // The second cause the owner named: somebody ran a container from the
+    // environment's image by hand. Docker refuses the image removal and, again,
+    // says nothing about what to do; `--filter ancestor=` does.
+    const id = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(id)
+    const image = environmentImageName(id)
+    const holder = `${PREFIX}ancestor-${id}`
+    // Built rather than tagged: `docker image rm` on an image that still has
+    // another tag only removes the tag, and succeeds even while a container is
+    // running from it. One tag is what makes the daemon refuse.
+    await run('docker', ['build', '--tag', image, '-'], {
+      input: `FROM ${HELPER_IMAGE}\nRUN touch /leftover-marker\n`
+    })
+    await run('docker', [
+      'run', '--detach', '--name', holder, image, 'sleep', '600'
+    ])
+    state.rows.set(id, {
+      id,
+      projectId: 'prj_live',
+      name: 'leftover-image',
+      containerName: `${PREFIX}${id}`,
+      containerId: null,
+      workspacePath: '/workspace',
+      status: 'running',
+      lastError: null,
+      retiredAt: new Date().toISOString(),
+      leftovers: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+
+    try {
+      const report = await cleanupEnvironment(id)
+
+      expect(report.leftovers).toEqual([
+        expect.objectContaining({
+          kind: 'image',
+          name: image,
+          error: `Container ${holder} was made from it. `
+            + `Remove it (docker rm -f ${holder}) and run the cleanup again.`
+        })
+      ])
+    } finally {
+      await run('docker', ['rm', '--force', '--volumes', holder], { allowFailure: true })
+    }
+
+    await expect(cleanupEnvironment(id)).resolves.toMatchObject({ leftovers: [] })
+    expect((await run('docker', ['images', '--quiet', image])).stdout).toBe('')
+  }, 5 * 60 * 1000)
+
+  it('leaves a live environment\'s workspace volume alone while it does it', async () => {
+    const live = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(live)
+    const retired = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(retired)
+    for (const id of [live, retired]) {
+      await run('docker', ['volume', 'create', '--label', `domo.envId=${id}`, workspaceVolumeName(id)])
+      state.rows.set(id, {
+        id,
+        projectId: 'prj_live',
+        name: id,
+        containerName: `${PREFIX}${id}`,
+        containerId: null,
+        workspacePath: '/workspace',
+        status: 'running',
+        lastError: null,
+        retiredAt: id === retired ? new Date().toISOString() : null,
+        leftovers: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      })
+    }
+
+    await reconcileEnvironmentResources()
+
+    // The one thing this change could do real harm with: a live environment's
+    // workspace volume is the only copy of whatever an agent has written in it.
+    const listed = (await run('docker', ['volume', 'ls', '--quiet'])).stdout.split('\n')
+    expect(listed).toContain(workspaceVolumeName(live))
+    expect(listed).not.toContain(workspaceVolumeName(retired))
+  }, 60 * 1000)
+
+  it('takes what a retired environment made on the host daemon, and nothing a live one made', async () => {
+    // What an agent made through its Docker proxy is named by the agent, so it
+    // is found by the `domo.env` label and the `domo-<id>/` tag the proxy put
+    // on it — made here by hand with exactly those, since this is about the
+    // way out and not about the proxy.
+    const live = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    const retired = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
+    created.push(live, retired)
+    const made = (id: string) => ({
+      container: `${id}-web`,
+      network: `${id}-default`,
+      volume: `${id}-data`,
+      image: `domo-${id}/docker.io/library/app:dev`
+    })
+    for (const id of [live, retired]) {
+      const names = made(id)
+      await run('docker', ['network', 'create', '--label', `domo.env=${id}`, names.network])
+      await run('docker', ['volume', 'create', '--label', `domo.env=${id}`, names.volume])
+      await run('docker', ['tag', HELPER_IMAGE, names.image])
+      await run('docker', [
+        'run', '--detach', '--name', names.container, '--label', `domo.env=${id}`,
+        '--network', names.network, '--volume', `${names.volume}:/data`, HELPER_IMAGE, 'sleep', '600'
+      ])
+      state.rows.set(id, {
+        id,
+        projectId: 'prj_live',
+        name: id,
+        containerName: `${PREFIX}${id}`,
+        containerId: null,
+        workspacePath: '/workspace',
+        status: 'running',
+        lastError: null,
+        retiredAt: id === retired ? new Date().toISOString() : null,
+        leftovers: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      })
+    }
+    const has = async (id: string) => {
+      const names = made(id)
+      const [containers, networks, volumes, images] = await Promise.all([
+        run('docker', ['ps', '--all', '--format', '{{.Names}}']),
+        run('docker', ['network', 'ls', '--format', '{{.Name}}']),
+        run('docker', ['volume', 'ls', '--format', '{{.Name}}']),
+        run('docker', ['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'])
+      ])
+      return [
+        containers.stdout.split('\n').includes(names.container),
+        networks.stdout.split('\n').includes(names.network),
+        volumes.stdout.split('\n').includes(names.volume),
+        images.stdout.split('\n').includes(names.image)
+      ]
+    }
+
+    try {
+      const report = await reconcileEnvironmentResources()
+
+      expect(await has(retired)).toEqual([false, false, false, false])
+      expect(await has(live)).toEqual([true, true, true, true])
+      expect(report.removed.map(leftover => `${leftover.kind} ${leftover.name}`)).toEqual(expect.arrayContaining([
+        `container ${made(retired).container}`,
+        `network ${made(retired).network}`,
+        `volume ${made(retired).volume}`,
+        // Listed as `repo` for `:latest` only, so this one keeps its tag.
+        `image ${made(retired).image}`
+      ]))
+      // A live environment's stack is accounted for, not "unattributed".
+      expect(report.unattributed.filter(entry => entry.includes(live))).toEqual([])
+    } finally {
+      await removeEnvironmentResources(live)
+    }
+    expect(await has(live)).toEqual([false, false, false, false])
+  }, 60 * 1000)
 })

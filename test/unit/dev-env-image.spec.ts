@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { defaultEnvironmentConfig, DIND_FEATURE } from '../../server/lib/dev-env/config'
+import { defaultEnvironmentConfig, DOOD_FEATURE } from '../../server/lib/dev-env/config'
 import { generatedBuildConfig } from '../../server/lib/dev-env/image'
 
 /**
@@ -19,7 +19,7 @@ describe('generatedBuildConfig', () => {
       features: {
         'ghcr.io/devcontainers/features/node:1': { version: '22' },
         'ghcr.io/devcontainers/features/github-cli:1': { version: 'latest' },
-        [DIND_FEATURE]: { version: 'latest' }
+        [DOOD_FEATURE]: { version: 'latest' }
       }
     })
   })

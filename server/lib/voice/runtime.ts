@@ -1,27 +1,29 @@
-import { createHash } from 'node:crypto'
-import { GoogleGenAI, Modality, type LiveServerMessage, type Session } from '@google/genai'
-
 import { bus } from '../bus'
 import { getSettings } from '../settings'
 import {
   appendVoiceMessage,
   countVoiceMessagesAfter,
-  getResumptionHandle,
   getVoiceSession,
   listAgentSessions,
   listVoiceMessages,
   setVoiceUsage,
   updateVoiceSession
 } from '../repo'
-import { ensureLiveContextWindows, geminiApiKey, liveContextWindow } from '../gemini'
-import { connectVoiceMcpServers, type ConnectedMcp } from './mcp'
 import { CONTEXT_MESSAGE_LIMIT, compactConversation, ensureCompacted } from './compaction'
 import { buildConversationContext } from './context'
-import { voiceToolDeclarations, voiceTools } from './tools'
-import type { VoiceServerMessage, VoiceUsage } from '../../../shared/types'
+import { GeminiBackend } from './gemini-backend'
+import { OpenAiBackend } from './openai-backend'
+import { voiceTools } from './tools'
+import type {
+  VoiceBackend,
+  VoiceHost,
+  VoiceNote,
+  VoiceToolCall,
+  VoiceToolResult,
+  VoiceUsageReading
+} from './backend'
+import type { VoiceProvider, VoiceServerMessage, VoiceUsage } from '../../../shared/types'
 
-export const INPUT_SAMPLE_RATE = 16000
-export const OUTPUT_SAMPLE_RATE = 24000
 /** The model waits on every tool response, so a hung handler must not silence it. */
 const TOOL_TIMEOUT_MS = 30000
 /**
@@ -36,7 +38,7 @@ const USER_SILENCE_MS = 1500
  * How often the conversation's context reading is written.
  *
  * `voice_sessions` is synced with `REPLICA IDENTITY FULL`, so each write
- * re-streams the whole row; `usageMetadata` arrives with most server messages.
+ * re-streams the whole row; a usage frame arrives with most server messages.
  * Same trade as the coding agents' own reading: often enough that the bar moves
  * while the model talks, rarely enough that it is not a write per packet.
  */
@@ -53,27 +55,31 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 type Listener = (message: VoiceServerMessage) => void
 
 /**
- * One live Gemini conversation, owned by the server so tool calls, persistence
- * and proactive notifications all happen in one place. Browsers attach and
- * detach freely; the conversation outlives any single tab.
+ * One live conversation, owned by the server so tool calls, persistence and
+ * proactive notifications all happen in one place. Browsers attach and detach
+ * freely; the conversation outlives any single tab.
+ *
+ * Provider-agnostic on purpose. Which live model is speaking is read from
+ * Settings at every connect and turned into a `VoiceBackend` (`./backend.ts`),
+ * so a conversation is not tied to the vendor it started on: change the
+ * setting, reconnect, and the same history is handed to the other model. What
+ * stays here is everything the *conversation* is made of — the transcript
+ * rows, the fold, the note gate and its single drain, the throttled usage
+ * write, the tool log, the hand-over to a fresh conversation.
  */
 class VoiceRuntime {
   readonly voiceSessionId: string
-  private ai: GoogleGenAI | null = null
-  private session: Session | null = null
+  private backend: VoiceBackend | null = null
   private listeners = new Set<Listener>()
-  private mcpConnections: ConnectedMcp[] = []
   private connecting: Promise<void> | null = null
   private closed = false
   private reconnectAttempts = 0
   /**
-   * Bumped on every connect and close. Callbacks from an older Live socket
-   * (one replaced after `goAway`, say) compare against it and bow out, so a late
-   * `onclose` cannot null out the session that replaced it.
+   * Bumped on every connect and close. A host handed to an older socket (one
+   * replaced after a `goAway`, say) compares against it and bows out, so a late
+   * callback cannot write to the conversation that replaced it.
    */
   private generation = 0
-  /** Fingerprint of the model + tools this socket was set up with. */
-  private setupFingerprint: string | null = null
   /** Tool calls the model is still waiting on. */
   private pendingToolCalls = 0
   /**
@@ -81,7 +87,7 @@ class VoiceRuntime {
    * first. The row is stored when the note is made, so the UI shows it at once;
    * only the *delivery* waits. See `injectNote`.
    */
-  private deferredNotes: Array<{ text: string, speak: boolean }> = []
+  private deferredNotes: VoiceNote[] = []
   /** True between the first sign of a model turn and the end of it. */
   private modelSpeaking = false
   /** When input transcription was last seen, i.e. when the user was last heard. */
@@ -101,16 +107,19 @@ class VoiceRuntime {
   private usage: VoiceUsage | null = null
   private writtenUsage: VoiceUsage | null = null
   private usageTimer: ReturnType<typeof setTimeout> | null = null
-  /** The window of the model this socket connected with, or null if unknown. */
-  private contextWindow: number | null = null
   /**
-   * Live messages are handled one at a time. `onmessage` fires without waiting
-   * for the previous handler, so concurrent flushes would store transcript rows
-   * out of order.
+   * Provider events are handled one at a time. They arrive without waiting for
+   * the previous handler, so concurrent flushes would store transcript rows out
+   * of order.
    */
   private inbox: Promise<void> = Promise.resolve()
   private unsubscribeBus: (() => void) | null = null
   private notifiedTurns = new Set<string>()
+  /**
+   * Tools the current backend resolves itself — MCP servers it connected on
+   * its own. Cleared with the socket, because they belong to it.
+   */
+  private extraTools: Record<string, (args: any) => Promise<unknown>> = {}
   /** A failed connect is remembered briefly: 8 audio chunks a second must not
    *  turn one misconfiguration into a storm of identical errors. */
   private connectError: { message: string, at: number } | null = null
@@ -120,7 +129,12 @@ class VoiceRuntime {
   }
 
   get live() {
-    return !!this.session
+    return !!this.backend
+  }
+
+  /** Which live model this conversation is currently talking through. */
+  get provider(): VoiceProvider | null {
+    return this.backend?.provider ?? null
   }
 
   addListener(listener: Listener): () => void {
@@ -145,7 +159,7 @@ class VoiceRuntime {
   /* ---------------------------- lifecycle ---------------------------- */
 
   async ensureConnected(): Promise<void> {
-    if (this.session) return
+    if (this.backend) return
     if (this.connectError && Date.now() - this.connectError.at < 10000) {
       throw new Error(this.connectError.message)
     }
@@ -166,16 +180,6 @@ class VoiceRuntime {
     return this.connecting
   }
 
-  private async apiKey(): Promise<string> {
-    const key = geminiApiKey()
-    if (!key) {
-      throw new Error(
-        'No Gemini API key. Put NUXT_GEMINI_API_KEY=... in .env and restart the server.'
-      )
-    }
-    return key
-  }
-
   private async systemInstruction(): Promise<string> {
     const settings = await getSettings()
     const agents = await listAgentSessions()
@@ -187,9 +191,10 @@ class VoiceRuntime {
 
     // The conversation is the row and its messages, not the socket: whatever
     // this connect is (a first one, a `goAway` reconnect, a fresh session after
-    // a tool change, a server restart), the model is handed the same thing —
-    // the durable summary of everything folded away so far, then the tail since
-    // it, verbatim and within a budget. See `./context.ts`.
+    // a tool change, a server restart, a switch to the other provider), the
+    // model is handed the same thing — the durable summary of everything folded
+    // away so far, then the tail since it, verbatim and within a budget. See
+    // `./context.ts`.
     const session = await getVoiceSession(this.voiceSessionId)
     const history = await listVoiceMessages(this.voiceSessionId, CONTEXT_MESSAGE_LIMIT)
     const context = buildConversationContext({
@@ -222,6 +227,83 @@ class VoiceRuntime {
     ].join('\n')
   }
 
+  /**
+   * The conversation as this socket may touch it.
+   *
+   * Every method checks the generation it was made at, so a callback from a
+   * socket that has already been replaced is silently dropped rather than
+   * writing a transcript row into a conversation that has moved on.
+   */
+  private hostFor(generation: number): VoiceHost {
+    const live = () => generation === this.generation
+    return {
+      voiceSessionId: this.voiceSessionId,
+      instruction: () => this.systemInstruction(),
+      emit: (message) => {
+        if (live()) this.emit(message)
+      },
+      audio: (data, sampleRate) => {
+        if (live()) this.emit({ type: 'audio', data, sampleRate })
+      },
+      userInterim: (text) => {
+        if (!live()) return
+        this.lastUserSpeechAt = Date.now()
+        this.emit({ type: 'transcript', role: 'user', text: this.userTranscript + text, final: false })
+      },
+      userDelta: (text) => {
+        if (!live()) return
+        this.lastUserSpeechAt = Date.now()
+        this.userTranscript += text
+        this.emit({ type: 'transcript', role: 'user', text: this.userTranscript, final: false })
+      },
+      assistantDelta: (text) => {
+        if (!live()) return
+        this.modelSpeaking = true
+        this.assistantTranscript += text
+        this.emit({ type: 'transcript', role: 'assistant', text: this.assistantTranscript, final: false })
+      },
+      speaking: (value) => {
+        if (!live()) return
+        this.modelSpeaking = value
+        // Stopping is a release point: `generationComplete` is the model
+        // putting its pen down, and `turnComplete` then waits on playback.
+        if (!value) this.drainNotes()
+      },
+      interrupted: () => (live() ? this.onInterrupted() : Promise.resolve()),
+      turnComplete: () => (live() ? this.onTurnComplete() : Promise.resolve()),
+      usage: (reading) => {
+        if (live()) this.noteUsage(reading)
+      },
+      runTools: calls => (live() ? this.runToolCalls(calls) : Promise.resolve([])),
+      useExtraTools: (handlers) => {
+        if (live()) this.extraTools = handlers
+      },
+      systemNote: (text) => {
+        if (live()) void this.recordSystemNote(text)
+      },
+      error: (message) => {
+        if (!live()) return
+        console.error(`[voice:${this.voiceSessionId}] live socket error: ${message}`)
+        this.emit({ type: 'error', message })
+        void updateVoiceSession(this.voiceSessionId, { status: 'error' })
+      },
+      reconnect: () => (live() ? this.reconnect() : Promise.resolve())
+    }
+  }
+
+  /**
+   * Which backend runs this connect.
+   *
+   * Read from Settings here rather than fixed when the runtime was made, so a
+   * provider change reaches a conversation the next time its socket comes up —
+   * which, given `goAway` and Nitro restarts, is usually within minutes and is
+   * always what a reload does.
+   */
+  private async makeBackend(host: VoiceHost): Promise<VoiceBackend> {
+    const settings = await getSettings()
+    return settings.voiceProvider === 'openai' ? new OpenAiBackend(host) : new GeminiBackend(host)
+  }
+
   private async connect(): Promise<void> {
     const generation = ++this.generation
     this.closed = false
@@ -229,134 +311,60 @@ class VoiceRuntime {
     // through is gone, and a stale `modelSpeaking` would hold notes forever.
     this.modelSpeaking = false
     this.lastUserSpeechAt = 0
+    this.extraTools = {}
     // Fold before the instruction is built, not after: a reconnect is exactly
     // where an uncompacted middle would fall off the end of the budget, and the
     // summary written here is what stops it. Capped, and never fatal.
     await ensureCompacted(this.voiceSessionId)
-    const settings = await getSettings()
+
+    const host = this.hostFor(generation)
+    const backend = await this.makeBackend(host)
+    await backend.connect()
+    // A `close()` while the socket was opening already moved the generation on.
+    if (generation !== this.generation) {
+      await backend.close()
+      return
+    }
+    this.backend = backend
+    this.reconnectAttempts = 0
+
+    // What the conversation last actually used, for the sidebar and the row.
+    // Always written from the backend rather than from Settings: the backend
+    // is the thing that knows what it connected with.
     const session = await getVoiceSession(this.voiceSessionId)
-    const apiKey = await this.apiKey()
-    this.ai = new GoogleGenAI({ apiKey })
-
-    const { tools: mcpTools, connections, errors } = await connectVoiceMcpServers()
-    this.mcpConnections = connections
-    for (const error of errors) {
-      this.emit({ type: 'error', message: `MCP server "${error.name}" failed: ${error.message}` })
+    if (session && (session.model !== backend.model || session.voice !== backend.voice)) {
+      void updateVoiceSession(this.voiceSessionId, { model: backend.model, voice: backend.voice })
     }
-
-    // Always the current Settings: the copy on the session row is only a record
-    // of what the conversation last used, and honouring it made a saved change
-    // (or a fixed default) silently not apply to existing conversations.
-    const model = settings.liveModel
-    const voiceName = settings.voiceName
-    if (session && (session.model !== model || session.voice !== voiceName)) {
-      void updateVoiceSession(this.voiceSessionId, { model, voice: voiceName })
-    }
-    const functionDeclarations = voiceToolDeclarations({ autoTitle: settings.autoTitle })
-
-    // A resumed session keeps the tools it was created with and ignores the ones
-    // sent now, so the agent would miss any tool added since (verified against
-    // the Live API). Resume only when the setup is unchanged; otherwise start a
-    // fresh session, which still gets the recent recap in its instruction.
-    const fingerprint = createHash('sha256')
-      .update(JSON.stringify({
-        model,
-        functionDeclarations,
-        mcp: connections.map(connection => [connection.server.id, connection.server.updatedAt])
-      }))
-      .digest('hex')
-    this.setupFingerprint = fingerprint
-    const stored = await getResumptionHandle(this.voiceSessionId)
-    const handle = stored.fingerprint === fingerprint ? stored.handle : null
-    if (stored.handle && !handle) {
-      console.info(`[voice:${this.voiceSessionId}] model or tools changed since the last session; starting fresh instead of resuming`)
-    }
-
-    // The denominator for the context bar. Best effort and not awaited on the
-    // hot path: a conversation starts whether or not the models API answers.
-    void ensureLiveContextWindows().then(() => { this.contextWindow = liveContextWindow(model) })
-    this.contextWindow = liveContextWindow(model)
-
-    // Resuming keeps the model's context; starting fresh does not. A fresh
-    // connect is therefore an empty window, and saying so at once beats leaving
-    // the previous conversation's number on screen until the first reading.
-    if (!handle) {
-      this.usage = { context: { used: 0, size: this.contextWindow }, updatedAt: new Date().toISOString() }
-      this.writtenUsage = null
-      this.scheduleUsageWrite()
-    }
-
-    this.emit({ type: 'status', status: 'idle', detail: `connecting to ${model}` })
-
-    const config: any = {
-      responseModalities: [Modality.AUDIO],
-      systemInstruction: await this.systemInstruction(),
-      speechConfig: {
-        languageCode: settings.language,
-        voiceConfig: { prebuiltVoiceConfig: { voiceName } }
-      },
-      inputAudioTranscription: {},
-      outputAudioTranscription: {},
-      sessionResumption: handle ? { handle } : {},
-      contextWindowCompression: { slidingWindow: {} },
-      tools: [{ functionDeclarations }, ...mcpTools]
-    }
-
-    this.session = await this.ai.live.connect({
-      model,
-      config,
-      callbacks: {
-        onopen: () => {
-          if (generation !== this.generation) return
-          this.reconnectAttempts = 0
-          this.emit({ type: 'status', status: 'live' })
-          void updateVoiceSession(this.voiceSessionId, { status: 'live' })
-        },
-        onmessage: (message: LiveServerMessage) => {
-          if (generation !== this.generation) return
-          this.inbox = this.inbox
-            .then(() => this.onMessage(message))
-            .catch((error) => {
-              console.error('[voice] message handling failed', error)
-            })
-        },
-        onerror: (event: any) => {
-          if (generation !== this.generation) return
-          const message = event?.message || String(event?.error ?? event ?? 'unknown error')
-          console.error(`[voice:${this.voiceSessionId}] live socket error: ${message}`)
-          this.emit({ type: 'error', message })
-          void updateVoiceSession(this.voiceSessionId, { status: 'error' })
-        },
-        onclose: (event: CloseEvent) => {
-          if (generation !== this.generation) return
-          this.session = null
-          const reason = `${event?.code ?? '?'}${event?.reason ? `: ${event.reason}` : ''}`
-          if (!this.closed) {
-            console.warn(`[voice:${this.voiceSessionId}] live socket closed (${reason})`)
-            void this.handleUnexpectedClose(reason)
-          } else {
-            this.emit({ type: 'status', status: 'idle' })
-          }
-        }
-      }
-    })
 
     this.subscribeToAgents()
   }
 
-  private async handleUnexpectedClose(reason: string) {
+  /** Drop the current socket and open another, keeping the conversation. */
+  private async reconnect(): Promise<void> {
+    const backend = this.backend
+    this.backend = null
+    await backend?.close().catch(() => {})
+    if (this.closed) return
     await updateVoiceSession(this.voiceSessionId, { status: 'idle' })
-    this.emit({ type: 'status', status: 'idle', detail: `connection closed (${reason})` })
-    if (!this.listeners.size || this.reconnectAttempts >= 3) return
+    if (!this.listeners.size || this.reconnectAttempts >= 3) {
+      this.emit({ type: 'status', status: 'idle' })
+      return
+    }
     this.reconnectAttempts += 1
-    const delay = 500 * this.reconnectAttempts
-    setTimeout(() => {
-      if (this.listeners.size && !this.session) {
-        void this.ensureConnected().catch((error) => {
-          this.emit({ type: 'error', message: error instanceof Error ? error.message : String(error) })
-        })
-      }
-    }, delay)
+    // A short, growing pause: the common cause is the server asking us to
+    // reconnect (Gemini's `goAway` arrives every few minutes and succeeds on
+    // the first try, which resets the count), and the uncommon one is a
+    // failure that reconnecting immediately would only repeat.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 500 * this.reconnectAttempts)
+      timer.unref?.()
+    })
+    if (this.closed || this.backend || !this.listeners.size) return
+    try {
+      await this.ensureConnected()
+    } catch (error) {
+      this.emit({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+    }
   }
 
   async close(): Promise<void> {
@@ -366,6 +374,7 @@ class VoiceRuntime {
     this.deferredNotes = []
     this.modelSpeaking = false
     this.lastUserSpeechAt = 0
+    this.extraTools = {}
     if (this.silenceTimer) clearTimeout(this.silenceTimer)
     this.silenceTimer = null
     if (this.handOverTimer) clearTimeout(this.handOverTimer)
@@ -374,17 +383,26 @@ class VoiceRuntime {
     this.handedOver = false
     this.unsubscribeBus?.()
     this.unsubscribeBus = null
+    // Whatever was being said when the socket went is still the conversation.
+    // It matters more on a provider with no turn boundary of its own, where
+    // the only other thing that would have stored this is an idle timer that
+    // is about to be thrown away with the backend.
+    await this.serial(async () => {
+      await this.flushUser()
+      await this.flushAssistant()
+    })
+    const backend = this.backend
+    this.backend = null
+    // The socket is shut down *before* the final write, because the last thing
+    // some sockets say is a usage figure: GPT-Live confirms the conversation's
+    // billed speech duration in `session.closed` and nowhere else. It comes
+    // back from `close()` rather than through the host, which has already
+    // stopped accepting callbacks from this generation.
+    const final = await backend?.close().catch(() => undefined)
+    if (final) this.noteUsage(final)
     // Whatever is sitting in the trailing timer is the conversation's final
     // reading; it would otherwise go with the process.
     await this.flushUsage()
-    try {
-      this.session?.close()
-    } catch {
-      /* ignore */
-    }
-    this.session = null
-    for (const connection of this.mcpConnections) await connection.close()
-    this.mcpConnections = []
     await updateVoiceSession(this.voiceSessionId, { status: 'idle' })
     this.emit({ type: 'status', status: 'idle' })
   }
@@ -393,33 +411,32 @@ class VoiceRuntime {
 
   async sendAudioChunk(base64: string): Promise<void> {
     await this.ensureConnected()
-    this.session?.sendRealtimeInput({
-      audio: { data: base64, mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` }
-    })
+    this.backend?.sendAudio(base64)
   }
 
   async sendAudioStreamEnd(): Promise<void> {
-    this.session?.sendRealtimeInput({ audioStreamEnd: true })
+    this.backend?.endAudioStream()
   }
 
-  async sendText(text: string): Promise<void> {
+  async sendText(text: string, speak = true): Promise<void> {
     await this.ensureConnected()
     await appendVoiceMessage({ sessionId: this.voiceSessionId, role: 'user', text })
-    // The turn is the model's from here; a note must not pre-empt the answer.
-    this.modelSpeaking = true
-    this.session?.sendClientContent({ turns: [{ role: 'user', parts: [{ text }] }], turnComplete: true })
+    this.backend?.sendUserText(text, speak)
   }
 
   /**
-   * Is this a moment at which client content would cut the conversation off?
+   * Is this a moment at which putting text in would cut the conversation off?
    *
-   * Client content pre-empts whatever the model is generating, so a note sent
-   * mid-sentence truncates it — the agent audibly interrupting itself. A note
-   * sent while the model waits on a tool response can leave that turn stuck.
-   * And one sent while the user is still talking answers a question they have
-   * not finished asking.
+   * Only ever asked of a provider whose text input pre-empts generation —
+   * Gemini's client content does, and a note sent mid-sentence truncates it,
+   * which is the agent audibly interrupting itself. A note sent while the
+   * model waits on a tool response can leave that turn stuck. And one sent
+   * while the user is still talking answers a question they have not finished
+   * asking. GPT-Live's appends have none of these properties, so its backend
+   * reports `notesPreemptSpeech: false` and nothing is ever held.
    */
   private busy(): boolean {
+    if (this.backend && !this.backend.notesPreemptSpeech) return false
     return this.pendingToolCalls > 0
       || this.modelSpeaking
       || Date.now() - this.lastUserSpeechAt < USER_SILENCE_MS
@@ -431,12 +448,11 @@ class VoiceRuntime {
    *
    * The transcript row is written now and the delivery may be held: the screen
    * should show agent news the moment it happens, and only the *speaking* has
-   * to wait for a gap. `speak` false means "context, don't answer it", which is
-   * `turnComplete: false` on the wire.
+   * to wait for a gap. `speak` false means "context, don't answer it".
    */
   async injectNote(text: string, speak = true): Promise<void> {
     // Agent news belongs to the conversation the user is moving to.
-    if (!this.session || this.handOverTo) return
+    if (!this.backend || this.handOverTo) return
     await appendVoiceMessage({
       sessionId: this.voiceSessionId,
       role: 'system',
@@ -453,30 +469,34 @@ class VoiceRuntime {
     this.send([{ text, speak }])
   }
 
-  /**
-   * One client-content message per delivery. `turnComplete` is true unless
-   * *every* note in it was context-only: a batch that contains something worth
-   * saying is worth answering once.
-   */
-  private send(notes: Array<{ text: string, speak: boolean }>) {
-    if (!this.session || !notes.length) return
-    const speak = notes.some(note => note.speak)
-    // A delivery that asks for an answer starts a model turn, so the next note
-    // along waits for it rather than cutting the reply to this one in half.
-    if (speak) this.modelSpeaking = true
-    this.session.sendClientContent({
-      turns: [{
-        role: 'user',
-        parts: [{ text: notes.map(note => `[Domo system notice] ${note.text}`).join('\n\n') }]
-      }],
-      turnComplete: speak
-    })
+  /** A line about what Domo did, for the transcript only. See `VoiceHost.systemNote`. */
+  private async recordSystemNote(text: string): Promise<void> {
+    try {
+      const stored = await appendVoiceMessage({
+        sessionId: this.voiceSessionId,
+        role: 'system',
+        text,
+        meta: { source: 'delegation' }
+      })
+      this.emit({ type: 'message', message: stored })
+    } catch (error) {
+      console.error(`[voice:${this.voiceSessionId}] could not record a note`, error)
+    }
   }
 
   /**
-   * Hand over every note that was held, as **one** message: three agents
-   * finishing while the model spoke is one thing to say, not three turns of
-   * client content racing each other.
+   * Hand a batch of notes to the model. Coalesced into one delivery: three
+   * agents finishing while the model spoke is one thing to say, not three
+   * turns racing each other. How the batch is rendered — one message, two
+   * appends — is the backend's business.
+   */
+  private send(notes: VoiceNote[]) {
+    if (!this.backend || !notes.length) return
+    this.backend.sendNotes(notes)
+  }
+
+  /**
+   * Hand over every note that was held, as one message.
    *
    * The rows were written when the notes were made, so nothing is stored here.
    * Called from every point at which the conversation might have gone quiet.
@@ -511,109 +531,47 @@ class VoiceRuntime {
 
   /* ---------------------------- output ---------------------------- */
 
-  private async onMessage(message: LiveServerMessage) {
-    if (message.setupComplete) {
-      this.emit({ type: 'status', status: 'live' })
-    }
+  /** The model stopped generating, so there is nothing left to cut off. */
+  private onInterrupted(): Promise<void> {
+    this.modelSpeaking = false
+    this.emit({ type: 'interrupted' })
+    return this.serial(async () => {
+      await this.flushAssistant()
+      this.drainNotes()
+    })
+  }
 
-    this.noteUsage(message.usageMetadata)
-
-    if (message.sessionResumptionUpdate?.newHandle) {
-      await updateVoiceSession(this.voiceSessionId, {
-        resumptionHandle: message.sessionResumptionUpdate.newHandle,
-        resumptionFingerprint: this.setupFingerprint
-      })
-    }
-
-    if (message.goAway) {
-      console.info(`[voice:${this.voiceSessionId}] goAway (time left ${message.goAway.timeLeft ?? '?'}), reconnecting`)
-      this.emit({ type: 'status', status: 'live', detail: 'server asked to reconnect' })
-      try {
-        this.session?.close()
-      } catch {
-        /* ignore */
-      }
-      this.session = null
-      await this.ensureConnected()
-      return
-    }
-
-    const content = message.serverContent
-    if (content) {
-      if (content.interrupted) {
-        // The model stopped generating, so there is nothing left to cut off.
-        this.modelSpeaking = false
-        this.emit({ type: 'interrupted' })
-        await this.flushAssistant()
-      }
-
-      // Interim text is a guess at the segment in progress, not a delta: show it
-      // after what has been committed so far and never accumulate it.
-      const interim = content.interimInputTranscription?.text
-      if (interim) {
-        this.lastUserSpeechAt = Date.now()
-        this.emit({ type: 'transcript', role: 'user', text: this.userTranscript + interim, final: false })
-      }
-
-      if (content.inputTranscription?.text) {
-        this.lastUserSpeechAt = Date.now()
-        this.userTranscript += content.inputTranscription.text
-        this.emit({ type: 'transcript', role: 'user', text: this.userTranscript, final: false })
-      }
-
-      if (content.outputTranscription?.text) {
-        this.modelSpeaking = true
-        this.assistantTranscript += content.outputTranscription.text
-        this.emit({ type: 'transcript', role: 'assistant', text: this.assistantTranscript, final: false })
-      }
-
-      if (content.modelTurn?.parts?.length) this.modelSpeaking = true
-      // `generationComplete` is the model putting its pen down; `turnComplete`
-      // then waits on playback. Either one ends the window in which client
-      // content would truncate what is being said.
-      if (content.generationComplete || content.turnComplete) this.modelSpeaking = false
-
-      for (const part of content.modelTurn?.parts ?? []) {
-        const inline = part.inlineData
-        if (inline?.data && (inline.mimeType ?? '').startsWith('audio/')) {
-          this.emit({ type: 'audio', data: inline.data, sampleRate: OUTPUT_SAMPLE_RATE })
-        }
-        // With audio output the spoken words arrive via `outputTranscription`;
-        // `thought` parts are the model's reasoning and must not be appended.
-        if (part.text && !part.thought) {
-          this.assistantTranscript += part.text
-          this.emit({ type: 'transcript', role: 'assistant', text: this.assistantTranscript, final: false })
-        }
-      }
-
-      if (content.turnComplete) {
-        // Whatever the user said has now been asked and answered, so the
-        // silence window is over however recently the transcription arrived.
-        this.lastUserSpeechAt = 0
-        await this.flushUser()
-        await this.flushAssistant()
-        await this.flushUsage()
-        this.emit({ type: 'turn-complete' })
-        this.scheduleCompaction()
-        if (this.handOverTo && this.handOverTimer) this.completeHandOver()
-      }
-
-      // Every release point goes through one drain: whatever was held back is
-      // delivered as soon as the conversation has a gap for it.
-      if (content.interrupted || content.generationComplete || content.turnComplete) {
-        this.drainNotes()
-      }
-    }
-
-    if (message.toolCall?.functionCalls?.length) {
-      // Store what was said so far first, so the rows read in order, then run
-      // the tools off the inbox: audio and transcripts keep flowing meanwhile.
+  /**
+   * The exchange is over: store what was said, write the reading, fold, and
+   * release whatever was held back.
+   */
+  private onTurnComplete(): Promise<void> {
+    return this.serial(async () => {
+      // Whatever the user said has now been asked and answered, so the silence
+      // window is over however recently the transcription arrived.
+      this.lastUserSpeechAt = 0
       await this.flushUser()
       await this.flushAssistant()
-      void this.runToolCalls(message.toolCall.functionCalls).catch((error) => {
-        console.error(`[voice:${this.voiceSessionId}] tool calls failed`, error)
+      await this.flushUsage()
+      this.emit({ type: 'turn-complete' })
+      this.scheduleCompaction()
+      if (this.handOverTo && this.handOverTimer) this.completeHandOver()
+      this.drainNotes()
+    })
+  }
+
+  /**
+   * Run something against the conversation one at a time. Provider callbacks
+   * arrive without waiting for the previous handler, so two flushes racing
+   * would store transcript rows out of order.
+   */
+  private serial(work: () => Promise<void>): Promise<void> {
+    this.inbox = this.inbox
+      .then(work)
+      .catch((error) => {
+        console.error('[voice] message handling failed', error)
       })
-    }
+    return this.inbox
   }
 
   /**
@@ -634,27 +592,31 @@ class VoiceRuntime {
   /* ---------------------------- context ---------------------------- */
 
   /**
-   * Take in a `usageMetadata` frame.
+   * Take in a context reading from whichever provider is speaking.
    *
-   * The Live API reports what the conversation has spent and never how big the
-   * window is, so `size` comes from the models API (see `liveContextWindow`)
-   * and is null for a model Domo has not been told about.
-   *
-   * `used` going **down** is normal and must not be smoothed away: the session
-   * runs with `contextWindowCompression: { slidingWindow: {} }`, so the oldest
-   * turns are dropped once the window fills, and a conversation that starts
-   * fresh after a fingerprint mismatch begins again at zero.
+   * Merged into the last one rather than replacing it, because the two
+   * providers report different halves at different moments: Gemini's window
+   * size arrives from the models API after the first token count does, and
+   * GPT-Live reports an occupancy ratio on one event and its billed audio
+   * total on another.
    */
-  private noteUsage(usageMetadata: LiveServerMessage['usageMetadata']): void {
-    if (!usageMetadata) return
-    // `totalTokenCount` is the whole exchange; `promptTokenCount` is what was
-    // sent, which is the conversation so far. Either answers "how full", and
-    // the second is what a frame carrying no total still has.
-    const used = usageMetadata.totalTokenCount ?? usageMetadata.promptTokenCount
-    if (typeof used !== 'number' || !Number.isFinite(used) || used < 0) return
-
+  private noteUsage(reading: VoiceUsageReading): void {
+    const previous = this.usage
+    // A reading that only refines the *denominator* — Gemini's window size,
+    // which arrives from the models API after the socket is already up — says
+    // nothing on its own. Writing one before the model has reported any
+    // occupancy would claim an empty window for a conversation that resumed a
+    // full one.
+    if (!previous && reading.used === undefined && reading.percent === undefined) return
+    const context = {
+      used: reading.used ?? previous?.context.used ?? 0,
+      size: reading.size !== undefined ? reading.size : previous?.context.size ?? null,
+      percent: reading.percent !== undefined ? reading.percent : previous?.context.percent ?? null
+    }
+    if (!Number.isFinite(context.used) || context.used < 0) return
     this.usage = {
-      context: { used, size: this.contextWindow },
+      context,
+      audioSeconds: reading.audioSeconds ?? previous?.audioSeconds ?? null,
       updatedAt: new Date().toISOString()
     }
     this.scheduleUsageWrite()
@@ -687,7 +649,9 @@ class VoiceRuntime {
     if (!usage) return
     if (this.writtenUsage
       && this.writtenUsage.context.used === usage.context.used
-      && this.writtenUsage.context.size === usage.context.size) return
+      && this.writtenUsage.context.size === usage.context.size
+      && this.writtenUsage.context.percent === usage.context.percent
+      && this.writtenUsage.audioSeconds === usage.audioSeconds) return
     this.writtenUsage = usage
     try {
       await setVoiceUsage(this.voiceSessionId, usage)
@@ -714,70 +678,80 @@ class VoiceRuntime {
     this.emit({ type: 'message', message: stored })
   }
 
-  private async runToolCalls(calls: any[]) {
+  /**
+   * Run a batch of tool calls and log each to the transcript.
+   *
+   * Which side of the wire asked is the backend's business — Gemini's model
+   * calls tools itself, OpenAI's delegated Responses backend does — and what a
+   * tool *is* is the same either way, so this is shared. Results come back in
+   * the order they were asked for.
+   */
+  private async runToolCalls(calls: VoiceToolCall[]): Promise<VoiceToolResult[]> {
     const generation = this.generation
     this.pendingToolCalls += 1
-    const responses: any[] = []
+    const results: VoiceToolResult[] = []
 
-    for (const call of calls) {
-      const name: string = call.name
-      const args = call.args ?? {}
-      this.emit({ type: 'tool', name, args, phase: 'start' })
+    // Store what was said so far first, so the rows read in order.
+    await this.serial(async () => {
+      await this.flushUser()
+      await this.flushAssistant()
+    })
 
-      const tool = voiceTools[name]
-      let result: any
-      if (!tool) {
-        // MCP-backed tools are executed by the SDK itself; anything unknown here
-        // is a genuine mistake worth surfacing to the model.
-        result = { error: `Unknown tool: ${name}` }
-      } else {
-        try {
-          result = await withTimeout(
-            tool.handler(args, {
-              voiceSessionId: this.voiceSessionId,
-              handOver: (id) => {
-                this.handOverTo = id
-              }
-            }),
-            TOOL_TIMEOUT_MS,
-            name
-          )
-        } catch (error) {
-          result = { error: error instanceof Error ? error.message : String(error) }
+    try {
+      for (const call of calls) {
+        const { name, args } = call
+        this.emit({ type: 'tool', name, args, phase: 'start' })
+
+        const tool = voiceTools[name]
+        const extra = this.extraTools[name]
+        let result: any
+        if (!tool && !extra) {
+          result = { error: `Unknown tool: ${name}` }
+        } else {
+          try {
+            const running = tool
+              ? tool.handler(args, {
+                  voiceSessionId: this.voiceSessionId,
+                  handOver: (id) => {
+                    this.handOverTo = id
+                  }
+                })
+              : extra!(args)
+            result = await withTimeout(running, TOOL_TIMEOUT_MS, name)
+          } catch (error) {
+            result = { error: error instanceof Error ? error.message : String(error) }
+          }
         }
-      }
 
-      this.emit({ type: 'tool', name, args, result, phase: 'end' })
-      try {
-        const stored = await appendVoiceMessage({
-          sessionId: this.voiceSessionId,
-          role: 'tool',
-          text: typeof result === 'string' ? result : JSON.stringify(result),
-          toolName: name,
-          meta: { args }
-        })
-        this.emit({ type: 'message', message: stored })
-      } catch (error) {
-        // The model still needs its answer even if the log row is lost.
-        console.error(`[voice:${this.voiceSessionId}] storing ${name} result failed`, error)
-      }
+        this.emit({ type: 'tool', name, args, result, phase: 'end' })
+        try {
+          const stored = await appendVoiceMessage({
+            sessionId: this.voiceSessionId,
+            role: 'tool',
+            text: typeof result === 'string' ? result : JSON.stringify(result),
+            toolName: name,
+            meta: { args }
+          })
+          this.emit({ type: 'message', message: stored })
+        } catch (error) {
+          // The model still needs its answer even if the log row is lost.
+          console.error(`[voice:${this.voiceSessionId}] storing ${name} result failed`, error)
+        }
 
-      responses.push({
-        id: call.id,
-        name,
-        response: result && typeof result === 'object' ? result : { output: result }
-      })
+        results.push({ call, result })
+      }
+    } finally {
+      this.pendingToolCalls = Math.max(0, this.pendingToolCalls - 1)
     }
 
     // A `close()` while the tools ran already reset the counter and the notes.
-    if (generation !== this.generation && this.closed) return
-    this.session?.sendToolResponse({ functionResponses: responses })
-    this.pendingToolCalls = Math.max(0, this.pendingToolCalls - 1)
+    if (generation !== this.generation && this.closed) return []
     if (this.handOverTo && !this.handOverTimer && !this.handedOver) {
-      // The sign-off ends with `turnComplete`; don't wait forever if it never comes.
+      // The sign-off ends with the turn; don't wait forever if it never comes.
       this.handOverTimer = setTimeout(() => this.completeHandOver(), 8000)
     }
     if (this.pendingToolCalls === 0) this.drainNotes()
+    return results
   }
 
   private completeHandOver() {
@@ -806,7 +780,7 @@ class VoiceRuntime {
 
   private async onBusEvent(event: any) {
     const settings = await getSettings()
-    if (!settings.proactiveNotifications || !this.session) return
+    if (!settings.proactiveNotifications || !this.backend) return
 
     if (event.type === 'agent-event') {
       const { agentSessionId, event: agentEvent } = event

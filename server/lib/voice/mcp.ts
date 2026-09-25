@@ -5,6 +5,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { mcpToTool, type CallableTool } from '@google/genai'
 
 import { listMcpServers } from '../repo'
+import type { OpenAiFunctionTool } from './tool-schema'
 import type { McpServer } from '../../../shared/types'
 
 export interface ConnectedMcp {
@@ -82,4 +83,60 @@ export async function connectVoiceMcpServers(): Promise<{
     : []
 
   return { tools, connections, errors }
+}
+
+/**
+ * The same connected servers, as plain function tools Domo executes itself.
+ *
+ * Gemini's SDK takes MCP clients directly (`mcpToTool`) and runs the calls;
+ * OpenAI's Live delegation takes a list of function declarations and hands the
+ * calls back for the application to run. So the same servers reach the two
+ * providers by different roads, and this is the second one: declare the tools,
+ * keep a handler per name, and dispatch through the client when one is called.
+ *
+ * Names are the servers' own and are not prefixed, because the model is told
+ * about them by name and a mangled one is a name the user cannot ask for. Two
+ * servers offering the same tool name is therefore a real collision: the first
+ * wins and the second is skipped with a warning, rather than one silently
+ * shadowing the other on every call.
+ */
+export async function mcpFunctionTools(connections: ConnectedMcp[]): Promise<{
+  tools: OpenAiFunctionTool[]
+  handlers: Record<string, (args: any) => Promise<unknown>>
+}> {
+  const tools: OpenAiFunctionTool[] = []
+  const handlers: Record<string, (args: any) => Promise<unknown>> = {}
+
+  for (const connection of connections) {
+    let listed: Awaited<ReturnType<Client['listTools']>>
+    try {
+      listed = await connection.client.listTools()
+    } catch (error) {
+      console.warn(
+        `[voice] could not list tools on MCP server "${connection.server.name}": `
+        + (error instanceof Error ? error.message : String(error))
+      )
+      continue
+    }
+
+    for (const tool of listed.tools ?? []) {
+      if (handlers[tool.name]) {
+        console.warn(
+          `[voice] MCP server "${connection.server.name}" also offers a tool called `
+          + `"${tool.name}"; keeping the first one`
+        )
+        continue
+      }
+      tools.push({
+        type: 'function',
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        parameters: (tool.inputSchema as any) ?? { type: 'object', properties: {} }
+      })
+      handlers[tool.name] = async (args: any) =>
+        connection.client.callTool({ name: tool.name, arguments: args ?? {} })
+    }
+  }
+
+  return { tools, handlers }
 }

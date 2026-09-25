@@ -76,9 +76,11 @@ async function toggleMic() {
   else await voice.startTalking()
 }
 
+const speakTyped = useSpokenReplies()
+
 function sendTyped() {
   if (!typed.value.trim()) return
-  voice.sendText(typed.value)
+  voice.sendText(typed.value, speakTyped.value)
   typed.value = ''
 }
 
@@ -149,8 +151,8 @@ function roleMeta(role: string) {
         </template>
 
         <template #right>
-          <!-- Context only: Gemini publishes no plan-limit API, so there is
-               nothing account-wide to show beside it. -->
+          <!-- Context only: neither voice provider publishes a plan-limit API,
+               so there is nothing account-wide to show beside it. -->
           <UsageMeter :usage="session?.usage ?? null" />
           <UTooltip text="Start over with a fresh context">
             <UButton
@@ -317,11 +319,29 @@ function roleMeta(role: string) {
                   />
                 </UTooltip>
 
+                <UTooltip
+                  :text="speakTyped
+                    ? 'Typed messages are answered out loud'
+                    : 'Typed messages are answered on screen only'"
+                >
+                  <UButton
+                    :icon="speakTyped ? 'i-lucide-volume-2' : 'i-lucide-volume-off'"
+                    :color="speakTyped ? 'primary' : 'neutral'"
+                    :variant="speakTyped ? 'solid' : 'subtle'"
+                    size="lg"
+                    :aria-label="speakTyped
+                      ? 'Answer typed messages out loud'
+                      : 'Answer typed messages on screen only'"
+                    :aria-pressed="speakTyped"
+                    @click="speakTyped = !speakTyped"
+                  />
+                </UTooltip>
+
                 <UInput
                   v-model="typed"
                   class="flex-1"
                   size="lg"
-                  placeholder="…or type to Domo"
+                  :placeholder="speakTyped ? '…or type to Domo' : '…or type quietly'"
                   :ui="{ trailing: 'pe-1' }"
                   @keydown.enter="sendTyped"
                 >

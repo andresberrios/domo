@@ -8,6 +8,9 @@ import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
 } from '../lib/dev-environment-ports'
+import { restoreDockerProxies } from '../lib/dev-environments'
+import { sweepEnvironmentResources } from '../lib/dev-env/reconcile'
+import { stopAllDoodProxies } from '../lib/dood/manager'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
@@ -40,8 +43,18 @@ export default defineNitroPlugin(async (nitro) => {
   // Subscriptions are rows, so they outlive the process that made them.
   await startSubscriptionNotifier().catch(error => console.error('[domo] subscriptions', error))
 
+  // Before the ports: detecting a stack's services goes through the daemon,
+  // and an environment's agent may be mid-`docker compose` right now.
+  await restoreDockerProxies().catch(error => console.error('[domo] docker proxy restore failed', error))
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
   cronScheduler.start()
+
+  // One pass, and the only one that is not somebody asking: a boot is the
+  // moment a blocking container has most likely gone by itself, because the
+  // machine restarted and it is not running any more. Not awaited — it is a
+  // `docker volume ls` against a daemon that may be slow or absent — and it
+  // asks Docker nothing at all on an install that has never made an environment.
+  void sweepEnvironmentResources().catch(error => console.error('[domo] leftover sweep', error))
 
   // Plan limits are account-wide, so they have to be current on a dashboard
   // nobody has run an agent on today. What a working agent reports is the other
@@ -54,5 +67,6 @@ export default defineNitroPlugin(async (nitro) => {
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()
+    await stopAllDoodProxies().catch(() => {})
   })
 })
