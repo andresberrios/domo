@@ -8,6 +8,11 @@ import { adapterEnv, adapterLaunch, opencodeConfigContent } from '../../server/l
 /** `gh` must never be spawned from a test, so the lookup is always injected. */
 const noGh = async () => null
 
+/** And the unit layer has no database, so the Settings read is injected too. */
+const DEFAULT_PERMISSION = { host: 'ask', environment: 'allow' } as const
+const noKey = async () => ({ apiKey: null, permission: DEFAULT_PERMISSION })
+const storedKey = (apiKey: string) => async () => ({ apiKey, permission: DEFAULT_PERMISSION })
+
 /**
  * What the adapter process is allowed to inherit.
  *
@@ -124,19 +129,74 @@ describe('adapterEnv for codex', () => {
 })
 
 describe('OpenCode', () => {
+  // `adapterEnv` reads the host's own global OpenCode config, so a developer
+  // who actually uses OpenCode has one and these assertions pick it up: the
+  // suite passed in a container with no `~/.config/opencode` and failed on a
+  // real machine, where a bare `{ "$schema": ... }` arrived beside the
+  // permission block. Point the lookup at an empty directory — the unit layer
+  // must not read the developer's home, for the same reason it must not spawn
+  // `gh`.
+  let configHome: string
+  beforeEach(async () => {
+    configHome = await mkdtemp(join(systemTmp, 'domo-opencode-empty-'))
+    vi.stubEnv('XDG_CONFIG_HOME', configHome)
+  })
+  afterEach(async () => {
+    vi.unstubAllEnvs()
+    await rm(configHome, { recursive: true, force: true })
+  })
+
   it('launches the native CLI through its ACP subcommand', () => {
     process.env.NUXT_OPENCODE_ACP_ENTRY = '/opt/opencode/bin/opencode'
     expect(adapterLaunch('opencode')).toEqual({ command: '/opt/opencode/bin/opencode', args: ['acp'] })
     delete process.env.NUXT_OPENCODE_ACP_ENTRY
   })
 
-  it('passes an explicit auth snapshot and common provider keys', async () => {
-    process.env.NUXT_OPENCODE_AUTH_CONTENT = '{"opencode-go":{"type":"api","key":"secret"}}'
+  it('passes the console key, and no login store', async () => {
+    process.env.NUXT_OPENCODE_API_KEY = 'console-key'
     process.env.NUXT_OPENAI_API_KEY = 'openai-test'
-    const env = await adapterEnv('opencode', true, noGh)
+    const env = await adapterEnv('opencode', true, noGh, noKey)
 
-    expect(env.OPENCODE_AUTH_CONTENT).toContain('opencode-go')
+    // One variable, measured: it is what makes a priced model routable at all.
+    // `OPENCODE_CONSOLE_TOKEN` is the name the console puts in the provider
+    // definition it serves and it changes nothing, so it is not passed.
+    expect(env.OPENCODE_API_KEY).toBe('console-key')
+    expect(env.OPENCODE_CONSOLE_TOKEN).toBeUndefined()
     expect(env.OPENAI_API_KEY).toBe('openai-test')
+    // OpenCode 2 dropped `OPENCODE_AUTH_CONTENT`; passing it would be a silent
+    // no-op, and its own store is sqlite that nothing here may hand over —
+    // the credential in it rotates, so a copy would log the host out.
+    expect(env.OPENCODE_AUTH_CONTENT).toBeUndefined()
+    expect(env.OPENCODE_DB).toBeUndefined()
+  })
+
+  it('falls back to the key stored in Settings when the environment names none', async () => {
+    const env = await adapterEnv('opencode', true, noGh, storedKey('stored-key'))
+
+    expect(env.OPENCODE_API_KEY).toBe('stored-key')
+  })
+
+  it('gives a container a permission policy and leaves the host on OpenCode\'s own', async () => {
+    const contained = await adapterEnv('opencode', true, noGh, noKey)
+    const host = await adapterEnv('opencode', false, noGh, noKey)
+
+    // OpenCode publishes no permission mode at all, so this config block is the
+    // only way to stop a session asking every time a tool steps outside `cwd` —
+    // which a coding agent does constantly.
+    expect(JSON.parse(contained.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: 'allow' })
+    expect(host.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+  })
+
+  it('follows the setting when the user turns it round', async () => {
+    const permissiveHost = async () => ({
+      apiKey: null,
+      permission: { host: 'allow', environment: 'ask' } as const
+    })
+    const contained = await adapterEnv('opencode', true, noGh, permissiveHost)
+    const host = await adapterEnv('opencode', false, noGh, permissiveHost)
+
+    expect(contained.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+    expect(JSON.parse(host.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: 'allow' })
   })
 
   it('finds the global config that managed environments receive as a snapshot', async () => {

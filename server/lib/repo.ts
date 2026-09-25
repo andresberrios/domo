@@ -84,6 +84,7 @@ function mapAgentSession(r: any): AgentSession {
     model: r.model ?? null,
     config: r.config ?? null,
     configOptions: r.config_options ?? null,
+    steering: r.steering ?? null,
     lastError: r.last_error,
     summary: r.summary,
     createdAt: r.created_at,
@@ -864,6 +865,7 @@ export async function updateAgentSession(
     model: string | null
     config: Record<string, string> | null
     configOptions: any
+    steering: boolean | null
     lastError: string | null
     summary: string | null
     archived: boolean
@@ -894,6 +896,7 @@ export async function updateAgentSession(
     params.push(JSON.stringify(patch.configOptions))
     sets.push(`config_options = $${params.length}::jsonb`)
   }
+  if (patch.steering !== undefined) push('steering', patch.steering)
   if (patch.lastError !== undefined) push('last_error', patch.lastError)
   if (patch.summary !== undefined) push('summary', patch.summary)
   if (patch.archived !== undefined) push('archived', patch.archived)

@@ -56,19 +56,60 @@ export function currentModel(option: any): ModelChoice | null {
  * direction — the adapters list ids like `claude-haiku-4-5` and aliases like
  * `haiku`, and an operator may reasonably write either. Never a fuzzy score:
  * silently running on a model nobody asked for is worse than not pinning.
+ *
+ * **An inexact match that fits more than one model resolves to nothing**, for
+ * the same reason `findConfigOption` refuses an ambiguous option: OpenCode
+ * offers `opencode/glm-5.3` and `opencode-go/glm-5.3`, one metered per token
+ * and one on the flat subscription, and `.find()` would have quietly taken
+ * whichever the adapter happened to list first. Refusing turns a silent
+ * billing surprise into a readable error naming both — see
+ * `ambiguousModelMatches`, which is what phrases it.
  */
 export function resolveModel(option: any, preference: string): ModelChoice | null {
   const configId = String(option?.id ?? '')
   const entries = flattenOptions(option?.options)
   if (!configId || entries.length === 0) return null
-  const wanted = preference.trim().toLowerCase()
 
-  const pick = entries.find(entry => entry.value === preference.trim())
-    ?? entries.find(entry => entry.value!.toLowerCase() === wanted)
-    ?? entries.find(entry => (entry.name ?? '').toLowerCase() === wanted)
-    ?? entries.find(entry => entry.value!.toLowerCase().includes(wanted))
-    ?? entries.find(entry => wanted.includes(entry.value!.toLowerCase()))
-  return pick ? { configId, value: pick.value!, name: pick.name ?? pick.value! } : null
+  const exact = entries.find(entry => entry.value === preference.trim())
+  if (exact) return { configId, value: exact.value!, name: exact.name ?? exact.value! }
+
+  const matches = inexactMatches(entries, preference)
+  if (matches.length !== 1) return null
+  const pick = matches[0]!
+  return { configId, value: pick.value!, name: pick.name ?? pick.value! }
+}
+
+/**
+ * Every model an inexact preference could have meant, at its most exact tier.
+ *
+ * Empty when the preference matches nothing at all; one entry when it resolved;
+ * more than one when it was refused as ambiguous. The caller uses the
+ * difference to say *why* the pin did not take.
+ */
+export function ambiguousModelMatches(option: any, preference: string): string[] {
+  const entries = flattenOptions(option?.options)
+  if (entries.some(entry => entry.value === preference.trim())) return []
+  return inexactMatches(entries, preference).map(entry => entry.value!)
+}
+
+/** The tiers below an exact id, stopping at the first that matches anything. */
+function inexactMatches(
+  entries: Array<{ value?: string, name?: string }>,
+  preference: string
+): Array<{ value?: string, name?: string }> {
+  const wanted = preference.trim().toLowerCase()
+  if (!wanted) return []
+  const tiers = [
+    (entry: { value?: string, name?: string }) => entry.value!.toLowerCase() === wanted,
+    (entry: { value?: string, name?: string }) => (entry.name ?? '').toLowerCase() === wanted,
+    (entry: { value?: string, name?: string }) => entry.value!.toLowerCase().includes(wanted),
+    (entry: { value?: string, name?: string }) => wanted.includes(entry.value!.toLowerCase())
+  ]
+  for (const tier of tiers) {
+    const found = entries.filter(tier)
+    if (found.length) return found
+  }
+  return []
 }
 
 /** The ids an adapter offered, for an error that tells the operator what to write. */

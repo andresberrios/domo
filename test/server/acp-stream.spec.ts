@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdir } from 'node:fs/promises'
+import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable, Writable } from 'node:stream'
@@ -253,13 +253,21 @@ function serve(adapter: FakeAdapter, turn: Turn, options: ServeOptions = {}) {
 
 const textChunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
 
+/**
+ * Every session here runs in one directory, and it has to be on disk: a session
+ * whose working directory is gone is not startable, so a machine that has never
+ * run this file before would fail every turn in it for that reason alone.
+ */
+const workspace = join(tmpdir(), 'domo-test', 'acp-stream')
+mkdirSync(workspace, { recursive: true })
+
 let seen: ReturnType<typeof captureBus>
 
 async function session(title = 'Streaming turn') {
   return createAgentSession({
     adapter: 'claude-code',
     title,
-    cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+    cwd: workspace
   })
 }
 
@@ -300,10 +308,6 @@ function textOf(events: AgentEvent[]): string[] {
 }
 
 beforeEach(async () => {
-  // Every session below runs "in" this directory, and a session whose working
-  // directory is missing is refused before its adapter is spawned. Nothing else
-  // makes it: a machine that never ran the suite before failed every test here.
-  await mkdir(join(tmpdir(), 'domo-test', 'acp-stream'), { recursive: true })
   await query('truncate agent_sessions cascade')
   // Account-wide, so it hangs off no session and no cascade reaches it.
   await query('truncate usage_limits')
@@ -353,6 +357,82 @@ describe('a streamed turn', () => {
     expect(textOf(events)).toEqual(['Looking at the build.', 'Found it.'])
     expect(events.map(event => event.seq)).toEqual([...events.map(event => event.seq)].sort((a, b) => a - b))
     expect(events.every(event => event.type !== 'agent_message' || event.payload.streaming === false)).toBe(true)
+  })
+
+  /**
+   * The shape OpenCode produces, taken from a real transcript: it announces a
+   * tool-call part the instant it exists — `pending`, empty `rawInput` — and
+   * that lands between two deltas of a sentence that is still streaming. The
+   * row seen there read `Now let me look at` / a tool card / ` the OpenCode
+   * normalizer:`, which is one sentence rendered as two bubbles.
+   */
+  it('keeps one sentence in one row when a tool call is announced mid-text', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'read the normalizer' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Now let me look at'))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'read:2', title: 'Read', kind: 'read', status: 'pending', rawInput: {} })
+      await send(textChunk(' the OpenCode normalizer:'))
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'read:2', status: 'completed' })
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+
+    expect(events.map(event => event.type)).toEqual([
+      'user_message',
+      'agent_message',
+      'tool_call',
+      'tool_call_update',
+      'turn_end'
+    ])
+    expect(textOf(events)).toEqual(['Now let me look at the OpenCode normalizer:'])
+    // The row kept the `seq` it claimed at its first delta, which is below the
+    // tool call's — so the whole sentence renders above the card, not after it.
+    const message = events.find(event => event.type === 'agent_message')!
+    const call = events.find(event => event.type === 'tool_call')!
+    expect(message.seq).toBeLessThan(call.seq)
+    expect(message.payload.streaming).toBe(false)
+  })
+
+  /**
+   * The other half of the same rule, and the reason it is safe: a tool that has
+   * actually started *can* have produced something the text after it is about,
+   * so the first `tool_call_update` still ends the block. A well-behaved
+   * adapter sends that update before its next delta, which is why nothing about
+   * Claude Code or codex-acp rendering changes.
+   */
+  it('still splits the message once the tool call has started', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Looking at the build.'))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Read', kind: 'read', status: 'pending' })
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'in_progress' })
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
+      await send(textChunk('Found it.'))
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+
+    expect(events.map(event => event.type)).toEqual([
+      'user_message',
+      'agent_message',
+      'tool_call',
+      'tool_call_update',
+      'tool_call_update',
+      'agent_message',
+      'turn_end'
+    ])
+    expect(textOf(events)).toEqual(['Looking at the build.', 'Found it.'])
+    const call = events.find(event => event.type === 'tool_call')!
+    const [, second] = events.filter(event => event.type === 'agent_message')
+    expect(second!.seq).toBeGreaterThan(call.seq)
   })
 
   it('shows a reader who arrives mid-turn the text so far', async () => {
@@ -617,7 +697,7 @@ describe('the model a session runs on', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Model',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       model
     })
     const asked: any[] = []
@@ -717,7 +797,7 @@ describe('the model a session runs on', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Model',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       model: 'gemini-3-pro'
     })
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
@@ -768,7 +848,7 @@ describe('the adapter settings a session runs with', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Effort',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+      cwd: workspace
     })
     if (config) await updateAgentSession(agent.id, { config })
     return { agent, ...await attach(agent.id, options.effort ?? EFFORT) }
@@ -839,7 +919,7 @@ describe('the adapter settings a session runs with', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Effort',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+      cwd: workspace
     })
     await updateAgentSession(agent.id, { config: { effort: 'high' } })
     // No effort option at all, the way Claude Code answers on a model without
@@ -901,7 +981,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: input.modeId
     })
     // What a session that has run before looks like: an adapter-side id to
@@ -958,7 +1038,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'default'
     })
     const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
@@ -978,7 +1058,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream')
+      cwd: workspace
     })
     const asked: any[] = []
     // A running session, because that is the case this is about: the mode is
@@ -1004,7 +1084,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'plan'
     })
     const asked: any[] = []
@@ -1030,7 +1110,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'default'
     })
     const asked: any[] = []
@@ -1055,7 +1135,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'plan'
     })
     const asked: any[] = []
@@ -1079,7 +1159,7 @@ describe('the mode a session runs in', () => {
     const agent = await createAgentSession({
       adapter: 'opencode',
       title: 'OpenCode mode',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'build'
     })
     const asked: any[] = []
@@ -1140,7 +1220,7 @@ describe('changing a setting on a session that is not running', () => {
     const agent = await createAgentSession({
       adapter: 'claude-code',
       title: 'Stopped',
-      cwd: join(tmpdir(), 'domo-test', 'acp-stream'),
+      cwd: workspace,
       modeId: 'default'
     })
     await updateAgentSession(agent.id, {
@@ -1404,6 +1484,44 @@ describe('a reattach that restores the adapter’s transcript', () => {
  * `_session/steering` extension, becomes an `agent_inbox` row, or cancels the
  * turn first.
  */
+/**
+ * The composer's delivery picker has to say whether a `steer` will really steer
+ * or fall back to interrupting, and the pickers are visible on a stopped
+ * session — so asking the adapter is exactly what it must not do. The answer is
+ * recorded on the row on every attach, the way `config_options` is.
+ */
+describe('whether a session can be steered', () => {
+  async function boot(options: ServeOptions) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const starting = acpManager.start(agent.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, options)
+    await starting
+    return agent
+  }
+
+  it('is null until something has attached', async () => {
+    const agent = await session()
+    expect((await getAgentSession(agent.id))!.steering).toBeNull()
+  })
+
+  it('is recorded from what the adapter advertised', async () => {
+    const agent = await boot({})
+    expect((await getAgentSession(agent.id))!.steering).toBe(true)
+  })
+
+  /**
+   * The OpenCode case: no top-level `_meta` in its `initialize` response, so a
+   * `steer` falls back to `interrupt`. `false` is a measurement and null is
+   * not, which is why the two are kept apart.
+   */
+  it('is false for an adapter that advertises no steering', async () => {
+    const agent = await boot({ steering: false })
+    expect((await getAgentSession(agent.id))!.steering).toBe(false)
+  })
+})
+
 describe('delivering a message to an agent that is already working', () => {
   /** Start a turn and hang it, so the session really is mid-turn. */
   async function working(options: ServeOptions = {}) {

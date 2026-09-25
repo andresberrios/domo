@@ -19,6 +19,7 @@ const session: AgentSession = {
   model: null,
   config: null,
   configOptions: null,
+  steering: null,
   lastError: null,
   summary: null,
   createdAt: '2026-01-01T00:00:00.000Z',

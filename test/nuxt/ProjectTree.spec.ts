@@ -53,6 +53,7 @@ const agent: AgentSession = {
   model: null,
   config: null,
   configOptions: null,
+  steering: null,
   lastError: null,
   summary: null,
   createdAt: '2026-01-03T00:00:00.000Z',
@@ -129,6 +130,12 @@ async function mountTree() {
 function buttonLabelled(label: string): HTMLButtonElement | undefined {
   return [...document.body.querySelectorAll<HTMLButtonElement>('button')]
     .find(element => element.getAttribute('aria-label') === label)
+}
+
+/** The select whose current label matches, as the user would find it. */
+function selectTrigger(label: string): HTMLElement | undefined {
+  return [...document.body.querySelectorAll<HTMLElement>('button[aria-haspopup="listbox"]')]
+    .find(element => element.textContent?.includes(label))
 }
 
 /** Reka's dropdown opens on `pointerdown`, not on a bare click. */
@@ -236,15 +243,47 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('preselects the environment when the agent is started from its row', async () => {
+  it('preselects the project and the environment when the agent is started from its row', async () => {
     const wrapper = await mountTree()
 
     buttonLabelled('New agent in feature-auth')!.click()
 
     await vi.waitFor(() => {
-      const trigger = [...document.body.querySelectorAll<HTMLElement>('button[aria-haspopup="listbox"]')]
-        .find(element => element.textContent?.includes('Domo / feature-auth'))
-      expect(trigger, 'the environment select is preselected to the row that opened it').toBeTruthy()
+      // The environment decides the project above it, so both read back.
+      expect(selectTrigger('Domo'), 'the project select follows the environment').toBeTruthy()
+      expect(selectTrigger('feature-auth'), 'the environment select is the row that opened it').toBeTruthy()
+    })
+
+    wrapper.unmount()
+  })
+
+  it('starts an agent in the project\'s own checkout from the local-checkout section', async () => {
+    const wrapper = await mountTree()
+
+    // The section is there whether or not anything runs in the checkout yet:
+    // its plus button is the only way to put the first agent in one.
+    buttonLabelled('New agent in the Domo checkout')!.click()
+
+    await vi.waitFor(() => {
+      expect(selectTrigger('Domo')).toBeTruthy()
+      expect(selectTrigger('Local checkout'), 'no container, the checkout itself').toBeTruthy()
+      expect(
+        document.body.querySelector<HTMLInputElement>('input[placeholder="/path/to/repository"]')?.value
+      ).toBe('/work/domo')
+    })
+
+    wrapper.unmount()
+  })
+
+  it('starts an agent with no project at all from the no-project section', async () => {
+    const wrapper = await mountTree()
+
+    buttonLabelled('New agent without a project')!.click()
+
+    await vi.waitFor(() => {
+      expect(selectTrigger('No project')).toBeTruthy()
+      // Nothing to scope an environment to, so the form asks for a path.
+      expect(selectTrigger('feature-auth')).toBeFalsy()
     })
 
     wrapper.unmount()

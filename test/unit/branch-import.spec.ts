@@ -12,7 +12,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const acp = vi.hoisted(() => ({
   isBusy: vi.fn((_agentSessionId: string) => false),
   supportsSteering: vi.fn((_agentSessionId: string) => true),
-  deliver: vi.fn(async (_agentSessionId: string, _input: any) => ({ delivered: true }))
+  // A `DeliveryResult`, because that is what the real one answers with and
+  // `tell()` reports the mode that *applied* rather than the one it asked for.
+  deliver: vi.fn(async (_agentSessionId: string, input: any) => ({
+    delivery: input.delivery,
+    outcome: input.delivery === 'steer' ? 'steered' : 'queued'
+  }))
 }))
 const gitSync = vi.hoisted(() => ({
   importBranch: vi.fn(async (input: any) => ({
@@ -208,6 +213,22 @@ describe('telling the agents where the changes are', () => {
 
     expect(acp.deliver).toHaveBeenCalledWith('ag_1', expect.objectContaining({ delivery: 'queue' }))
     expect(acp.deliver).not.toHaveBeenCalledWith('ag_1', expect.objectContaining({ delivery: 'interrupt' }))
+    expect(result.notified[0]!.via).toBe('queue')
+  })
+
+  /**
+   * A steer can still land as something else: the turn it was aimed at may
+   * settle in the gap, and `steerInto` then queues the message rather than
+   * prompting into a turn that has gone. The report is the only record of
+   * where the notice actually went, so it follows the answer and not the ask.
+   */
+  it('reports where the notice went, not where it was aimed', async () => {
+    acp.isBusy.mockReturnValue(true)
+    acp.deliver.mockResolvedValueOnce({ delivery: 'queue', outcome: 'queued' } as any)
+
+    const result = await importIt('main')
+
+    expect(acp.deliver).toHaveBeenCalledWith('ag_1', expect.objectContaining({ delivery: 'steer' }))
     expect(result.notified[0]!.via).toBe('queue')
   })
 

@@ -11,7 +11,7 @@ import { ensureTestDatabase, unavailableError } from '../helpers/database'
  * Every missing thing is named in one message rather than one per run, because
  * this layer's preconditions are the awkward kind — an account, a daemon and a
  * database — and finding out about them one at a time is three round trips.
- * There is no skip and no opt-out; see test/CLAUDE.md.
+ * There is no skip and no opt-out; see test/AGENTS.md.
  */
 
 function dockerIsUp(): Promise<boolean> {
@@ -41,7 +41,7 @@ export async function setup(): Promise<void> {
   }
   // The one credential with no fallback: a host login is never copied into an
   // environment, so inside a container this token is the only way Claude Code
-  // can authenticate. See README, "Claude authentication".
+  // can authenticate. See README, "Authentication".
   if (!process.env.NUXT_CLAUDE_CODE_OAUTH_TOKEN && !process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     missing.push(
       'NUXT_CLAUDE_CODE_OAUTH_TOKEN is not set. Run `claude setup-token` and put it in .env — '
@@ -53,6 +53,18 @@ export async function setup(): Promise<void> {
     missing.push(
       'No Codex login found. Run `codex login` (writes ~/.codex/auth.json), or set '
       + 'NUXT_CODEX_API_KEY / NUXT_OPENAI_API_KEY.'
+    )
+  }
+  // The same shape as Claude's token and for the same reason: OpenCode 2 keeps
+  // its own login in sqlite and that login rotates, so nothing copies it into a
+  // container. This layer runs OpenCode *in* one, so a console key is the only
+  // thing that can authenticate it — and without one every priced model answers
+  // `provider.no-route` rather than failing in a way a test could read.
+  if (!process.env.NUXT_OPENCODE_API_KEY && !process.env.OPENCODE_API_KEY) {
+    missing.push(
+      'NUXT_OPENCODE_API_KEY is not set. Mint a service-account key in the OpenCode console '
+      + '(https://opencode.ai/console) and put it in .env — a host `opencode auth login` is '
+      + 'deliberately never copied into an environment.'
     )
   }
 

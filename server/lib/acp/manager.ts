@@ -28,7 +28,14 @@ import {
   resolveConfigValue,
   sameConfigOptions
 } from './config-options'
-import { availableModelIds, currentModel, defaultModel, modelConfigOption, resolveModel } from './model'
+import {
+  ambiguousModelMatches,
+  availableModelIds,
+  currentModel,
+  defaultModel,
+  modelConfigOption,
+  resolveModel
+} from './model'
 import { availableModes, currentModeId, modeConfigOption } from './mode'
 import {
   appendAgentEvent,
@@ -741,8 +748,11 @@ class AgentRuntime {
     } as any)) as any
 
     // Steering is an extension, so it is advertised in the response's top-level
-    // `_meta` and not in `agentCapabilities`. Both installed adapters set it;
-    // one that does not gets `interrupt` where it would have got `steer`.
+    // `_meta` and not in `agentCapabilities`. claude-agent-acp and codex-acp
+    // set it; OpenCode does not, and gets `interrupt` where it would have got
+    // `steer`. It is recorded on the row for the same reason `config_options`
+    // is: the composer has to be able to say what a `steer` will really do, and
+    // the only other way to find out is to start an adapter and ask it.
     this.steering = initialized?._meta?.steering?.supported === true
 
     // The mesh is an HTTP MCP server now; an adapter that cannot speak that
@@ -773,7 +783,11 @@ class AgentRuntime {
 
     try {
       let fresh = false
-      const patch: { acpSessionId?: string, modes?: any, modeId?: string } = {}
+      const patch: { acpSessionId?: string, modes?: any, modeId?: string, steering?: boolean } = {}
+      // Rides along with the rest of what this attach learned rather than
+      // costing a write of its own; `null` on the row means nothing has ever
+      // attached, which is a different answer from `false`.
+      if (this.steering !== session.steering) patch.steering = this.steering
       if (!this.acpSessionId) {
         const created = (await connection.agent.request(acp.methods.agent.session.new, {
           cwd: session.cwd,
@@ -925,9 +939,18 @@ class AgentRuntime {
         const from = session.model
           ? 'This session asked for'
           : `The default model for ${session.adapter} is`
-        const message = `${from} "${preference}", which the adapter does not offer. `
-          + `It offers: ${availableModelIds(option).join(', ') || '(none)'}. `
-          + `The session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
+        // An ambiguous pin is a different problem from a missing one, and
+        // saying "does not offer" about a name the adapter offers twice sends
+        // the reader looking in the wrong place. OpenCode's two providers
+        // share model names and do not share a bill, so name both.
+        const ambiguous = ambiguousModelMatches(option, preference)
+        const message = ambiguous.length > 1
+          ? `${from} "${preference}", which matches more than one model: ${ambiguous.join(', ')}. `
+            + 'Name one exactly — they are not interchangeable. '
+            + `The session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
+          : `${from} "${preference}", which the adapter does not offer. `
+            + `It offers: ${availableModelIds(option).join(', ') || '(none)'}. `
+            + `The session is running on ${chosen?.value ?? 'the adapter’s default'} instead.`
         console.error(`[acp:${this.agentSessionId}] ${message}`)
         await appendAgentEvent(this.agentSessionId, 'error', { message })
       } else if (wanted.value !== chosen?.value) {
@@ -1117,7 +1140,25 @@ class AgentRuntime {
     // Detached here, before anything awaits: the block's row has to exist with a
     // lower `seq` than this event, or the transcript would show the text that
     // preceded a tool call after it.
-    const block = this.takeStream()
+    //
+    // A tool call that has not started is the one thing that does not end the
+    // text around it. OpenCode announces a part the instant it exists —
+    // `pending`, empty `rawInput`, no locations, filled in by a later
+    // `tool_call_update` — and that lands *between* two deltas of a sentence
+    // still being written, so closing here split one sentence into two bubbles
+    // with a tool card wedged between them. A tool that has not run yet cannot
+    // have produced anything for the agent to be commenting on, so text that
+    // arrives while the newest call is still pending is a continuation of the
+    // text before it. Everything else closes the block as before, the first
+    // `tool_call_update` included: that one means the tool really started. An
+    // adapter that fills a call in immediately sends it before the next delta,
+    // so nothing about Claude Code or codex-acp changes.
+    //
+    // Seq is untouched by this. The block claimed its `seq` at its *first*
+    // delta, which is already below this event's, so continuing to write into
+    // it renders the whole sentence above the tool card, which is where it
+    // belongs.
+    const block = kind === 'tool_call' && update.status === 'pending' ? null : this.takeStream()
     await this.serial(async () => {
       await this.closeStream(block)
       await appendAgentEvent(this.agentSessionId, kind, update)
@@ -1561,9 +1602,13 @@ class AgentRuntime {
 
     const wanted = resolveModel(this.modelOption, model)
     if (!wanted) {
+      const ambiguous = ambiguousModelMatches(this.modelOption, model)
       throw new Error(
-        `This session's adapter does not offer a model matching "${model}". `
-        + `It offers: ${availableModelIds(this.modelOption).join(', ') || '(none)'}.`
+        ambiguous.length > 1
+          ? `"${model}" matches more than one model this adapter offers: ${ambiguous.join(', ')}. `
+            + 'Name one exactly — they are not interchangeable.'
+          : `This session's adapter does not offer a model matching "${model}". `
+            + `It offers: ${availableModelIds(this.modelOption).join(', ') || '(none)'}.`
       )
     }
 

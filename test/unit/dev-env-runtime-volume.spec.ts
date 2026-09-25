@@ -79,13 +79,13 @@ describe('ensureRuntimeVolume', () => {
     expect(dockerCalls()[0]).toEqual(['volume', 'create', '--label', 'domo.runtime=true', volume])
     const script = dockerCalls().at(-1)!.at(-1)!
     expect(script).toContain('npm install --prefix /opt/domo/adapters')
-    expect(script).toContain('@agentclientprotocol/claude-agent-acp@0.78.0')
-    expect(script).toContain('@agentclientprotocol/codex-acp@1.12.0')
-    expect(script).toContain('opencode-ai@1.18.28')
+    expect(script).toContain('@agentclientprotocol/claude-agent-acp@0.81.1')
+    expect(script).toContain('@agentclientprotocol/codex-acp@1.13.1')
+    expect(script).toContain('@opencode/cli@2.0.15')
     // The absolute node: npm's own shims say `#!/usr/bin/env node`, and the environment's
     // image is not required to have a node at all.
     expect(script).toContain('exec /opt/domo/node/bin/node /opt/domo/adapters/node_modules/')
-    expect(script).toContain('exec /opt/domo/adapters/node_modules/opencode-ai/bin/opencode.exe acp')
+    expect(script).toContain('exec /opt/domo/adapters/node_modules/@opencode/cli/bin/opencode.exe acp')
     // The marker last, and flushed on both sides of it: a crash must not leave
     // a marker in front of files still in the page cache.
     expect(script.trim().split('\n').slice(-3)).toEqual(['sync', 'touch /opt/domo/.ready', 'sync'])
@@ -102,7 +102,7 @@ describe('ensureRuntimeVolume', () => {
     for (const path of [
       'test -s /opt/domo/adapters/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js',
       'test -s /opt/domo/adapters/node_modules/@agentclientprotocol/codex-acp/dist/index.js',
-      'test -s /opt/domo/adapters/node_modules/opencode-ai/bin/opencode.exe',
+      'test -s /opt/domo/adapters/node_modules/@opencode/cli/bin/opencode.exe',
       'test -x /opt/domo/bin/claude-agent-acp',
       'test -x /opt/domo/bin/codex-acp',
       'test -x /opt/domo/bin/opencode-acp'

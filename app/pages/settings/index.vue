@@ -7,11 +7,27 @@ const { data: settings, refresh } = await useFetch<AppSettings & {
   hasAnthropicKey: boolean
   hasOpenAiKey: boolean
   hasOpenCodeAuth: boolean
+  hasOpenCodeKey: boolean
 }>('/api/settings')
 const { data: modelList } = await useFetch<{
   models: Array<{ name: string, displayName?: string, live: boolean }>
   error?: string
 }>('/api/models', { lazy: true })
+
+/**
+ * OpenCode has two credentials that do different jobs, and one being present
+ * says nothing about the other: a host login runs host sessions and is all
+ * OpenCode needs there, while a console key is the only thing a container
+ * session or the plan-limit poll can use.
+ */
+const openCodeAuthSummary = computed(() => {
+  const key = settings.value?.hasOpenCodeKey
+  const login = settings.value?.hasOpenCodeAuth
+  if (key && login) return 'Console key and host login'
+  if (key) return 'Console key configured'
+  if (login) return 'Host login only — add a console key for environments'
+  return 'Run opencode auth login, or add a console key'
+})
 
 const form = reactive({
   liveModel: '',
@@ -90,11 +106,11 @@ async function save() {
           :description="settings?.hasOpenAiKey ? 'API key configured' : 'Local login may be used'"
         />
         <UAlert
-          :color="settings?.hasOpenCodeAuth ? 'success' : 'neutral'"
+          :color="settings?.hasOpenCodeKey || settings?.hasOpenCodeAuth ? 'success' : 'neutral'"
           variant="subtle"
           icon="i-lucide-code-xml"
           title="OpenCode"
-          :description="settings?.hasOpenCodeAuth ? 'Auth store configured' : 'Run opencode auth login'"
+          :description="openCodeAuthSummary"
         />
       </div>
     </section>

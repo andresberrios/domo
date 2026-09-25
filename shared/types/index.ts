@@ -54,6 +54,14 @@ export type AgentSessionStatus =
 
 export type AgentAdapter = 'claude-code' | 'codex' | 'opencode'
 
+/**
+ * What OpenCode does when a tool reaches outside the session's working
+ * directory. `deny` exists in OpenCode's own schema and is deliberately not
+ * offered: it is not a setting worth a picker, and it broke the provider
+ * outright when probed.
+ */
+export type OpenCodePermission = 'ask' | 'allow'
+
 export interface AgentSession {
   id: string
   voiceSessionId: string | null
@@ -75,6 +83,17 @@ export interface AgentSession {
   config: Record<string, string> | null
   /** The selects the adapter last reported, minus mode and model. */
   configOptions: SessionConfigOptionInfo[] | null
+  /**
+   * Whether this session's adapter advertised `_session/steering` the last time
+   * one attached — recorded for the same reason `configOptions` is, so the
+   * composer can say what a `steer` will actually do without probing and,
+   * crucially, without starting an adapter to ask.
+   *
+   * `null` is "nothing has ever attached", which is not the same as `false`:
+   * a session that has never run has not been measured, and claiming it cannot
+   * be steered would be a guess. Only `false` is a measurement.
+   */
+  steering: boolean | null
   lastError: string | null
   createdAt: string
   updatedAt: string
@@ -360,7 +379,8 @@ export interface EnvironmentBranchImport extends BranchImport {
   /** The session that was asked to merge the changes by hand, when one was. */
   resolver?: ImportPlanSession | null
   /** The sessions told where the changes are, and how each one was reached. */
-  notified: Array<{ agentSessionId: string, title: string, via: 'steer' | 'queue' | 'inbox' }>
+  /** Where each notice actually went, as the delivery reported itself. */
+  notified: Array<{ agentSessionId: string, title: string, via: MessageDelivery | 'inbox' }>
 }
 
 /** What importing one branch into an environment did to the environment's checkout. */
@@ -585,6 +605,38 @@ export interface AppSettings {
    * model without effort levels) is skipped rather than failing the start.
    */
   defaultAgentConfig: Record<AgentAdapter, Record<string, string>>
+  /**
+   * An OpenCode console service-account key, for installs without a `.env`.
+   *
+   * The one credential in this object, and the reason it is here rather than in
+   * the environment alone is that it is the *only* way a container session can
+   * authenticate: OpenCode 2 keeps its own login in sqlite, and that login
+   * rotates its refresh token, so nothing copies it. `NUXT_OPENCODE_API_KEY`
+   * still wins when it is set.
+   *
+   * **Never returned by `GET /api/settings`** — that endpoint answers
+   * `hasOpenCodeKey` instead, the way it already does for the Gemini and
+   * Anthropic keys. Anything that spreads `AppSettings` into a response has to
+   * take it back out.
+   */
+  openCodeApiKey: string
+  /**
+   * Whether OpenCode asks before touching a path outside the session's working
+   * directory, per surface. `ask` is OpenCode's own behaviour and Domo then
+   * writes no policy at all; `allow` suppresses it.
+   *
+   * Two values because the surfaces are not alike. An environment is a volume
+   * Domo can re-create, so the prompts buy nothing and cost a prompt on every
+   * out-of-directory read — an agent hits that constantly. The host is the
+   * developer's real tree, where the same prompt does catch an accidental step
+   * outside the project.
+   *
+   * It is a guardrail and not containment: what prompts is inconsistent —
+   * measured, the `read` tool asks about a file that ten bash commands reached
+   * without asking, and the two OpenCode versions disagree about which. A
+   * `permission` block in the developer's own OpenCode config wins over both.
+   */
+  openCodePermission: { host: OpenCodePermission, environment: OpenCodePermission }
   language: string
   /** Let the voice agent name conversations, and rename them as the topic moves. */
   autoTitle: boolean

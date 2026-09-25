@@ -22,7 +22,10 @@ import type { DevEnvironment } from '../../shared/types'
 const acp = vi.hoisted(() => ({
   isBusy: vi.fn((_id: string) => false),
   supportsSteering: vi.fn((_id: string) => true),
-  deliver: vi.fn(async (_id: string, _input: any) => ({ delivered: true }))
+  deliver: vi.fn(async (_id: string, input: any) => ({
+    delivery: input.delivery,
+    outcome: input.delivery === 'steer' ? 'steered' : 'queued'
+  }))
 }))
 vi.mock('../../server/lib/acp/manager', () => ({ acpManager: acp }))
 

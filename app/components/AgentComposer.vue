@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import type { AgentSession, MessageDelivery, SessionConfigOptionInfo } from '~~/shared/types'
-import { agentAdapterInfo } from '~~/shared/agent-adapters'
+import type { AgentSession, MessageDelivery } from '~~/shared/types'
 
 const props = defineProps<{ session: AgentSession }>()
 
@@ -14,125 +13,69 @@ const sending = ref(false)
  * and Shift+Enter to break, which is what `UChatPrompt` does by default.
  */
 const isTouch = useIsTouch()
-const adapterInfo = computed(() => agentAdapterInfo(props.session.adapter))
-
-/* ---------------- what this session is running on ---------------- */
 
 /**
- * The session mode, the model and whatever else the adapter offers all live
- * here rather than in the page header. They are decisions about the message
- * being written — "plan this one", "switch to Opus for this bit", "think
- * harder about this" — and the composer is where that decision is made and
- * where the answer is about to be sent. All of them go through the one
- * `PATCH /api/agents/[id]`, which reaches the adapter when one is running and
- * records the choice on the row when none is — picking a model here never
- * starts a session, which matters most for the environment-backed ones, where
- * starting a session means starting work in a container.
+ * Whether a `steer` on this session really steers.
  *
- * Nothing here holds the chosen value: every picker reads the session row, so
- * a change that the adapter refuses reverts on its own, and a change made from
- * the voice agent or another browser arrives through Electric like any other.
- */
-const applying = ref<string | null>(null)
-
-async function apply(body: Record<string, unknown>, key: string, failure: string) {
-  applying.value = key
-  try {
-    await $fetch(`/api/agents/${props.session.id}`, { method: 'PATCH', body })
-  } catch (error: any) {
-    toast.add({ title: failure, description: error?.data?.statusMessage ?? error?.message, color: 'error' })
-  } finally {
-    applying.value = null
-  }
-}
-
-const modeItems = computed(() =>
-  (props.session.modes ?? []).map(mode => ({ label: mode.name, value: mode.id }))
-)
-
-const currentMode = computed({
-  get: () => props.session.modeId ?? '',
-  set: (value: string) => { void apply({ modeId: value }, 'mode', 'Could not change the mode') }
-})
-
-/**
- * The model list is the one thing not already on the row: an adapter only
- * reports it in a `session/new` response, so the server answers this by
- * spawning a throwaway probe (cached an hour). Hence `immediate: false` and a
- * fetch on first open — opening an agent page must not cost an adapter spawn.
- */
-const { data: modelData, status: modelStatus, refresh: refreshModels } = await useFetch<{
-  models: Array<{ id: string, name: string }>
-}>('/api/adapters/models', {
-  query: computed(() => ({ adapter: props.session.adapter })),
-  immediate: false,
-  lazy: true,
-  watch: false
-})
-
-let probed = false
-function probeModels(open: boolean) {
-  if (!open || probed) return
-  probed = true
-  void refreshModels()
-}
-
-const modelItems = computed(() => {
-  const items = (modelData.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id }))
-  // Whatever the session is actually on goes in even before the probe answers:
-  // a menu whose selected value is not among its own items renders blank.
-  const current = props.session.model
-  if (current && !items.some(item => item.value === current)) items.unshift({ label: current, value: current })
-  return items
-})
-
-const currentModel = computed({
-  get: () => props.session.model ?? '',
-  set: (value: string) => { void apply({ model: value }, 'model', 'Could not change the model') }
-})
-
-/**
- * The adapter's own settings: reasoning effort, and whatever else it ships.
+ * `steer` on an adapter that does not advertise the extension falls back to
+ * `interrupt` — the intent is "change course now", and waiting is the one
+ * thing it definitely does not mean — so on such a session the option is still
+ * the right default and still does the right thing, it just does it bluntly.
+ * Saying so is the whole point: the label used to promise an injection into
+ * the running turn and OpenCode would cancel the turn instead, which is a
+ * surprise rather than a choice.
  *
- * Read off the row and never hard-coded, because the two adapters do not agree
- * on any of it — Claude Code calls effort `effort` and Codex
- * `reasoning_effort`, Codex has a collaboration mode Claude has never heard
- * of, and both publish these *per model*, so the list changes when the model
- * above it does. The row is rewritten from the adapter's own answer on every
- * change, so this follows along on its own.
+ * The row is read, never a probe: `agent_sessions.steering` is written on every
+ * attach, so this costs nothing and — the part that matters — cannot start an
+ * adapter. `null` means nothing has ever attached, and an unmeasured session is
+ * not claimed to be either one.
  */
-const configOptions = computed(() => props.session.configOptions ?? [])
-
-function configValue(option: SessionConfigOptionInfo): string {
-  return props.session.config?.[option.id] ?? option.currentValue ?? ''
-}
-
-function configItems(option: SessionConfigOptionInfo) {
-  return option.options.map(entry => ({ label: entry.name, value: entry.value }))
-}
-
-function setConfigValue(option: SessionConfigOptionInfo, value: string) {
-  void apply({ config: { [option.id]: value } }, option.id, `Could not change ${option.name.toLowerCase()}`)
-}
-
-/** ACP's own category is the only hint available, and only some of it is known. */
-function configIcon(option: SessionConfigOptionInfo): string {
-  return option.category === 'thought_level' ? 'i-lucide-brain' : 'i-lucide-sliders-horizontal'
-}
+const steers = computed(() => props.session.steering !== false)
 
 /**
  * What happens to a message sent while the agent is mid-turn.
  *
  * `steer` is preselected because that is what typing at a working agent
- * normally means; it only matters while something is running, so the picker is
- * hidden the rest of the time.
+ * normally means. It is a property of *this message* rather than of the
+ * session — which is why it is not in the settings panel with the model and
+ * the mode — so it hangs off the send button, the control it modifies. With
+ * nothing running all three mean the same thing (a prompt), so the button has
+ * no dropdown at all until there is a turn to choose about, and the
+ * placeholder says in words what the chosen one will do.
+ *
+ * A computed rather than a constant because Steer's description depends on the
+ * session — see `steers`.
  */
-const DELIVERY_ITEMS = [
-  { value: 'steer' as const, label: 'Steer', icon: 'i-lucide-git-branch', description: 'Put it into the turn it is running now' },
+const deliveryModes = computed(() => [
+  {
+    value: 'steer' as const,
+    label: 'Steer',
+    icon: 'i-lucide-git-branch',
+    description: steers.value
+      ? 'Put it into the turn it is running now'
+      : 'This adapter cannot be steered — it stops the current turn instead'
+  },
   { value: 'queue' as const, label: 'Queue', icon: 'i-lucide-inbox', description: 'Wait for the current turn to finish' },
   { value: 'interrupt' as const, label: 'Interrupt', icon: 'i-lucide-octagon-x', description: 'Stop the current turn first' }
-]
+])
 const delivery = ref<MessageDelivery>('steer')
+const deliveryInfo = computed(() => deliveryModes.value.find(item => item.value === delivery.value)!)
+
+/**
+ * One checked item rather than a radio group, because `UDropdownMenu` has no
+ * radio type; unchecking the checked one re-selects it, which is the only
+ * sensible reading of "none of the three".
+ */
+const deliveryItems = computed(() => [
+  deliveryModes.value.map(item => ({
+    label: item.label,
+    description: item.description,
+    icon: item.icon,
+    type: 'checkbox' as const,
+    checked: item.value === delivery.value,
+    onUpdateChecked: () => { delivery.value = item.value }
+  }))
+])
 const attachments = ref<Array<{ name: string, path: string, mimeType: string, size: number }>>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 
@@ -152,6 +95,7 @@ const placeholder = computed(() => {
   if (!busy.value) return 'Message this agent…'
   if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
   if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'
+  if (!steers.value) return 'The agent is working — this adapter cannot be steered, so this stops its turn first…'
   return 'The agent is working — this goes into the turn it is running…'
 })
 
@@ -334,14 +278,8 @@ async function stop() {
       @paste="onPaste"
     >
       <template #footer>
-        <!--
-          The pickers wrap rather than shrink: there may be four of them on a
-          Codex session (mode, model, reasoning effort, collaboration mode) and
-          a phone has no room for that in one row. The submit button stays
-          outside the wrapping group so it never moves.
-        -->
         <div class="flex w-full items-start justify-between gap-2">
-          <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
             <UTooltip text="Attach files — or paste them in">
               <UButton
                 icon="i-lucide-paperclip"
@@ -360,66 +298,15 @@ async function stop() {
               @change="onFiles"
             >
 
-            <UTooltip v-if="modeItems.length" :text="adapterInfo.modeLabel">
-              <USelectMenu
-                v-model="currentMode"
-                :items="modeItems"
-                value-key="value"
-                size="xs"
-                variant="ghost"
-                :icon="session.adapter === 'opencode' ? 'i-lucide-bot' : 'i-lucide-shield'"
-                :loading="applying === 'mode'"
-                class="w-32"
-              />
-            </UTooltip>
+            <!--
+              The mode, the model and the adapter's own settings, as one card
+              that opens a panel; see AgentComposerSettings.
+            -->
+            <AgentComposerSettings :session="session" />
 
-            <UTooltip text="Model">
-              <USelectMenu
-                v-model="currentModel"
-                :items="modelItems"
-                value-key="value"
-                size="xs"
-                variant="ghost"
-                icon="i-lucide-cpu"
-                placeholder="Model"
-                :loading="applying === 'model' || modelStatus === 'pending'"
-                class="w-32"
-                @update:open="probeModels"
-              />
-            </UTooltip>
-
-            <!-- Whatever this adapter offers on this model; see the script. -->
-            <UTooltip
-              v-for="option in configOptions"
-              :key="option.id"
-              :text="option.description || option.name"
-            >
-              <USelectMenu
-                :model-value="configValue(option)"
-                :items="configItems(option)"
-                value-key="value"
-                size="xs"
-                variant="ghost"
-                :icon="configIcon(option)"
-                :placeholder="option.name"
-                :loading="applying === option.id"
-                class="w-32"
-                @update:model-value="value => setConfigValue(option, value as string)"
-              />
-            </UTooltip>
-
-            <span v-if="!busy" class="hidden text-xs text-dimmed lg:inline">
+            <span class="hidden min-w-0 truncate text-xs text-dimmed lg:inline">
               {{ shortPath(session.cwd, 3) }}
             </span>
-            <USelectMenu
-              v-else
-              v-model="delivery"
-              :items="DELIVERY_ITEMS"
-              value-key="value"
-              size="xs"
-              variant="ghost"
-              class="w-32"
-            />
           </div>
 
           <div class="flex items-center gap-1">
@@ -428,19 +315,33 @@ async function stop() {
               nothing else, so on a touch screen — where Enter deliberately
               types a line break — there was no way to send at all. Steering a
               running turn is the normal thing to do here, so it gets its own
-              button rather than a rule about which key to press.
+              button rather than a rule about which key to press — and the
+              delivery mode hangs off that button as a split control, because
+              it is a choice about the message this button is about to send.
             -->
-            <UTooltip v-if="busy" text="Send">
-              <UButton
-                icon="i-lucide-arrow-up"
-                color="neutral"
-                size="md"
-                aria-label="Send"
-                :loading="sending"
-                :disabled="!canSend"
-                @click="submit"
-              />
-            </UTooltip>
+            <UFieldGroup v-if="busy">
+              <UTooltip :text="`Send — ${deliveryInfo.description.toLowerCase()}`">
+                <UButton
+                  icon="i-lucide-arrow-up"
+                  color="neutral"
+                  size="md"
+                  aria-label="Send"
+                  :loading="sending"
+                  :disabled="!canSend"
+                  @click="submit"
+                />
+              </UTooltip>
+              <UDropdownMenu :items="deliveryItems" :content="{ side: 'top', align: 'end' }">
+                <UTooltip text="What happens to this message mid-turn">
+                  <UButton
+                    icon="i-lucide-chevron-up"
+                    color="neutral"
+                    size="md"
+                    :aria-label="`Delivery: ${deliveryInfo.label}`"
+                  />
+                </UTooltip>
+              </UDropdownMenu>
+            </UFieldGroup>
             <UChatPromptSubmit
               :status="status"
               :loading="sending"

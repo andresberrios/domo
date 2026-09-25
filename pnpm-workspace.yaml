@@ -1,14 +1,38 @@
 allowBuilds:
   '@google/genai': true
+  '@opencode/cli': true
   esbuild: true
-  opencode-ai: true
   protobufjs: true
   unrs-resolver: true
   vue-demi: true
 minimumReleaseAgeExclude:
-  - '@agentclientprotocol/claude-agent-acp@0.78.0'
+  - '@agentclientprotocol/claude-agent-acp@0.81.1'
   - '@ai-sdk/gateway@4.0.82'
   - '@ai-sdk/provider-utils@5.0.41'
   - '@ai-sdk/provider@4.0.15'
+  - '@opencode/cli-darwin-arm64@2.0.15'
+  - '@opencode/cli-darwin-x64-baseline@2.0.15'
+  - '@opencode/cli-darwin-x64@2.0.15'
+  - '@opencode/cli-linux-arm64-musl@2.0.15'
+  - '@opencode/cli-linux-arm64@2.0.15'
+  - '@opencode/cli-linux-x64-baseline-musl@2.0.15'
+  - '@opencode/cli-linux-x64-baseline@2.0.15'
+  - '@opencode/cli-linux-x64-musl@2.0.15'
+  - '@opencode/cli-linux-x64@2.0.15'
+  - '@opencode/cli-windows-arm64@2.0.15'
+  - '@opencode/cli-windows-x64-baseline@2.0.15'
+  - '@opencode/cli-windows-x64@2.0.15'
+  - '@opencode/cli@2.0.15'
   - '@types/node@22.20.3'
   - ai@7.0.102
+  - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk@0.3.280'
+  - '@agentclientprotocol/codex-acp@1.13.1'
+  - '@openai/codex@0.156.1-darwin-arm64 || 0.156.1-darwin-x64 || 0.156.1-linux-arm64 || 0.156.1-linux-x64 || 0.156.1-win32-arm64 || 0.156.1-win32-x64 || 0.156.1'

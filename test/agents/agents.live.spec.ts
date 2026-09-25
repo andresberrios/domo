@@ -36,7 +36,11 @@ const MODELS: Record<AgentAdapter, string> = {
   // "Fast and affordable agentic coding model" — codex-acp lists no *-mini or
   // *-nano id at all, and luna is the cheap end of the 5.6 family.
   codex: 'gpt-5.6-luna',
-  opencode: 'opencode-go/kimi-k3'
+  // Exact, and it has to be: with a key set the adapter lists `opencode/*` and
+  // `opencode-go/*` together and 18 bare names are in both, so a preference
+  // like `glm-5.3` is refused as ambiguous rather than guessed at. The `-go`
+  // provider is the flat subscription; `flash` is the cheap end of it.
+  opencode: 'opencode-go/glm-5.3-flash'
 }
 
 let mesh: MeshHarness
@@ -70,6 +74,13 @@ beforeAll(async () => {
   const project = await createProject({ name: 'agents-live', repoPath })
   environment = await createEnvironment({ projectId: project.id, name: 'Agents Live' })
   expect(environment.status).toBe('running')
+
+  // OpenCode's prompts are governed by a Domo setting whose default is
+  // deliberately permissive for environments. Pin it to `ask` so these tests
+  // describe the *adapter* and keep saying the same thing whatever that default
+  // becomes; the one test that is about the setting flips it itself.
+  const { patchSettings } = await import('../../server/lib/settings')
+  await patchSettings({ openCodePermission: { host: 'ask', environment: 'ask' } })
 }, HOUR)
 
 afterAll(async () => {
@@ -116,10 +127,30 @@ const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
     modeId: 'read-only',
     prompt: 'Create a file named permission-probe.txt containing the word ok.'
   },
+  // Measured, and it is neither a command nor an edit: OpenCode asks when a
+  // tool touches a path *outside* the session's working directory. An in-`cwd`
+  // write raises nothing at all, because it is delegated to the client as
+  // `fs/write_text_file`.
   opencode: {
-    modeId: 'plan',
-    prompt: 'Create a file named permission-probe.txt containing the word ok.'
+    modeId: 'build',
+    prompt: 'Read the file /etc/hosts with your read tool and reply with its first line.'
   }
+}
+
+/**
+ * Whether the adapter names the tool in its ACP `tool_call` event.
+ *
+ * Claude Code and Codex do. OpenCode does not — an MCP call arrives as
+ * `title: "execute"`, `kind: "other"`, `rawInput: {}`, with the tool's own name
+ * nowhere in the payload, so anything asserting on the name is measuring the
+ * adapter's reporting format rather than what the tool did. The behaviour
+ * assertions either side of this are adapter-neutral and are the ones that
+ * matter.
+ */
+const NAMES_TOOL_CALLS: Record<AgentAdapter, boolean> = {
+  'claude-code': true,
+  codex: true,
+  opencode: false
 }
 
 /** Start a session in the shared environment, on the cheap model. */
@@ -140,7 +171,7 @@ async function start(adapter: AgentAdapter, options: { modeId?: string, host?: b
   return session
 }
 
-describe.each<AgentAdapter>(['codex', 'claude-code'])('%s in a dev environment', (adapter) => {
+describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev environment', (adapter) => {
   it('starts a session inside the container, on the model it was given', async () => {
     const { getAgentSession } = await import('../../server/lib/repo')
     const session = await start(adapter)
@@ -265,13 +296,23 @@ describe.each<AgentAdapter>(['codex', 'claude-code'])('%s in a dev environment',
       'nothing fetched the probe page, so no browser ran in the container'
     ).toBeGreaterThan(0)
 
-    // And the adapter was offered the server and routed a call to it. Asserted
-    // on the tool names rather than on the reply, which is a model's wording.
-    const toolNames = (await eventsOfType(session.id, 'tool_call'))
-      .map(event => JSON.stringify(event.payload))
-      .join(' ')
-    expect(toolNames, 'no browser tool call was recorded').toMatch(/browser_/)
+    // …and it came back through the browser rather than by some other route:
+    // the marker is only in the rendered page.
     expect(await assistantText(session.id)).toContain(PROBE_MARKER)
+
+    // Which tool was called is only assertable on an adapter that says.
+    // OpenCode reports every MCP tool call as `title: "execute"`, `kind:
+    // "other"`, `rawInput: {}` — the tool's own name appears nowhere in the
+    // ACP event, so this regex cannot pass for it however well the browser
+    // works. Measured against a purpose-built stdio MCP server: OpenCode
+    // spawned it, sent `initialize`, `tools/list` and `tools/call`, and the
+    // result came back — reported as `execute` throughout.
+    if (NAMES_TOOL_CALLS[adapter]) {
+      const toolNames = (await eventsOfType(session.id, 'tool_call'))
+        .map(event => JSON.stringify(event.payload))
+        .join(' ')
+      expect(toolNames, 'no browser tool call was recorded').toMatch(/browser_/)
+    }
   }, HOUR / 4)
 
   it('reaches Domo\'s mesh from inside the container, authenticated as itself', async () => {
@@ -295,6 +336,56 @@ describe.each<AgentAdapter>(['codex', 'claude-code'])('%s in a dev environment',
     // The bearer is the calling session's own token, minted in this process.
     expect(verifyMeshToken(toolCall!.authorization.replace(/^Bearer\s+/i, ''))).toBe(session.id)
   }, HOUR / 4)
+})
+
+/**
+ * The one thing in this layer that is about Domo's own setting rather than
+ * about an adapter.
+ *
+ * OpenCode publishes no permission mode — `build` and `plan` are its only two,
+ * and Build defers to a configured `permission` block — so the only way to stop
+ * a session asking is the config Domo injects. This is the pair of runs that
+ * proves it: the same prompt, the same environment, one setting apart. Without
+ * it a test that only exercised bash and in-`cwd` edits would pass whether the
+ * feature worked or not, because neither of those asks either way.
+ */
+describe('the OpenCode permission policy Domo injects', () => {
+  const OUTSIDE_CWD = 'Read the file /etc/hosts with your read tool and reply with its first line.'
+
+  afterAll(async () => {
+    const { patchSettings } = await import('../../server/lib/settings')
+    await patchSettings({ openCodePermission: { host: 'ask', environment: 'ask' } })
+  })
+
+  it('asks about a path outside the working directory, and stops when told not to', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { patchSettings } = await import('../../server/lib/settings')
+
+    // `ask` — OpenCode's own behaviour, which `beforeAll` pinned.
+    const asking = await start('opencode')
+    const askingAnswers = answerPermissions(asking.id)
+    await acpManager.prompt(asking.id, [{ type: 'text', text: OUTSIDE_CWD }])
+    const asked = await askingAnswers.stop()
+
+    expect(asked.length, 'OpenCode asked nothing for a read outside cwd').toBeGreaterThan(0)
+    expect((await eventsOfType(asking.id, 'permission_request')).length).toBeGreaterThan(0)
+
+    // `allow` — the same turn, with the policy Domo writes into
+    // OPENCODE_CONFIG_CONTENT. The setting is read when the adapter starts, so
+    // this has to be a new session rather than the same one.
+    await patchSettings({ openCodePermission: { host: 'ask', environment: 'allow' } })
+    const allowed = await start('opencode')
+    const allowedAnswers = answerPermissions(allowed.id)
+    const result = await acpManager.prompt(allowed.id, [{ type: 'text', text: OUTSIDE_CWD }])
+    const askedAgain = await allowedAnswers.stop()
+
+    expect(result.stopReason).toBe('end_turn')
+    expect(askedAgain, 'the permission policy did not suppress the prompt').toEqual([])
+    expect(await eventsOfType(allowed.id, 'permission_request')).toEqual([])
+    // And it still did the work — a suppressed prompt that also suppressed the
+    // read would look identical on the assertions above.
+    expect((await eventsOfType(allowed.id, 'tool_call')).length).toBeGreaterThan(0)
+  }, HOUR / 2)
 })
 
 /**
