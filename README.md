@@ -2,23 +2,27 @@
 
 **A voice-first control room for coding agents.**
 
-Talk to a Gemini Live agent. It spawns Claude Code, Codex and OpenCode sessions over
+Talk to a live voice agent — Gemini Live or OpenAI's GPT-Live, your
+choice. It spawns Claude Code, Codex and OpenCode sessions over
 [ACP](https://agentclientprotocol.com), watches them work, answers their
 permission prompts when you tell it to, and reports back — out loud — while your
 hands stay free. Every session is persisted, and the UI updates in real time
 through ElectricSQL.
 
 ```
-you ⇄ (voice) ⇄ Gemini Live agent ⇄ tools ⇄ coding agents (ACP)
-                                              ↕ agent-mesh MCP
-                                        agents talk to each other / spawn peers
+you ⇄ (voice) ⇄ live voice agent ⇄ tools ⇄ coding agents (ACP)
+                                            ↕ agent-mesh MCP
+                                      agents talk to each other / spawn peers
 ```
 
 ## What's in the box
 
-- **Voice agent** — Gemini Live over a WebSocket: 16 kHz PCM up, 24 kHz PCM
-  back, barge-in supported, live transcripts on screen. The model session lives
-  on the server, so a page refresh never drops the conversation.
+- **Voice agent** — Gemini Live or OpenAI GPT-Live over a WebSocket: 16 kHz PCM
+  up, 24 kHz PCM back, barge-in supported, live transcripts on screen. The model
+  session lives on the server, so a page refresh never drops the conversation,
+  and the provider is one setting — a conversation is rebuilt from Postgres at
+  every connect, so it survives the switch. See
+  [Choosing a voice model](#choosing-a-voice-model).
 - **Projects and dev environments** — register a local checkout, then make any
   number of isolated containers from it, described by one `.domo.json` in the
   project. Each environment has a copied checkout, can host several parallel
@@ -465,17 +469,19 @@ configured providers are kept current automatically (see
 
 | Variable | Purpose |
 | --- | --- |
-| `NUXT_GEMINI_API_KEY` | Gemini key for the voice agent (required) |
+| `NUXT_GEMINI_API_KEY` | Gemini key for the voice agent (required for the Gemini provider) |
 | `NUXT_CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token`; how Claude Code authenticates inside a development environment — see [Claude authentication](#claude-authentication) |
 | `NUXT_ANTHROPIC_API_KEY` | Optional fallback; **bills the API, not your subscription**, and is passed only when there is no other credential |
 | `NUXT_CODEX_API_KEY` | Optional; forwarded as `CODEX_API_KEY` to the Codex adapter |
-| `NUXT_OPENAI_API_KEY` | Optional; forwarded as `OPENAI_API_KEY` to the Codex adapter |
+| `NUXT_OPENAI_API_KEY` | OpenAI key: required for the GPT-Live voice provider, and forwarded as `OPENAI_API_KEY` to the Codex adapter |
 | `NUXT_OPENCODE_API_KEY` | Optional OpenCode console service-account key; the only OpenCode credential that reaches a development environment, and what the plan-limit poller uses. Settable in Settings instead |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration, forwarded to host and environment sessions |
 | `DATABASE_URL` | Postgres, defaults to the compose service |
 | `ELECTRIC_URL` | Electric, defaults to `http://localhost:30000` |
 | `NUXT_GEMINI_LIVE_MODEL` | Default Live model id |
-| `NUXT_GEMINI_SUMMARY_MODEL` | Text model that writes the rolling conversation summary (default `gemini-flash-lite-latest`) |
+| `NUXT_GEMINI_SUMMARY_MODEL` | Text model that writes the rolling conversation summary on the Gemini provider (default `gemini-flash-lite-latest`) |
+| `NUXT_OPENAI_LIVE_MODEL` | Default GPT-Live model id |
+| `NUXT_OPENAI_SUMMARY_MODEL` | Text model that writes the rolling summary on the OpenAI provider (default `gpt-5.6-luna`) |
 | `NUXT_DEFAULT_CWD` | Default workspace for new coding agents |
 | `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
 | `NUXT_DEV_ENV_IMAGE` | Base image of the built-in environment definition |
@@ -657,9 +663,11 @@ chosen becomes the Claude Code default, and the other adapters start on theirs.
 
 Nothing about a conversation lives in the socket. Gemini hands out a
 `goAway` every few minutes, changing a tool or adding an MCP server
-invalidates the resumption handle, and editing `server/` under `pnpm dev`
-restarts Nitro — so a long conversation is rebuilt from Postgres many times
-over, and what it is rebuilt *from* is the whole question.
+invalidates the resumption handle, GPT-Live has no resumption at all, and
+editing `server/` under `pnpm dev` restarts Nitro — so a long conversation is
+rebuilt from Postgres many times over, and what it is rebuilt *from* is the
+whole question. It is also what lets you change voice provider mid-conversation
+and carry on where you left off.
 
 Domo answers it with two halves that meet exactly:
 
@@ -671,8 +679,10 @@ The fold runs when a turn ends and again just before a connect (capped, and
 never fatal), and it always leaves the last few exchanges alone — a paraphrase
 of what you said thirty seconds ago is worse than the words. It is written by
 a cheap text model, not the Live one — `gemini-flash-lite-latest`, which
-summarised a 6.6 kB transcript in ~1.2 s in testing; set
-`NUXT_GEMINI_SUMMARY_MODEL` to change it. If the summariser is unreachable the conversation carries on regardless,
+summarised a 6.6 kB transcript in ~1.2 s in testing, or `gpt-5.6-luna` when the
+voice provider is OpenAI, so the fold always runs on a credential the install
+actually has; set `NUXT_GEMINI_SUMMARY_MODEL` / `NUXT_OPENAI_SUMMARY_MODEL` to
+change either. If the summariser is unreachable the conversation carries on regardless,
 and the instruction says in as many words that some messages were lost, so
 Domo tells you rather than confabulating.
 
@@ -685,12 +695,32 @@ Coding agents are not part of this: Claude Code and Codex compact their own
 context inside their own processes, and `agent_events` is a log Domo renders,
 not a prompt it rebuilds.
 
-### About the Live model id
+### Choosing a voice model
 
-Google's Live model ids move fast. Domo defaults to `gemini-3.8-live`
-and lets you change it in **Settings → Live model**; the dropdown is populated
-from `models.list` on your own API key, and you can type any id by hand. If a
-session fails to connect with a model-not-found error, that's the knob to turn.
+**Settings → General → Voice model** picks which live model runs conversations.
+The two are not the same shape, so the fields under the choice differ.
+
+**Gemini Live** is one model that listens, thinks, calls Domo's tools and
+speaks. It takes a model id, a voice and a spoken language.
+
+**GPT-Live** runs the conversation and *delegates* the thinking — it holds no
+tools of its own. You choose who answers:
+
+- **An OpenAI model** (the default, `gpt-6-sol`) — OpenAI calls it for you
+  with every one of Domo's tools attached, and returns the result to the
+  conversation. Nothing else to set up, and a reasoning effort to tune.
+- **A coding agent session** — Domo hands each request to a Claude Code, Codex
+  or OpenCode session, which answers with its own tools plus the whole agent
+  mesh. Pick an existing session or let Domo make one for the conversation and
+  keep using it. The agent takes as long as a coding agent takes, so the voice
+  model says it is on it and keeps talking; progress and the answer arrive as
+  spoken updates. The conversation-only tools (naming a conversation, starting
+  a fresh one, answering a permission out loud) belong to the live model's
+  backend and a coding agent is not one, so those stay on screen in this mode.
+
+Model ids move fast on both. Each dropdown is populated from the models API on
+your own key and you can type any id by hand; if a session fails to connect
+with a model-not-found error, that is the knob to turn.
 
 ## How it fits together
 
@@ -703,7 +733,10 @@ app/                     Nuxt 4 SPA (Nuxt UI 4)
   utils/agentTranscript  ACP event log → renderable transcript
 server/
   lib/db.ts              Postgres pool + schema (source of truth)
-  lib/voice/runtime.ts   Gemini Live session, tool dispatch, persistence
+  lib/voice/runtime.ts   the conversation: transcript, notes, tools, usage
+  lib/voice/gemini-backend.ts  the Gemini Live socket
+  lib/voice/openai-backend.ts  the GPT-Live socket and its delegation
+  lib/voice/delegation.ts      handing a delegation to a coding agent
   lib/voice/context.ts   summary + verbatim tail → what a connect is told
   lib/voice/compaction.ts folding old messages into the rolling summary
   lib/voice/tools.ts     the voice agent's tools over coding agents

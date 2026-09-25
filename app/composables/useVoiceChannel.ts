@@ -371,11 +371,11 @@ export function useVoiceChannel(
     stopMic()
   }
 
-  function sendText(text: string) {
+  function sendText(text: string, speak = true) {
     const trimmed = text.trim()
     if (!trimmed) return
     connect()
-    send({ type: 'text', text: trimmed })
+    send({ type: 'text', text: trimmed, speak })
   }
 
   onMounted(() => {

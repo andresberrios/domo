@@ -12,11 +12,12 @@ else is a directory inside a project.
 | project | directories | what it is |
 | --- | --- | --- |
 | `unit` | `test/unit`, `test/docker` | plain node, no services, no Nuxt. Pure logic (`buildTranscript()`, the conversation-context builder and the
-compaction cut, formatters, settings reconciliation, `.domo.json` parsing and validation, the generated build config, the image-metadata allow-list, the `docker run` argv and the runtime volume's name, the voice tools with everything below them mocked, the usage normalisers and the poller's scheduling with injected clients) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
+compaction cut, formatters, settings reconciliation, `.domo.json` parsing and validation, the generated build config, the image-metadata allow-list, the `docker run` argv and the runtime volume's name, the voice tools with everything below them mocked, both voice runtimes with their vendor module replaced by a recorder, the Gemini-to-OpenAI tool-schema conversion and the microphone resampler, the usage normalisers and the poller's scheduling with injected clients) plus Docker at the process boundary — the exact argv handed to `docker`, which needs no daemon. |
 | `nuxt` | `test/nuxt` | components and composables in a real Nuxt runtime (happy-dom) through `mountSuspended` / `registerEndpoint`. |
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | everything that needs a real Postgres, one file at a time. `test/server` drives `repo.ts` and the schema directly (including booting on top of a pre-migration database), the whole ACP client against a fake agent on a pair of pipes, and the voice runtime with Google replaced by a recorder (which model it asks for, and what context a connect is told after a conversation has been folded); `test/e2e` drives a production build of the Nitro server over HTTP, no browser; `test/helpers/database.spec.ts` covers the harness's own reset, next to the code it tests. |
 | `electric` | `test/electric` | the propagation loop, still without a browser: a page mounted in happy-dom drives the real Nitro server, which writes to real Postgres, which a real ElectricSQL streams back into the mounted page. Its own database and its own Electric — see below. |
 | `docker-live` | `test/docker/*.live.spec.ts` | what needs a real Docker daemon: `inspectContainer` against a running container, and `dev-environment.live.spec.ts`, which creates and deletes real environments (real `devcontainer build`, real `docker run`: the built-in definition, a bare glibc image with no Node of its own, an Alpine image that must fail readably, an `ubuntu:22.04` one that must fail readably for a *different* reason, and two environments sharing one runtime volume; plus the tar copy into the volume. Minutes on a cold cache, needs the network). Opt in. |
+| `voice-live` | `test/voice/*.live.spec.ts` | the voice agent end to end with nothing faked: a real Chromium whose microphone is a WAV file, the real app and Nitro server, real Postgres, and a real GPT-Live session on a real OpenAI account. The only layer that can execute `useVoiceChannel` at all. Needs Postgres **and** a Chromium **and** `NUXT_OPENAI_API_KEY`, and it bills. Opt in. |
 | `agents-live` | `test/agents/*.live.spec.ts` | all three coding agents for real: a real account, a real adapter process, a real container, real Postgres. Needs Postgres **and** Docker **and** a Claude token **and** a Codex login **and** an OpenCode console key. Opt in. |
 
 `test/unit` and `test/docker` share a project because nothing distinguished
@@ -39,6 +40,7 @@ daemon is not something the default run may assume.
 | `pnpm test:electric` | Postgres + `electric-e2e` | `electric`. |
 | `pnpm test:docker` | a Docker daemon | every `test/docker` file, live ones included. |
 | `pnpm test:agents` | Postgres + Docker + real accounts | `agents-live`. ~90 s warm, minutes cold. |
+| `pnpm test:voice` | Postgres + Chromium + an OpenAI key | `voice-live`. Minutes, and it spends money. |
 | `pnpm test:watch` | nothing | `unit` + `nuxt` in watch mode. |
 
 ### An unreachable service fails the run
@@ -133,15 +135,35 @@ Build before run, preflight before the `chown`, `chown` before the generated
 workspace volume, DinD volume, image) at every failure point. None of that is
 visible in any single argv, and all of it has been wrong at some point.
 
-What is deliberately *not* tested: a real Gemini Live session and
-`useVoiceChannel` (a real browser and a real Live session; only what the runtime
-*sends* is covered, with the SDK faked — the model and voice it connects with in
-`test/server/voice-runtime-model.spec.ts`, when a proactive note is allowed
-to reach the model in `test/unit/voice-runtime-notes.spec.ts`, and what it
-records about its context window in `test/unit/voice-runtime-usage.spec.ts`,
-where the repo, the settings and the tools are faked too so they need no
-database). That is the whole list now: spawning ACP adapters used to be on it
-and is covered by `agents-live`.
+What is deliberately *not* tested in the default run: a real session on either
+voice provider, and `useVoiceChannel`. Both need a real browser and a real
+account, so both live in `voice-live` — which is opt-in and is the only layer
+that has them. Without it, what is covered is only what the runtime *sends*,
+with the vendor module faked: the model and voice it connects with in
+`test/server/voice-runtime-model.spec.ts`, when a proactive note is allowed to
+reach the model in `test/unit/voice-runtime-notes.spec.ts`, what it records
+about its context window in `test/unit/voice-runtime-usage.spec.ts`, and the
+whole GPT-Live wire in `test/unit/openai-voice-runtime.spec.ts`, where `ws` is
+the recorder and the `AgentDelegate` is stubbed so no coding agent is spawned.
+In all of them the repo, the settings and the tools are faked too, so they need
+no database.
+
+**A faked socket cannot tell you the API agrees with you**, and the GPT-Live
+delegation bug is the standing example: the unit fake echoed a response id on
+every nested event, the real API sends one on three of them and not on the
+item events, and Domo's pending-call lookup missed every time. Green suite,
+no tool ever ran. The fake now mirrors the measured shapes — when a fixture and
+the wire disagree, the wire is right and the fixture is the bug.
+
+**Nothing in the *default* suite may open a real voice socket, and that now
+means two vendors.** `@google/genai` and `ws` are both replaced where a runtime
+is driven; `test/e2e` and `test/electric` never connect one, because a Live
+session only starts when a browser attaches to `/api/voice/ws`. The default
+provider is Gemini, so an OpenAI key in the environment reaches nothing on its
+own — but if a test outside `voice-live` ever sets `voiceProvider: 'openai'`
+against a real server, mock `ws` the way `openai-voice-runtime.spec.ts` does.
+`voice-live` is the one layer allowed to connect for real, and it is opt-in
+for exactly that reason.
 
 ### No layer may reach a real usage account
 
@@ -164,6 +186,46 @@ fake timers (`test/unit/usage-poller.spec.ts`), and the Codex exchange runs
 against a fake JSON-RPC server on a pair of pipes
 (`test/server/codex-usage.spec.ts`) — the same technique as the fake ACP agent,
 so the framing and the handshake order are the real ones.
+
+## The `voice-live` layer
+
+`pnpm test:voice`. A real Chromium whose microphone is a WAV file, the real
+app, a real Nitro server, real Postgres, a real Electric and a real GPT-Live
+session. Three tests, chosen to prove the wiring rather than to sweep the tool
+surface: speech in → transcript → spoken answer; a delegation that runs one
+real Domo tool and carries on afterwards; and the usage reading landing on the
+row.
+
+- **It runs on `domo_e2e` with the real `electric-e2e`, not on `domo_test`
+  with the stub, and that is the whole reason it works.**
+  `test/helpers/electric-stub.ts` answers *every* shape with one hardcoded
+  `projects` row. That is fine for `test/e2e`, which never renders a page, and
+  useless the moment a browser loads the app — no conversation, no transcript,
+  no sidebar. The two layers never run at once and both reset on entry, so the
+  shared database is safe; the port is its own (`test/voice/origin.ts`) so
+  running them back to back cannot collide.
+- **The microphone is a synthesised WAV, because the fake device is a tone.**
+  `--use-file-for-fake-audio-capture` takes a file and loops it;
+  `test/helpers/speech.ts` makes one with OpenAI TTS and caches it under
+  `.nuxt/test/voice/`. Chromium fixes the audio source at *launch*, so there is
+  one browser per spoken question — not a shared browser with several pages.
+  Keep the questions to one short sentence: the model hears them on repeat
+  until the microphone stops.
+- **A Chromium with no fontconfig crashes as soon as it draws text**, and the
+  symptom names everything except fonts: the browser disconnects a second after
+  `page.goto` resolves and every locator fails with "Target page, context or
+  browser has been closed". The one real clue is on the browser's own stderr
+  (`DEBUG=pw:browser`): `FATAL: SkFontMgr_FontConfigInterface … Not
+  implemented`. A trivial page survives it; the app does not. This was found
+  here and **fixed at the source** — the browser volume's
+  `bin/chrome-headless-shell` is now a wrapper that supplies the environment,
+  so `DOMO_TEST_CHROMIUM=/opt/domo-browser/bin/chrome-headless-shell` is all
+  this layer needs. Do not set `LD_LIBRARY_PATH` yourself; Playwright's own
+  download exits 127 with one.
+- **Assert on shape, never on wording.** A live model may say "nothing is
+  running" or "you have no agents right now"; a test that pinned either would
+  fail for being right. What is asserted is that a transcript appeared, that a
+  named tool row exists, and that the conversation continued after it.
 
 ## The `agents-live` layer
 

@@ -21,6 +21,21 @@ export function formatTokens(tokens: number): string {
 }
 
 /** A whole percent, for a bar and a label that have to agree with each other. */
+/**
+ * `4m 12s`, for a provider that bills a conversation by how long it spoke.
+ *
+ * Seconds up to a minute, then minutes and seconds, then hours: a voice
+ * conversation is read at a glance and "252 seconds" is not a glance.
+ */
+export function formatDuration(seconds: number | null | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '—'
+  const whole = Math.round(seconds)
+  if (whole < 60) return `${whole}s`
+  const minutes = Math.floor(whole / 60)
+  if (minutes < 60) return `${minutes}m ${whole % 60}s`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
 export function percentOf(used: number, size: number | null | undefined): number | null {
   if (!size || !Number.isFinite(size) || size <= 0) return null
   if (!Number.isFinite(used)) return null

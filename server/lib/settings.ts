@@ -1,7 +1,14 @@
 import { query } from './db'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
-import { AGENT_ADAPTERS } from '../../shared/agent-adapters'
-import type { AppSettings } from '../../shared/types'
+import { AGENT_ADAPTERS, isAgentAdapter } from '../../shared/agent-adapters'
+import {
+  DEFAULT_OPENAI_LIVE_MODEL,
+  DEFAULT_OPENAI_VOICE,
+  DEFAULT_VOICE_DELEGATION,
+  isReasoningEffort,
+  isVoiceProvider
+} from '../../shared/voice-providers'
+import type { AppSettings, VoiceDelegationSettings } from '../../shared/types'
 
 export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code, Codex and OpenCode — for a developer,
 and you talk with them out loud while they do other things: pacing, cooking,
@@ -57,8 +64,15 @@ How you work:
 - If they want to call this conversation something, use rename_conversation.`
 
 export const DEFAULTS: AppSettings = {
+  // Gemini, because that is what every install before this setting existed was
+  // running and a version bump must not move a conversation onto another
+  // vendor's model — and another vendor's bill — on its own.
+  voiceProvider: 'gemini',
   liveModel: process.env.NUXT_GEMINI_LIVE_MODEL || 'gemini-3.8-live',
   voiceName: 'Puck',
+  openaiLiveModel: process.env.NUXT_OPENAI_LIVE_MODEL || DEFAULT_OPENAI_LIVE_MODEL,
+  openaiVoiceName: DEFAULT_OPENAI_VOICE,
+  openaiDelegation: { ...DEFAULT_VOICE_DELEGATION },
   systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
   proactiveNotifications: true,
@@ -101,11 +115,42 @@ export async function getSettings(): Promise<AppSettings> {
   return {
     ...DEFAULTS,
     ...stored,
+    voiceProvider: isVoiceProvider(stored.voiceProvider) ? stored.voiceProvider : DEFAULTS.voiceProvider,
+    openaiDelegation: storedVoiceDelegation(stored),
     defaultAgentModes: storedAgentModes(stored),
     defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored),
     openCodePermission: storedOpenCodePermission(stored)
   } as AppSettings
+}
+
+/**
+ * Who thinks behind an OpenAI Live conversation, read the same defensive way
+ * as the records below.
+ *
+ * Every field keeps its default rather than becoming undefined, and the two
+ * enumerated ones are checked rather than trusted: `target` and
+ * `reasoningEffort` are sent verbatim into a `session.start`, where a value
+ * OpenAI does not recognise fails the whole connect rather than the one
+ * setting. The ids (`agentSessionId`, `agentDevEnvironmentId`) are *not*
+ * checked against the database here — a session that has since been deleted is
+ * resolved at delegation time, where the answer can be "make a new one".
+ */
+function storedVoiceDelegation(stored: Record<string, any>): VoiceDelegationSettings {
+  const delegation = { ...DEFAULT_VOICE_DELEGATION }
+  const current = stored.openaiDelegation
+  if (!current || typeof current !== 'object') return delegation
+  if (current.target === 'responses' || current.target === 'agent') delegation.target = current.target
+  if (typeof current.responsesModel === 'string' && current.responsesModel.trim()) {
+    delegation.responsesModel = current.responsesModel.trim()
+  }
+  if (isReasoningEffort(current.reasoningEffort)) delegation.reasoningEffort = current.reasoningEffort
+  if (typeof current.agentSessionId === 'string') delegation.agentSessionId = current.agentSessionId.trim()
+  if (isAgentAdapter(current.agentAdapter)) delegation.agentAdapter = current.agentAdapter
+  if (typeof current.agentDevEnvironmentId === 'string') {
+    delegation.agentDevEnvironmentId = current.agentDevEnvironmentId.trim()
+  }
+  return delegation
 }
 
 /**

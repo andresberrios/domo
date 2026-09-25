@@ -70,7 +70,9 @@ export default defineWebSocketHandler({
           await runtime.sendAudioStreamEnd()
           break
         case 'text':
-          await runtime.sendText(parsed.text)
+          // Absent means spoken: an older client that does not know about the
+          // switch gets the behaviour it has always had.
+          await runtime.sendText(parsed.text, parsed.speak ?? true)
           break
         case 'stop':
           await voiceManager.close(state.sessionId)

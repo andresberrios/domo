@@ -4,6 +4,49 @@
 
 export type VoiceSessionStatus = 'idle' | 'live' | 'error'
 
+/**
+ * Which live voice model runs conversations.
+ *
+ * One install-wide setting rather than a column on the conversation: a running
+ * conversation is rebuilt from `voice_messages` on every connect (see
+ * `server/lib/voice/context.ts`), so switching provider and reconnecting
+ * continues the same conversation with the other model. The row's `model` and
+ * `voice` columns record what the last connect actually used.
+ */
+export type VoiceProvider = 'gemini' | 'openai'
+
+/**
+ * Who does the thinking behind an OpenAI Live conversation.
+ *
+ * The Live model itself holds no tools and does no reasoning — it runs the
+ * spoken conversation and hands the work out (`session.delegation.created`).
+ * `responses` is the managed path: OpenAI calls the text model named below,
+ * with Domo's own voice tools registered on it, and returns the result to the
+ * conversation. `agent` is client delegation: Domo builds the request from the
+ * conversation and hands it to a coding agent session, whose answer comes back
+ * as spoken commentary.
+ */
+export type VoiceDelegationTarget = 'responses' | 'agent'
+
+/** How hard the delegated Responses model thinks. Empty means the model's own default. */
+export type VoiceReasoningEffort = '' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+export interface VoiceDelegationSettings {
+  target: VoiceDelegationTarget
+  /** The Responses backend model, for `target: 'responses'`. */
+  responsesModel: string
+  reasoningEffort: VoiceReasoningEffort
+  /**
+   * The coding agent session that thinks, for `target: 'agent'`. Empty means
+   * "make one on the first delegation and keep using it".
+   */
+  agentSessionId: string
+  /** Which adapter a session created that way runs. */
+  agentAdapter: AgentAdapter
+  /** Which development environment it runs in. Empty means the default workspace. */
+  agentDevEnvironmentId: string
+}
+
 /** Who set a conversation's title: auto-titling only ever replaces its own. */
 export type VoiceTitleSource = 'auto' | 'user'
 
@@ -139,9 +182,21 @@ export interface AgentUsage {
  * `size` is null for a Live model Domo has no window size for — the API never
  * reports one — and `used` may *decrease*: sliding-window compression drops old
  * turns, and a fresh session after a fingerprint mismatch starts again at zero.
+ *
+ * `percent` exists because the two providers count in different currencies.
+ * Gemini reports tokens and Domo supplies the denominator; OpenAI's Live API
+ * reports `context_window.usage_ratio` and **no token counts at all**, so a
+ * reading from it fills `percent` and leaves `used` at zero. Anything drawing
+ * a bar must prefer `percent` when it is there, and must not print `used` as a
+ * token count beside it — that zero is "not reported", not "empty".
  */
 export interface VoiceUsage {
-  context: { used: number, size: number | null }
+  context: { used: number, size: number | null, percent?: number | null }
+  /**
+   * Cumulative audio seconds the provider has billed this conversation for,
+   * when it says. A total, never an increment to add up.
+   */
+  audioSeconds?: number | null
   updatedAt: string
 }
 
@@ -562,8 +617,21 @@ export interface McpServer {
 }
 
 export interface AppSettings {
+  /** Which live voice model new connects use. See `VoiceProvider`. */
+  voiceProvider: VoiceProvider
+  /** The Gemini Live model id. Only read when `voiceProvider` is `gemini`. */
   liveModel: string
+  /** The Gemini prebuilt voice. Only read when `voiceProvider` is `gemini`. */
   voiceName: string
+  /** The OpenAI Live model id. Only read when `voiceProvider` is `openai`. */
+  openaiLiveModel: string
+  /**
+   * The OpenAI Live voice. Immutable for the life of a Live socket, so a change
+   * applies at the next connect like everything else here.
+   */
+  openaiVoiceName: string
+  /** Who thinks behind an OpenAI Live conversation. See `VoiceDelegationSettings`. */
+  openaiDelegation: VoiceDelegationSettings
   systemInstruction: string
   defaultCwd: string
   /** Tell the voice agent out loud when a coding agent finishes / needs input. */
@@ -677,7 +745,12 @@ export type VoiceClientMessage =
   | { type: 'start' }
   | { type: 'audio', data: string }
   | { type: 'audio-stream-end' }
-  | { type: 'text', text: string }
+  /**
+   * Something typed rather than said. `speak` asks for the reply out loud;
+   * false means "take this in, answer on screen". See `useSpokenReplies()` —
+   * GPT-Live stays silent on typed input unless it is asked not to.
+   */
+  | { type: 'text', text: string, speak?: boolean }
   | { type: 'stop' }
   | { type: 'ping' }
 

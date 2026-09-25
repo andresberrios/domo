@@ -10,6 +10,30 @@ const { creating, startConversation } = useNewConversation()
 const newAgentOpen = ref(false)
 
 const working = computed(() => agents.value.filter(agent => agent.status === 'thinking').length)
+
+/**
+ * The key the *configured* voice provider needs, if it is missing. Warning
+ * about Gemini's while the install is running GPT-Live would nag about a
+ * credential nothing reads and stay quiet about the one that is actually
+ * stopping the voice agent from connecting.
+ */
+const missingVoiceKey = computed(() => {
+  if (!settings.value) return null
+  if (settings.value.voiceProvider === 'openai') {
+    return settings.value.hasOpenAiKey
+      ? null
+      : {
+          title: 'No OpenAI API key yet',
+          description: 'Add NUXT_OPENAI_API_KEY to your .env and restart the dev server to enable the voice agent.'
+        }
+  }
+  return settings.value.hasGeminiKey
+    ? null
+    : {
+        title: 'No Gemini API key yet',
+        description: 'Add NUXT_GEMINI_API_KEY to your .env and restart the dev server to enable the voice agent.'
+      }
+})
 </script>
 
 <template>
@@ -37,9 +61,9 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
             Your voice control room for coding agents
           </h1>
           <p class="mx-auto mt-2 max-w-xl text-sm text-muted">
-            Talk to a Gemini Live agent. It spawns Claude Code or Codex sessions over ACP, watches them,
-            answers their permission prompts, and tells you what changed — while you keep your
-            hands free.
+            Talk to a live voice agent. It spawns Claude Code, Codex or OpenCode sessions over ACP,
+            watches them, answers their permission prompts, and tells you what changed — while you
+            keep your hands free.
           </p>
           <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
             <UButton
@@ -61,12 +85,12 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
         </section>
 
         <UAlert
-          v-if="settings && !settings.hasGeminiKey"
+          v-if="missingVoiceKey"
           color="warning"
           variant="subtle"
           icon="i-lucide-key-round"
-          title="No Gemini API key yet"
-          description="Add NUXT_GEMINI_API_KEY to your .env and restart the dev server to enable the voice agent."
+          :title="missingVoiceKey.title"
+          :description="missingVoiceKey.description"
         />
 
         <UsageLimitsCard />

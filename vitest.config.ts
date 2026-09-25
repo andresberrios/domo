@@ -129,6 +129,32 @@ export default defineConfig(async () => ({
         }
       },
 
+      // 6. The voice agent end to end, with nothing faked: a real Chromium with
+      //    a real microphone, the real app and server, and a real GPT-Live
+      //    session on a real OpenAI account. It is the only layer that can run
+      //    `useVoiceChannel` at all — happy-dom has no AudioContext and no
+      //    worklet — and the only one that finds out whether OpenAI accepts
+      //    what Domo sends. Costs money, so it is opt in: `pnpm test:voice`.
+      {
+        resolve: { alias },
+        test: {
+          name: 'voice-live',
+          environment: 'node',
+          include: ['test/voice/**/*.live.spec.ts'],
+          // One server and one database, and every test opens a real browser.
+          fileParallelism: false,
+          globalSetup: [resolve(rootDir, 'test/voice/global-setup.ts')],
+          // No `test/setup/database.ts`: that one resets `domo_test`, and this
+          // layer runs against `domo_e2e` so it can use the real Electric the
+          // `electric-e2e` container is bound to. The reset happens once, in
+          // the global setup, and the spec only ever talks HTTP.
+          // A turn on a live voice model is tens of seconds; a cold app build
+          // in front of it is more.
+          hookTimeout: 600_000,
+          testTimeout: 300_000
+        }
+      },
+
       // 6. Real coding agents, in a real environment, on real accounts: the one
       //    boundary every other layer stops at. Needs Postgres *and* Docker *and*
       //    a Claude and a Codex login, so it can never be part of the default

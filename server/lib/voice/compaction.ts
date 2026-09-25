@@ -1,7 +1,9 @@
 import { GoogleGenAI } from '@google/genai'
 
 import { geminiApiKey } from '../gemini'
+import { openAiApiBase, openAiApiKey } from '../openai'
 import { getVoiceSession, listVoiceMessagesAfter, saveConversationSummary } from '../repo'
+import { getSettings } from '../settings'
 import { SUMMARY_CHARS, renderTranscript, selectCompactionSlice } from './context'
 
 /**
@@ -13,9 +15,12 @@ import { SUMMARY_CHARS, renderTranscript, selectCompactionSlice } from './contex
  * after it verbatim. A fold never runs backwards (the write is guarded on the
  * seq it advances past), never overlaps, and never leaves a gap.
  *
- * The summariser is an injected parameter. The default one costs a Gemini text
- * call; every test passes its own, and nothing in the test suite may reach the
- * network.
+ * The summariser is an injected parameter. The default one costs one text call
+ * to whichever provider is running the voice — Gemini's lite model or
+ * OpenAI's — because an install configured for one may hold no credential for
+ * the other, and a conversation whose folds all fail is one that quietly
+ * forgets. Every test passes its own, and nothing in the test suite may reach
+ * the network.
  */
 
 /** How many of the newest messages a fold or a connect will even look at. */
@@ -32,6 +37,16 @@ export const COMPACT_CONNECT_TIMEOUT_MS = 6000
  */
 export function summaryModel(): string {
   return process.env.NUXT_GEMINI_SUMMARY_MODEL || process.env.GEMINI_SUMMARY_MODEL || 'gemini-flash-lite-latest'
+}
+
+/**
+ * The OpenAI text model that writes the summary when the voice provider is
+ * OpenAI. Luna rather than the backend model an operator picked for thinking:
+ * a fold is a background job on a few kilobytes and the connect path waits on
+ * it, so this is the same latency-first choice Gemini's lite model is.
+ */
+export function openAiSummaryModel(): string {
+  return process.env.NUXT_OPENAI_SUMMARY_MODEL || 'gpt-5.6-luna'
 }
 
 export interface SummariseInput {
@@ -69,18 +84,9 @@ Rules:
   silently drop a commitment.
 - Aim for under 300 words. Stay well under 500 even for a long conversation.`
 
-/**
- * The default summariser: one Gemini text call.
- *
- * Exported so it can be exercised by hand against a real key — nothing in the
- * suite may reach the network, so this is the only way to find out that a model
- * id has stopped existing.
- */
-export async function summariseWithGemini(input: SummariseInput): Promise<string> {
-  const apiKey = geminiApiKey()
-  if (!apiKey) throw new Error('No Gemini API key, so the conversation cannot be summarised')
-  const ai = new GoogleGenAI({ apiKey })
-  const prompt = [
+/** What the summariser is asked, whichever model is asked it. */
+function summaryPrompt(input: SummariseInput): string {
+  return [
     `Conversation title: ${input.title}`,
     '',
     input.previous
@@ -92,10 +98,23 @@ export async function summariseWithGemini(input: SummariseInput): Promise<string
     '',
     'Return the updated memory.'
   ].join('\n')
+}
+
+/**
+ * The default summariser: one Gemini text call.
+ *
+ * Exported so it can be exercised by hand against a real key — nothing in the
+ * suite may reach the network, so this is the only way to find out that a model
+ * id has stopped existing.
+ */
+export async function summariseWithGemini(input: SummariseInput): Promise<string> {
+  const apiKey = geminiApiKey()
+  if (!apiKey) throw new Error('No Gemini API key, so the conversation cannot be summarised')
+  const ai = new GoogleGenAI({ apiKey })
 
   const response = await ai.models.generateContent({
     model: summaryModel(),
-    contents: prompt,
+    contents: summaryPrompt(input),
     // No output cap: a thinking model can spend one entirely on thinking and
     // answer with empty text. The length is bounded on the way into the row.
     config: { temperature: 0.2, systemInstruction: SUMMARISER_INSTRUCTION }
@@ -104,6 +123,53 @@ export async function summariseWithGemini(input: SummariseInput): Promise<string
   const text = (response.text ?? '').trim()
   if (!text) throw new Error('The summariser returned nothing')
   return text
+}
+
+/**
+ * One OpenAI Responses call.
+ *
+ * The same job as `summariseWithGemini` and the same reason it exists: an
+ * install that runs GPT-Live may have no Gemini key at all, and a conversation
+ * whose folds all fail is one that quietly forgets — the failure this whole
+ * module is written to avoid. Which one runs follows `voiceProvider`, so the
+ * summariser is always on the credential the install actually has.
+ */
+export async function summariseWithOpenAi(input: SummariseInput): Promise<string> {
+  const apiKey = openAiApiKey()
+  if (!apiKey) throw new Error('No OpenAI API key, so the conversation cannot be summarised')
+
+  const response = await fetch(`${openAiApiBase()}/responses`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: openAiSummaryModel(),
+      instructions: SUMMARISER_INSTRUCTION,
+      input: summaryPrompt(input)
+      // No output cap, for the reason the Gemini call gives: a thinking model
+      // can spend one entirely on thinking and answer with empty text.
+    })
+  })
+  if (!response.ok) {
+    throw new Error(`The summariser answered ${response.status} ${response.statusText}`)
+  }
+  const body = await response.json() as {
+    output_text?: string
+    output?: Array<{ content?: Array<{ text?: string }> }>
+  }
+  const text = (body.output_text
+    ?? body.output?.flatMap(item => item.content ?? []).map(part => part.text ?? '').join('')
+    ?? '').trim()
+  if (!text) throw new Error('The summariser returned nothing')
+  return text
+}
+
+/**
+ * Which summariser a fold uses when the caller names none: the one belonging
+ * to whichever live model this install is talking through.
+ */
+export async function defaultSummariser(): Promise<Summariser> {
+  const settings = await getSettings().catch(() => null)
+  return settings?.voiceProvider === 'openai' ? summariseWithOpenAi : summariseWithGemini
 }
 
 /**
@@ -153,7 +219,7 @@ async function runCompaction(
   const slice = selectCompactionSlice({ messages, summaryThroughSeq: session.summaryThroughSeq })
   if (!slice) return { compacted: false, reason: 'not-needed' }
 
-  const summarise = options.summarise ?? summariseWithGemini
+  const summarise = options.summarise ?? await defaultSummariser()
   let summary: string
   try {
     summary = await summarise({

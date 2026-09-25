@@ -35,10 +35,67 @@ things that are easy to get wrong.
 
 ## Architecture decisions that matter
 
-- **The Gemini Live session lives on the server**, not the browser. The browser
+- **The live voice session lives on the server**, not the browser. The browser
   only ships microphone PCM up and plays PCM down over `/api/voice/ws`. That
   keeps the API key server-side, lets tools run in-process, makes persistence
   trivial, and means a reload doesn't kill the conversation.
+- **There are two live voice providers and one `VoiceRuntime`.** `voiceProvider`
+  in Settings picks Gemini Live or OpenAI's GPT-Live, and the split is
+  composition rather than a class per vendor: `runtime.ts` owns everything the
+  *conversation* is made of — transcript rows, the note gate and its single
+  drain, the throttled usage write, the tool log, the bus subscription, the
+  hand-over — and a `VoiceBackend` (`server/lib/voice/backend.ts`) is the
+  translation to one vendor's socket. The provider is read at **connect** and
+  not at construction, which is the load-bearing part: a conversation is
+  rebuilt from Postgres at every connect anyway, so changing the setting and
+  reconnecting continues the *same* conversation on the other vendor's model,
+  with the same id, the same history and the microphone still open. Every
+  callback a backend makes goes through a host bound to the generation it
+  connected at, so a late event from a replaced socket can neither write a
+  transcript row nor resurrect a session that has gone.
+- **GPT-Live is not Gemini Live with different names, and three differences
+  are load-bearing.** The live model holds **no tools** and does no reasoning:
+  it runs the conversation and *delegates* (`session.delegation.created`),
+  either to a Responses model OpenAI manages or to Domo itself
+  (`delegation.type: 'client'`). Results go back as **appended context** —
+  `session.commentary.append` for something to say aloud,
+  `session.thinking.append` for something to know quietly — and never as a
+  turn, which is why `VoiceBackend.notesPreemptSpeech` is false for it and
+  `VoiceRuntime.busy()` holds nothing back: an append is designed to arrive
+  mid-sentence, while Gemini's client content truncates what is being said.
+  And **nothing on the wire ends a turn** — its own reference says the
+  transcript deltas "do not define complete turns or include a
+  transcript-done event" — so Domo defines one: `TRANSCRIPT_IDLE_MS` (2 s)
+  after the last delta of *either* side, audio included, is when the
+  transcripts are stored and the fold is scheduled. Shorten it and a pause
+  mid-sentence becomes two messages.
+- **The thinking behind a GPT-Live conversation is either a managed model or a
+  coding agent, and the two are not the same feature.** `responses` is one
+  object in `session.start`: OpenAI calls the model (Sol by default) with
+  Domo's *own* voice tool declarations converted into its dialect
+  (`voice/tool-schema.ts`), streams the work back inside `response.event`
+  envelopes, and Domo runs the function calls through the same
+  `runToolCalls` Gemini uses — full parity, nothing else to set up. `agent`
+  is client delegation: `voice/delegation.ts` builds a request out of the same
+  `buildConversationContext` a reconnect uses (the delegation event carries
+  **no task text** — only an id, a target and an offset), steers it into a
+  coding agent session, and follows that agent *on the bus* for its
+  `turn_end`, exactly as `acp/subscriptions.ts` does. Nothing can await a
+  coding agent — a turn takes minutes and the delegation needs an answer while
+  the user is in the room — so progress goes back as `thinking` and the answer
+  as `commentary`. **That mode gives up the conversation-only tools**
+  (`set_conversation_title`, `start_new_conversation`, `answer_permission`):
+  they live on the delegation backend and a coding agent is not one. The
+  Settings card says so in as many words rather than leaving it to be
+  discovered.
+- **The live model is told it holds no tools; the backend is not.** Domo's
+  system instruction is the operator's, editable, and written for a model that
+  calls tools ("check with your tools before saying anything about an agent").
+  GPT-Live's frontend cannot, so `LIVE_SUPPLEMENT` in `openai-backend.ts` is
+  appended to *its* copy only — the Responses backend is handed the same
+  instruction unqualified, because it is the one that holds the tools the
+  instruction talks about. The instruction itself is never rewritten per
+  provider.
 - **Everything the UI renders is a table, including text that is still
   arriving.** `agent_events` (the ACP `session/update` log) and `voice_messages`
   are the two durable logs; `buildTranscript()` in `app/utils/agentTranscript.ts`
@@ -323,6 +380,9 @@ things that are easy to get wrong.
   turn to complete (8 s fallback), emits `session-changed`, and the browser
   follows with `switchSession()`, which swaps the socket but keeps the mic open.
 - **A conversation is the row and its messages; the socket is disposable.**
+  This is also what makes the provider a setting rather than a column: neither
+  vendor's context survives a reconnect anyway (Gemini's resumption handle is
+  invalidated by any tool change, GPT-Live has no resumption at all).
   Every connect rebuilds the model's context from Postgres, and what it
   rebuilds is two halves that meet at `voice_sessions.summary_through_seq`: the
   rolling `summary` stands in for everything up to it, and everything after it
@@ -349,6 +409,12 @@ things that are easy to get wrong.
   already did. And the most recent exchanges are never folded
   (`KEEP_VERBATIM_CHARS`) — the user says "do that again" about those, and a
   paraphrase is worse than the words.
+- **The summariser follows the voice provider.** A fold is a text call, and an
+  install that runs GPT-Live may hold no Gemini key at all — a conversation
+  whose folds all fail is one that quietly forgets, which is the failure the
+  whole of `compaction.ts` exists to avoid. `defaultSummariser()` picks
+  `summariseWithGemini` or `summariseWithOpenAi` off `voiceProvider`; both are
+  still injectable parameters, and nothing in the suite may reach either.
 - **A failed fold is told to the model, not hidden from it.** If the summariser
   is unreachable the row is left exactly as it was, the tail overflows its
   budget, and `buildConversationContext` puts the count of what it had to drop
@@ -801,7 +867,20 @@ things that are easy to get wrong.
   with no extra usage carries `overage-status: rejected` with
   `overage-disabled-reason: out_of_credits` and *no* utilization — that means
   "you never bought any", not "you hit a limit", so no credits row is drawn.
-- **The Live API never reports a context window, and `used` can go down.** The
+- **The two voice providers count context in different currencies, and one of
+  them reports no tokens at all.** Gemini answers a token count and Domo
+  supplies the denominator; GPT-Live answers `context_window.usage_ratio` and
+  nothing else, plus a cumulative *audio duration* in `usage.seconds` which is
+  what it actually bills. So `VoiceUsage.context` grew a `percent`, and where
+  it is set `used` is zero meaning "not reported" rather than "empty" —
+  anything drawing a bar prefers `percent` and must not print the token count
+  beside it. **The final audio total arrives in `session.closed`, after the
+  runtime has stopped accepting callbacks from that socket**, which is why
+  `VoiceBackend.close()` returns a reading instead of pushing one: the
+  conversation's billed duration is the one number that cannot be recomputed
+  afterwards, and `VoiceRuntime.close()` shuts the socket down *before* its
+  final `flushUsage`.
+- **The Gemini Live API never reports a context window, and `used` can go down.** The
   size comes from the models API's own `inputTokenLimit` (learned and cached in
   `server/lib/gemini.ts`, with a seeded table for an offline install); an unknown
   model is `null` and the UI then shows a token count with no bar, because a
@@ -821,6 +900,16 @@ things that are easy to get wrong.
   uses. Reading the Keychain prompts on macOS, and refreshing that token would
   race the developer's own CLI over a refresh token Anthropic rotates on every
   use — the same hazard `home-overlay.ts` refuses to mount `~/.claude` for.
+- **The browser's sample rates are fixed, so a provider that wants another one
+  is absorbed on the server.** `useVoiceChannel.ts` captures at 16 kHz and
+  builds every playback `AudioBuffer` at 24 kHz, ignoring the rate a chunk is
+  labelled with. Gemini happens to want exactly that pair; **GPT-Live takes one
+  rate for both directions**, so the session is configured at 24 kHz and the
+  microphone is resampled in `server/lib/voice/audio.ts`. The tab keeps one
+  code path whichever provider is configured — which it has to, since the
+  provider can change under a live conversation — and the rate that was chosen
+  falls the right way: at 16 kHz nothing would need resampling and the *spoken
+  output* would be the half that got worse.
 - **`UChatMessages` skips messages whose `parts` array is empty.** Rich items
   ride in `metadata` and render through the `#content` slot, but each message
   still needs a plain-text part (see `AgentTranscript.vue`).
@@ -1186,6 +1275,21 @@ things that are easy to get wrong.
   hard-code `/opt/domo/node/bin/node` — npm's own shims say `#!/usr/bin/env
   node`, which finds nothing in an image without node — and the project's own
   node version still wins in the agent's shell.
+- **`bin/chrome-headless-shell` in the browser volume is a wrapper, never a
+  symlink, and the reason is a crash that names everything except its cause.**
+  Chromium needs `LD_LIBRARY_PATH` (the libraries are in the volume) and
+  `FONTCONFIG_PATH` (the image may carry no fonts at all). A symlink carries
+  neither, so anything launching the browser *by path* rather than through
+  Domo's own spawn — Playwright's `executablePath`, `pnpm test:voice`, a
+  developer — got a browser that either would not start or, worse, started
+  fine and died the instant it drew text: `FATAL:
+  SkFontMgr_FontConfigInterface … Not implemented`, surfacing to the caller as
+  nothing but "the browser has closed". A trivial page survives it and a real
+  one does not, which is why the volume's smoke test renders actual words —
+  and now runs with **no** env of its own, so a volume is only `.ready` if the
+  wrapper really supplies them. `BROWSER_LAYOUT_REVISION` is in the volume-name
+  hash for this: the fix moves no version pin, so without it every existing
+  install would go on mounting the broken volume.
 - **The bundled browser needs a newer glibc than the bundled Node, so an image
   can pass the preflight and still have no browser.** The libraries in
   `/opt/domo-browser` are taken from `RUNTIME_IMAGE` (bookworm, glibc 2.36) and
@@ -1237,6 +1341,14 @@ things that are easy to get wrong.
   on every tool response, so a hung handler (e.g. an adapter that never answers
   `session/new`) used to leave the voice agent silent; agent notes are held until
   the response has gone out.
+- **`session.start` is the first thing on a GPT-Live socket, and a rejected one
+  has to fail the connect.** A bad model id or an unknown voice comes back as
+  an ordinary `error` event, which would otherwise be reported into a
+  conversation that never began — `LiveConnection` therefore treats an `error`
+  arriving before `session.started` as the connect's own rejection, and every
+  later one as a report. There is no resumption handle in this protocol at
+  all: the history a socket starts with is the instruction, built from
+  Postgres like every other connect.
 - **Client content pre-empts generation, so a proactive note has one gate and
   one drain.** Sending `sendClientContent` while the model is speaking *cancels*
   that generation — the symptom was the voice agent cutting itself off
@@ -1559,12 +1671,16 @@ with the server. The `e2e` and `electric` layers therefore blank
 an unreachable address, and point `NUXT_CODEX_ENTRY` at the same dead stub the
 ACP adapters get.
 
-What is deliberately *not* tested: a real Gemini Live session and
-`useVoiceChannel` (a real browser and a real Live session; what the runtime
-*sends* is covered with the SDK faked — the model and voice in
+What is deliberately *not* tested: a real session on either voice provider, and
+`useVoiceChannel` (both need a real browser and a real account; what the runtime
+*sends* is covered with the vendor module faked — the model and voice in
 `test/server/voice-runtime-model.spec.ts`, when a proactive note is allowed
-out in `test/unit/voice-runtime-notes.spec.ts`, and what it records about its
-context window in `test/unit/voice-runtime-usage.spec.ts`). **Spawning ACP adapters is now
+out in `test/unit/voice-runtime-notes.spec.ts`, what it records about its
+context window in `test/unit/voice-runtime-usage.spec.ts`, and the whole
+GPT-Live wire — `session.start`, the delegation in both modes, the idle-gap
+turn boundary, the Responses tool loop and the ratio-only usage reading — in
+`test/unit/openai-voice-runtime.spec.ts`, where `ws` is the recorder).
+**Spawning ACP adapters is now
 covered** — `pnpm test:agents` runs both, for real, inside a real environment.
 Everything above that boundary is still covered without an account:
 `test/server/acp-stream.spec.ts` mocks `spawn` with a pair of pipes and puts the
@@ -1573,6 +1689,43 @@ and permissions are end to end because a permission is a row.
 
 ## Verification notes
 
+- **GPT-Live has been run against a real account, in a real browser**, and the
+  layer that does it is `pnpm test:voice` (`test/voice/`). A real Chromium with
+  a WAV for a microphone drives the real app against a real session: speech in,
+  transcript on screen, a delegation to the Responses backend, one of Domo's
+  own tools run server-side, and speech back. Confirmed by hand on the way
+  there: `gpt-live-1` and `gpt-6-sol` both resolve on a platform key,
+  `session.start` is accepted, and `session.closed` really does carry the
+  billed audio total. **What is still unmeasured**: the `agent` delegation
+  target against a real coding agent (the responses target is what the live
+  layer exercises), whether 2 s is the right `TRANSCRIPT_IDLE_MS` against long
+  real pauses, and how the 16→24 kHz resample *sounds* to a person rather than
+  to a transcriber.
+- **Typed input does not make GPT-Live speak unless it is asked to, and that
+  is measured.** Appending a typed message as `session.thinking.append` plus
+  `response.item.create` / `response.create` is what OpenAI's own guide
+  prescribes, and the backend does run and answer — but with no audio turn to
+  attach speech to, the live model takes the result in silently, and a close in
+  that state comes back `context_injection_incomplete`. What produces speech is
+  `session.instructions.append`, the documented lever for redirecting the
+  conversation: of the three appends it is the only one that reliably makes the
+  model *act* rather than merely know. So typed input carries a `speak` flag all
+  the way from the browser (`useSpokenReplies()`, a `localStorage` switch beside
+  the voice page's text box) to `VoiceBackend.sendUserText`, and the two
+  providers need **opposite** handling to honour it: Gemini answers a turn
+  unless `turnComplete: false` says not to, GPT-Live stays silent unless
+  instructed. Neither default matches the user's choice on its own.
+- **A delegated function call is keyed by the envelope's `delegation_id`, never
+  by a nested response id** — measured off the wire, and it was a real bug.
+  Only `response.created`, `response.in_progress` and `response.completed`
+  carry a nested `response` object; `response.output_item.added`,
+  `response.output_item.done` and the argument deltas carry none. Keying on
+  `event.response?.id` therefore filed the pending call under `'current'` and
+  looked it up under `resp_…`, so every delegated tool call was collected and
+  silently dropped — the model asked for a tool, Domo ran nothing, and the
+  conversation stalled with no error anywhere. The unit test did not catch it
+  because the fake echoed a response id on *both* events; it now mirrors the
+  real shapes, and fails when the keying is reverted.
 - **The active-row highlight is browser-only.** `test/nuxt` cannot see it: the
   links `mountSuspended` renders do not observe navigation pushed through the
   wrapper's own `$router`, so a test asserting the active class fails whether
