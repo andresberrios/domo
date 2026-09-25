@@ -14,7 +14,7 @@ import {
   createVoiceSession,
   deleteAgentSession,
   deleteInboxMessage,
-  pruneRetiredRecords,
+  pruneRetiredProjects,
   deleteVoiceSession,
   getAgentSession,
   enqueueInboxMessage,
@@ -110,7 +110,7 @@ describe('projects', () => {
     await expect(listDevEnvironments()).resolves.toEqual([
       expect.objectContaining({ name: 'api' })
     ])
-    await expect(pruneRetiredRecords()).resolves.toEqual({ environments: 0, projects: 0 })
+    await expect(pruneRetiredProjects()).resolves.toBe(0)
   })
 })
 

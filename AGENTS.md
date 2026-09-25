@@ -559,6 +559,10 @@ things that are easy to get wrong.
   Boot removes what already-retired rows left behind — only rows this database
   knows: a volume with no row at all may belong to another Domo on the same
   daemon, such as a worktree's dev server, so it is never guessed at by name.
+  **A retired environment's row is kept for good**; it used to be deleted once
+  no session named it, so one retired without ever having an agent vanished
+  without trace. Only a retired project no environment ever lived in is
+  dropped (`pruneRetiredProjects`).
 - **Whether a session can start is derived, and the guard cannot live in one
   place.** A session has one stored visibility state, `archived`; whether it can
   *run* is a question about the place it ran — is its environment retired, is

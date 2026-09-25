@@ -52,8 +52,8 @@ describe('sessionStartability', () => {
   })
 
   it('refuses one whose environment row has gone entirely', () => {
-    // `pruneRetiredRecords` only drops a retired environment once nothing
-    // references it, so this is the case where the row was never kept at all.
+    // Retired rows are kept for good now, but a session can still name an
+    // environment whose row an older install already dropped.
     expect(sessionStartability(session({ devEnvironmentId: 'env_gone' }), null).startable).toBe(false)
   })
 

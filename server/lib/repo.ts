@@ -312,10 +312,10 @@ export async function updateProject(id: string, patch: { name: string }): Promis
  * Retire a project: its environments' containers are already gone, and what is
  * left is the name the records under it point at.
  *
- * There is deliberately no hard delete beside this one. `pruneRetiredRecords`
- * is the only thing that really removes a project or an environment row, and
- * only once nothing references it — an exported `deleteProject` would be an
- * open invitation to take a session's context away with it.
+ * There is deliberately no hard delete beside this one. `pruneRetiredProjects`
+ * is the only thing that really removes a project row, and only one no
+ * environment ever lived in — an exported `deleteProject` would be an open
+ * invitation to take a session's context away with it.
  */
 export async function retireProjectRow(id: string): Promise<Project | null> {
   const row = await queryOne(
@@ -518,24 +518,23 @@ export async function retireDevEnvironmentRow(id: string): Promise<DevEnvironmen
  * project above it once that is empty too — which is what keeps "never delete
  * anything" from meaning "accumulate rows for ever".
  */
-export async function pruneRetiredRecords(): Promise<{ environments: number, projects: number }> {
-  const environments = await query<{ id: string }>(
-    `delete from dev_environments
-      where retired_at is not null
-        and not exists (select 1 from agent_sessions where dev_environment_id = dev_environments.id)
-      returning id`
-  )
+/**
+ * Drop retired projects no environment ever lived in — nothing ran there, so
+ * there is nothing to remember. A retired *environment's* row is never
+ * removed: it is the record that the environment existed, where its sessions
+ * ran, and what boot checks for leftovers on the daemon (`healRetiredEnvironments`).
+ * It used to be deleted once no session named it, which made an environment
+ * retired without ever having an agent vanish without trace.
+ */
+export async function pruneRetiredProjects(): Promise<number> {
   const projects = await query<{ id: string }>(
     `delete from projects
       where retired_at is not null
         and not exists (select 1 from dev_environments where project_id = projects.id)
       returning id`
   )
-  for (const row of environments) {
-    bus.publish({ type: 'dev-environment-changed', devEnvironmentId: row.id })
-  }
   if (projects.length) bus.publish({ type: 'project-changed' })
-  return { environments: environments.length, projects: projects.length }
+  return projects.length
 }
 
 /* ------------------------------------------------------------------ */

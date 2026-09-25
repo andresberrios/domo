@@ -47,7 +47,6 @@ import {
   getDevEnvironment,
   getProject,
   listDevEnvironments,
-  pruneRetiredRecords,
   retireDevEnvironmentRow,
   updateDevEnvironment,
   upsertDevEnvironmentPort
@@ -559,8 +558,8 @@ async function ensureRunning(id: string): Promise<DevEnvironment> {
  * unstartable — `sessionStartability` reads `retiredAt` rather than anything
  * written on the sessions themselves. Nothing about the environment is
  * recoverable, since the checkout only ever existed in the volume, so this is
- * never a thing to restart. The row is dropped for real by
- * `pruneRetiredRecords` once the last session naming it has been purged.
+ * never a thing to restart. The row is kept for good (`pruneRetiredProjects`
+ * says why).
  *
  * Standing those sessions down — stopping their adapters first — belongs to
  * `retireProjectEnvironment` in `projects.ts`, one layer up: importing
@@ -589,7 +588,6 @@ async function retire(id: string): Promise<void> {
   await collectRuntimeVolumes().catch(() => {})
   await collectBrowserVolumes().catch(() => {})
   await retireDevEnvironmentRow(id)
-  await pruneRetiredRecords()
 }
 
 /** Whatever of a retired environment is still on the daemon, by name. Pure. */

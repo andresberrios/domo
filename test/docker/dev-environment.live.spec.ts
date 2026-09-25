@@ -59,7 +59,6 @@ vi.mock('../../server/lib/repo', () => ({
   getDevEnvironment: async (id: string) => state.rows.get(id) ?? null,
   listDevEnvironments: async () => [...state.rows.values()],
   retireDevEnvironmentRow: async (id: string) => { state.rows.delete(id) },
-  pruneRetiredRecords: async () => ({ environments: 0, projects: 0 }),
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
   // The import tells every agent session in the environment where the changes
   // are; this project has no Postgres, and no session ever runs in these.

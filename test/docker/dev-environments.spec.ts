@@ -41,11 +41,9 @@ const dood = {
 }
 const repo = {
   createDevEnvironmentRow: vi.fn(),
-  // Removal tombstones the row rather than deleting it: the retired sessions
-  // that ran here still name it. `pruneRetiredRecords` is what eventually
-  // drops it, once nothing does.
+  // Removal tombstones the row rather than deleting it, and the row is kept
+  // for good: it is the record that the environment existed.
   retireDevEnvironmentRow: vi.fn(),
-  pruneRetiredRecords: vi.fn(async () => ({ environments: 0, projects: 0 })),
   getDevEnvironment: vi.fn(),
   getProject: vi.fn(),
   updateDevEnvironment: vi.fn(),

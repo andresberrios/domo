@@ -12,7 +12,7 @@ import {
   disableCronJobsForAgent,
   listAgentSessionsInEnvironment,
   listDevEnvironments,
-  pruneRetiredRecords,
+  pruneRetiredProjects,
   removeAllAgentSubscriptions,
   retireProjectRow
 } from './repo'
@@ -123,6 +123,6 @@ export async function retireProjectCascade(projectId: string): Promise<void> {
     await retireProjectEnvironment(environment.id)
   }
   await retireProjectRow(projectId)
-  // A project nothing ever ran in leaves no record behind at all.
-  await pruneRetiredRecords()
+  // A project no environment ever lived in leaves no record behind at all.
+  await pruneRetiredProjects()
 }
