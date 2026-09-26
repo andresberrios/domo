@@ -28,7 +28,7 @@ import { GrpcMessageReader, grpcFrame } from './protobuf'
  * stream. Only the calls `rewrites` names are decoded; every other call — and
  * `POST /session`, which stays a byte splice in `proxy.ts` — passes as bytes.
  *
- * Measured by the spike (`docs/spikes/dood-namespace`): ~15 ms per build.
+ * Measured: ~15 ms per build.
  *
  * Teardown is the part that has to be right:
  * - the client resetting its socket once every call is answered is how the
