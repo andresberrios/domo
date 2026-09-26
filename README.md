@@ -32,13 +32,14 @@ With Domo you can:
 - Docker
 - [Caddy](https://caddyserver.com) on your `PATH` (`brew install caddy`).
   Browsers allow the microphone only on HTTPS.
-- A Gemini API key ([AI Studio](https://aistudio.google.com/apikey))
+- A Gemini API key ([AI Studio](https://aistudio.google.com/apikey)) for
+  Gemini Live, or an OpenAI API key for GPT-Live
 - At least one coding agent account. See [Authentication](#authentication).
 
 ## Quick start
 
 ```bash
-cp .env.example .env     # add your Gemini key
+cp .env.example .env     # add your Gemini or OpenAI key
 docker compose up -d     # Postgres :54321, Electric :30000
 pnpm install
 caddy trust              # once, so the browser accepts Caddy's certificate
@@ -253,9 +254,6 @@ Typed messages are answered out loud too; the speaker button beside the text
 box turns that off when you would rather read the reply. Model ids change
 often on both providers — each dropdown is filled from your own key, and you
 can type any id by hand.
-
-If a voice session fails with a model-not-found error, change the Live model in
-**Settings**. Google's Live model ids change often.
 
 ## Development
 
