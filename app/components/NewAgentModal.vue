@@ -76,7 +76,7 @@ const modelItems = computed(() => [
   ...typedModels.value.map(id => ({ label: id, value: id }))
 ])
 
-const { data: settings } = await useFetch('/api/settings', { lazy: true })
+const { data: settings } = useSettings()
 
 // The mode this session starts in, preselected to the install's
 // default for the chosen adapter. Never a sentinel: an empty v-model would show

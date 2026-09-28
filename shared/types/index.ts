@@ -746,6 +746,24 @@ export interface AppSettings {
   browserTools: boolean
 }
 
+/**
+ * What `GET /api/settings` answers, and the only shape of settings the browser
+ * ever sees.
+ *
+ * The one secret stored in `AppSettings` is subtracted here rather than
+ * described in a comment, so a response that forgets to take it out no longer
+ * compiles; each credential is reported as "configured or not" instead.
+ */
+export interface AppSettingsView extends Omit<AppSettings, 'openCodeApiKey'> {
+  hasGeminiKey: boolean
+  hasAnthropicKey: boolean
+  hasOpenAiKey: boolean
+  /** A console key, which is what a container session and the usage poll use. */
+  hasOpenCodeKey: boolean
+  /** A login on this machine, which is all a host session needs and all Domo can see. */
+  hasOpenCodeAuth: boolean
+}
+
 /** Server -> browser events on the /api/stream SSE channel. */
 export type StreamEvent =
   | { type: 'agent-event', agentSessionId: string, event: AgentEvent }

@@ -2,11 +2,13 @@ import { geminiApiKey } from '../lib/gemini'
 import { openAiApiKey } from '../lib/openai'
 import { getSettings } from '../lib/settings'
 import { openCodeCredentialState } from '../lib/opencode-credentials'
+import type { AppSettingsView } from '../../shared/types'
 
-export default defineEventHandler(async () => {
+export default defineEventHandler(async (): Promise<AppSettingsView> => {
   // `openCodeApiKey` is the one secret stored in Settings, and it must not go
   // back out: every other credential here is reported as a boolean, and this
-  // response is what the Settings page holds in memory.
+  // response is what the Settings page holds in memory. The return type
+  // subtracts it, so putting it back would not compile.
   const { openCodeApiKey, ...settings } = await getSettings()
   const openCode = await openCodeCredentialState()
   return {

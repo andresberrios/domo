@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { VoiceSession } from '~~/shared/types'
 
 // Nuxt keys pages by their interpolated path, so going from one conversation to
 // another would remount this page, and its unmount stops the mic. One key for
@@ -21,13 +20,11 @@ watch(
   }
 )
 
-const { data: fetchedSession, refresh: refreshSession } = await useFetch<VoiceSession>(
-  () => `/api/voice-sessions/${sessionId.value}`,
-  { lazy: true }
-)
-// The live row wins, so an auto-generated title shows up as soon as it lands.
+// Read off the shape, like everything else here: an auto-generated title shows
+// up as soon as it lands, and a write does not have to remember to fetch the
+// row back afterwards.
 const { sessions } = useVoiceSessions()
-const session = computed(() => sessions.value.find(row => row.id === sessionId.value) ?? fetchedSession.value)
+const session = computed(() => sessions.value.find(row => row.id === sessionId.value) ?? null)
 const { creating, startConversation } = useNewConversation()
 
 const { messages } = useVoiceMessages(sessionId)
@@ -86,7 +83,6 @@ function sendTyped() {
 
 async function endSession() {
   voice.disconnect({ stopSession: true })
-  await refreshSession()
 }
 
 async function saveTitle() {
@@ -96,7 +92,6 @@ async function saveTitle() {
     body: { title: titleDraft.value.trim() }
   })
   renaming.value = false
-  await refreshSession()
 }
 
 async function nameAutomatically() {

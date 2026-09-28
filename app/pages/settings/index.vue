@@ -3,13 +3,7 @@ import type { AppSettings } from '~~/shared/types'
 import { DEFAULT_VOICE_DELEGATION, DEFAULT_OPENAI_LIVE_MODEL, DEFAULT_OPENAI_VOICE } from '~~/shared/voice-providers'
 
 const toast = useToast()
-const { data: settings, refresh } = await useFetch<AppSettings & {
-  hasGeminiKey: boolean
-  hasAnthropicKey: boolean
-  hasOpenAiKey: boolean
-  hasOpenCodeAuth: boolean
-  hasOpenCodeKey: boolean
-}>('/api/settings')
+const { data: settings, refresh } = await useSettingsForm()
 /**
  * OpenCode has two credentials that do different jobs, and one being present
  * says nothing about the other: a host login runs host sessions and is all

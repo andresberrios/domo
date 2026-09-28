@@ -13,7 +13,6 @@ import type { AgentSession } from '~~/shared/types'
  * case where the user still has to act, so that is the only case shown.
  */
 const props = defineProps<{ session: AgentSession }>()
-const emit = defineEmits<{ retried: [] }>()
 
 const toast = useToast()
 const retrying = ref(false)
@@ -24,8 +23,8 @@ const shown = computed(() => props.session.status === 'error')
 async function retry() {
   retrying.value = true
   try {
+    // Nothing to report back: the status change arrives on the session's row.
     await $fetch(`/api/agents/${props.session.id}/start`, { method: 'POST' })
-    emit('retried')
   } catch (error: any) {
     toast.add({
       title: 'Could not start the adapter',

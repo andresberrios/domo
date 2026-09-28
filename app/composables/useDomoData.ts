@@ -302,29 +302,28 @@ export function useAgentInbox(agentSessionId: MaybeRefOrGetter<string | null | u
   return { messages, queued, isReady }
 }
 
-export function useVoiceMessages(voiceSessionId: MaybeRefOrGetter<string | null | undefined>) {
-  const { data, isReady } = useLiveQuery(
-    (q) => {
-      const id = toValue(voiceSessionId)
-      if (!id) return undefined
-      return q.from({ message: voiceMessagesCollection(id) })
-    },
-    [() => toValue(voiceSessionId)]
-  )
+function toVoiceMessage(row: any): VoiceMessage {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    seq: asNumber(row.seq),
+    role: row.role,
+    text: row.text ?? '',
+    toolName: row.tool_name ?? null,
+    meta: row.meta ?? null,
+    createdAt: row.created_at
+  }
+}
 
-  const messages = computed<VoiceMessage[]>(() =>
-    (data.value ?? [])
-      .map((row: any) => ({
-        id: row.id,
-        sessionId: row.session_id,
-        seq: asNumber(row.seq),
-        role: row.role,
-        text: row.text ?? '',
-        toolName: row.tool_name ?? null,
-        meta: row.meta ?? null,
-        createdAt: row.created_at
-      }))
-      .sort((a, b) => a.seq - b.seq)
+/** One conversation's transcript, in order. A growing log, like `useAgentEvents`. */
+export function useVoiceMessages(voiceSessionId: MaybeRefOrGetter<string | null | undefined>) {
+  const { items: messages, isReady } = useSyncedLog<any, VoiceMessage>(
+    () => {
+      const id = toValue(voiceSessionId)
+      return id ? voiceMessagesCollection(id) : null
+    },
+    toVoiceMessage,
+    bySeq
   )
 
   return { messages, isReady }
