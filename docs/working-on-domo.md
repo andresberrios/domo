@@ -41,8 +41,13 @@ Then open `https://localhost:3766`. The last four variables stop the usage
 poller and Claude Code sessions from contacting real accounts. Remove them if
 the check needs a real agent.
 
-- Do not run `pnpm test:electric` at the same time. It resets the same
-  database.
+- Do not run `pnpm test` at the same time. It resets the same database —
+  `electric` is one of the four projects it runs, so `pnpm test:electric` is
+  not the only way to empty what you put there.
+- For a check that needs a transcript the size of a real one,
+  `scripts/seed-perf-db.sh` copies a slice of the developer's own database into
+  it and `scripts/simulate-stream.mjs` rewrites an event row the way a
+  streaming turn does. Seed after a test run, not before.
 - When you are done, stop the server by its port. Then remove the
   `domo-<x>-runtime-*` and `domo-<x>-browser-*` volumes it built, and the
   `domo-<x>-port-helper` container and image if it started one.
