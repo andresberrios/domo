@@ -1,5 +1,5 @@
-import { access, copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { access, copyFile, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { RepositoryState, WorkspaceSeedReport } from '../../../shared/types'
 import { canonicalGitdirFileContents } from './canonical-mounts'
@@ -156,16 +156,60 @@ export async function createHostWorktree(input: CreateHostWorktreeInput): Promis
 export async function removeHostWorktree(input: { repoPath: string, environmentId: string }): Promise<string[]> {
   const worktreePath = hostWorktreePath(input.repoPath, input.environmentId)
   const gitdirFilePath = containerGitdirFilePath(input.repoPath, input.environmentId)
-  await run('git', ['-C', input.repoPath, 'worktree', 'remove', '--force', '--force', worktreePath], { allowFailure: true })
-    .catch(() => null)
-  await rm(worktreePath, { recursive: true, force: true }).catch(() => null)
-  await rm(gitdirFilePath, { force: true }).catch(() => null)
+  const registration = await domoRegistration(input.repoPath, worktreePath)
+  if (registration === 'foreign' || (registration === 'none' && await exists(worktreePath))) {
+    throw new NotDomosWorktreeError(worktreePath)
+  }
+  if (registration === 'domo') {
+    await run('git', ['-C', input.repoPath, 'worktree', 'remove', '--force', '--force', worktreePath], { allowFailure: true })
+      .catch(() => null)
+    await rm(worktreePath, { recursive: true, force: true }).catch(() => null)
+  }
+  const pointer = await readFile(gitdirFilePath, 'utf8').catch(() => null)
+  if (pointer?.startsWith('gitdir: /worktrees/.base/')) await rm(gitdirFilePath, { force: true }).catch(() => null)
   const left: string[] = []
   for (const path of [worktreePath, gitdirFilePath]) if (await exists(path)) left.push(path)
   return left
 }
 
 const exists = (path: string) => access(path).then(() => true, () => false)
+
+/** A path that is claimed but is not the worktree Domo made there. Never removed; said. */
+export class NotDomosWorktreeError extends Error {
+  constructor(path: string) {
+    super(
+      `${path} is not the locked worktree Domo made for this environment, so it was left alone. `
+      + 'If it is not yours, remove it and run the cleanup again.'
+    )
+  }
+}
+
+/** A path as git records it: symlinks in its existing part resolved (macOS's /var is /private/var). */
+async function canonicalPath(path: string): Promise<string> {
+  const real = await realpath(path).catch(() => null)
+  if (real) return real
+  const parent = await realpath(dirname(path)).catch(() => dirname(path))
+  return join(parent, basename(path))
+}
+
+/**
+ * Whether git has a worktree registered at `path`, and whether it is Domo's:
+ * locked with Domo's own reason, as `createHostWorktree` makes every one.
+ * Something else there — the developer's own worktree, a directory nobody
+ * registered — is never force-removed on a row's say-so.
+ */
+async function domoRegistration(repoPath: string, path: string): Promise<'domo' | 'foreign' | 'none'> {
+  const target = await canonicalPath(path)
+  const listed = await run('git', ['-C', repoPath, 'worktree', 'list', '--porcelain'], { allowFailure: true })
+    .catch(() => ({ stdout: '' }))
+  for (const block of listed.stdout.split('\n\n')) {
+    const lines = block.split('\n')
+    const worktree = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length)
+    if (!worktree || await canonicalPath(worktree) !== target) continue
+    return lines.includes(`locked ${LOCK_REASON}`) ? 'domo' : 'foreign'
+  }
+  return 'none'
+}
 
 /** Whether a worktree is on disk for this environment — the observation the leftover sweep decides on. */
 export function hostWorktreeExists(repoPath: string, environmentId: string): Promise<boolean> {

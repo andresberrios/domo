@@ -37,6 +37,7 @@ const environment: DevEnvironment = {
   updatedAt: '2026-01-02T00:00:00.000Z',
   retiredAt: null,
   leftovers: [],
+  cleanedAt: null,
 }
 
 /** One agent inside the environment, one directly in the host checkout. */
@@ -113,6 +114,7 @@ registerEndpoint('/api/settings', () => ({ defaultCwd: '/work', defaultAgentMode
 registerEndpoint('/api/projects/p1', { method: 'PATCH', handler: record('/api/projects/p1', 'PATCH') })
 registerEndpoint('/api/projects/p1', { method: 'DELETE', handler: record('/api/projects/p1', 'DELETE') })
 registerEndpoint('/api/dev-environments', { method: 'POST', handler: record('/api/dev-environments', 'POST') })
+registerEndpoint('/api/projects/p1/repository', () => ({ repository: true, hasCommits: true, filesToCommit: null }))
 
 const Harness = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(ProjectPage) })
@@ -200,12 +202,10 @@ describe('project details page', { timeout: 30_000 }, () => {
     })
     create.click()
 
-    // `discard` unless the switch was turned on: the host's uncommitted work must
-    // not ride along invisibly inside whatever branch comes back out.
     await vi.waitFor(() => expect(calls).toContainEqual({
       method: 'POST',
       path: '/api/dev-environments',
-      body: { projectId: 'p1', name: 'feature-billing', workingTree: 'discard' }
+      body: { projectId: 'p1', name: 'feature-billing' }
     }))
 
     wrapper.unmount()

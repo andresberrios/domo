@@ -111,6 +111,10 @@ alter table dev_environments add column if not exists retired_at text;
 -- state; each entry names what is blocking it, and the row is kept even once
 -- nothing else references it so that a later cleanup can still find them.
 alter table dev_environments add column if not exists leftovers jsonb not null default '[]'::jsonb;
+-- When a sweep confirmed a retired environment owes nothing. From then on the
+-- row claims nothing, so a path or a name derived from its id is never removed
+-- again, whatever later appears there. Written once.
+alter table dev_environments add column if not exists cleaned_at text;
 do $$ begin
   if exists (select 1 from information_schema.columns
               where table_name = 'dev_environments' and column_name = 'deleted_at') then

@@ -139,7 +139,12 @@ Every environment gets a locked git worktree in
   `docker network prune`, because it would remove the developer's own
   networks.
 - **A retired environment's row is kept for good**, because the row is what
-  claims its leftovers.
+  claims its leftovers. It stops claiming once a sweep has seen nothing of it
+  left (`cleaned_at`). A path or name reusing its id after that belongs to
+  somebody else. It is never marked while Docker cannot be asked, anything is
+  owed, or its project is missing.
+- **A claimed worktree path is force-removed only if git lists it locked with
+  Domo's reason.** Anything else there is reported, not removed.
 - **`retired_at` is lifecycle, and `status` is health.** A retired row that
   still owes resources has `status: 'error'`. The UI keys on `status`, never on
   `last_error`.

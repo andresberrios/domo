@@ -146,7 +146,8 @@ export function useProjects() {
       repoPath: row.repo_path,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      retiredAt: row.retired_at ?? null
+      retiredAt: row.retired_at ?? null,
+      cleanedAt: row.cleaned_at ?? null
     })).sort((a, b) => a.name.localeCompare(b.name))
   )
   const projects = computed(() =>
@@ -175,7 +176,8 @@ export function useDevEnvironments() {
       leftovers: row.leftovers ?? [],
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-      retiredAt: row.retired_at ?? null
+      retiredAt: row.retired_at ?? null,
+      cleanedAt: row.cleaned_at ?? null
     })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   )
   const environments = computed(() =>

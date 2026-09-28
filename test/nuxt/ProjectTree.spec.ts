@@ -38,6 +38,7 @@ const environment: DevEnvironment = {
   updatedAt: '2026-01-02T00:00:00.000Z',
   retiredAt: null,
   leftovers: [],
+  cleanedAt: null,
 }
 
 const agent: AgentSession = {

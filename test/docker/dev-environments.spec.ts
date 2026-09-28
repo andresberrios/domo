@@ -72,6 +72,8 @@ const repo = {
   // What the sweep after a cleanup writes when Docker still has something a
   // retired row claims.
   setEnvironmentLeftovers: vi.fn(async (_id: string, _leftovers: unknown[], _health?: unknown) => null),
+  // What ends a retired row's claim, once a pass has seen nothing of it left.
+  markEnvironmentCleaned: vi.fn(async (_id: string) => null),
   getDevEnvironment: vi.fn(),
   getProject: vi.fn(),
   updateDevEnvironment: vi.fn(),
@@ -155,6 +157,7 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     updatedAt: '2026-01-01T00:00:00.000Z',
     retiredAt: null,
     leftovers: [],
+    cleanedAt: null,
     ...overrides
   }
 }
@@ -559,6 +562,62 @@ describe('start, stop and remove', () => {
       expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith('env_1',
         [expect.objectContaining({ kind: 'worktree', name: worktree, error: expect.stringContaining(worktree) })],
         expect.objectContaining({ status: 'error' }))
+    })
+
+    it('ends the row\'s claim once a pass has seen nothing of it left, and never claims again', async () => {
+      repo.getDevEnvironment.mockResolvedValue(environment())
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({ containers: ['domo-dev-env_1'], labels: { 'domo-dev-env_1': { envId: 'env_1' } } })
+      inspectContainer.mockResolvedValue(null)
+
+      await retireEnvironment('env_1')
+      expect(repo.markEnvironmentCleaned).toHaveBeenCalledWith('env_1')
+
+      // Something later appears at the same path and under the same derived
+      // name. A cleaned row claims neither, and they are its id's, so known.
+      hostWorktree.removeHostWorktree.mockClear()
+      hostWorktree.onDisk.add(worktree)
+      const fake = daemon({ containers: ['domo-dev-env_1'] })
+      repo.listDevEnvironments.mockResolvedValue([{ ...retired, cleanedAt: '2026-01-03T00:00:00.000Z' }])
+
+      const report = await reconcileEnvironmentResources()
+
+      expect(hostWorktree.removeHostWorktree).not.toHaveBeenCalled()
+      expect(fake.containers).toEqual(['domo-dev-env_1'])
+      expect(report.removed).toEqual([])
+    })
+
+    it('keeps the claim while anything is owed, and when Docker could not be asked', async () => {
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({})
+      hostWorktree.removeHostWorktree.mockResolvedValueOnce([worktree])
+      await reconcileEnvironmentResources()
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+
+      run.mockRejectedValue(new Error('docker ps failed: Cannot connect to the Docker daemon'))
+      await reconcileEnvironmentResources()
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+    })
+
+    it('keeps the claim when its project is not there to find the worktree by', async () => {
+      repo.listProjects.mockResolvedValue([])
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({})
+
+      await reconcileEnvironmentResources()
+
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+    })
+
+    it('reports a claimed path that is not Domo\'s worktree, and leaves it', async () => {
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({})
+      hostWorktree.removeHostWorktree.mockRejectedValueOnce(new Error(`${worktree} is not the locked worktree Domo made for this environment, so it was left alone.`))
+
+      const report = await reconcileEnvironmentResources()
+
+      expect(report.leftovers).toEqual([expect.objectContaining({ kind: 'worktree', error: expect.stringContaining('left alone') })])
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
     })
 
     it('is never touched for a live environment, and one no row knows is reported, not removed', async () => {

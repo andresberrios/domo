@@ -314,6 +314,13 @@ export interface DevEnvironment {
    * retries this in the background.
    */
   leftovers: EnvironmentLeftover[]
+  /**
+   * When a sweep confirmed the retired environment owes nothing. Only then does
+   * the row stop claiming what is named from its id: nothing can be made for a
+   * retired environment, so there is nothing left to find, and a directory or a
+   * name that happens to reuse the id later is somebody else's.
+   */
+  cleanedAt: string | null
 }
 
 /** `worktree` is an environment's checkout on the host; its name is the path. */

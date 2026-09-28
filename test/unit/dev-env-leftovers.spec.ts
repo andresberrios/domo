@@ -40,6 +40,7 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     updatedAt: '2026-01-01T00:00:00.000Z',
     retiredAt: null,
     leftovers: [],
+    cleanedAt: null,
     ...overrides
   }
 }

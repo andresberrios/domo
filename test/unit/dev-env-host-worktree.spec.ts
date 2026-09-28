@@ -226,6 +226,35 @@ describe('removeHostWorktree', () => {
     expect(await git(repo, 'worktree', 'list')).not.toContain(worktreePath)
   })
 
+  it('refuses a directory at the claimed path that is not a worktree at all, and leaves it', async () => {
+    const lookalike = join(root, '.domo-worktrees', 'env_1')
+    await mkdir(lookalike, { recursive: true })
+    await writeFile(join(lookalike, 'notes.md'), 'mine\n')
+
+    await expect(removeHostWorktree({ repoPath: repo, environmentId: 'env_1' })).rejects.toThrow(/not the locked worktree Domo made/)
+    expect(await readFile(join(lookalike, 'notes.md'), 'utf8')).toBe('mine\n')
+  })
+
+  it('refuses the developer\'s own worktree at the claimed path, and leaves both it and its entry', async () => {
+    const theirs = join(root, '.domo-worktrees', 'env_1')
+    await mkdir(join(root, '.domo-worktrees'), { recursive: true })
+    await git(repo, 'worktree', 'add', '--quiet', '--detach', theirs, 'HEAD')
+    await writeFile(join(theirs, 'wip.txt'), 'uncommitted\n')
+
+    await expect(removeHostWorktree({ repoPath: repo, environmentId: 'env_1' })).rejects.toThrow(/left alone/)
+    expect(await readFile(join(theirs, 'wip.txt'), 'utf8')).toBe('uncommitted\n')
+    expect(await git(repo, 'worktree', 'list')).toContain(theirs)
+  })
+
+  it('leaves a file at the override\'s path that is not Domo\'s override', async () => {
+    await mkdir(join(root, '.domo-worktrees'), { recursive: true })
+    const file = join(root, '.domo-worktrees', 'env_1.container-gitdir')
+    await writeFile(file, 'something else\n')
+
+    await removeHostWorktree({ repoPath: repo, environmentId: 'env_1' })
+    expect(await readFile(file, 'utf8')).toBe('something else\n')
+  })
+
   it('is a no-op for an environment that never had a worktree', async () => {
     expect(await removeHostWorktree({ repoPath: repo, environmentId: 'env_never' })).toEqual([])
     expect(await git(repo, 'worktree', 'list')).toBe(`${repo}  ${await git(repo, 'rev-parse', '--short', 'HEAD')} [main]`)

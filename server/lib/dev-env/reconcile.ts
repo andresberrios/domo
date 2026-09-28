@@ -1,5 +1,5 @@
 import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover, Project } from '../../../shared/types'
-import { listDevEnvironments, listProjects, setEnvironmentLeftovers } from '../repo'
+import { listDevEnvironments, listProjects, markEnvironmentCleaned, setEnvironmentLeftovers } from '../repo'
 import { hostWorktreeExists, hostWorktreePath, listHostWorktrees, removeHostWorktree } from './host-worktree'
 import {
   describeLeftovers,
@@ -69,8 +69,11 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   // Worth the early return: an install that does not use development
   // environments at all must not log a Docker error every half hour.
   if (!environments.length) return EMPTY
+  // A retired row claims what is named from its id only until a pass has seen
+  // none of it left (`cleanedAt`). Nothing can be made for it after that, and a
+  // path or name reusing its id later belongs to somebody else.
   const claimants = environments.filter(
-    environment => environment.retiredAt || environment.leftovers.length
+    environment => (environment.retiredAt && !environment.cleanedAt) || environment.leftovers.length
   )
 
   let present
@@ -105,6 +108,11 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
     const settled = !owed.length && !environment.leftovers.length
       && (!wanted || (environment.status === wanted.status && environment.lastError === wanted.lastError))
     if (!settled) await setEnvironmentLeftovers(environment.id, owed, wanted)
+    // Confirmed clean: Docker was asked (an unreachable one returned above) and
+    // the host was looked at. Without its project the worktree could not be,
+    // so that row keeps its claim.
+    const looked = projects.some(project => project.id === environment.projectId)
+    if (environment.retiredAt && !owed.length && looked) await markEnvironmentCleaned(environment.id)
   }
   return { removed: outcome.removed, leftovers: outcome.failed, unattributed }
 }
@@ -130,12 +138,13 @@ export async function removeWorktreeLeftovers(
     const claimed = !!environment.retiredAt || environment.leftovers.some(owed => owed.kind === 'worktree')
     if (!claimed || !(await hostWorktreeExists(repoPath, environment.id))) continue
     const leftover = { kind: 'worktree' as const, name: hostWorktreePath(repoPath, environment.id), environmentId: environment.id }
-    const left = await removeHostWorktree({ repoPath, environmentId: environment.id }).catch(error => [String(error)])
-    if (left.length) {
-      outcome.failed.push({ ...leftover, error: `Could not delete ${left.join(', ')}. Delete it by hand and run the cleanup again.` })
-    } else {
-      outcome.removed.push(leftover)
-    }
+    const result = await removeHostWorktree({ repoPath, environmentId: environment.id })
+      .then(left => left.length
+        ? { error: `Could not delete ${left.join(', ')}. Delete it by hand and run the cleanup again.` }
+        : { error: null },
+      error => ({ error: error instanceof Error ? error.message : String(error) }))
+    if (result.error) outcome.failed.push({ ...leftover, error: result.error })
+    else outcome.removed.push(leftover)
   }
   return outcome
 }

@@ -150,7 +150,8 @@ function mapDevEnvironment(r: any): DevEnvironment {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     retiredAt: r.retired_at ?? null,
-    leftovers: r.leftovers ?? []
+    leftovers: r.leftovers ?? [],
+    cleanedAt: r.cleaned_at ?? null
   }
 }
 
@@ -549,6 +550,23 @@ export async function setEnvironmentLeftovers(
     `update dev_environments set ${sets.join(', ')}
       where id = $1 and (${changed.join(' or ')}) returning *`,
     params
+  )
+  if (!row) return null
+  bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
+  return mapDevEnvironment(row)
+}
+
+/**
+ * Record that a sweep observed nothing left of a retired environment. Once,
+ * and only for a retired row: it is what ends the row's claim on everything
+ * named from its id (`dev-env/reconcile.ts`).
+ */
+export async function markEnvironmentCleaned(id: string): Promise<DevEnvironment | null> {
+  const now = nowIso()
+  const row = await queryOne(
+    `update dev_environments set cleaned_at = $2, updated_at = $2
+      where id = $1 and retired_at is not null and cleaned_at is null returning *`,
+    [id, now]
   )
   if (!row) return null
   bus.publish({ type: 'dev-environment-changed', devEnvironmentId: id })
