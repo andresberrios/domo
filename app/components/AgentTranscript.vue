@@ -149,56 +149,105 @@ const totalSize = computed(() => virtualizer.value.getTotalSize())
  */
 const pinned = ref(true)
 const BOTTOM_THRESHOLD = 64
+let lastScrollTop = 0
 
 function distanceFromBottom(el: HTMLElement) {
   return el.scrollHeight - el.scrollTop - el.clientHeight
 }
 
+/**
+ * Only the reader going *back* unpins.
+ *
+ * Two things this must not mistake for that. "Not at the bottom any more" is
+ * not it: a row that measures taller than its estimate, or one that has just
+ * been appended, moves the bottom away without the reader having done
+ * anything. Nor is a scroll position that *fell*: rows that measure shorter
+ * than their estimate shrink the page under a view that is pinned to the end,
+ * and the browser pulls the scroll down to fit. That one unpinned the
+ * transcript mid-settle and left it stranded — a hundred thousand pixels above
+ * the newest message after the condensed switch, which is what made this look
+ * like the switch was broken.
+ *
+ * So a scroll that `followTail` is responsible for is ignored, and the window
+ * outlives the loop by a moment because scroll events arrive after the
+ * assignment that caused them.
+ */
+const FOLLOW_GRACE_MS = 120
+let followingUntil = 0
+
 function onScroll() {
   const el = scroller.value
   if (!el) return
-  pinned.value = distanceFromBottom(el) <= BOTTOM_THRESHOLD
+  // At the bottom is pinned, whatever got us there — asked first, because a
+  // view that has arrived cannot also be a reader who has left, and answering
+  // the other question first once stranded the button on screen at the bottom
+  // of a transcript that had just shrunk under it.
+  if (distanceFromBottom(el) <= BOTTOM_THRESHOLD) pinned.value = true
+  else if (performance.now() > followingUntil && el.scrollTop < lastScrollTop - 1) pinned.value = false
+  lastScrollTop = el.scrollTop
 }
 
-function scrollToEnd(behavior: ScrollBehavior = 'auto') {
-  const el = scroller.value
-  if (!el) return
-  el.scrollTo({ top: el.scrollHeight, behavior })
+/**
+ * Go to the newest row, and keep going until it really is on screen.
+ *
+ * Arriving at the bottom of a virtual list is not one scroll. A row's height is
+ * a guess until it has been drawn, the end of the list is the sum of those
+ * guesses, and scrolling there is what draws the rows that correct them — so
+ * the destination moves as you approach it. On a condensed transcript the
+ * guesses are only a little wrong and one extra frame covers it; expanded, the
+ * same list is thousands of rows estimated at four times their real height, and
+ * chasing `scrollHeight` frame by frame never caught up inside any budget worth
+ * spending.
+ *
+ * `scrollToEnd` is the virtualiser's own answer to this, and it reconciles
+ * against its own measurements rather than against the DOM's lagging height.
+ */
+function followTail() {
+  followingUntil = performance.now() + FOLLOW_GRACE_MS
+  virtualizer.value.scrollToEnd()
 }
 
 function jumpToLatest() {
   pinned.value = true
-  scrollToEnd('smooth')
+  followTail()
 }
 
 /**
- * Follow the tail.
+ * Condensing rewrites every row, so wherever the reader was has no counterpart
+ * on the other side of the switch — a scroll position kept across it lands
+ * somewhere arbitrary. The newest message is the one place that means the same
+ * thing in both views, so that is where the switch leaves them.
  *
- * Rows are measured as they are drawn, so the scroll height grows for a moment
- * after new content lands and a single scroll lands short. Two frames of
- * follow-up is what it takes for a freshly measured row to settle.
+ * Declared before the watcher below, and it has to be: both answer the same
+ * flush, in the order they were made, and the one below reads what this one
+ * writes. The other way round it read the pin from before the switch, which is
+ * how turning condensing off used to strand the view where the condensed
+ * transcript had ended.
  */
-function followTail() {
-  if (!pinned.value) return
-  scrollToEnd()
-  requestAnimationFrame(() => {
-    if (pinned.value) scrollToEnd()
-  })
-}
-
-watch(() => items.value.length, () => nextTick(followTail))
-// Streamed text grows the last row without adding one, so length alone is not
-// enough to stay pinned to the bottom of it.
-watch(() => items.value[items.value.length - 1], () => nextTick(followTail))
-
-onMounted(() => {
-  nextTick(() => {
-    scrollToEnd()
-    // The first paint measures only the rows the estimate put on screen; once
-    // they report their real heights the end has moved.
-    setTimeout(() => followTail(), 120)
-  })
+watch(() => props.condensed, () => {
+  pinned.value = true
 })
+
+/**
+ * What to follow: the height of the content, not the list behind it.
+ *
+ * Watching the items is watching the wrong thing, and by a whole layout pass.
+ * They change first; the box only grows once the virtualiser has re-measured
+ * for them, which is frames later — so a follow started on the item change
+ * found a scroller that still had its old height and decided it was already at
+ * the bottom of it.
+ *
+ * `totalSize` is the virtualiser's own answer, so it moves when the content
+ * really does — a new row, a row that measured differently, streamed text
+ * growing the last one — and never before.
+ */
+watch(totalSize, () => {
+  if (pinned.value) followTail()
+})
+
+// An empty transcript has no height to follow, so nothing above ever fires for
+// it; this is what makes the first rows land at the bottom rather than the top.
+onMounted(() => nextTick(() => followTail()))
 </script>
 
 <template>
@@ -249,7 +298,7 @@ onMounted(() => {
       variant="outline"
       size="sm"
       aria-label="Jump to the latest message"
-      class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-lg"
+      class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-default shadow-lg"
       @click="jumpToLatest"
     />
   </div>
