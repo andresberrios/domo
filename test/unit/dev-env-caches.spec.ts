@@ -13,6 +13,7 @@ describe('resolveCaches', () => {
     expect(caches.env.pnpm_config_store_dir).toBe(`${CACHES_ROOT}/pnpm`)
     // And the global virtual store is what makes the project's node_modules symlinks, not copies.
     expect(caches.env.pnpm_config_enable_global_virtual_store).toBe('true')
+    expect(caches.env.pnpm_config_shamefully_hoist).toBe('true')
     for (const name of Object.keys(BUILTIN_CACHES)) {
       for (const variable of Object.keys(BUILTIN_CACHES[name]!)) expect(caches.env, variable).toHaveProperty(variable)
     }

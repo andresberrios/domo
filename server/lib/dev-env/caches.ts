@@ -13,7 +13,13 @@ import { resourcePrefix, run } from './docker'
  * symlinks into the store — which is what makes sharing it save disk as well
  * as downloads, because the store and the checkout are on different mounts and
  * a hardlink cannot cross one (measured: a plain store install copies). A Vite
- * dev server was measured serving that layout.
+ * dev server was measured serving that layout. Hoisting is public
+ * (`shamefully_hoist`) because a package in the store cannot reach the
+ * project's hidden hoist directory by walking up from its real path. Measured:
+ * Nuxt resolves a module's module dependencies that way (`@nuxt/icon` for
+ * `@nuxt/ui`), and `nuxt prepare` failed until they were at the top of
+ * `node_modules`. The cost is that the project's own code can import a package
+ * it did not declare here, where the host's install would refuse it.
  *
  * Only caches that are safe to share are built in: each is keyed by content
  * or by version, never by the project that wrote it. A project adds its own in
@@ -27,7 +33,8 @@ export const CACHES_ROOT = '/opt/domo-caches'
 export const BUILTIN_CACHES: Record<string, Record<string, string>> = {
   pnpm: {
     pnpm_config_store_dir: `${CACHES_ROOT}/pnpm`,
-    pnpm_config_enable_global_virtual_store: 'true'
+    pnpm_config_enable_global_virtual_store: 'true',
+    pnpm_config_shamefully_hoist: 'true'
   },
   npm: { npm_config_cache: `${CACHES_ROOT}/npm` },
   yarn: { YARN_CACHE_FOLDER: `${CACHES_ROOT}/yarn`, YARN_GLOBAL_FOLDER: `${CACHES_ROOT}/yarn-berry` },

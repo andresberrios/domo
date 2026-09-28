@@ -91,8 +91,9 @@ A development environment is a long-lived container with its own git worktree
 of a project, created beside your checkout in `.domo-worktrees/` and mounted
 into the container. Several agents can share one environment.
 
-- The worktree starts at your last commit; uncommitted changes stay on your
-  machine. A project with no commits yet is offered its first one when you
+- The worktree is on a branch named after the environment, made at your last
+  commit, or checked out if you already have that branch; uncommitted changes
+  stay on your machine. A project with no commits yet is offered its first one when you
   create an environment. Gitignored `.env` files are copied in.
   `node_modules`, `.venv` and other dependency folders never are: without a
   `postCreateCommand`, Domo installs by lockfile inside the environment

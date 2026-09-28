@@ -117,7 +117,9 @@ Every environment gets a locked git worktree in
   variable. pnpm reads `pnpm_config_store_dir` and ignores `store-dir` in an
   `.npmrc` and `npm_config_store_dir`. The store and the checkout are on
   different mounts, and a hardlink cannot cross one, so without pnpm's global
-  virtual store every install copies.
+  virtual store every install copies. With it, hoisting has to be public
+  (`shamefully_hoist`): a package in the store cannot reach the project's
+  hidden hoist directory, and Nuxt fails to resolve module dependencies.
 - **On a Linux daemon the checkout keeps the host's uids**, so creation
   renumbers the remote user to the worktree's owner (`user-alignment.ts`).
   Docker Desktop maps ownership and needs nothing.

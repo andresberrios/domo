@@ -1214,6 +1214,8 @@ describe('createEnvironment', () => {
       repoPath,
       projectId: 'prj_1',
       environmentId: id,
+      // The environment's name is the branch it works on.
+      branch: 'api-work',
       copyIgnored: undefined
     })
     // The only volumes made are the shared caches: nothing holds, or is tarred into, a copy of the checkout.

@@ -283,6 +283,7 @@ async function create(
       repoPath: project.repoPath,
       projectId: project.id,
       environmentId: id,
+      branch: safeName,
       copyIgnored: resolved.config.copyIgnored
     })
     const canonicalPath = canonicalWorkspacePath(id)

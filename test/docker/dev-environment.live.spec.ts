@@ -883,7 +883,7 @@ describe('a retirement whose volume removal is refused', () => {
     const retired = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
     created.push(retired)
     for (const id of [live, retired]) {
-      await createHostWorktree({ repoPath: repo, projectId: 'prj_live', environmentId: id })
+      await createHostWorktree({ repoPath: repo, projectId: 'prj_live', environmentId: id, branch: id })
       state.rows.set(id, {
         id,
         projectId: 'prj_live',

@@ -178,7 +178,7 @@ const cascade = computed(() => {
             </li>
           </ul>
           <p v-else class="rounded-lg border border-dashed border-default px-4 py-6 text-center text-sm text-muted">
-            No environments yet. Each one is a container with a private copy of this checkout.
+            No environments yet. Each one is a container with its own git worktree and branch of this checkout.
           </p>
         </section>
 

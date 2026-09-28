@@ -63,10 +63,11 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-const create = (copyIgnored?: string[], environmentId = 'env_1') => createHostWorktree({
+const create = (copyIgnored?: string[], environmentId = 'env_1', branch = environmentId) => createHostWorktree({
   repoPath: repo,
   projectId: 'prj_1',
   environmentId,
+  branch,
   copyIgnored
 })
 
@@ -85,6 +86,28 @@ describe('createHostWorktree', () => {
     expect(result.seed).toEqual({ paths: ['a.txt', 'b.txt'], copied: ['.env'] })
     // Only ever read: the host keeps its edit.
     expect(await readFile(join(repo, 'a.txt'), 'utf8')).toBe('edited on the host\n')
+  })
+
+  it('works on a branch named for the environment, so its commits outlive the worktree', async () => {
+    const { worktreePath } = await create(undefined, 'env_1', 'feature-auth')
+    expect(await git(worktreePath, 'symbolic-ref', '--short', 'HEAD')).toBe('feature-auth')
+    expect(await git(repo, 'rev-parse', 'feature-auth')).toBe(await git(repo, 'rev-parse', 'HEAD'))
+
+    await git(worktreePath, '-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '--quiet', '--allow-empty', '-m', 'agent work')
+    expect(await removeHostWorktree({ repoPath: repo, environmentId: 'env_1' })).toEqual([])
+    expect(await git(repo, 'log', '-1', '--format=%s', 'feature-auth')).toBe('agent work')
+  })
+
+  it('continues on a branch that already exists, and refuses one checked out elsewhere', async () => {
+    await git(repo, 'branch', 'existing')
+    await git(repo, '-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '--quiet', '--allow-empty', '-m', 'after the branch')
+    const { worktreePath } = await create(undefined, 'env_1', 'existing')
+    expect(await git(worktreePath, 'log', '-1', '--format=%s')).toBe('initial')
+
+    await expect(create(undefined, 'env_2', 'existing')).rejects.toThrow(/Could not check out the branch existing/)
+    await expect(create(undefined, 'env_3', 'main')).rejects.toThrow(/Could not check out the branch main/)
+    await expect(create(undefined, 'env_4', 'bad..name')).rejects.toThrow(/cannot be a git branch name/)
+    expect(await exists(join(root, '.domo-worktrees', 'env_4'))).toBe(false)
   })
 
   it('locks the worktree, so a prune run anywhere that cannot see its directory leaves it alone', async () => {
@@ -160,7 +183,7 @@ describe('createHostWorktree', () => {
     await mkdir(empty)
     await git(empty, 'init', '--quiet')
 
-    await expect(createHostWorktree({ repoPath: empty, projectId: 'prj_1', environmentId: 'env_1' }))
+    await expect(createHostWorktree({ repoPath: empty, projectId: 'prj_1', environmentId: 'env_1', branch: 'env_1' }))
       .rejects.toThrow(/has no commits yet/)
     expect(await exists(join(root, '.domo-worktrees'))).toBe(false)
   })
@@ -187,7 +210,7 @@ describe('repositoryState and createInitialCommit', () => {
     expect(await repositoryState(fresh)).toMatchObject({ hasCommits: true })
     expect((await git(fresh, 'ls-files')).split('\n').sort()).toEqual(['.gitignore', 'index.ts'])
     // And a worktree can now be cut from it.
-    await expect(createHostWorktree({ repoPath: fresh, projectId: 'prj_2', environmentId: 'env_fresh' })).resolves.toBeTruthy()
+    await expect(createHostWorktree({ repoPath: fresh, projectId: 'prj_2', environmentId: 'env_fresh', branch: 'fresh' })).resolves.toBeTruthy()
   })
 
   it('makes a plain folder a repository first', async () => {

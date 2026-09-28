@@ -81,6 +81,16 @@ async function headExists(repoPath: string): Promise<boolean> {
   return !!head.stdout.trim()
 }
 
+/** `name` as a branch git accepts, or a readable refusal. */
+async function checkBranchName(repoPath: string, name: string): Promise<string> {
+  const checked = await run('git', ['-C', repoPath, 'check-ref-format', '--branch', name], { allowFailure: true })
+    .catch(() => ({ stdout: '' }))
+  if (!checked.stdout.trim()) {
+    throw new Error(`"${name}" cannot be a git branch name. Name the environment differently.`)
+  }
+  return checked.stdout.trim()
+}
+
 /**
  * Ignored files of the host checkout that match `globs`, relative to it.
  * `--directory` collapses an ignored directory into one entry, so a
@@ -98,6 +108,12 @@ export interface CreateHostWorktreeInput {
   repoPath: string
   projectId: string
   environmentId: string
+  /**
+   * The branch the worktree works on: made at the project's `HEAD` if it does
+   * not exist, checked out if it does. Never a detached `HEAD`, whose commits
+   * nothing would reach once the worktree is removed.
+   */
+  branch: string
   /** Globs of ignored files to copy in; `DEFAULT_COPY_IGNORED` when absent, nothing when empty. */
   copyIgnored?: string[]
 }
@@ -127,10 +143,17 @@ export async function createHostWorktree(input: CreateHostWorktreeInput): Promis
   const commonGitDir = await hostCommonGitDir(input.repoPath)
   const worktreePath = hostWorktreePath(input.repoPath, input.environmentId)
   const gitdirFilePath = containerGitdirFilePath(input.repoPath, input.environmentId)
+  const branch = await checkBranchName(input.repoPath, input.branch)
+  const existing = await run('git', ['-C', input.repoPath, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFailure: true })
+    .then(output => !!output.stdout.trim(), () => false)
   await mkdir(dirname(worktreePath), { recursive: true })
   await run('git', [
-    '-C', input.repoPath, 'worktree', 'add', '--detach', '--lock', '--reason', LOCK_REASON, worktreePath, 'HEAD'
-  ])
+    '-C', input.repoPath, 'worktree', 'add', '--lock', '--reason', LOCK_REASON,
+    ...(existing ? [worktreePath, branch] : ['-b', branch, worktreePath, 'HEAD'])
+  ]).catch((error: Error) => {
+    // Git's own words say where the branch is already checked out.
+    throw new Error(`Could not check out the branch ${branch}: ${error.message.replace(/^git worktree failed: (fatal: )?/, '')}`)
+  })
   const adminPath = await worktreeAdminPath(worktreePath, commonGitDir)
   await writeFile(gitdirFilePath, canonicalGitdirFileContents(input.projectId, adminPath), 'utf8')
 

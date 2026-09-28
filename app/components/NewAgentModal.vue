@@ -316,7 +316,7 @@ async function create() {
           <template #help>
             <span class="text-xs text-muted">
               The local checkout is {{ selectedProject.repoPath }} on this machine.
-              Environments are containers with a private copy of it, and can be
+              Environments are containers, each with its own git worktree of it, and can be
               shared by multiple agents.
             </span>
           </template>
