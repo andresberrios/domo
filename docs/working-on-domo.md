@@ -20,6 +20,21 @@ nohup sh -c '<wait for the turn to end>; <apply the change>' >/dev/null 2>&1 & d
 
 macOS has no `setsid`, and `nohup setsid …` does nothing and reports no error.
 
+## Which database is for what
+
+The main compose stack (`docker compose up -d`) holds three databases in one
+Postgres. Only the first is somewhere to run Domo:
+
+| database | Electric | used by |
+| --- | --- | --- |
+| `domo` | `electric`, port 30000 | the user's own Domo. Real data. |
+| `domo_test` | none | the `integration` test layer, which drops its schema between runs |
+| `domo_e2e` | `electric-e2e`, port 30001 | the `electric` and `voice-live` test layers, which reset it |
+
+`pnpm test` resets both test databases. Neither is a place to run a dev server,
+and a second dev server never points at `domo`: its boot marks every session
+stopped while the user's agents are still running.
+
 ## A second dev server for in-app checks
 
 Inside Domo, run the check in a dev environment: it has its own stack. Outside
@@ -50,8 +65,8 @@ agent.
 - Start from an empty database. Copy real data in only when the check needs
   something an empty one cannot show, and then never `dev_environments`: a
   server that believes it owns an environment will act on the real containers.
-- `domo_test` and `domo_e2e` belong to the test layers, which reset them. They
-  are not somewhere to run a dev server.
+  Copy by column name — the real tables grew their columns over time, so their
+  order differs from a fresh schema.
 - When you are done, stop the server by its port and
   `docker compose -p domo-<x> down -v`. Then remove the `domo-<x>-runtime-*`
   and `domo-<x>-browser-*` volumes it built, and the `domo-<x>-port-helper`

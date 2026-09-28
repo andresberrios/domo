@@ -90,7 +90,8 @@ not in the UI.
 ## Topic docs
 
 - `docs/working-on-domo.md`: read before you change Domo from inside Domo
-  (parallel tasks, applying `server/` changes, a second dev server).
+  (parallel tasks, applying `server/` changes, a second dev server), or before
+  you point anything at a database: which one is for what.
 - `docs/acp-adapters.md`: read before you change adapter versions, models,
   steering or permissions, or when an adapter acts in an unexpected way.
 - `docs/dev-environments.md`: read before you change the environment
