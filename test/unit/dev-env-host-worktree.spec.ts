@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -44,7 +44,8 @@ let root: string
 let repo: string
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'domo-wt-'))
+  // Real path: git reports /private/var for macOS's /var.
+  root = await realpath(await mkdtemp(join(tmpdir(), 'domo-wt-')))
   repo = join(root, 'repo')
   await mkdir(join(repo, 'node_modules', 'pkg'), { recursive: true })
   await git(repo, 'init', '--quiet', '-b', 'main')

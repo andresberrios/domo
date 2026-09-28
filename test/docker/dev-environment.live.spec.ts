@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -45,6 +45,7 @@ vi.mock('../../server/lib/repo', () => ({
       status: 'creating',
       lastError: null,
       retiredAt: null,
+      cleanedAt: null,
       leftovers: [],
       createdAt: now,
       updatedAt: now,
@@ -78,6 +79,13 @@ vi.mock('../../server/lib/repo', () => ({
     // The real column writes health in the same statement: a retirement that
     // owes Docker something reads as broken, and a cleanup that worked does not.
     if (health) Object.assign(row, { status: health.status, lastError: health.lastError })
+    return row
+  },
+  // A sweep that finds nothing of a retired row left ends its claim.
+  markEnvironmentCleaned: async (id: string) => {
+    const row = state.rows.get(id)
+    if (!row?.retiredAt || row.cleanedAt) return null
+    row.cleanedAt = new Date().toISOString()
     return row
   },
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
@@ -115,6 +123,7 @@ const {
 } = await import('../../server/lib/dev-environments')
 const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
+const { sharedCacheVolumeName } = await import('../../server/lib/dev-env/caches')
 const { doodSocketDir, doodSocketPath, stopDoodProxy } = await import('../../server/lib/dood/manager')
 const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
 const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
@@ -149,14 +158,20 @@ async function writeIn(repo: string, files: Record<string, string>) {
   }
 }
 
-/** A committed git checkout, the way a project is when someone adds it in Domo. */
+/**
+ * A committed git checkout, the way a project is when someone adds it in Domo.
+ * In a scratch directory of its own, because its environments' worktrees are
+ * made beside it (`.domo-worktrees`), and so go with it.
+ */
 async function checkout(files: Record<string, string> = {}): Promise<string> {
-  const repo = await temp('repo')
+  const repo = join(await temp('project'), 'repo')
   await run('git', ['init', '--quiet', '--initial-branch=main', repo])
   await writeIn(repo, { 'README.md': '# fixture\n', 'src/index.ts': 'export {}\n', ...files })
   await git(repo, 'add', '--all')
   await git(repo, 'commit', '--quiet', '-m', 'fixture')
-  return repo
+  // As git names it (macOS's /var is /private/var), so paths Domo derives from
+  // git and from the project match the ones asserted here.
+  return realpath(repo)
 }
 
 /** What is inside the container, as the environment's own user. */
@@ -261,6 +276,8 @@ afterAll(async () => {
   // takes it; this run's is named for the test prefix, image included.
   await run('docker', ['rm', '--force', portHelperName()], { allowFailure: true })
   await run('docker', ['image', 'rm', portHelperImage()], { allowFailure: true })
+  // So is the cache volume, which unlike the runtime is cheap to make again.
+  await run('docker', ['volume', 'rm', sharedCacheVolumeName()], { allowFailure: true })
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
   // The proxies' sockets live under the home directory, in a folder named for
   // this run's scratch data directory.
@@ -445,7 +462,8 @@ describe('an environment for a project with no .domo.json', () => {
       expect(left.stdout, `a ${kind} outlived its environment`).toBe('')
     }
     for (const name of kept) {
-      if (name.startsWith(`${PREFIX}runtime-`)) continue // shared, and deliberately kept
+      // Shared by every environment, and deliberately kept.
+      if (name.startsWith(`${PREFIX}runtime-`) || name === sharedCacheVolumeName()) continue
       const left = await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${name}$`])
       expect(left.stdout, `volume ${name} outlived its environment`).toBe('')
     }
@@ -560,8 +578,11 @@ describe('an environment for a bare glibc image with no Node of its own', () => 
       .not.toContain('dind-var-lib-docker')
     await expect(inContainer(environment, 'sh', '-c', 'command -v node || echo none')).resolves.toBe('none')
 
-    // The workspace belongs to the remote user, and postCreateCommand ran as them.
-    await expect(inContainer(environment, 'stat', '-c', '%U', '.')).resolves.toBe('dev')
+    // The workspace belongs to the remote user, and postCreateCommand ran as
+    // them. Not `.`: Docker Desktop shows a bind mount's own root as root's,
+    // whoever may write to it.
+    await expect(inContainer(environment, 'stat', '-c', '%U', 'README.md')).resolves.toBe('dev')
+    await expect(inContainer(environment, 'sh', '-c', 'touch .writable && rm .writable')).resolves.toBe('')
     await expect(inContainer(environment, 'stat', '-c', '%U', '/tmp/post-create')).resolves.toBe('dev')
     await expect(inContainer(environment, 'printenv', 'FROM_PROJECT')).resolves.toBe('yes')
     await expect(inContainer(environment, 'printenv', 'DOMO_DEV_ENVIRONMENT_ID')).resolves.toBe(environment.id)

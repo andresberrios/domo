@@ -23,11 +23,11 @@ async function readRepository() {
   repository.value = await $fetch<RepositoryState>(`/api/projects/${props.project.id}/repository`).catch(() => null)
 }
 
-watch(open, (isOpen) => {
+watch([open, () => props.project?.id], ([isOpen]) => {
   if (!isOpen) return
   name.value = ''
   readRepository()
-})
+}, { immediate: true })
 
 const needsFirstCommit = computed(() => !!repository.value && !repository.value.hasCommits)
 
