@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { observeElementRect, useVirtualizer } from '@tanstack/vue-virtual'
 import type { AgentEvent, AgentSession, PendingPermission } from '~~/shared/types'
-import type { CondensedItem } from '~/utils/agentTranscript'
+import type { CondensedItem, TranscriptItem } from '~/utils/agentTranscript'
 
 const props = withDefaults(defineProps<{
   session: AgentSession
@@ -13,22 +14,45 @@ const props = withDefaults(defineProps<{
 /**
  * Two passes, and only the first one is about the log: `buildTranscript()` says
  * what happened, `condenseTranscript()` decides what to draw.
+ *
+ * Both fold the log from the beginning, so both hand back a fresh object for
+ * every line on every delta. The `reconcile*` passes put the previous objects
+ * back wherever nothing changed, which is what stops a streamed word from
+ * re-rendering — and re-highlighting — the rows above it. The caches are plain
+ * variables: they are memoisation, not state, and nothing may re-run when they
+ * are written.
  */
-const built = computed(() => buildTranscript(props.events, props.permissions))
+let lastBuilt: TranscriptItem[] = []
+let lastItems: CondensedItem[] = []
+
+const built = computed(() => {
+  lastBuilt = reconcileTranscript(lastBuilt, buildTranscript(props.events, props.permissions))
+  return lastBuilt
+})
 
 /** A trailing thought is the live tail only while the agent is still working. */
 const live = computed(() => props.session.status === 'thinking' || props.session.status === 'starting')
 
-const items = computed<CondensedItem[]>(() =>
-  props.condensed ? condenseTranscript(built.value, { live: live.value }) : built.value
-)
+const items = computed<CondensedItem[]>(() => {
+  const next = props.condensed
+    ? condenseTranscript(built.value, { live: live.value })
+    : built.value
+  lastItems = reconcileCondensed(lastItems, next)
+  return lastItems
+})
 
 /**
- * UChatMessages speaks UIMessage: the rich item rides in `metadata` and is
+ * `UChatMessage` speaks UIMessage: the rich item rides in `metadata` and is
  * rendered by the `#content` slot, while `parts` carries a plain-text version
- * (UChatMessages skips messages with no parts, and the text is what a copy or a
- * screen reader gets).
+ * (a message with no parts renders as the typing indicator, and the text is
+ * what a copy or a screen reader gets).
+ *
+ * The wrappers are cached per item, for the same reason the items themselves
+ * are. Keyed on the item, so one carried forward keeps its wrapper and one that
+ * changed gets a new one.
  */
+const wrappers = new WeakMap<object, any>()
+
 function plainText(item: CondensedItem): string {
   switch (item.kind) {
     case 'user':
@@ -48,48 +72,185 @@ function plainText(item: CondensedItem): string {
   }
 }
 
-const messages = computed(() =>
-  items.value.map(item => ({
+function messageFor(item: CondensedItem) {
+  const cached = wrappers.get(item)
+  if (cached) return cached
+  const wrapper = {
     id: item.id,
     role: item.kind === 'user' ? ('user' as const) : ('assistant' as const),
     parts: [{ type: 'text', text: plainText(item) }] as any[],
     metadata: { item }
-  }))
-)
+  }
+  wrappers.set(item, wrapper)
+  return wrapper
+}
 
-const status = computed(() => {
-  if (props.session.status === 'thinking' || props.session.status === 'starting') return 'streaming' as const
-  return 'ready' as const
-})
+const USER_PROPS = { side: 'right', variant: 'soft', avatar: { icon: 'i-lucide-user' } } as const
+const ASSISTANT_PROPS = { side: 'left', variant: 'naked', avatar: { icon: 'i-lucide-sparkles' } } as const
 
 const pendingPermissionIds = computed(() =>
   props.permissions.filter(permission => !permission.resolvedAt).map(permission => permission.id)
 )
 
-function itemOf(message: any): CondensedItem {
-  return message.metadata.item as CondensedItem
+/* -------------------------------------------------------------------------
+ * The window on screen
+ *
+ * A transcript is unbounded — a long session condenses to hundreds of rows,
+ * each of which may be a rendered diff or a page of highlighted markdown — and
+ * the container Nuxt UI ships renders every one of them, watches the whole
+ * list deeply, and re-scrolls on every DOM mutation underneath it. That is
+ * work proportional to everything the agent has ever done, repeated for every
+ * word it streams, and it is what made a long session unusable on a phone.
+ *
+ * So the rows are virtualised: only what fits on screen, plus a little either
+ * side, is ever in the DOM. Each row is still a `UChatMessage`, so what a row
+ * looks like has not changed and does not live in two places.
+ * ------------------------------------------------------------------------- */
+
+const scroller = ref<HTMLElement | null>(null)
+
+/**
+ * How tall to assume the box is when it says it is nothing.
+ *
+ * A window is only as good as the measurement behind it, and a scroller that
+ * reports no height — laid out but not yet painted, or a DOM with no layout at
+ * all, which is what a component test runs in — would window the transcript
+ * down to nothing and render an empty page. Guessing a screen is wrong by a
+ * few rows; believing the zero is wrong by all of them.
+ */
+const UNMEASURED_VIEWPORT = 1200
+
+const virtualizer = useVirtualizer(computed(() => ({
+  count: items.value.length,
+  getScrollElement: () => scroller.value,
+  // Rows vary from a one-line notice to a long answer, so this is only what an
+  // unmeasured row is assumed to be; `measureElement` corrects each one as it
+  // is drawn. Estimating high keeps a jump to the end from overshooting.
+  estimateSize: () => 160,
+  getItemKey: (index: number) => items.value[index]?.id ?? index,
+  overscan: 4,
+  initialRect: { width: 0, height: UNMEASURED_VIEWPORT },
+  observeElementRect: (instance: any, callback: (rect: { width: number, height: number }) => void) =>
+    observeElementRect(instance, rect =>
+      callback({ width: rect.width, height: rect.height || UNMEASURED_VIEWPORT })
+    )
+})))
+
+const virtualRows = computed(() => virtualizer.value.getVirtualItems())
+const totalSize = computed(() => virtualizer.value.getTotalSize())
+
+/**
+ * Whether the view is pinned to the newest row.
+ *
+ * Pinned is the default and the state we return to, because a transcript is
+ * read from the bottom. It is given up the moment the user scrolls away from
+ * the end, and taken back when they come back to it — reading back through
+ * what an agent did must not be yanked away by the next thing it says.
+ */
+const pinned = ref(true)
+const BOTTOM_THRESHOLD = 64
+
+function distanceFromBottom(el: HTMLElement) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight
 }
+
+function onScroll() {
+  const el = scroller.value
+  if (!el) return
+  pinned.value = distanceFromBottom(el) <= BOTTOM_THRESHOLD
+}
+
+function scrollToEnd(behavior: ScrollBehavior = 'auto') {
+  const el = scroller.value
+  if (!el) return
+  el.scrollTo({ top: el.scrollHeight, behavior })
+}
+
+function jumpToLatest() {
+  pinned.value = true
+  scrollToEnd('smooth')
+}
+
+/**
+ * Follow the tail.
+ *
+ * Rows are measured as they are drawn, so the scroll height grows for a moment
+ * after new content lands and a single scroll lands short. Two frames of
+ * follow-up is what it takes for a freshly measured row to settle.
+ */
+function followTail() {
+  if (!pinned.value) return
+  scrollToEnd()
+  requestAnimationFrame(() => {
+    if (pinned.value) scrollToEnd()
+  })
+}
+
+watch(() => items.value.length, () => nextTick(followTail))
+// Streamed text grows the last row without adding one, so length alone is not
+// enough to stay pinned to the bottom of it.
+watch(() => items.value[items.value.length - 1], () => nextTick(followTail))
+
+onMounted(() => {
+  nextTick(() => {
+    scrollToEnd()
+    // The first paint measures only the rows the estimate put on screen; once
+    // they report their real heights the end has moved.
+    setTimeout(() => followTail(), 120)
+  })
+})
 </script>
 
 <template>
-  <UChatMessages
-    :messages="messages as any"
-    :status="status"
-    should-auto-scroll
-    :user="{ side: 'right', variant: 'soft', avatar: { icon: 'i-lucide-user' } }"
-    :assistant="{ side: 'left', variant: 'naked', avatar: { icon: 'i-lucide-sparkles' } }"
-    :ui="{ root: 'w-full max-w-3xl mx-auto gap-4 py-4' }"
-  >
-    <template #content="message">
-      <ActivityGroup
-        v-if="itemOf(message).kind === 'activity'"
-        :group="(itemOf(message) as any)"
-      />
-      <TranscriptItemView
-        v-else
-        :item="(itemOf(message) as any)"
-        :pending-permission-ids="pendingPermissionIds"
-      />
-    </template>
-  </UChatMessages>
+  <div :data-status="live ? 'streaming' : 'ready'" class="relative flex h-full min-h-0 flex-col">
+    <div
+      ref="scroller"
+      class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+      @scroll.passive="onScroll"
+    >
+      <div
+        class="relative mx-auto w-full max-w-3xl px-1 py-4"
+        :style="{ height: `${totalSize}px` }"
+      >
+        <div
+          v-for="row in virtualRows"
+          :key="row.key as string"
+          :ref="(el) => virtualizer.measureElement(el as Element)"
+          :data-index="row.index"
+          class="absolute inset-x-0 top-0 pb-4"
+          :style="{ transform: `translateY(${row.start}px)` }"
+        >
+          <UChatMessage
+            v-bind="{
+              ...(items[row.index]!.kind === 'user' ? USER_PROPS : ASSISTANT_PROPS),
+              ...messageFor(items[row.index]!)
+            }"
+          >
+            <template #content>
+              <ActivityGroup
+                v-if="items[row.index]!.kind === 'activity'"
+                :group="(items[row.index] as any)"
+              />
+              <TranscriptItemView
+                v-else
+                :item="(items[row.index] as any)"
+                :pending-permission-ids="pendingPermissionIds"
+              />
+            </template>
+          </UChatMessage>
+        </div>
+      </div>
+    </div>
+
+    <UButton
+      v-if="!pinned"
+      icon="i-lucide-arrow-down"
+      color="neutral"
+      variant="outline"
+      size="sm"
+      aria-label="Jump to the latest message"
+      class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-lg"
+      @click="jumpToLatest"
+    />
+  </div>
 </template>

@@ -36,6 +36,7 @@
     "@tanstack/db": "^0.9.2",
     "@tanstack/electric-db-collection": "^0.4.10",
     "@tanstack/vue-db": "^0.2.1",
+    "@tanstack/vue-virtual": "^3.13.39",
     "@vueuse/core": "^14.4.0",
     "jsonc-parser": "^3.3.1",
     "marked": "^18.0.13",

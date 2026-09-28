@@ -30,6 +30,33 @@ interface ShapeDef {
   key?: (row: Row) => string
 }
 
+/**
+ * A synced row's JSON is data, never state — so keep Vue out of it.
+ *
+ * `useLiveQuery` holds its results in a `reactive([])`, which deep-proxies
+ * whatever it is handed and re-tracks every property a reader touches. A
+ * transcript row carries a whole ACP payload, so on a long session that is
+ * thousands of nested proxies walked again on every delta: the reactivity cost
+ * measured several times the work it wrapped, and an agent streaming text froze
+ * the page. Nothing mutates these values in the browser — the next Electric
+ * message replaces the row — so the tracking buys nothing.
+ *
+ * The columns are marked, not the row: TanStack DB shallow-copies each row to
+ * add its `$synced`/`$key` virtual props, and a copy does not carry the row's
+ * own `__v_skip`. What the copy does carry is the *same* nested objects, so
+ * marking those is what survives. `reactive()` and the `traverse()` behind
+ * every deep watcher both stop at `__v_skip`, which leaves Vue tracking a
+ * handful of scalars per row instead of a whole payload tree.
+ */
+function rawKey(key: (row: Row) => string) {
+  return (row: Row) => {
+    for (const value of Object.values(row)) {
+      if (value !== null && typeof value === 'object') markRaw(value)
+    }
+    return key(row)
+  }
+}
+
 function collection(key: string, def: ShapeDef): any {
   const existing = cache.get(key)
   if (existing) return existing
@@ -45,7 +72,7 @@ function collection(key: string, def: ShapeDef): any {
           ...(def.params ? { params: def.params } : {})
         }
       },
-      getKey: def.key ?? ((row: Row) => row.id as string)
+      getKey: rawKey(def.key ?? ((row: Row) => row.id as string))
     })
   )
   cache.set(key, created)

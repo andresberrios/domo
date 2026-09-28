@@ -196,22 +196,20 @@ const menuItems = computed(() => [
         </div>
 
         <!--
-          The transcript must own its scroll box. Without `overflow-y-auto` here it
-          spills out of its flex slot, the dashboard body scrolls instead, and the
-          pinned permission cards and composer paint on top of the messages.
-          The outer `relative` box (not the scroller) anchors UChatMessages'
-          absolutely positioned jump-to-bottom button so it doesn't scroll away.
+          The transcript owns its scroll box, because the virtualiser inside it
+          measures rows against that element. `min-h-0` is what keeps it inside
+          this flex column: without it the box grows to its content, the
+          dashboard body scrolls instead, and the pinned permission cards and
+          the composer paint on top of the messages.
         -->
-        <div v-else-if="session" class="relative flex min-h-0 flex-1 flex-col">
-          <div class="min-h-0 flex-1 overflow-y-auto">
-            <AgentTranscript
-              :session="session"
-              :events="events"
-              :permissions="permissions"
-              :condensed="condensed"
-            />
-          </div>
-        </div>
+        <AgentTranscript
+          v-else-if="session"
+          class="min-h-0 flex-1"
+          :session="session"
+          :events="events"
+          :permissions="permissions"
+          :condensed="condensed"
+        />
 
         <div v-if="pending.length && !blocked" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
           <PermissionCard

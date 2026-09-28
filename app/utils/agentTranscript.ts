@@ -393,3 +393,105 @@ export function activityLabel(group: ActivityGroup): string {
 export function activityBreakdown(group: ActivityGroup): string {
   return group.names.map(entry => `${entry.name} ×${entry.count}`).join(', ')
 }
+
+/**
+ * Whether two builds produced the same item, cheaply enough to ask on every
+ * delta.
+ *
+ * Everything a transcript item holds that is big — a tool's content, its raw
+ * input and output — is the event payload's own object, handed through
+ * untouched by `buildTranscript`. A payload is replaced whole when its row
+ * changes and is the same object when it does not, so reference equality
+ * answers "did this change" exactly, without walking any of it. The small
+ * fields are compared by value because the builder rewrites them: a tool's
+ * title and status are edited in place by later updates, and streamed text is
+ * concatenated.
+ */
+function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
+  if (a === b) return true
+  if (a.id !== b.id || a.kind !== b.kind) return false
+
+  switch (a.kind) {
+    case 'user': {
+      const other = b as typeof a
+      return a.text === other.text && a.attachments.length === other.attachments.length
+    }
+    case 'assistant': {
+      const other = b as typeof a
+      return a.text === other.text && a.streaming === other.streaming
+    }
+    case 'thought':
+    case 'notice':
+      return a.text === (b as typeof a).text
+    case 'tool': {
+      const mine = a.tool
+      const theirs = (b as typeof a).tool
+      return mine.status === theirs.status
+        && mine.title === theirs.title
+        && mine.kind === theirs.kind
+        && mine.name === theirs.name
+        && mine.content === theirs.content
+        && mine.rawInput === theirs.rawInput
+        && mine.rawOutput === theirs.rawOutput
+        && mine.locations === theirs.locations
+    }
+    case 'plan': {
+      const other = b as typeof a
+      return a.entries.length === other.entries.length
+        && a.entries.every((entry, index) => {
+          const theirs = other.entries[index]!
+          return entry.content === theirs.content && entry.status === theirs.status
+        })
+    }
+    case 'permission':
+      return a.toolCall === (b as typeof a).toolCall
+  }
+}
+
+/**
+ * Carry forward the objects that did not change.
+ *
+ * `buildTranscript` is a fold over the whole log, so it allocates a new item
+ * for every line every time it runs — and a new object is, to Vue, a changed
+ * prop: one streamed word re-rendered the whole transcript, markdown and diffs
+ * included. The fold stays whole, because that is what keeps it readable; this
+ * hands back the previous object wherever the new one says the same thing, so
+ * what re-renders is what actually moved.
+ */
+export function reconcileTranscript(
+  previous: TranscriptItem[],
+  next: TranscriptItem[]
+): TranscriptItem[] {
+  if (!previous.length) return next
+  const before = new Map(previous.map(item => [item.id, item]))
+  return next.map((item) => {
+    const old = before.get(item.id)
+    return old && sameItem(old, item) ? old : item
+  })
+}
+
+/**
+ * The same, for the condensed pass. A group is unchanged when it stands for
+ * exactly the same items, which — once `reconcileTranscript` has run — is one
+ * reference check per item.
+ */
+export function reconcileCondensed(
+  previous: CondensedItem[],
+  next: CondensedItem[]
+): CondensedItem[] {
+  if (!previous.length) return next
+  const groups = new Map<string, ActivityGroup>()
+  for (const item of previous) {
+    if (item.kind === 'activity') groups.set(item.id, item)
+  }
+  // Everything that is not a group passed through `condenseTranscript`
+  // untouched, so `reconcileTranscript` has already settled its identity.
+  return next.map((item) => {
+    if (item.kind !== 'activity') return item
+    const old = groups.get(item.id)
+    const same = old
+      && old.items.length === item.items.length
+      && old.items.every((entry, index) => entry === item.items[index])
+    return same ? old : item
+  })
+}

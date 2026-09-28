@@ -232,27 +232,35 @@ export function useCronJobs() {
   return { jobs, isReady }
 }
 
-export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
-  const { data, isReady } = useLiveQuery(
-    (q) => {
-      const id = toValue(agentSessionId)
-      if (!id) return undefined
-      return q.from({ event: agentEventsCollection(id) })
-    },
-    [() => toValue(agentSessionId)]
-  )
+function toAgentEvent(row: any): AgentEvent {
+  return {
+    id: row.id,
+    agentSessionId: row.agent_session_id,
+    seq: asNumber(row.seq),
+    type: row.type,
+    payload: row.payload,
+    createdAt: row.created_at
+  }
+}
 
-  const events = computed<AgentEvent[]>(() =>
-    (data.value ?? [])
-      .map((row: any) => ({
-        id: row.id,
-        agentSessionId: row.agent_session_id,
-        seq: asNumber(row.seq),
-        type: row.type,
-        payload: row.payload,
-        createdAt: row.created_at
-      }))
-      .sort((a, b) => a.seq - b.seq)
+const bySeq = (a: { seq: number }, b: { seq: number }) => a.seq - b.seq
+
+/**
+ * One session's transcript log, in order.
+ *
+ * Read off the change stream rather than through a live query: a transcript is
+ * the one list here that grows without bound and is rewritten while it is on
+ * screen, so what a delta costs has to be independent of how long the agent has
+ * been working. See `useSyncedLog`.
+ */
+export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
+  const { items: events, isReady } = useSyncedLog<any, AgentEvent>(
+    () => {
+      const id = toValue(agentSessionId)
+      return id ? agentEventsCollection(id) : null
+    },
+    toAgentEvent,
+    bySeq
   )
 
   return { events, isReady }
