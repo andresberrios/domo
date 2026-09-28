@@ -28,7 +28,26 @@ interface ShapeDef {
    * fact in two columns.
    */
   key?: (row: Row) => string
+  /**
+   * How long the rows stay after the last reader leaves. TanStack DB's own
+   * default — five minutes — when this is unset.
+   */
+  gcTime?: number
 }
+
+/**
+ * How long a session's own rows are kept once you have navigated away.
+ *
+ * A transcript is megabytes, and the account-wide shapes are kilobytes, so
+ * these are the only ones where the answer matters. Held for the default five
+ * minutes, browsing half a dozen agents left every one of their transcripts in
+ * memory at once — measured at 335MB climbing to 448MB over seven sessions,
+ * which on a phone is the range where the tab is killed rather than slowed.
+ *
+ * A minute is long enough that stepping into an agent and back out is free,
+ * and short enough that reading through a morning's work does not accumulate.
+ */
+const SESSION_SHAPE_GC_MS = 60_000
 
 /**
  * A synced row's JSON is data, never state — so keep Vue out of it.
@@ -72,7 +91,8 @@ function collection(key: string, def: ShapeDef): any {
           ...(def.params ? { params: def.params } : {})
         }
       },
-      getKey: rawKey(def.key ?? ((row: Row) => row.id as string))
+      getKey: rawKey(def.key ?? ((row: Row) => row.id as string)),
+      ...(def.gcTime === undefined ? {} : { gcTime: def.gcTime })
     })
   )
   cache.set(key, created)
@@ -98,24 +118,30 @@ export const usageProvidersCollection = () => collection('usage_providers', {
   key: row => row.provider as string
 })
 
-/** Per-session shapes keep the client store small on long-running sessions. */
+/**
+ * Per-session shapes: only the session on screen is synced, and only for as
+ * long as it is being read. See `SESSION_SHAPE_GC_MS`.
+ */
 export const agentEventsCollection = (agentSessionId: string) =>
   collection(`agent_events:${agentSessionId}`, {
     table: 'agent_events',
     where: 'agent_session_id = $1',
-    params: [agentSessionId]
+    params: [agentSessionId],
+    gcTime: SESSION_SHAPE_GC_MS
   })
 
 export const agentInboxCollection = (agentSessionId: string) =>
   collection(`agent_inbox:${agentSessionId}`, {
     table: 'agent_inbox',
     where: 'agent_session_id = $1',
-    params: [agentSessionId]
+    params: [agentSessionId],
+    gcTime: SESSION_SHAPE_GC_MS
   })
 
 export const voiceMessagesCollection = (voiceSessionId: string) =>
   collection(`voice_messages:${voiceSessionId}`, {
     table: 'voice_messages',
     where: 'session_id = $1',
-    params: [voiceSessionId]
+    params: [voiceSessionId],
+    gcTime: SESSION_SHAPE_GC_MS
   })
