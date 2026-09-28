@@ -5,7 +5,8 @@ Read this before you change Domo while it is running your own session.
 ## Parallel tasks
 
 Give each parallel task to an agent in a dev environment, with one environment
-and one branch per task. Bring the results home with `export_branch`.
+and one branch per task. The branch is in your checkout as soon as the agent
+makes it: environments share the project's refs.
 
 ## Applying `server/` changes
 

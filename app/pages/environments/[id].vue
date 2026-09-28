@@ -133,8 +133,6 @@ async function retryCleanup() {
   }
 }
 
-const exportOpen = ref(false)
-const importOpen = ref(false)
 </script>
 
 <template>
@@ -173,9 +171,7 @@ const importOpen = ref(false)
           <UDropdownMenu
             v-if="environment && !retired"
             :items="[[
-              { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } },
-              { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running, onSelect: () => { exportOpen = true } },
-              { label: 'Import branch', icon: 'i-lucide-git-branch-plus', disabled: !running, onSelect: () => { importOpen = true } }
+              { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } }
             ], [
               { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire = true } }
             ]]"
@@ -299,8 +295,6 @@ const importOpen = ref(false)
 
         <section v-if="!retired" class="flex flex-wrap gap-2">
           <OpenInVsCode :environment="environment" />
-          <ExportBranchModal v-model:open="exportOpen" :environment="environment" />
-          <ImportBranchModal v-model:open="importOpen" :environment="environment" />
         </section>
       </div>
 
@@ -310,7 +304,7 @@ const importOpen = ref(false)
         v-if="environment"
         v-model:open="renaming"
         title="Rename environment"
-        description="Changes the name shown in Domo. The container and its volume keep the names they were created with."
+        description="Changes the name shown in Domo. The container and its worktree keep the names they were created with."
         :initial="environment.name"
         @submit="rename"
       />

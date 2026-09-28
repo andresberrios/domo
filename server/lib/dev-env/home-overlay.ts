@@ -74,6 +74,12 @@ export interface HomeOverlayInput {
   containerHome: string
   /** The checkout inside the environment, which the generated git config marks safe. */
   workspacePath: string
+  /**
+   * More paths to mark safe: a worktree checkout's canonical mount and its base
+   * `.git`. Git checks ownership on the real path, and `workspacePath` is then
+   * only a symlink to it.
+   */
+  safeDirectories?: string[]
   /** The configured entries, relative to the home directory. */
   paths: string[]
   /** Which of `paths` this host actually has. Anything else is skipped silently. */
@@ -154,6 +160,7 @@ export function validateHomeMounts(entries: string[]): string[] {
 export function containerGitconfig(input: {
   containerHome: string
   workspacePath: string
+  safeDirectories?: string[]
   includeHostConfig: boolean
 }): string {
   const lines: string[] = []
@@ -163,6 +170,7 @@ export function containerGitconfig(input: {
   lines.push(
     '[safe]',
     `    directory = ${input.workspacePath}`,
+    ...(input.safeDirectories ?? []).map(directory => `    directory = ${directory}`),
     '[credential]',
     // An empty value resets the list a multi-value key accumulated.
     '    helper =',
@@ -291,6 +299,7 @@ export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
     gitconfig: containerGitconfig({
       containerHome: input.containerHome,
       workspacePath: input.workspacePath,
+      safeDirectories: input.safeDirectories,
       includeHostConfig
     }),
     ssh
@@ -331,6 +340,7 @@ export function overlaySourceHome(env: NodeJS.ProcessEnv = process.env): string 
 export async function resolveHomeOverlay(input: {
   containerHome: string
   workspacePath: string
+  safeDirectories?: string[]
   paths: string[]
 }): Promise<HomeOverlay> {
   const sshAgent = await detectSshAgent()

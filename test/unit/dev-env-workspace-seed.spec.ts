@@ -1,23 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  carryMessage,
+  DEFAULT_COPY_IGNORED,
   describeSeed,
+  globToRegExp,
+  matchesAny,
   MAX_REPORTED_PATHS,
   parsePorcelain,
-  RECONCILE_SCRIPT,
-  reconcileArgs,
   seedReport
 } from '../../server/lib/dev-env/workspace-seed'
-
-/**
- * The decisions behind "the environment's git and the environment's files must
- * agree". The script itself is shell, so what is pinned here is the argv it is
- * handed and the properties the incident turned on: ignored files are never
- * touched, untracked-but-not-ignored files are, and nothing is ever interpolated
- * into the command. `dev-environments.spec.ts` asserts that it runs at all, and
- * in the right place; `dev-environment.live.spec.ts` runs it against real git.
- */
 
 describe('parsePorcelain', () => {
   it('reads NUL-separated entries, and takes a rename as one path and not two', () => {
@@ -35,34 +26,29 @@ describe('parsePorcelain', () => {
   })
 })
 
-describe('reconcileArgs', () => {
-  it('passes the mode, the workspace and the message as argv, never inside the script', () => {
-    const args = reconcileArgs({ mode: 'carry', workspacePath: '/workspaces/feature-auth', message: 'a; rm -rf /' })
-
-    expect(args).toEqual(['sh', '-c', RECONCILE_SCRIPT, 'sh', 'carry', '/workspaces/feature-auth', 'a; rm -rf /'])
-    expect(RECONCILE_SCRIPT).not.toContain('feature-auth')
+describe('globToRegExp', () => {
+  it('matches a leading **/ at the top level and at any depth, and * only inside one directory', () => {
+    expect(globToRegExp('**/.env').test('.env')).toBe(true)
+    expect(globToRegExp('**/.env').test('apps/web/.env')).toBe(true)
+    expect(globToRegExp('*.pem').test('key.pem')).toBe(true)
+    expect(globToRegExp('*.pem').test('certs/key.pem')).toBe(false)
+    expect(globToRegExp('config/?.json').test('config/a.json')).toBe(true)
   })
 
-  it('resets to HEAD and removes untracked files in discard mode', () => {
-    expect(RECONCILE_SCRIPT).toContain('git reset --hard --quiet')
-    expect(RECONCILE_SCRIPT).toContain('git clean -fdq')
+  it('treats every other character literally, dots included', () => {
+    expect(globToRegExp('.env').test('xenv')).toBe(false)
+    expect(globToRegExp('a+b(c).txt').test('a+b(c).txt')).toBe(true)
   })
+})
 
-  // `node_modules` is the entire reason the workspace volume exists, and a
-  // gitignored `.env` is what the environment needs to run at all. Neither can
-  // ever reach a commit without being force-added, so neither can make the
-  // returning diff lie — which is why `-x` must not appear here.
-  it('never cleans ignored files', () => {
-    expect(RECONCILE_SCRIPT).not.toMatch(/git clean[^\n]*-[a-z]*x/)
-  })
-
-  it('commits what it carries without running the project\'s commit hooks', () => {
-    expect(RECONCILE_SCRIPT).toContain('git commit --quiet --no-verify')
-  })
-
-  it('leaves a repository with no commits alone rather than failing creation', () => {
-    expect(RECONCILE_SCRIPT).toContain('git rev-parse --verify --quiet HEAD')
-    expect(RECONCILE_SCRIPT).toContain('exit 0')
+describe('DEFAULT_COPY_IGNORED', () => {
+  it('copies .env files at any depth, and not dependency trees or other ignored files', () => {
+    for (const path of ['.env', '.env.local', 'apps/api/.env.development']) {
+      expect(matchesAny(path, DEFAULT_COPY_IGNORED), path).toBe(true)
+    }
+    for (const path of ['node_modules/pkg/index.js', 'dist/app.js', '.envrc', 'environment.ts']) {
+      expect(matchesAny(path, DEFAULT_COPY_IGNORED), path).toBe(false)
+    }
   })
 })
 
@@ -70,37 +56,24 @@ describe('seedReport', () => {
   it('caps the listed paths but keeps the true total', () => {
     const paths = Array.from({ length: MAX_REPORTED_PATHS + 5 }, (_value, index) => `file-${index}.ts`)
 
-    const report = seedReport({ mode: 'discard', paths })
+    const report = seedReport({ paths })
 
     expect(report.paths).toHaveLength(MAX_REPORTED_PATHS)
     expect(report.total).toBe(MAX_REPORTED_PATHS + 5)
-    expect(report.commit).toBeNull()
+    expect(report).toMatchObject({ copied: [], install: null })
   })
 })
 
 describe('describeSeed', () => {
-  it('says nothing happened when the host tree was clean', () => {
-    expect(describeSeed(seedReport({ mode: 'discard', paths: [] })))
-      .toBe('The host checkout had no uncommitted changes.')
+  it('says it starts from the last commit, and says what stayed behind so an absent change is never silent', () => {
+    expect(describeSeed(seedReport({ paths: [] }))).toBe('It starts from the project\'s last commit.')
+    expect(describeSeed(seedReport({ paths: ['a.ts', 'b.ts'] }))).toContain('2 uncommitted paths stay on the host')
   })
 
-  it('says what was left behind, so an absent change is never a silent one', () => {
-    expect(describeSeed(seedReport({ mode: 'discard', paths: ['a.ts', 'b.ts'] })))
-      .toContain('Left 2 uncommitted paths behind on the host')
-  })
-
-  it('names the commit carried work landed on', () => {
-    expect(describeSeed(seedReport({ mode: 'carry', paths: ['a.ts'], commit: '0123456789abcdef' })))
-      .toBe('Carried 1 uncommitted path from the host and committed them as 0123456789ab.')
-  })
-})
-
-describe('carryMessage', () => {
-  it('says where the changes came from and that they are not the session\'s work', () => {
-    const message = carryMessage({ environmentName: 'feature-auth', repoPath: '/Users/dev/domo' })
-
-    expect(message.split('\n')[0]).toBe('chore: carry the host\'s uncommitted changes into feature-auth')
-    expect(message).toContain('/Users/dev/domo')
-    expect(message).toContain('not this session\'s work')
+  it('names what was copied and how dependencies were installed, and a failed install loudly', () => {
+    expect(describeSeed(seedReport({ paths: [], copied: ['.env'], install: { command: 'pnpm install --frozen-lockfile', error: null } })))
+      .toBe('It starts from the project\'s last commit. Copied .env from the host. Installed dependencies with `pnpm install --frozen-lockfile`.')
+    expect(describeSeed(seedReport({ paths: [], install: { command: 'npm ci', error: 'the image has no npm' } })))
+      .toContain('`npm ci` failed, so dependencies may be missing: the image has no npm')
   })
 })

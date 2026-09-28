@@ -94,7 +94,6 @@ describe.skipIf(!daemon)('an environment\'s own view of the shared daemon', () =
         environmentId: env.id,
         containerReference: env.container,
         workspacePath: WORKSPACE,
-        workspaceVolume: env.volume,
         helperImage: IMAGE
       })).socketPath
     }

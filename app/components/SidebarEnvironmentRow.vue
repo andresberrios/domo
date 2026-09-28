@@ -19,8 +19,6 @@ const emit = defineEmits<{ toggle: [], newAgent: [] }>()
 
 const toast = useToast()
 const busy = ref(false)
-const exporting = ref(false)
-const importing = ref(false)
 const renaming = ref(false)
 const confirmingRetire = ref(false)
 
@@ -81,10 +79,6 @@ const items = computed(() => retired.value
           : { label: 'Start', icon: 'i-lucide-play', onSelect: () => lifecycle('start') },
         // A link, not a button: the menu item carries the `vscode://` URL itself.
         { label: 'Open in VS Code', icon: 'i-lucide-code-xml', to: vscodeHref.value, target: '_self', disabled: !vscodeHref.value },
-        { label: 'Export branch', icon: 'i-lucide-git-branch', disabled: !running.value, onSelect: () => { exporting.value = true } },
-        // Labelled by direction, beside its opposite: "out of" and "into" are the
-        // only thing that tells these two apart at a glance.
-        { label: 'Import branch', icon: 'i-lucide-git-branch-plus', disabled: !running.value, onSelect: () => { importing.value = true } },
         { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }
       ],
       [
@@ -147,14 +141,10 @@ const items = computed(() => retired.value
       />
     </UDropdownMenu>
 
-    <ExportBranchModal v-model:open="exporting" :environment="environment" :trigger="false" />
-
-    <ImportBranchModal v-model:open="importing" :environment="environment" :trigger="false" />
-
     <RenameModal
       v-model:open="renaming"
       title="Rename environment"
-      description="Changes the name shown in Domo. The container and its volume keep the names they were created with."
+      description="Changes the name shown in Domo. The container and its worktree keep the names they were created with."
       :initial="environment.name"
       @submit="rename"
     />

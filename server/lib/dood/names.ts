@@ -53,7 +53,7 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&
  * The prefix removed wherever it starts a name inside free text — an error
  * message (`Conflict. The container name "/env_x-web" is already in use`), a
  * link (`/env_x-db:/env_x-web/db`), a volume's mountpoint. Only at a name
- * boundary: the environment's own workspace volume is `domo-dev-env_x-workspace`,
+ * boundary: a volume of Domo's own such as `domo-dev-env_x-state`
  * and that one is not the agent's to see differently.
  */
 export function stripNames(ns: Namespace, text: string): string {

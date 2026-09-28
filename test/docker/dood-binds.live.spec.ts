@@ -177,7 +177,6 @@ describe.skipIf(!daemon)('binds outside the checkout, the socket, and host netwo
       environmentId: ENV_ID,
       containerReference: ENV,
       workspacePath: WORKSPACE,
-      workspaceVolume: WORKSPACE_VOLUME,
       helperImage: 'busybox:1.37'
     })).socketPath
     const { stdout: id } = await run('docker', [

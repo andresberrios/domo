@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import type { DevEnvironment, WorkingTreeMode } from '~~/shared/types'
+import type { DevEnvironment } from '~~/shared/types'
 
 /**
  * Creating a development environment for real: the real Dev Container CLI building a
@@ -81,10 +81,8 @@ vi.mock('../../server/lib/repo', () => ({
     return row
   },
   upsertDevEnvironmentPort: async (port: any) => { state.ports.push(port) },
-  // The import tells every agent session in the environment where the changes
-  // are; this project has no Postgres, and no session ever runs in these.
-  listAgentSessions: async () => [],
-  enqueueInboxMessage: async () => ({})
+  // Where the sweep finds each environment's worktree on the host.
+  listProjects: async () => (state.project ? [state.project] : [])
 }))
 // Settings live in Postgres, which this project does not have. The home
 // overlay is the only thing under test that reads them.
@@ -101,7 +99,8 @@ vi.mock('../../server/lib/dev-environment-ports', () => ({
 const PREFIX = 'domo-live-test-'
 process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = PREFIX
 
-const { run, inspectContainer, populateWorkspaceVolume } = await import('../../server/lib/dev-env/docker')
+const { run, inspectContainer } = await import('../../server/lib/dev-env/docker')
+const { createHostWorktree, hostWorktreePath, removeHostWorktree } = await import('../../server/lib/dev-env/host-worktree')
 const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
 const { environmentImageName } = await import('../../server/lib/dev-env/image')
 const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
@@ -112,12 +111,9 @@ const {
   restoreDockerProxies,
   retireEnvironment,
   startEnvironment,
-  stopEnvironment,
-  workspaceVolumeName
+  stopEnvironment
 } = await import('../../server/lib/dev-environments')
 const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
-const { exportBranch, listEnvironmentBranches } = await import('../../server/lib/dev-env/git-sync')
-const { importBranchIntoEnvironment } = await import('../../server/lib/branch-import')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
 const { doodSocketDir, doodSocketPath, stopDoodProxy } = await import('../../server/lib/dood/manager')
 const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
@@ -186,8 +182,8 @@ async function exists(path: string): Promise<boolean> {
   return stat(path).then(() => true, () => false)
 }
 
-async function create(name = 'Live Test', workingTree?: WorkingTreeMode): Promise<DevEnvironment> {
-  const environment = await createEnvironment({ projectId: 'prj_live', name, workingTree })
+async function create(name = 'Live Test'): Promise<DevEnvironment> {
+  const environment = await createEnvironment({ projectId: 'prj_live', name })
   created.push(environment.id)
   return environment
 }
@@ -295,21 +291,25 @@ describe('an environment for a project with no .domo.json', () => {
     })
     expect((await inspectContainer(environment.containerId!))?.running).toBe(true)
 
-    // The checkout is the environment's own volume, and nothing binds the developer's
-    // tree or Domo's data into it.
+    // The checkout is the environment's own worktree, bound at its canonical
+    // path with the base `.git` beside it; the developer's own tree is never bound.
     const all = await mounts(environment.containerId!)
-    expect(all).toContainEqual(expect.objectContaining({
-      Type: 'volume',
-      Name: workspaceVolumeName(environment.id),
-      Destination: '/workspaces/live-test'
-    }))
-    expect(all.filter(mount => mount.Type === 'bind').map(mount => mount.Source).join('\n')).not.toContain(repo)
+    const worktree = hostWorktreePath(repo, environment.id)
+    const binds = all.filter(mount => mount.Type === 'bind').map(mount => `${mount.Source.replace(/^\/host_mnt/, '')} -> ${mount.Destination}`)
+    expect(binds).toContain(`${worktree} -> /worktrees/${environment.id}`)
+    expect(binds).toContain(`${worktree}.container-gitdir -> /worktrees/${environment.id}/.git`)
+    expect(binds).toContain(`${join(repo, '.git')} -> /worktrees/.base/prj_live`)
+    expect(binds.some(bind => bind.startsWith(`${repo} ->`))).toBe(false)
+    await expect(inContainer(environment, 'readlink', '-f', '/workspaces/live-test')).resolves.toBe(`/worktrees/${environment.id}`)
 
-    // The project is in there, owned by the environment's user, and git is happy with it.
+    // The project is in there, writable by the environment's user, and git is happy with it.
     await expect(readEnvironmentFile(environment, '/workspaces/live-test/README.md')).resolves.toBe('# fixture\n')
-    await expect(inContainer(environment, 'stat', '-c', '%U', '.')).resolves.toBe(environment.remoteUser)
+    await expect(inContainer(environment, 'sh', '-c', 'touch .writable && rm .writable')).resolves.toBe('')
     await expect(inContainer(environment, 'git', 'log', '--oneline')).resolves.toMatch(/fixture/)
     await expect(inContainer(environment, 'git', 'status', '--porcelain')).resolves.toBe('')
+    // Its commits are the project's own: refs are shared, so nothing has to be exported.
+    await inContainer(environment, 'sh', '-c', 'git switch -c live-agent-work && git commit --allow-empty -m "from the environment"')
+    expect((await run('git', ['-C', repo, 'log', '-1', '--format=%s', 'live-agent-work'])).stdout).toBe('from the environment')
 
     // Work in the environment stays in the environment.
     await inContainer(environment, 'sh', '-c', 'echo scribble > written-inside.txt')
@@ -688,10 +688,7 @@ describe('an environment whose image cannot run Domo\'s runtime', () => {
     expect(state.rows.get(id)).toMatchObject({ status: 'error' })
     const containers = await run('docker', ['ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`])
     expect(containers.stdout, 'a container outlived a failed creation').toBe('')
-    const volume = await run('docker', [
-      'volume', 'ls', '--quiet', '--filter', `name=^${workspaceVolumeName(id)}$`
-    ])
-    expect(volume.stdout, 'the workspace volume outlived a failed creation').toBe('')
+    expect(await exists(hostWorktreePath(repo, id)), 'the worktree outlived a failed creation').toBe(false)
     const image = await run('docker', ['images', '--quiet', environmentImageName(id)])
     expect(image.stdout, 'the image outlived a failed creation').toBe('')
   }, HOUR / 4)
@@ -728,256 +725,11 @@ describe('two environments of the same project', () => {
   }, HOUR / 2)
 })
 
-describe('exporting a branch out of an environment', () => {
-  it('fetches it straight from the container into the project\'s own checkout', async () => {
-    const repo = await checkout()
-    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
-    state.ports.length = 0
-
-    const environment = await create('Export Live')
-    /** A command in the environment that must succeed — `inContainer` swallows failures. */
-    const exec = (...command: string[]) => run('docker', [
-      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
-      environment.containerId!, ...command
-    ])
-
-    // Work done in the environment, on its own branch and with its own identity
-    // (which arrives through the included host gitconfig).
-    await exec('git', 'checkout', '--quiet', '-b', 'from-the-environment')
-    await exec('sh', '-c', 'echo shipped > shipped.txt')
-    await exec('git', 'add', 'shipped.txt')
-    await exec('git', 'commit', '--quiet', '-m', 'shipped from the environment')
-    const sha = (await exec('git', 'rev-parse', 'HEAD')).stdout
-
-    const branches = await listEnvironmentBranches(environment.id)
-    expect(branches.current).toBe('from-the-environment')
-    expect(branches.branches).toContainEqual({
-      name: 'from-the-environment',
-      sha,
-      subject: 'shipped from the environment'
-    })
-
-    const result = await exportBranch({
-      environmentId: environment.id,
-      branch: 'from-the-environment',
-      into: 'from-the-environment'
-    })
-
-    expect(result).toMatchObject({
-      ref: 'refs/remotes/domo-env/export-live/from-the-environment',
-      sha,
-      result: 'created'
-    })
-    expect(result.commits.map(commit => commit.subject)).toEqual(['shipped from the environment'])
-
-    // It really is in the host checkout: the branch, the tracking ref and the blob.
-    const host = (...args: string[]) => run('git', ['-C', repo, ...args])
-    await expect(host('rev-parse', 'refs/heads/from-the-environment')).resolves.toMatchObject({ stdout: sha })
-    await expect(host('rev-parse', 'refs/remotes/domo-env/export-live/from-the-environment'))
-      .resolves.toMatchObject({ stdout: sha })
-    await expect(host('show', 'from-the-environment:shipped.txt')).resolves.toMatchObject({ stdout: 'shipped' })
-    // The checked-out branch was not the target and was left exactly as it was.
-    await expect(host('symbolic-ref', '--short', 'HEAD')).resolves.toMatchObject({ stdout: 'main' })
-    await expect(host('status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
-    // `protocol.ext.allow` is passed per invocation and written nowhere: this
-    // repository did not gain a transport that runs arbitrary commands.
-    await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()
-
-    await retireEnvironment(environment.id)
-  }, HOUR / 4)
-})
-
-/**
- * The incident this exists for: two environments were created while the host tree
- * was dirty, the agents inside committed on top, and the branches that came back
- * carried a stale copy of somebody else's UI work — which, merged, would have
- * reverted a colour palette to an earlier version of itself. The export's whole
- * value is that its diff can be trusted, so this is asserted end to end, against
- * real git on both sides of the fetch.
- */
-describe('an environment created while the host checkout is dirty', () => {
-  /** A checkout with committed work, ignored files the environment needs, and uncommitted work on top. */
-  async function dirtyCheckout(): Promise<string> {
-    const repo = await checkout({
-      '.gitignore': 'node_modules\n.env\n',
-      'palette.css': '--green: #118657;\n'
-    })
-    await writeIn(repo, {
-      // Uncommitted, tracked: the palette that nearly got reverted.
-      'palette.css': '--green: #02ab49;\n',
-      // Uncommitted, untracked, not ignored: `git add -A` would take this too.
-      'scratch.md': 'half an idea\n',
-      // Ignored: what the volume exists for, and what the environment needs to run.
-      'node_modules/pkg/index.js': 'module.exports = 1\n',
-      '.env': 'NUXT_SECRET=hunter2\n'
-    })
-    return repo
-  }
-
-  it('starts from HEAD, keeps the ignored files, and exports only the agent\'s own work', async () => {
-    const repo = await dirtyCheckout()
-    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
-    state.ports.length = 0
-
-    const environment = await create('Dirty Discard')
-    const exec = (...command: string[]) => run('docker', [
-      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
-      environment.containerId!, ...command
-    ])
-
-    // git and the filesystem agree, which is the whole property.
-    await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
-    await expect(exec('cat', 'palette.css')).resolves.toMatchObject({ stdout: '--green: #118657;' })
-    await expect(exec('git', 'rev-parse', 'HEAD')).resolves.toMatchObject({
-      stdout: (await run('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout
-    })
-    // The untracked-but-not-ignored file is on the side of the line `git add -A` takes.
-    await expect(exec('test', '-e', 'scratch.md')).rejects.toThrow()
-    // The ignored ones are not, and they are what the environment needs.
-    await expect(exec('cat', '.env')).resolves.toMatchObject({ stdout: 'NUXT_SECRET=hunter2' })
-    await expect(exec('cat', 'node_modules/pkg/index.js')).resolves.toMatchObject({ stdout: 'module.exports = 1' })
-
-    // An agent does its own, unrelated work and it comes home alone.
-    await exec('git', 'checkout', '--quiet', '-b', 'agent-work')
-    await exec('sh', '-c', 'echo shipped > shipped.txt')
-    await exec('git', 'add', '--all')
-    await exec('git', 'commit', '--quiet', '-m', 'the work the agent was asked for')
-
-    const result = await exportBranch({ environmentId: environment.id, branch: 'agent-work' })
-
-    expect(result.commits.map(commit => commit.subject)).toEqual(['the work the agent was asked for'])
-    const diff = await run('git', ['-C', repo, 'diff', '--name-only', 'HEAD', result.ref])
-    expect(diff.stdout.split('\n').filter(Boolean)).toEqual(['shipped.txt'])
-
-    await retireEnvironment(environment.id)
-  }, HOUR / 4)
-
-  it('commits what it carries, so the work arrives labelled instead of disguised', async () => {
-    const repo = await dirtyCheckout()
-    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
-    state.ports.length = 0
-
-    const environment = await create('Dirty Carry', 'carry')
-    const exec = (...command: string[]) => run('docker', [
-      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
-      environment.containerId!, ...command
-    ])
-
-    await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
-    // The files are the host's, and git now says so.
-    await expect(exec('cat', 'palette.css')).resolves.toMatchObject({ stdout: '--green: #02ab49;' })
-    await expect(exec('git', 'log', '-1', '--format=%s')).resolves.toMatchObject({
-      stdout: expect.stringContaining('carry the host\'s uncommitted changes into Dirty Carry')
-    })
-    const carried = await exec('git', 'show', '--name-only', '--format=', 'HEAD')
-    expect(carried.stdout.split('\n').filter(Boolean).sort()).toEqual(['palette.css', 'scratch.md'])
-    // Ignored files stayed out of the commit and stayed on disk.
-    await expect(exec('cat', '.env')).resolves.toMatchObject({ stdout: 'NUXT_SECRET=hunter2' })
-
-    await retireEnvironment(environment.id)
-  }, HOUR / 4)
-})
-
-/**
- * The push half of the `ext::` transport, against a real container. The fetch
- * half proves `git-upload-pack` is reachable inside the image; nothing but this
- * says `git-receive-pack` is — nor that the commit-then-merge sequence really
- * runs through `docker exec` against a checkout owned by another user.
- */
-describe('importing a branch into an environment', () => {
-  it('commits the container\'s uncommitted work, then merges the host branch in', async () => {
-    const repo = await checkout()
-    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
-    state.ports.length = 0
-
-    const environment = await create('Import Live')
-    const exec = (...command: string[]) => run('docker', [
-      'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
-      environment.containerId!, ...command
-    ])
-
-    const host = (...args: string[]) => run('git', [
-      '-C', repo, '-c', 'user.name=Domo Test', '-c', 'user.email=test@example.com', ...args
-    ])
-    await writeIn(repo, { 'landed.txt': 'merged on the host\n' })
-    await host('add', '--all')
-    await host('commit', '--quiet', '-m', 'landed on the host')
-    const sha = (await host('rev-parse', 'HEAD')).stdout
-
-    // The environment is sitting on `main`, which is the whole point: an import
-    // into a branch the agent is not on would never be noticed. And it has
-    // uncommitted work, which is the normal state of an agent mid-task.
-    await expect(exec('git', 'symbolic-ref', '--short', 'HEAD')).resolves.toMatchObject({ stdout: 'main' })
-    await exec('sh', '-c', 'echo half-finished > agent.txt')
-
-    const result = await importBranchIntoEnvironment({ environmentId: environment.id, branch: 'main' })
-
-    expect(result).toMatchObject({ requested: 'main', result: 'merged' })
-    expect(result.wip).toMatch(/^[0-9a-f]{40}$/)
-    // The host's commit arrived, the agent's file is still there, and git is
-    // not confused about any of it.
-    await expect(exec('cat', 'landed.txt')).resolves.toMatchObject({ stdout: 'merged on the host' })
-    await expect(exec('cat', 'agent.txt')).resolves.toMatchObject({ stdout: 'half-finished' })
-    await expect(exec('git', 'status', '--porcelain')).resolves.toMatchObject({ stdout: '' })
-    await expect(exec('git', 'merge-base', '--is-ancestor', sha, 'HEAD')).resolves.toMatchObject({ stdout: '' })
-    // The agent's work is a real commit it can reset to, not a stash.
-    await expect(exec('git', 'show', `${result.wip}:agent.txt`)).resolves.toMatchObject({ stdout: 'half-finished' })
-
-    // `protocol.ext.allow` was passed per invocation on the push too, not written.
-    await expect(host('config', '--get', 'protocol.ext.allow')).rejects.toThrow()
-
-    await retireEnvironment(environment.id)
-  }, HOUR / 4)
-})
-
-describe('populateWorkspaceVolume', () => {
-  it('copies a checkout, keeping hidden files and leaving out a data dir that lives inside it', async () => {
-    const repo = await checkout({
-      '.hidden': 'dotfile\n',
-      '.domo-data/dev-environments/env_old/repo/stale.txt': 'old\n',
-      'tools/state/domo/uploads/photo.png': 'not a copy target\n'
-    })
-    const volume = `${PREFIX}populate-${Date.now()}`
-    volumes.push(volume)
-    await run('docker', ['volume', 'create', volume])
-
-    await populateWorkspaceVolume({
-      source: repo,
-      volume,
-      helperImage: HELPER_IMAGE,
-      exclude: ['.domo-data', 'tools/state/domo']
-    })
-
-    const listing = (await run('docker', [
-      'run', '--rm', '--volume', `${volume}:/w`, HELPER_IMAGE,
-      'find', '/w', '-not', '-path', '/w/.git/*', '-type', 'f'
-    ])).stdout.split('\n').sort()
-
-    expect(listing).toEqual(expect.arrayContaining(['/w/README.md', '/w/src/index.ts', '/w/.hidden']))
-    expect(listing.join('\n')).not.toMatch(/stale\.txt|photo\.png/)
-    // macOS `tar` adds AppleDouble companions unless told not to.
-    expect(listing.filter(path => path.split('/').pop()!.startsWith('._'))).toEqual([])
-  }, 5 * 60 * 1000)
-})
-
-/**
- * A cleanup step that Docker refuses, against a real daemon.
- *
- * This is the failure the reconciliation exists for, and it is the one thing
- * about it no mock can vouch for: `docker volume rm` really is refused while
- * another container has the volume mounted, and `allowFailure` really does turn
- * that into a silent success. Measured once as a workspace volume holding a
- * full checkout, left on a machine, referenced by nothing, permanently.
- *
- * The environment here is made by hand out of busybox rather than by
- * `createEnvironment` — this is about what happens to the resources on the way
- * out, and a real image build would add minutes and nothing else.
- */
 describe('a retirement whose volume removal is refused', () => {
   it('names the container holding it, and removes it when asked again', async () => {
     const id = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
     created.push(id)
-    const volume = workspaceVolumeName(id)
+    const volume = `dind-var-lib-docker-${id}`
     const containerName = `${PREFIX}${id}`
     const holder = `${PREFIX}holder-${id}`
     await run('docker', ['volume', 'create', '--label', `domo.envId=${id}`, volume])
@@ -1102,13 +854,15 @@ describe('a retirement whose volume removal is refused', () => {
     expect((await run('docker', ['images', '--quiet', image])).stdout).toBe('')
   }, 5 * 60 * 1000)
 
-  it('leaves a live environment\'s workspace volume alone while it does it', async () => {
+  it('leaves a live environment\'s worktree alone while it removes a retired one\'s', async () => {
+    const repo = await checkout()
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
     const live = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
     created.push(live)
     const retired = `env_${randomUUID().replace(/-/g, '').slice(0, 20)}`
     created.push(retired)
     for (const id of [live, retired]) {
-      await run('docker', ['volume', 'create', '--label', `domo.envId=${id}`, workspaceVolumeName(id)])
+      await createHostWorktree({ repoPath: repo, projectId: 'prj_live', environmentId: id })
       state.rows.set(id, {
         id,
         projectId: 'prj_live',
@@ -1127,11 +881,14 @@ describe('a retirement whose volume removal is refused', () => {
 
     await reconcileEnvironmentResources()
 
-    // The one thing this change could do real harm with: a live environment's
-    // workspace volume is the only copy of whatever an agent has written in it.
-    const listed = (await run('docker', ['volume', 'ls', '--quiet'])).stdout.split('\n')
-    expect(listed).toContain(workspaceVolumeName(live))
-    expect(listed).not.toContain(workspaceVolumeName(retired))
+    // The one thing this could do real harm with: a live environment's worktree
+    // is the only copy of whatever an agent has not committed yet.
+    expect(await exists(hostWorktreePath(repo, live))).toBe(true)
+    expect(await exists(hostWorktreePath(repo, retired))).toBe(false)
+    const listed = (await run('git', ['-C', repo, 'worktree', 'list'])).stdout
+    expect(listed).toContain(live)
+    expect(listed).not.toContain(retired)
+    await removeHostWorktree({ repoPath: repo, environmentId: live })
   }, 60 * 1000)
 
   it('takes what a retired environment made on the host daemon, and nothing a live one made', async () => {

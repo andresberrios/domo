@@ -183,9 +183,22 @@ describe('validation', () => {
     ['forwardPorts', { image: 'i', forwardPorts: 3000 }, /forwardPorts must be an array/],
     ['forwardPorts', { image: 'i', forwardPorts: [{}] }, /forwardPorts may only contain numbers and strings/],
     ['portsAttributes', { image: 'i', portsAttributes: { 3000: 'web' } }, /portsAttributes\.3000 must be an object/],
-    ['postCreateCommand', { image: 'i', postCreateCommand: 7 }, /postCreateCommand must be a string/]
+    ['postCreateCommand', { image: 'i', postCreateCommand: 7 }, /postCreateCommand must be a string/],
+    ['caches', { image: 'i', caches: [] }, /caches must be false or an object/],
+    ['caches', { image: 'i', caches: { Gradle: '/g' } }, /caches\.Gradle must be named with lowercase/],
+    ['caches', { image: 'i', caches: { pnpm: '/elsewhere' } }, /caches\.pnpm is built in/],
+    ['caches', { image: 'i', caches: { gradle: 'relative' } }, /caches\.gradle must be an absolute container path/],
+    ['copyIgnored', { image: 'i', copyIgnored: '.env' }, /copyIgnored must be an array of relative globs/],
+    ['copyIgnored', { image: 'i', copyIgnored: ['../secrets'] }, /copyIgnored must be an array of relative globs/]
   ])('refuses a bad %s', async (_field, config, message) => {
     await expect(domoJson(config)).rejects.toThrow(message)
+  })
+
+  it('accepts caches and copyIgnored as given', async () => {
+    const { config } = await domoJson({ image: 'i', caches: { pnpm: false, gradle: '/home/vscode/.gradle' }, copyIgnored: [] })
+
+    expect(config.caches).toEqual({ pnpm: false, gradle: '/home/vscode/.gradle' })
+    expect(config.copyIgnored).toEqual([])
   })
 
   it.each([

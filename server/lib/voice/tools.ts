@@ -6,8 +6,6 @@ import { acpManager, normalizeCwd } from '../acp/manager'
 import { listAdapterCatalog } from '../acp/models'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
-import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
-import { importBranchIntoEnvironment } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { cleanupEnvironment, createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
@@ -476,20 +474,12 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_dev_environment',
       description:
-        'Create a new isolated development environment for a project: a container with its own copy of the repository. This can take a while; tell the user it is starting rather than waiting silently.',
+        'Create a new isolated development environment for a project: a container with its own git worktree of the repository, starting from the last commit. This can take a while; tell the user it is starting rather than waiting silently.',
       parameters: {
         type: Type.OBJECT,
         properties: {
           project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' },
-          name: { type: Type.STRING, description: 'Short name for the environment, e.g. "feature-auth".' },
-          workingTree: {
-            type: Type.STRING,
-            enum: ['discard', 'carry'],
-            description:
-              'What to do with work the user has left uncommitted on the host. "discard" (the default) '
-              + 'starts the environment from the last commit. Pass "carry" only if the user asks to '
-              + 'continue their uncommitted work in it; it is committed there so it stays visible.'
-          }
+          name: { type: Type.STRING, description: 'Short name for the environment, e.g. "feature-auth".' }
         },
         required: ['project', 'name']
       }
@@ -498,17 +488,13 @@ export const voiceTools: Record<string, VoiceTool> = {
       const project = await resolveProject(args.project)
       const name = String(args.name ?? '').trim()
       if (!name) throw new Error('A name is required.')
-      const environment = await createEnvironment({
-        projectId: project.id,
-        name,
-        workingTree: args.workingTree === 'carry' ? 'carry' : 'discard'
-      })
+      const environment = await createEnvironment({ projectId: project.id, name })
       return {
         id: environment.id,
         name: environment.name,
         status: environment.status,
         workspace: environment.workspacePath,
-        workingTree: describeSeed(environment.workspaceSeed)
+        checkout: describeSeed(environment.workspaceSeed)
       }
     }
   },
@@ -584,63 +570,6 @@ export const voiceTools: Record<string, VoiceTool> = {
         removed: report.removed.map(leftover => `${leftover.kind} ${leftover.name}`),
         leftovers: report.leftovers.map(({ kind, name, error }) => ({ resource: `${kind} ${name}`, error }))
       }
-    }
-  },
-
-  export_branch: {
-    declaration: {
-      name: 'export_branch',
-      description:
-        'Copy a branch out of a development environment into the project’s checkout on this machine. Fast-forward only; nothing on this machine is rewritten.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' },
-          branch: { type: Type.STRING, description: 'Branch in the environment. Omit for the one checked out there.' },
-          into: { type: Type.STRING, description: 'Local branch to fast-forward. Omit for the same name; pass an empty string to fetch only.' }
-        },
-        required: ['environment']
-      }
-    },
-    handler: async (args) => {
-      const environment = await resolveEnvironment(args.environment)
-      const branch = String(args.branch ?? '').trim()
-        || (await listEnvironmentBranches(environment.id)).current
-      if (!branch) throw new Error(`${environment.name} has no branch checked out; name the branch to export.`)
-      const exported = await exportBranch({
-        environmentId: environment.id,
-        branch,
-        into: resolveIntoBranch(branch, args.into)
-      })
-      return { environment: environment.name, branch, ...exported }
-    }
-  },
-
-  import_branch: {
-    declaration: {
-      name: 'import_branch',
-      description:
-        'Copy a branch the other way: from the project’s checkout on this machine *into* a development environment. Use it to bring an environment up to date with work that has landed here, or to give it a branch to carry on from. Anything the agent left uncommitted is committed first, so nothing is lost, and then the branch is merged into the one it is on. A conflict is left on a side branch for the agent to resolve, as is anything imported while it is mid-turn. The agents there are always told.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' },
-          branch: { type: Type.STRING, description: 'Branch to write in the environment.' },
-          from: { type: Type.STRING, description: 'Branch on this machine to send. Omit for the same name.' }
-        },
-        required: ['environment', 'branch']
-      }
-    },
-    handler: async (args) => {
-      const environment = await resolveEnvironment(args.environment)
-      const branch = String(args.branch ?? '').trim()
-      if (!branch) throw new Error('Name the branch to write in the environment.')
-      const imported = await importBranchIntoEnvironment({
-        environmentId: environment.id,
-        branch,
-        from: args.from
-      })
-      return { environment: environment.name, ...imported }
     }
   },
 

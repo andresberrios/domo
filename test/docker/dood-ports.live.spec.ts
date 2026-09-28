@@ -115,7 +115,6 @@ describe.skipIf(!daemon)('ports in a stack on the host daemon', () => {
       environmentId: ENV_ID,
       containerReference: ENV_CONTAINER,
       workspacePath: '/workspaces/probe',
-      workspaceVolume: VOLUME,
       helperImage: 'alpine:3'
     })).socketPath
 

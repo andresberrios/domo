@@ -71,7 +71,7 @@ function setup() {
     ns,
     scope: {
       workspacePath: '/workspaces/domo',
-      workspaceVolume: 'domo-dev-env_abc-workspace',
+      mounts: [{ destination: '/workspaces/domo', kind: 'volume', volume: 'domo-dev-env_abc-workspace', readOnly: false }],
       labels: { 'domo.env': ENV },
       dockerSocket: '/sock/env_abc.sock'
     },

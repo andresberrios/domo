@@ -1,9 +1,10 @@
-import { access, rm } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { access, rm, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 
-import type { DevEnvironment, Project, WorkingTreeMode, WorkspaceSeedReport } from '../../shared/types'
+import type { DevEnvironment, Project, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
+import { canonicalBaseGitPath, canonicalWorkspacePath, workspaceAliasArgs } from './dev-env/canonical-mounts'
 import { seedClaudeHome } from './dev-env/claude-home'
 import { resolveEnvironmentConfig, resolveForwardPorts, usesHostDaemon } from './dev-env/config'
 import {
@@ -15,13 +16,18 @@ import {
   resolveRemoteUser
 } from './dev-env/container'
 import {
+  dockerServerOs,
   inspectContainer,
-  populateWorkspaceVolume,
   resourcePrefix,
   run,
   type ContainerInspection
 } from './dev-env/docker'
-import { environmentResources, observeEnvironmentResources, ownedResources, workspaceVolumeName } from './dev-env/leftovers'
+import { cacheMountTargets, ensureCacheVolumes, resolveCaches } from './dev-env/caches'
+import { defaultInstallCommand, presentLockfiles } from './dev-env/dependencies'
+import { createHostWorktree, hostWorktreePath } from './dev-env/host-worktree'
+import { alignUserArgs, planAlignment } from './dev-env/user-alignment'
+import { seedReport } from './dev-env/workspace-seed'
+import { environmentResources, observeEnvironmentResources, ownedResources } from './dev-env/leftovers'
 import { sweepEnvironmentResources, type CleanupReport } from './dev-env/reconcile'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
 import { buildEnvironmentImage } from './dev-env/image'
@@ -32,7 +38,6 @@ import {
   ensureBrowserVolume
 } from './dev-env/browser-volume'
 import { collectRuntimeVolumes, ensureRuntimeVolume, RUNTIME_ROOT } from './dev-env/runtime-volume'
-import { carryMessage, readHostWorkingTree, reconcileArgs, seedReport } from './dev-env/workspace-seed'
 import {
   doodSocketPath,
   ensureDoodProxy,
@@ -41,7 +46,6 @@ import {
   stopEnvironmentContainers
 } from './dood/manager'
 import { keyedSerial } from './keyed-serial'
-import { dataDir } from './paths'
 import { getSettings } from './settings'
 import {
   createDevEnvironmentRow,
@@ -75,9 +79,6 @@ export function safeEnvironmentName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase()
 }
 
-/** Named from the id, like every Docker resource an environment owns — see `dev-env/leftovers.ts`. */
-export { workspaceVolumeName }
-
 function containerReference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
 }
@@ -92,19 +93,6 @@ function assertNotRetired(environment: DevEnvironment): void {
   throw new Error(
     `Development environment "${environment.name}" was retired; its container and checkout no longer exist.`
   )
-}
-
-async function copyRepository(source: string, environmentId: string): Promise<string> {
-  const volume = workspaceVolumeName(environmentId)
-  await run('docker', ['volume', 'create', '--label', `domo.envId=${environmentId}`, volume])
-  const excluded = relative(resolve(source), resolve(dataDir()))
-  await populateWorkspaceVolume({
-    source,
-    volume,
-    helperImage: HELPER_IMAGE,
-    exclude: excluded && !excluded.startsWith('..') && !isAbsolute(excluded) ? [excluded] : []
-  })
-  return volume
 }
 
 /**
@@ -137,7 +125,7 @@ function ensureDockerProxy(environment: {
     environmentId: environment.id,
     containerReference: environment.containerReference,
     workspacePath: environment.workspacePath,
-    workspaceVolume: workspaceVolumeName(environment.id),
+    workspaceAlias: { legacyPath: environment.workspacePath, canonicalPath: canonicalWorkspacePath(environment.id) },
     helperImage: HELPER_IMAGE
   })
 }
@@ -241,62 +229,9 @@ const SSH_HOME_SCRIPT = [
   'for entry in "$@"; do ln -sfn "$host/$entry" "$dir/$entry"; done'
 ].join('\n')
 
-/**
- * Reconciles the copied checkout with the HEAD copied beside it — see
- * `workspace-seed.ts` for which direction, and why there are two.
- *
- * It fails creation when it fails. The alternative is an environment that looks
- * created and quietly carries invisible work back out, which is the whole thing
- * being fixed; a repository with no commits yet is the one case that is not a
- * failure, because there is no HEAD to reconcile against.
- */
-async function reconcileWorkingTree(input: {
-  containerId: string
-  remoteUser: string
-  home: string
-  workspacePath: string
-  mode: WorkingTreeMode
-  dirtyPaths: string[]
-  environmentName: string
-  repoPath: string
-}): Promise<WorkspaceSeedReport> {
-  const result = await run('docker', [
-    ...execArgs({
-      containerId: input.containerId,
-      user: input.remoteUser,
-      workdir: input.workspacePath,
-      env: { HOME: input.home }
-    }),
-    ...reconcileArgs({
-      mode: input.mode,
-      workspacePath: input.workspacePath,
-      message: carryMessage({ environmentName: input.environmentName, repoPath: input.repoPath })
-    })
-  ]).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(
-      `Could not reconcile the copied checkout with its HEAD: ${message}. `
-      + 'The environment would have started with files its own git does not describe.'
-    )
-  })
-  if (result.stderr.includes('no-head')) {
-    console.warn(
-      `[dev-env] ${input.environmentName} was created from a checkout with no commit to reconcile against; `
-      + 'its working tree was copied as it stood.'
-    )
-  }
-  return seedReport({
-    mode: input.mode,
-    paths: input.dirtyPaths,
-    commit: input.mode === 'carry' ? result.stdout.trim() || null : null
-  })
-}
-
 export async function createEnvironment(input: {
   projectId: string
   name: string
-  /** What to do with whatever is uncommitted on the host. Defaults to `discard`. */
-  workingTree?: WorkingTreeMode
 }): Promise<DevEnvironment & { workspaceSeed: WorkspaceSeedReport }> {
   const project = await getProject(input.projectId)
   if (!project) throw new Error('Project not found')
@@ -310,9 +245,8 @@ export async function createEnvironment(input: {
 async function create(
   id: string,
   project: Project,
-  input: { name: string, workingTree?: WorkingTreeMode }
+  input: { name: string }
 ): Promise<DevEnvironment & { workspaceSeed: WorkspaceSeedReport }> {
-  const workingTree = input.workingTree ?? 'discard'
   const name = input.name.trim()
   const safeName = safeEnvironmentName(name) || id
   const workspacePath = `/workspaces/${safeName}`
@@ -321,7 +255,7 @@ async function create(
 
   try {
     // The definition, build contexts and Dockerfiles are read from the project's own
-    // checkout; the environment gets a copy in a named volume, never a host directory.
+    // checkout; the environment gets a worktree of its own beside it (`host-worktree.ts`).
     const resolved = await resolveEnvironmentConfig(project.repoPath)
     const declaredPorts = resolveForwardPorts(resolved.config)
     for (const port of declaredPorts) {
@@ -342,10 +276,19 @@ async function create(
         return null
       })
       : null
-    // Read before the tar and only to be able to say what happened; the reconcile
-    // below runs on what actually landed in the volume, not on this list.
-    const dirtyPaths = await readHostWorkingTree(project.repoPath)
-    const workspaceVolume = await copyRepository(project.repoPath, id)
+    // A clean checkout of the last commit, as git users expect of a worktree,
+    // plus the ignored files the project needs to run (a `.env`). Nothing has
+    // to be reconciled inside the container afterwards.
+    const worktree = await createHostWorktree({
+      repoPath: project.repoPath,
+      projectId: project.id,
+      environmentId: id,
+      copyIgnored: resolved.config.copyIgnored
+    })
+    const canonicalPath = canonicalWorkspacePath(id)
+    const baseGitPath = canonicalBaseGitPath(project.id)
+    const caches = resolveCaches(resolved.config.caches)
+    await ensureCacheVolumes(caches)
     const imageName = await buildEnvironmentImage({
       config: resolved.config,
       environmentId: id,
@@ -360,6 +303,7 @@ async function create(
     const overlay = await resolveHomeOverlay({
       containerHome: home,
       workspacePath,
+      safeDirectories: [canonicalPath, baseGitPath],
       paths: settings.homeMounts
     })
     // Before `docker run`: the socket is mounted as a file, and it has to exist.
@@ -375,7 +319,13 @@ async function create(
       metadata,
       remoteUser,
       workspacePath,
-      workspaceVolume,
+      workspace: {
+        hostWorktreePath: worktree.worktreePath,
+        hostGitdirFilePath: worktree.gitdirFilePath,
+        hostBaseGitPath: worktree.commonGitDir,
+        projectId: project.id
+      },
+      caches,
       runtimeVolume,
       browserVolume,
       ports: declaredPorts,
@@ -401,13 +351,22 @@ async function create(
     // published ports and its `host.docker.internal` live in this namespace.
     if (dockerSocket) await ensureEnvironmentNetwork(id)
 
-    // The tar stream left the checkout owned by root; hand it to the user everything
-    // else runs as, before anything else touches it.
+    // Before anything runs as the remote user, which may be about to get a new uid.
+    await alignRemoteUser({ containerId: inspection.id, remoteUser, worktreePath: worktree.worktreePath })
+    // Before anything addresses the checkout by the path the rest of Domo, the
+    // project's config and its compose files all use.
+    await run('docker', [
+      ...execArgs({ containerId: inspection.id, user: 'root' }),
+      ...workspaceAliasArgs({ canonicalPath, legacyPath: workspacePath })
+    ])
+    // Every environment's installs write here, as whichever user each one runs as.
+    const cacheTargets = cacheMountTargets(caches)
+    if (cacheTargets.length) {
+      await run('docker', [...execArgs({ containerId: inspection.id, user: 'root' }), 'chmod', '1777', ...cacheTargets])
+    }
+    // No `chown` of the checkout: it is the host's own worktree now, not a
+    // root-owned tar extraction, and its files belong to the developer.
     if (remoteUser !== 'root') {
-      await run('docker', [
-        ...execArgs({ containerId: inspection.id, user: 'root' }),
-        'chown', '--recursive', `${remoteUser}:`, workspacePath
-      ])
       // A mount target's missing parent (`~/.config`, when only `~/.config/gh`
       // is mounted) is created by Docker as root, and gcloud then cannot write
       // beside its own directory. Not recursive: the mounted content is the
@@ -434,22 +393,14 @@ async function create(
         'sh', '-c', SSH_HOME_SCRIPT, 'sh', `${home}/.ssh`, `${home}/.ssh-host`, ...overlay.ssh.links
       ], { input: overlay.ssh.config })
     }
-    // Before anything else looks at the checkout, and in particular before
-    // `postCreateCommand` and any agent: the tar copied the host's *working tree*,
-    // so until this runs the environment's files and its HEAD disagree. Needs the
-    // generated `~/.gitconfig` above, which is where the commit identity comes from.
-    const workspaceSeed = await reconcileWorkingTree({
-      containerId: inspection.id,
-      remoteUser,
-      home,
-      workspacePath,
-      mode: workingTree,
-      dirtyPaths,
-      environmentName: name,
-      repoPath: project.repoPath
-    })
     // After the preflight, because it runs the CLI out of the runtime volume.
     await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
+    // The worktree has no `node_modules` or `.venv`: dependencies are installed
+    // here, for this container's platform, never copied from the host. A
+    // project with a `postCreateCommand` installs its own way instead.
+    const install = resolved.config.postCreateCommand
+      ? null
+      : await installDependencies({ containerId: inspection.id, user: remoteUser, home, workspacePath, checkout: worktree.worktreePath })
     if (resolved.config.postCreateCommand) {
       await run('docker', [
         ...execArgs({ containerId: inspection.id, user: remoteUser, workdir: workspacePath, env: { HOME: home } }),
@@ -461,7 +412,10 @@ async function create(
 
     const environment = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     await refreshEnvironmentPorts(id)
-    return { ...((await getDevEnvironment(id)) ?? environment), workspaceSeed }
+    return {
+      ...((await getDevEnvironment(id)) ?? environment),
+      workspaceSeed: seedReport({ ...worktree.seed, install })
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await updateDevEnvironment(id, { status: 'error', lastError: message })
@@ -487,10 +441,74 @@ async function create(
     // failed creation is not a retirement — so it has to claim the resources
     // explicitly, and the sweep below is what removes each one and confirms it
     // is really gone.
-    await claimResources(id)
+    // The worktree is claimed with the rest, and the sweep removes it after
+    // the container that mounts it.
+    await claimResources(id, project)
     await sweepEnvironmentResources()
     throw error
   }
+}
+
+/**
+ * The install a project with no `postCreateCommand` gets, by its lockfile
+ * (`dependencies.ts`). Never fails the creation: an environment with no
+ * dependencies installed still runs agents, and the report says what went
+ * wrong so the agent or the developer can fix it — an image without the tool,
+ * or a lockfile out of date.
+ */
+async function installDependencies(input: {
+  containerId: string
+  user: string
+  home: string
+  workspacePath: string
+  /** The worktree on the host, where the lockfiles are read. */
+  checkout: string
+}): Promise<WorkspaceSeedReport['install']> {
+  const command = defaultInstallCommand(await presentLockfiles(input.checkout))
+  if (!command) return null
+  const exec = execArgs({ containerId: input.containerId, user: input.user, workdir: input.workspacePath, env: { HOME: input.home } })
+  const printed = command.join(' ')
+  const available = await run('docker', [...exec, 'sh', '-c', 'command -v "$1"', 'sh', command[0]!]).then(() => true, () => false)
+  if (!available) return { command: printed, error: `the image has no ${command[0]}` }
+  return run('docker', [...exec, ...command]).then(
+    () => ({ command: printed, error: null }),
+    error => ({ command: printed, error: error instanceof Error ? error.message : String(error) })
+  )
+}
+
+/**
+ * Give the remote user the worktree owner's uid when the daemon passes host
+ * ids through (a Linux daemon; Docker Desktop maps them) — `user-alignment.ts`.
+ * An image without `usermod`, or a root remote user, is warned about rather
+ * than failed: the environment still runs, and what it writes is the only thing
+ * at stake.
+ */
+async function alignRemoteUser(input: { containerId: string, remoteUser: string, worktreePath: string }): Promise<void> {
+  const owner = await stat(input.worktreePath)
+  const containerUid = input.remoteUser === 'root'
+    ? 0
+    : Number.parseInt((await run('docker', [...execArgs({ containerId: input.containerId }), 'id', '-u', input.remoteUser])
+      .catch(() => ({ stdout: '' }))).stdout, 10)
+  // An image that cannot say who its user is gets nothing renumbered on a guess.
+  if (!Number.isInteger(containerUid)) return
+  const plan = planAlignment({
+    daemonOs: await dockerServerOs(),
+    remoteUser: input.remoteUser,
+    hostUid: owner.uid,
+    hostGid: owner.gid,
+    containerUid
+  })
+  if (plan.kind === 'root-owned') {
+    console.warn(`[dev-env] ${input.containerId} runs as root on a Linux daemon: what it writes in the checkout will be root's on the host.`)
+    return
+  }
+  if (plan.kind !== 'renumber') return
+  await run('docker', [
+    ...execArgs({ containerId: input.containerId, user: 'root' }),
+    ...alignUserArgs({ user: input.remoteUser, uid: plan.uid, gid: plan.gid })
+  ]).catch((error) => {
+    console.warn(`[dev-env] could not give ${input.remoteUser} the checkout owner's uid ${plan.uid}: ${error}`)
+  })
 }
 
 /**
@@ -505,11 +523,12 @@ async function create(
  * (`postCreateCommand` can start a whole stack). If Docker cannot be asked,
  * the derived names are still worth writing down.
  */
-async function claimResources(id: string): Promise<void> {
+async function claimResources(id: string, project: Project): Promise<void> {
   const made = await observeEnvironmentResources()
     .then(present => ownedResources(id, present))
     .catch(() => [])
-  const owed = new Map([...environmentResources(id), ...made]
+  const worktree = { kind: 'worktree' as const, name: hostWorktreePath(project.repoPath, id) }
+  const owed = new Map([...environmentResources(id), ...made, worktree]
     .map(({ kind, name }) => [`${kind} ${name}`, { kind, name, error: 'Cleanup after a failed creation has not been confirmed.' }]))
   await setEnvironmentLeftovers(id, [...owed.values()])
 }
@@ -610,15 +629,15 @@ async function ensureRunning(id: string): Promise<DevEnvironment> {
 
 /**
  * Retire an environment: destroy everything it has on the daemon — its
- * container, its workspace volume, its image, and whatever its agents made
+ * container, its worktree, its image, and whatever its agents made
  * through its Docker proxy — and keep the row.
  *
  * The row outliving all of it is the point. It is the only record of where the
  * agent sessions that ran here ran, it is what makes every one of them
  * unstartable — `sessionStartability` reads `retiredAt` rather than anything
  * written on the sessions themselves — and it is what claims whatever Docker
- * would not remove, for as long as that takes. Nothing about the environment
- * is recoverable, since the checkout only ever existed in the volume, so this
+ * would not remove, for as long as that takes. Its commits stay in the project's
+ * repository (the worktree shared its refs), but uncommitted work goes with the worktree, so this
  * is never a thing to restart. The row is kept for good
  * (`pruneRetiredProjects` says why).
  *

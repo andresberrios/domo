@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser'
 
+import { BUILTIN_CACHES, CACHE_NAME } from './caches'
 import type {
   DevEnvironmentConfig,
   ForwardPortEntry,
@@ -30,7 +31,7 @@ export const GITHUB_CLI_FEATURE = 'ghcr.io/devcontainers/features/github-cli:1'
  */
 const SUPPORTED_KEYS = [
   'image', 'build', 'features', 'docker', 'remoteUser',
-  'containerEnv', 'forwardPorts', 'portsAttributes', 'postCreateCommand'
+  'containerEnv', 'forwardPorts', 'portsAttributes', 'postCreateCommand', 'caches', 'copyIgnored'
 ] as const
 
 const BUILD_KEYS = ['dockerfile', 'context', 'args', 'target'] as const
@@ -211,6 +212,27 @@ export function validate(input: unknown, repoPath: string): DevEnvironmentConfig
       fail('postCreateCommand', 'must be a string (run through sh -c) or an array of strings (argv).')
     }
     config.postCreateCommand = command as string | string[]
+  }
+  if (input.caches !== undefined) {
+    if (input.caches !== false && !isPlainObject(input.caches)) {
+      fail('caches', 'must be false or an object of cache names to container paths (or false).')
+    }
+    if (input.caches !== false) {
+      for (const [name, value] of Object.entries(input.caches)) {
+        if (!CACHE_NAME.test(name)) fail(`caches.${name}`, 'must be named with lowercase letters, digits, ".", "_" or "-".')
+        if (value === false) continue
+        if (name in BUILTIN_CACHES) fail(`caches.${name}`, 'is built in, so it can only be turned off with false.')
+        if (typeof value !== 'string' || !value.startsWith('/')) fail(`caches.${name}`, 'must be an absolute container path or false.')
+      }
+    }
+    config.caches = input.caches as false | Record<string, string | false>
+  }
+  if (input.copyIgnored !== undefined) {
+    const globs = input.copyIgnored
+    if (!Array.isArray(globs) || !globs.every(glob => typeof glob === 'string' && glob && !glob.startsWith('/') && !glob.split('/').includes('..'))) {
+      fail('copyIgnored', 'must be an array of relative globs inside the project.')
+    }
+    config.copyIgnored = globs as string[]
   }
   return config
 }

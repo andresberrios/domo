@@ -1,12 +1,14 @@
-import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover } from '../../../shared/types'
-import { listDevEnvironments, setEnvironmentLeftovers } from '../repo'
+import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover, Project } from '../../../shared/types'
+import { listDevEnvironments, listProjects, setEnvironmentLeftovers } from '../repo'
+import { hostWorktreeExists, hostWorktreePath, listHostWorktrees, removeHostWorktree } from './host-worktree'
 import {
   describeLeftovers,
   observeEnvironmentResources,
   planLeftoverRemoval,
   removeLeftovers,
   unattributedResources,
-  type Leftover
+  type Leftover,
+  type RemovalOutcome
 } from './leftovers'
 
 /**
@@ -77,9 +79,18 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   } catch (error) {
     return { ...EMPTY, unreachable: error instanceof Error ? error.message : String(error) }
   }
-  const unattributed = unattributedResources({ environments, present })
+  const projects = await listProjects(true)
+  const unattributed = [
+    ...unattributedResources({ environments, present }),
+    ...await unattributedWorktrees(environments, projects)
+  ]
 
   const outcome = await removeLeftovers(planLeftoverRemoval({ environments: claimants, present }))
+  // After Docker's: the container that mounts a worktree has gone by now, or
+  // it is itself a leftover and the worktree stays with it.
+  const worktrees = await removeWorktreeLeftovers(claimants, projects)
+  outcome.removed.push(...worktrees.removed)
+  outcome.failed.push(...worktrees.failed)
   const remaining = new Map<string, EnvironmentLeftover[]>()
   for (const failure of outcome.failed) {
     const list = remaining.get(failure.environmentId) ?? []
@@ -96,6 +107,53 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
     if (!settled) await setEnvironmentLeftovers(environment.id, owed, wanted)
   }
   return { removed: outcome.removed, leftovers: outcome.failed, unattributed }
+}
+
+/**
+ * The host half of a sweep: an environment's worktree, which is a directory
+ * beside its project's checkout rather than anything Docker lists.
+ *
+ * The same attribution rule as Docker's: a retired row claims its worktree,
+ * any row claims one a cleanup recorded as owed, and a live environment's is
+ * never touched — it is the only copy of its agent's uncommitted work.
+ * Whether it went is decided by looking at the disk afterwards.
+ */
+export async function removeWorktreeLeftovers(
+  claimants: DevEnvironment[],
+  projects: Project[]
+): Promise<RemovalOutcome> {
+  const outcome: RemovalOutcome = { removed: [], failed: [] }
+  const repoPaths = new Map(projects.map(project => [project.id, project.repoPath]))
+  for (const environment of claimants) {
+    const repoPath = repoPaths.get(environment.projectId)
+    if (!repoPath) continue
+    const claimed = !!environment.retiredAt || environment.leftovers.some(owed => owed.kind === 'worktree')
+    if (!claimed || !(await hostWorktreeExists(repoPath, environment.id))) continue
+    const leftover = { kind: 'worktree' as const, name: hostWorktreePath(repoPath, environment.id), environmentId: environment.id }
+    const left = await removeHostWorktree({ repoPath, environmentId: environment.id }).catch(error => [String(error)])
+    if (left.length) {
+      outcome.failed.push({ ...leftover, error: `Could not delete ${left.join(', ')}. Delete it by hand and run the cleanup again.` })
+    } else {
+      outcome.removed.push(leftover)
+    }
+  }
+  return outcome
+}
+
+/**
+ * Worktrees beside a project's checkout that no environment row knows —
+ * reported, never removed, for the same reason as Docker's: nothing here can
+ * tell another install's live checkout from garbage.
+ */
+async function unattributedWorktrees(environments: DevEnvironment[], projects: Project[]): Promise<string[]> {
+  const known = new Set(environments.map(environment => environment.id))
+  const found = new Set<string>()
+  for (const project of projects) {
+    for (const id of await listHostWorktrees(project.repoPath)) {
+      if (!known.has(id)) found.add(`worktree ${hostWorktreePath(project.repoPath, id)}`)
+    }
+  }
+  return [...found]
 }
 
 /**

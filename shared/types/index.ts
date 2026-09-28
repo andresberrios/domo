@@ -316,7 +316,8 @@ export interface DevEnvironment {
   leftovers: EnvironmentLeftover[]
 }
 
-export type LeftoverKind = 'container' | 'network' | 'volume' | 'image'
+/** `worktree` is an environment's checkout on the host; its name is the path. */
+export type LeftoverKind = 'container' | 'network' | 'volume' | 'image' | 'worktree'
 
 /** One Docker resource that should no longer exist and still does. */
 export interface EnvironmentLeftover {
@@ -325,22 +326,23 @@ export interface EnvironmentLeftover {
   error: string
 }
 
-/**
- * What to do with whatever was uncommitted on the host when an environment is
- * created. `discard` (the default) starts the environment from the project's
- * HEAD; `carry` brings the host's working tree over and records it as a commit,
- * so the environment's git still agrees with its files.
- */
-export type WorkingTreeMode = 'discard' | 'carry'
-
-/** What the host's working tree looked like when an environment was seeded, and what was done with it. */
+/** What the host's checkout looked like when an environment's worktree was cut from it, and what came along. */
 export interface WorkspaceSeedReport {
-  mode: WorkingTreeMode
-  /** Paths git called dirty on the host, capped; `total` is how many there really were. */
+  /** Paths that were uncommitted on the host and stayed there (capped); `total` is how many there really were. */
   paths: string[]
   total: number
-  /** The commit the carried changes were recorded as, when anything was carried. */
-  commit: string | null
+  /** Ignored files copied into the worktree (`copyIgnored`), such as a `.env`. */
+  copied: string[]
+  /** The dependency install Domo ran because the project defines no `postCreateCommand`, if any. */
+  install: { command: string, error: string | null } | null
+}
+
+/** Whether a project's checkout can have a worktree cut from it yet. */
+export interface RepositoryState {
+  repository: boolean
+  hasCommits: boolean
+  /** Files the first commit would contain, respecting `.gitignore`; null when there is no repository to ask. */
+  filesToCommit: number | null
 }
 
 export interface DevEnvironmentPort {
@@ -360,120 +362,6 @@ export interface DevEnvironmentPort {
   listening: boolean
   forwarded: boolean
   url: string | null
-}
-
-export interface EnvironmentBranch {
-  name: string
-  sha: string
-  subject: string
-}
-
-export interface EnvironmentBranches {
-  /** The branch checked out in the container, or null when its HEAD is detached. */
-  current: string | null
-  branches: EnvironmentBranch[]
-}
-
-/**
- * How a branch sync ended, whichever way it moved. An export is fast-forward
- * only in every direction, so `not-merged` — with a reason — is what a
- * divergence comes back as rather than anything being rewritten. Only an
- * import reaches `merged`: once it has committed what an agent left
- * uncommitted, the branch has genuinely diverged and a merge is the honest
- * tool. A conflict is `not-merged` with the side branch named, never a
- * half-merged tree left behind.
- */
-export type BranchSyncResult = 'fast-forwarded' | 'created' | 'up-to-date' | 'merged' | 'not-merged'
-
-export interface SyncedCommit {
-  sha: string
-  subject: string
-}
-
-/** What exporting one branch out of an environment did to the project's own checkout. */
-export interface BranchExport {
-  /** The remote-tracking ref the environment's branch was fetched into. */
-  ref: string
-  /** What that ref now points at. */
-  sha: string
-  /** What came over, newest first, relative to `into` (or to the previous tracking ref). */
-  commits: SyncedCommit[]
-  /** The local branch that was asked for, or null when only the fetch was. */
-  into: string | null
-  result: BranchSyncResult
-  /** Why `into` was left alone, when it was. */
-  reason?: string
-}
-
-/** One agent session, as an import plan refers to it. */
-export interface ImportPlanSession {
-  agentSessionId: string
-  title: string
-  /** Whether a turn is in flight right now. */
-  busy: boolean
-}
-
-/**
- * What an import *would* do, worked out from the environment's observed state
- * before anything is touched. The executor carries this out rather than
- * deciding again, and the modal renders it — so the button cannot promise
- * something different from what the server does.
- */
-export interface ImportPlan {
-  /** The branch the caller asked the environment to have. */
-  requested: string
-  /** The ref in the project's checkout that will be sent. */
-  from: string
-  /** The branch the commits will land on in the environment. */
-  branch: string
-  /** True when `branch` is a side ref rather than the one asked for. */
-  toSideBranch: boolean
-  /** Why it is going to a side ref, when it is. */
-  sideBranchReason: 'agent-mid-turn' | null
-  /** The branch the environment has checked out, or null when its HEAD is detached. */
-  checkedOut: string | null
-  /** Paths that will be committed before anything else happens, capped, with the true total. */
-  commitFirst: { paths: string[], total: number } | null
-  /** Whether a merge into the checked-out branch will be attempted. */
-  merge: boolean
-  /** Every session that will be told what happened. */
-  notify: ImportPlanSession[]
-  /**
-   * The one session that will be asked to merge by hand — when the changes land
-   * on a side branch, or if the merge conflicts. Null when the environment has
-   * no sessions, or when there will be nothing left to merge.
-   */
-  resolver: ImportPlanSession | null
-}
-
-/** What an import did, and what it told the agents working in the environment. */
-export interface EnvironmentBranchImport extends BranchImport {
-  /** The branch the caller asked for. Differs from `branch` when the import went to a side ref. */
-  requested: string
-  /** Why it was left on a side branch, when it was. */
-  diverted?: string
-  /** The commit an agent's uncommitted work was parked in before the merge, if there was any. */
-  wip?: string | null
-  /** The session that was asked to merge the changes by hand, when one was. */
-  resolver?: ImportPlanSession | null
-  /** The sessions told where the changes are, and how each one was reached. */
-  /** Where each notice actually went, as the delivery reported itself. */
-  notified: Array<{ agentSessionId: string, title: string, via: MessageDelivery | 'inbox' }>
-}
-
-/** What importing one branch into an environment did to the environment's checkout. */
-export interface BranchImport {
-  /** The branch in the environment that was written, or would have been. */
-  branch: string
-  /** The ref in the project's own checkout that was sent. */
-  from: string
-  /** What the environment's branch points at now — unchanged when nothing moved. */
-  sha: string
-  /** What crossed, newest first, relative to where the environment's branch stood. */
-  commits: SyncedCommit[]
-  result: BranchSyncResult
-  /** Why the environment's branch was left alone, when it was. */
-  reason?: string
 }
 
 export interface SessionModeInfo {

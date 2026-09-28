@@ -147,26 +147,6 @@ async function tarInto(input: {
   })
 }
 
-/** The checkout, into the named volume that becomes the environment's workspace. */
-export async function populateWorkspaceVolume(input: {
-  source: string
-  volume: string
-  helperImage: string
-  /** Paths relative to `source` to leave out (the data directory when it lives in the project). */
-  exclude?: string[]
-}): Promise<void> {
-  await tarInto({
-    source: input.source,
-    entries: ['.'],
-    exclude: input.exclude,
-    label: `the checkout into ${input.volume}`,
-    consumerArgs: [
-      'run', '--rm', '--interactive', '--volume', `${input.volume}:/workspace`, input.helperImage,
-      'tar', '-xf', '-', '-C', '/workspace', '--no-same-owner'
-    ]
-  })
-}
-
 /**
  * Named entries of a host directory into a path in a running container, owned by
  * the user the extraction runs as.

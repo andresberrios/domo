@@ -10,8 +10,8 @@ unexpected way.
 - **Each environment gets its own unix socket onto the host daemon**, mounted
   at `/var/run/docker.sock`. The socket a request arrives on is its only
   identity. This replaced a daemon per environment (DinD), whose volumes
-  filled the Docker VM. Older environments keep DinD, and so does a project
-  that lists the docker-in-docker Feature itself. Only those run
+  filled the Docker VM. A project that lists the docker-in-docker Feature
+  itself still gets DinD, and only then does an environment run
   `--privileged`.
 - **It is not a security boundary.** Anything that reaches the host daemon can
   take the host.
@@ -92,6 +92,36 @@ Engine, three problems are known and not yet fixed:
 - The keep-alive's `chmod 666` changes the host file, so the socket becomes
   world-writable on the host.
 
+## The checkout is a host worktree
+
+Every environment gets a locked git worktree in
+`<repo>/../.domo-worktrees/<id>`, sharing the project's objects and refs. See
+`dev-env/host-worktree.ts` and `dev-env/canonical-mounts.ts`.
+
+- **It is mounted at `/worktrees/<id>`. `/workspaces/<name>` is a symlink to
+  it.** `docker inspect` lists only the real destination, so a bind source
+  given by the legacy path is resolved through the alias first (`binds.ts`).
+  Git checks ownership on the real path, so `safe.directory` lists both.
+- **The container sees its own `.git` file**, a side file bind-mounted over
+  the worktree's, naming the base `.git` mounted at `/worktrees/.base/<project>`.
+  Never rewrite the worktree's own `.git`: `git worktree remove` then refuses
+  on the host.
+- **Never run `git worktree prune` on the developer's checkout.** It is
+  repository-wide and drops their own worktrees' entries. Remove with
+  `remove --force --force` (the worktree is locked). Locking is also what stops
+  a prune inside an environment, which cannot see any host path, from deleting
+  every sibling's admin directory.
+- **Dependency folders never cross from the host**: they hold the host's
+  platform's binaries. Installs run in the container against the shared
+  `domo-dev-caches` volume (`caches.ts`). Tools find it by environment
+  variable. pnpm reads `pnpm_config_store_dir` and ignores `store-dir` in an
+  `.npmrc` and `npm_config_store_dir`. The store and the checkout are on
+  different mounts, and a hardlink cannot cross one, so without pnpm's global
+  virtual store every install copies.
+- **On a Linux daemon the checkout keeps the host's uids**, so creation
+  renumbers the remote user to the worktree's owner (`user-alignment.ts`).
+  Docker Desktop maps ownership and needs nothing.
+
 ## Lifecycle
 
 - **Retirement is done when Docker no longer has the resources, not when
@@ -102,10 +132,12 @@ Engine, three problems are known and not yet fixed:
   after retirement or a failed creation, once at boot, and on request. There
   is **no retry timer**, on purpose. What survives one attempt does not go
   away by itself.
-- **A resource is removed only when a row claims it** (`dev-env/leftovers.ts`).
-  **Never sweep by prefix**, because the workspace volume is the only copy of
-  an agent's work. Never use `docker network prune`, because it would remove
-  the developer's own networks.
+- **A resource is removed only when a row claims it** (`dev-env/leftovers.ts`),
+  worktrees included: the sweep observes them on the host after Docker's
+  resources (`removeWorktreeLeftovers`). **Never sweep by prefix**, because a
+  live worktree is the only copy of an agent's uncommitted work. Never use
+  `docker network prune`, because it would remove the developer's own
+  networks.
 - **A retired environment's row is kept for good**, because the row is what
   claims its leftovers.
 - **`retired_at` is lifecycle, and `status` is health.** A retired row that

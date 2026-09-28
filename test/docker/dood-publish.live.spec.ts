@@ -183,7 +183,6 @@ async function startEnvironment(env: Env, options: { existing?: boolean } = {}) 
     environmentId: env.id,
     containerReference: env.container,
     workspacePath: WORKSPACE,
-    workspaceVolume: env.volume,
     helperImage: NODE
   })).socketPath
   await ensureEnvironmentNetwork(env.id)

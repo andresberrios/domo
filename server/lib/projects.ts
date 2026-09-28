@@ -20,7 +20,7 @@ import {
 /**
  * Project and environment lifecycle, one level above `dev-environments.ts`.
  *
- * Retiring an environment destroys its container, its workspace volume and its
+ * Retiring an environment destroys its container, its worktree and its
  * image, and **keeps every row**: the environment's own, and the whole
  * transcript of each coding agent that ran inside it. An agent session is a
  * record of work — what was tried, what was decided, what broke — and it stays

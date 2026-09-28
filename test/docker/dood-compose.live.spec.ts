@@ -92,7 +92,6 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
       environmentId: ENV_ID,
       containerReference: ENV_CONTAINER,
       workspacePath: WORKSPACE,
-      workspaceVolume: VOLUME,
       helperImage: 'alpine:3',
       onDroppedPorts: ports => { dropped.push(...ports) }
     })

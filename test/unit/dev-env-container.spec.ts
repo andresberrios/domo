@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { resolveCaches, type ResolvedCaches } from '../../server/lib/dev-env/caches'
 import { defaultEnvironmentConfig } from '../../server/lib/dev-env/config'
 import {
   containerRunArgs,
@@ -48,6 +49,7 @@ function runArgs(input: {
   homeOverlay?: HomeOverlay
   browserVolume?: string | null
   dockerSocket?: string | null
+  caches?: ResolvedCaches
 } = {}): string[] {
   return containerRunArgs({
     environmentId: 'env_1',
@@ -58,7 +60,13 @@ function runArgs(input: {
     metadata: input.metadata ?? metadata(),
     remoteUser: input.remoteUser ?? 'vscode',
     workspacePath: '/workspaces/api',
-    workspaceVolume: 'domo-dev-env_1-workspace',
+    workspace: {
+      hostWorktreePath: '/Users/me/src/.domo-worktrees/env_1',
+      hostGitdirFilePath: '/Users/me/src/.domo-worktrees/env_1.container-gitdir',
+      hostBaseGitPath: '/Users/me/src/api/.git',
+      projectId: 'prj_1'
+    },
+    caches: input.caches ?? resolveCaches(false),
     runtimeVolume: 'domo-dev-runtime-abc123',
     browserVolume: input.browserVolume ?? null,
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
@@ -210,9 +218,41 @@ describe('containerRunArgs', () => {
     expect(args).toContain('--add-host')
     expect(args).toContain('host.docker.internal:host-gateway')
     expect(values(args, '--mount')).toEqual([
-      'type=volume,source=domo-dev-env_1-workspace,target=/workspaces/api',
+      'type=bind,source=/Users/me/src/.domo-worktrees/env_1,target=/worktrees/env_1',
+      'type=bind,source=/Users/me/src/.domo-worktrees/env_1.container-gitdir,target=/worktrees/env_1/.git,readonly',
+      'type=bind,source=/Users/me/src/api/.git,target=/worktrees/.base/prj_1',
       'type=volume,source=domo-dev-runtime-abc123,target=/opt/domo,readonly'
     ])
+  })
+
+  it('mounts the worktree at its canonical path, never at the display path, which is only a symlink', () => {
+    const targets = values(runArgs(), '--mount').map(mount => /target=([^,]+)/.exec(mount)![1])
+
+    expect(targets).not.toContain('/workspaces/api')
+    // The `.git` override lands on top of the worktree's own, and the base it
+    // names is mounted where the override says.
+    expect(targets).toContain('/worktrees/env_1/.git')
+    expect(targets).toContain('/worktrees/.base/prj_1')
+  })
+
+  it('mounts the shared caches read-write and points each tool at them, and never a node_modules', () => {
+    expect(values(runArgs(), '--mount').join(' ')).not.toContain('cache')
+
+    const args = runArgs({ caches: resolveCaches({ gradle: '/home/vscode/.gradle/caches' }) })
+    const mounts = values(args, '--mount')
+    expect(mounts).toContain('type=volume,source=domo-dev-caches,target=/opt/domo-caches')
+    expect(mounts).toContain('type=volume,source=domo-dev-cache-gradle,target=/home/vscode/.gradle/caches')
+    expect(mounts.join(' ')).not.toContain('node_modules')
+    expect(values(args, '--env')).toContain('pnpm_config_store_dir=/opt/domo-caches/pnpm')
+  })
+
+  it('lets the project\'s own containerEnv override where a cache points', () => {
+    const env = values(runArgs({
+      caches: resolveCaches(undefined),
+      config: { containerEnv: { npm_config_cache: '/project/cache' } }
+    }), '--env')
+
+    expect(env.lastIndexOf('npm_config_cache=/project/cache')).toBeGreaterThan(env.indexOf('npm_config_cache=/opt/domo-caches/npm'))
   })
 
   it('mounts the shared browser read-only when the install has one', () => {
@@ -343,7 +383,8 @@ describe('containerRunArgs', () => {
   })
 
   it('mounts nothing of the home when the overlay is empty', () => {
-    expect(values(runArgs(), '--mount')).toHaveLength(2)
+    // The worktree, its `.git` override, the base `.git` and the runtime.
+    expect(values(runArgs(), '--mount')).toHaveLength(4)
     expect(values(runArgs(), '--env')).toEqual(['DOMO_DEV_ENVIRONMENT_ID=env_1'])
   })
 

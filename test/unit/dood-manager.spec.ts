@@ -48,7 +48,6 @@ const input = (environmentId: string) => ({
   environmentId,
   containerReference: `c-${environmentId}`,
   workspacePath: '/workspaces/app',
-  workspaceVolume: `v-${environmentId}`,
   helperImage: 'busybox'
 })
 

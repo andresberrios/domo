@@ -10,8 +10,7 @@ import {
   ownedResources,
   planLeftoverRemoval,
   removeArgs,
-  unattributedResources,
-  workspaceVolumeName
+  unattributedResources
 } from '../../server/lib/dev-env/leftovers'
 
 /**
@@ -50,7 +49,7 @@ const RETIRED = environment({ retiredAt: '2026-01-02T00:00:00.000Z' })
 /** Everything a retired `env_1` owns, as Docker would list it. */
 const PRESENT = {
   containers: ['domo-dev-env_1'],
-  volumes: ['domo-dev-env_1-workspace', 'dind-var-lib-docker-env_1'],
+  volumes: ['dind-var-lib-docker-env_1'],
   images: ['domo-dev-env_1']
 }
 
@@ -59,19 +58,17 @@ function planned(input: Parameters<typeof planLeftoverRemoval>[0]): string[] {
 }
 
 describe('the names an environment owns', () => {
-  it('derives all four from the id, so a failed cleanup is findable later', () => {
+  it('derives all three from the id, so a failed cleanup is findable later', () => {
     expect(environmentResources('env_1').map(resource => `${resource.kind} ${resource.name}`)).toEqual([
       'container domo-dev-env_1',
-      'volume domo-dev-env_1-workspace',
       'volume dind-var-lib-docker-env_1',
       'image domo-dev-env_1'
     ])
-    expect(workspaceVolumeName('env_ABC')).toBe('domo-dev-env_abc-workspace')
   })
 
   it('claims nothing for a live environment, and everything for a retired one', () => {
     expect(claimedResources(environment())).toEqual([])
-    expect(claimedResources(RETIRED)).toHaveLength(4)
+    expect(claimedResources(RETIRED)).toHaveLength(3)
   })
 
   it('claims what a past cleanup wrote down, retired or not', () => {
@@ -89,7 +86,6 @@ describe('planning a removal', () => {
   it('takes what a retired row claims and Docker still has', () => {
     expect(planned({ environments: [RETIRED], present: PRESENT })).toEqual([
       'container domo-dev-env_1',
-      'volume domo-dev-env_1-workspace',
       'volume dind-var-lib-docker-env_1',
       'image domo-dev-env_1'
     ])
@@ -110,7 +106,7 @@ describe('planning a removal', () => {
   it('leaves the shared runtime and browser volumes to their own collectors', () => {
     expect(planned({
       environments: [RETIRED],
-      present: { containers: [], volumes: ['domo-dev-runtime-abc123', 'domo-dev-browser-def456'], images: [] }
+      present: { containers: [], volumes: ['domo-dev-runtime-abc123', 'domo-dev-browser-def456', 'domo-dev-caches', 'domo-dev-cache-gradle'], images: [] }
     })).toEqual([])
   })
 
@@ -154,8 +150,7 @@ describe('what an environment made on the host daemon', () => {
     networks: [{ name: 'env_1-default', owner: 'env_1' }, { name: 'env_live-default', owner: 'env_live' }],
     volumes: [
       { name: 'env_1-data', owner: 'env_1' },
-      { name: 'env_live-data', owner: 'env_live' },
-      { name: 'domo-dev-env_live-workspace', owner: 'env_live', environment: true }
+      { name: 'env_live-data', owner: 'env_live' }
     ],
     images: [
       { name: 'domo-env_1/docker.io/library/app:dev', owner: 'env_1' },
@@ -183,7 +178,6 @@ describe('what an environment made on the host daemon', () => {
       'container env_live-web',
       'network env_live-default',
       'volume env_live-data',
-      'volume domo-dev-env_live-workspace',
       'image domo-env_live/docker.io/library/app:dev'
     ])
   })
@@ -230,27 +224,27 @@ describe('what no row accounts for', () => {
   it('is named but never planned for removal', () => {
     const present = {
       containers: [],
-      volumes: ['domo-dev-env_pruned-workspace', 'domo-dev-env_1-workspace'],
+      volumes: ['domo-dev-env_pruned-state', 'dind-var-lib-docker-env_1'],
       images: []
     }
 
     expect(unattributedResources({ environments: [RETIRED], present }))
-      .toEqual(['volume domo-dev-env_pruned-workspace'])
+      .toEqual(['volume domo-dev-env_pruned-state'])
     expect(planned({ environments: [RETIRED], present }))
-      .toEqual(['volume domo-dev-env_1-workspace'])
+      .toEqual(['volume dind-var-lib-docker-env_1'])
   })
 
   it('says nothing about the shared volumes, which are nobody\'s environment', () => {
     expect(unattributedResources({
       environments: [RETIRED],
-      present: { containers: [], volumes: ['domo-dev-runtime-abc123', 'domo-dev-browser-def456'], images: [] }
+      present: { containers: [], volumes: ['domo-dev-runtime-abc123', 'domo-dev-browser-def456', 'domo-dev-caches', 'domo-dev-cache-gradle'], images: [] }
     })).toEqual([])
   })
 
   it('counts a live environment\'s own resources as accounted for', () => {
     expect(unattributedResources({
       environments: [environment()],
-      present: { containers: ['domo-dev-env_1'], volumes: ['domo-dev-env_1-workspace'], images: ['domo-dev-env_1'] }
+      present: { containers: ['domo-dev-env_1'], volumes: [], images: ['domo-dev-env_1'] }
     })).toEqual([])
   })
 })
