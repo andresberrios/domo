@@ -59,3 +59,58 @@ about delegation, transcripts or voice usage.
 `pnpm test:voice` is the only layer that runs `useVoiceChannel`, because
 happy-dom has no `AudioContext`. It uses a real browser and a real GPT-Live
 session. See `test/AGENTS.md`.
+
+## Talking to a coding agent
+
+The voice bar on an agent's page (`server/lib/agent-voice/`) is a cascade, not
+a live model: the browser records, an engine transcribes, the transcript is
+delivered to the agent as an ordinary spoken turn, and the agent's streamed
+text is read out sentence by sentence by an engine. The agent is the only
+thing that thinks. Engines are chosen in Settings (`AgentVoiceSettings`),
+separately for hearing and speaking: Gemini, OpenAI, open models on the CPU
+(Moonshine and Kokoro through transformers.js, about 300 MB fetched on first
+use), or a Kyutai moshi-server.
+
+- **The spoken-channel instructions ride on the message, never on the
+  session.** ACP has no portable system prompt (only the Claude Code adapter
+  reads one from session metadata), and a system prompt would change typed
+  sessions too. The full text goes with the first spoken message of an
+  episode and a one-line reminder with the rest; `needsFullInstructions`
+  in `agent-voice/prompt.ts` is the rule. A typed message is answered as
+  text.
+- **Hands-free ends a turn with words, never with a clock**, unless the
+  `silence` detector is chosen in Settings. By default, at each pause
+  the whole turn so far is scored by `pipecat-ai/smart-turn` v3.2 (BSD-2,
+  8 MB ONNX, about 150 ms on the CPU including the feature extraction in
+  `agent-voice/turn.ts`, which matches transformers.js's Whisper extractor
+  exactly). An incomplete turn is held; after a silence the bar says "yes?",
+  twice at most, and waits. Only a complete-sounding pause, a sign-off
+  ("over" after punctuation, "that's it", "go ahead"), a Send, or a spoken
+  command ends it. The model file is fetched from Hugging Face into the data
+  directory on first use, or read from `NUXT_SMART_TURN_MODEL`; without it a
+  pause ends the turn. The `kyutai` detector reads the Kyutai transcriber's
+  two-second pause head instead, and `silence` waits `silenceSeconds`.
+- **Speech leaves the browser through a media element, not
+  `AudioContext.destination`.** Chrome's echo canceller only subtracts what
+  it knows is playing, and on Android that is media elements and WebRTC. On
+  a Galaxy phone's loudspeaker the agent's voice came straight back in as
+  the developer's, until this.
+- **Every audio graph is resumed inside a tap.** iOS creates them suspended
+  outside a gesture and refuses to resume them from anywhere else, which is
+  why the microphone is opened by the button and never on mount.
+- **`onnxruntime-node` is pinned to the version transformers.js depends on.**
+  Two versions in one process fail at `dlopen` with a symbol-version error,
+  because the second binding finds the first shared library already loaded.
+- **Under `pnpm dev`, a `server/` edit breaks every ONNX model until the dev
+  server is restarted.** Nitro reloads into a new worker, and the native
+  binding cannot load twice in one process ("Module did not self-register").
+  The turn model then reports itself unavailable and the local engines fail.
+  A production process never reloads, so it is a dev-only cost.
+- **The Kyutai engine was written from the reference clients and has not run
+  against a server.** A moshi-server needs a GPU. Its key is
+  `NUXT_KYUTAI_API_KEY`, the one environment variable here, because the
+  settings table is streamed to the browser.
+- **No open full-duplex model takes an external brain** (researched September
+  2026: Moshi, PersonaPlex, MiniCPM-o, NemotronLabs VoiceChat all own their
+  LLM). Kyutai Unmute is the open path to a Realtime-style socket around an
+  external LLM, and needs a GPU. This cascade is the CPU answer.

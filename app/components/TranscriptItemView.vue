@@ -23,6 +23,10 @@ const permissionPending = computed(() =>
 <template>
   <template v-if="item.kind === 'user'">
     <div class="space-y-2">
+      <div v-if="item.spoken" class="flex items-center gap-1 text-xs text-dimmed">
+        <UIcon name="i-lucide-mic" class="size-3" />
+        <span>Spoken</span>
+      </div>
       <MarkdownView :text="item.text" />
       <div v-if="item.attachments?.length" class="flex flex-wrap gap-1.5">
         <UBadge

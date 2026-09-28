@@ -1,3 +1,4 @@
+import { isSpokenNote } from '~~/shared/agent-voice'
 import type { AgentEvent, PendingPermission } from '~~/shared/types'
 
 export interface ToolCallView {
@@ -13,7 +14,7 @@ export interface ToolCallView {
 }
 
 export type TranscriptItem =
-  | { id: string, seq: number, at: string, kind: 'user', text: string, attachments: Array<{ name: string, uri?: string }> }
+  | { id: string, seq: number, at: string, kind: 'user', text: string, attachments: Array<{ name: string, uri?: string }>, spoken: boolean }
   | { id: string, seq: number, at: string, kind: 'assistant', text: string, streaming: boolean }
   | { id: string, seq: number, at: string, kind: 'thought', text: string }
   | { id: string, seq: number, at: string, kind: 'tool', tool: ToolCallView }
@@ -89,10 +90,14 @@ export function buildTranscript(
       case 'user_message': {
         closeText()
         const blocks: any[] = event.payload?.content ?? []
+        // A spoken turn carries a note for the agent saying so; the reader
+        // gets a microphone instead of the note.
+        const texts = blocks.filter(block => block?.type === 'text')
         items.push({
           ...base,
           kind: 'user',
-          text: blocks.filter(block => block?.type === 'text').map(block => block.text).join('\n'),
+          spoken: texts.some(block => isSpokenNote(block.text)),
+          text: texts.filter(block => !isSpokenNote(block.text)).map(block => block.text).join('\n'),
           attachments: blocks
             .filter(block => block?.type === 'resource_link' || block?.type === 'resource' || block?.type === 'image')
             .map(block => ({ name: block.name ?? block.uri ?? 'attachment', uri: block.uri }))

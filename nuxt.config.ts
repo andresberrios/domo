@@ -38,7 +38,11 @@ export default defineNuxtConfig({
         '@agentclientprotocol/claude-agent-acp',
         '@agentclientprotocol/codex-acp',
         '@openai/codex',
-        '@agentclientprotocol/sdk'
+        '@agentclientprotocol/sdk',
+        // Native ONNX runtime and the open speech models that run on it.
+        'onnxruntime-node',
+        '@huggingface/transformers',
+        'kokoro-js'
       ],
       traceInclude: [
         new URL('./node_modules/@devcontainers/cli/devcontainer.js', import.meta.url).pathname,

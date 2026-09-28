@@ -1022,6 +1022,20 @@ export async function writeAgentStream(
  * What a subscriber is told about a peer, so it has to be the *last* thing the
  * agent said rather than the whole log: one indexed row, not two thousand.
  */
+/** The newest user messages first, as far back as `limit`. For the voice bar's reminder rule. */
+export async function listRecentUserMessages(
+  agentSessionId: string,
+  limit = 12
+): Promise<Array<{ content: any[], createdAt: string }>> {
+  const rows = await query<{ payload: any, created_at: string }>(
+    `select payload, created_at from agent_events
+      where agent_session_id = $1 and type = 'user_message'
+      order by seq desc limit $2`,
+    [agentSessionId, limit]
+  )
+  return rows.map(row => ({ content: row.payload?.content ?? [], createdAt: row.created_at }))
+}
+
 export async function latestAgentMessage(agentSessionId: string): Promise<string> {
   const row = await queryOne<{ text: string | null }>(
     `select payload->>'text' as text from agent_events

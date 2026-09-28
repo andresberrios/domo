@@ -744,6 +744,45 @@ export interface AppSettings {
    * the container is created.
    */
   browserTools: boolean
+  /** Who hears and who speaks when talking to a coding agent. See `AgentVoiceSettings`. */
+  agentVoice: AgentVoiceSettings
+}
+
+/** An engine that can transcribe speech and synthesise it. */
+export type SpeechEngine = 'gemini' | 'openai' | 'local' | 'kyutai'
+
+/**
+ * What decides, at a pause, whether a hands-free turn is over: Smart Turn
+ * on the audio, the Kyutai transcriber's own pause prediction, or nothing
+ * but the length of the silence.
+ */
+export type TurnDetector = 'smart-turn' | 'kyutai' | 'silence'
+
+/**
+ * The cascade behind the voice bar on an agent's page: one engine hears, one
+ * speaks, and they need not be the same. Each engine's own knobs sit beside
+ * it so switching back finds the old setup intact. The Gemini voice is the
+ * live agent's `voiceName`; the Kyutai key is `NUXT_KYUTAI_API_KEY`, because
+ * this table is streamed to the browser and holds no secrets.
+ */
+export interface AgentVoiceSettings {
+  transcriber: SpeechEngine
+  speaker: SpeechEngine
+  turnDetector: TurnDetector
+  /** For the `silence` detector: a pause this long ends the turn. */
+  silenceSeconds: number
+  geminiTranscribeModel: string
+  geminiSpeechModel: string
+  openaiTranscribeModel: string
+  openaiSpeechModel: string
+  openaiVoice: string
+  /** A transformers.js speech-recognition model id. */
+  localTranscribeModel: string
+  /** A Kokoro voice id. */
+  localVoice: string
+  /** The moshi-server base, `ws://host:port`. STT is at `/api/asr-streaming`, TTS at `/api/tts_streaming`. */
+  kyutaiUrl: string
+  kyutaiVoice: string
 }
 
 /** Server -> browser events on the /api/stream SSE channel. */
@@ -781,6 +820,61 @@ export type VoiceClientMessage =
   | { type: 'text', text: string, speak?: boolean }
   | { type: 'stop' }
   | { type: 'ping' }
+
+/**
+ * Browser -> server messages on the agent voice WebSocket
+ * (`/api/agent-voice/ws`). Audio goes up as 16 kHz PCM16 base64; the server
+ * buffers it until the browser says the segment ended.
+ */
+export type AgentVoiceClientMessage =
+  | { type: 'audio', data: string }
+  /**
+   * The browser stopped hearing speech. `final` means the developer ended the
+   * turn themselves (click-to-record); otherwise it is a pause in hands-free
+   * mode, and the words are held until an end-of-turn phrase or a `send`.
+   */
+  | { type: 'segment-end', final: boolean }
+  /** Hands-free: send what has been held so far as the turn. */
+  | { type: 'send' }
+  /** Hands-free: drop what has been held so far. */
+  | { type: 'discard' }
+  /** Stop speaking. The agent keeps working. */
+  | { type: 'hush' }
+  /** Cancel the agent's turn. */
+  | { type: 'cancel' }
+  /** Whether the agent's text is read out loud at all. */
+  | { type: 'speak', enabled: boolean }
+
+/** Server -> browser messages on the agent voice WebSocket. */
+export type AgentVoiceServerMessage =
+  | { type: 'status', transcribing: boolean, speaking: boolean, speak: boolean }
+  /** What has been heard and is still being held (hands-free). */
+  | { type: 'utterance', text: string }
+  /**
+   * A segment ended and produced no words. Said out loud rather than
+   * swallowed, because a turn that vanishes is indistinguishable from a
+   * microphone that is not working. `seconds` is how much audio arrived.
+   */
+  | { type: 'nothing-heard', reason: 'too-short' | 'silent' | 'no-speech', seconds: number }
+  /**
+   * Hands-free: a pause was judged. `complete` means the turn is being sent;
+   * otherwise the words so far are held for more. `probability` is null when
+   * the turn model is unavailable and a long pause decided instead.
+   */
+  | { type: 'turn', complete: boolean, probability: number | null, seconds: number }
+  /** A turn was delivered to the agent. */
+  | { type: 'sent', text: string }
+  /** A spoken command was recognised and acted on. */
+  | { type: 'command', name: 'hush' | 'cancel' | 'send' }
+  /** Speech to play, PCM16 base64 at `sampleRate`. */
+  | { type: 'audio', data: string, sampleRate: number }
+  /** The sentence now being spoken; null when nothing is. */
+  | { type: 'speaking', text: string | null }
+  /** The agent called a tool. For a sound, so a pocketed phone knows it is working. */
+  | { type: 'tool', title: string }
+  /** Drop whatever is still playing. */
+  | { type: 'hushed' }
+  | { type: 'error', message: string }
 
 /** Server -> browser messages on the voice WebSocket. */
 export type VoiceServerMessage =

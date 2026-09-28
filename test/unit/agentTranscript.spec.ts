@@ -394,3 +394,19 @@ describe('buildTranscript', () => {
     expect(kinds(items)).toEqual(['user', 'thought', 'assistant', 'tool', 'plan', 'assistant'])
   })
 })
+
+describe('spoken turns', () => {
+  it('hides the note and flags the item', () => {
+    const items = buildTranscript([
+      agentEvent('user_message', { content: [{ type: 'text', text: 'run the tests' }, { type: 'text', text: '[Spoken over voice] Answer for speech.' }] })
+    ])
+
+    expect(items[0]).toMatchObject({ kind: 'user', text: 'run the tests', spoken: true })
+  })
+
+  it('leaves a typed message unflagged', () => {
+    const items = buildTranscript([userMessage('typed')])
+
+    expect(items[0]).toMatchObject({ kind: 'user', text: 'typed', spoken: false })
+  })
+})

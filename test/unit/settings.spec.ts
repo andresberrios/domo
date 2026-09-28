@@ -253,3 +253,41 @@ describe('patchSettings systemInstruction', () => {
     expect(writes('systemInstruction').some(([sql]) => /insert into settings/.test(sql))).toBe(true)
   })
 })
+
+describe('agentVoice', () => {
+  beforeEach(() => {
+    query.mockReset()
+    stored({})
+  })
+
+  it('keeps the defaults for a fresh install and for a stored row missing fields', async () => {
+    stored({ agentVoice: { speaker: 'local' } })
+
+    const settings = await getSettings()
+
+    expect(settings.agentVoice.speaker).toBe('local')
+    expect(settings.agentVoice.transcriber).toBe(DEFAULTS.agentVoice.transcriber)
+    expect(settings.agentVoice.localVoice).toBe(DEFAULTS.agentVoice.localVoice)
+  })
+
+  it('drops an engine it does not know and a blank model id', async () => {
+    stored({ agentVoice: { transcriber: 'elevenlabs', localTranscribeModel: '  ', kyutaiUrl: ' ws://gpu:8080 ' } })
+
+    const settings = await getSettings()
+
+    expect(settings.agentVoice.transcriber).toBe(DEFAULTS.agentVoice.transcriber)
+    expect(settings.agentVoice.localTranscribeModel).toBe(DEFAULTS.agentVoice.localTranscribeModel)
+    expect(settings.agentVoice.kyutaiUrl).toBe('ws://gpu:8080')
+  })
+
+  it('checks the turn detector and keeps the silence within reason', async () => {
+    stored({ agentVoice: { turnDetector: 'silence', silenceSeconds: 2 } })
+    expect((await getSettings()).agentVoice).toMatchObject({ turnDetector: 'silence', silenceSeconds: 2 })
+
+    stored({ agentVoice: { turnDetector: 'psychic', silenceSeconds: 0 } })
+    expect((await getSettings()).agentVoice).toMatchObject({
+      turnDetector: DEFAULTS.agentVoice.turnDetector,
+      silenceSeconds: DEFAULTS.agentVoice.silenceSeconds
+    })
+  })
+})

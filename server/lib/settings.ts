@@ -8,7 +8,8 @@ import {
   isReasoningEffort,
   isVoiceProvider
 } from '../../shared/voice-providers'
-import type { AppSettings, VoiceDelegationSettings } from '../../shared/types'
+import { DEFAULT_AGENT_VOICE, isSpeechEngine, isTurnDetector } from '../../shared/agent-voice'
+import type { AgentVoiceSettings, AppSettings, VoiceDelegationSettings } from '../../shared/types'
 
 export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code, Codex and OpenCode — for a developer,
 and you talk with them out loud while they do other things: pacing, cooking,
@@ -105,7 +106,8 @@ export const DEFAULTS: AppSettings = {
   // On, because the gap it closes is one nobody can close from in here: an
   // agent that cannot open a page can only say a change "should" render. The
   // cost is one several-hundred-megabyte volume per machine, built once.
-  browserTools: true
+  browserTools: true,
+  agentVoice: { ...DEFAULT_AGENT_VOICE }
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -120,7 +122,8 @@ export async function getSettings(): Promise<AppSettings> {
     defaultAgentModes: storedAgentModes(stored),
     defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored),
-    openCodePermission: storedOpenCodePermission(stored)
+    openCodePermission: storedOpenCodePermission(stored),
+    agentVoice: storedAgentVoice(stored)
   } as AppSettings
 }
 
@@ -151,6 +154,28 @@ function storedVoiceDelegation(stored: Record<string, any>): VoiceDelegationSett
     delegation.agentDevEnvironmentId = current.agentDevEnvironmentId.trim()
   }
   return delegation
+}
+
+/**
+ * The agent voice cascade, read the same defensive way as the records below:
+ * the two engine ids are checked against the catalogue, because each is used
+ * to pick an implementation, and every model id or voice keeps its default
+ * when the stored one is not a non-empty string.
+ */
+function storedAgentVoice(stored: Record<string, any>): AgentVoiceSettings {
+  const voice = { ...DEFAULT_AGENT_VOICE }
+  const current = stored.agentVoice
+  if (!current || typeof current !== 'object') return voice
+  if (isSpeechEngine(current.transcriber)) voice.transcriber = current.transcriber
+  if (isSpeechEngine(current.speaker)) voice.speaker = current.speaker
+  if (isTurnDetector(current.turnDetector)) voice.turnDetector = current.turnDetector
+  const seconds = Number(current.silenceSeconds)
+  if (Number.isFinite(seconds) && seconds >= 0.3 && seconds <= 30) voice.silenceSeconds = seconds
+  for (const key of Object.keys(voice) as Array<keyof AgentVoiceSettings>) {
+    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds') continue
+    if (typeof current[key] === 'string' && current[key].trim()) voice[key] = current[key].trim()
+  }
+  return voice
 }
 
 /**
