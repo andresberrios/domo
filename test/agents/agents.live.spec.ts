@@ -1,4 +1,5 @@
 import { rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -96,7 +97,7 @@ afterAll(async () => {
   if (environment) await retireEnvironment(environment.id).catch(() => {})
   await mesh?.close()
   for (const path of [repoPath, hostCwd]) {
-    if (path) await rm(path, { recursive: true, force: true })
+    if (path) await rm(dirname(path), { recursive: true, force: true })
   }
 
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX

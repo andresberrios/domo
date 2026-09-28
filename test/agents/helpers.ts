@@ -106,7 +106,9 @@ export async function startMeshServer(): Promise<MeshHarness> {
 
 /** A committed checkout with a `.domo.json` that keeps the environment cheap. */
 export async function fixtureRepo(): Promise<string> {
-  const repo = await mkdtemp(join(tmpdir(), 'domo-agents-repo-'))
+  // In a scratch directory of its own, because its environments' worktrees
+  // are made beside it (`.domo-worktrees`): removing that directory takes them.
+  const repo = join(await mkdtemp(join(tmpdir(), 'domo-agents-repo-')), 'repo')
   await run('git', ['init', '--quiet', '--initial-branch=main', repo])
   await writeFile(join(repo, 'README.md'), '# fixture\n')
   await mkdir(join(repo, 'src'), { recursive: true })
