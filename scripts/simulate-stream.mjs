@@ -1,29 +1,35 @@
-// Simulate a live agent turn against `domo_e2e`, the second dev server's
-// database, so the browser can be measured while text is streaming without
-// spending an agent's tokens to produce it.
+// Simulate a live agent turn, so the browser can be measured while text is
+// streaming without spending an agent's tokens to produce it.
 //
-//   node scripts/simulate-stream.mjs <agentSessionId> [ticks] [msBetween]
+//   DATABASE_URL=postgresql://postgres:password@localhost:54331/domo \
+//     node scripts/simulate-stream.mjs <agentSessionId> [ticks] [msBetween]
 //
 // One `agent_message` row is appended and then rewritten, which is what
 // server/lib/acp does while a turn streams. Electric sends the whole row on
 // each rewrite (the synced tables are REPLICA IDENTITY FULL), so this is the
-// hot path the transcript has to survive. Pair it with `seed-perf-db.sh`, which
-// puts a transcript the size of a real one in front of it.
+// hot path the transcript has to survive.
+//
+// This writes, so it only ever runs against a separate compose stack (see
+// docs/working-on-domo.md), named explicitly: there is no default, and the
+// developer's own Postgres — whose port also holds the test databases — is
+// refused outright.
 import pg from 'pg'
 
 const sessionId = process.argv[2]
 const ticks = Number(process.argv[3] ?? 100)
 const everyMs = Number(process.argv[4] ?? 150)
+const url = process.env.DATABASE_URL
 
-if (!sessionId) {
-  console.error('usage: node scripts/simulate-stream.mjs <agentSessionId> [ticks] [msBetween]')
+if (!sessionId || !url) {
+  console.error('usage: DATABASE_URL=<a separate stack> node scripts/simulate-stream.mjs <agentSessionId> [ticks] [msBetween]')
+  process.exit(1)
+}
+if (new URL(url).port === '54321') {
+  console.error('refusing to write to the developer\'s own Postgres (port 54321); point DATABASE_URL at a separate stack')
   process.exit(1)
 }
 
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL
-    ?? 'postgresql://postgres:password@localhost:54321/domo_e2e'
-})
+const pool = new pg.Pool({ connectionString: url })
 const id = `ev_sim_${Date.now()}`
 const words = 'the quick brown fox jumps over the lazy dog while the agent narrates its plan in detail'.split(' ')
 
