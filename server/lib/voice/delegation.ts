@@ -145,6 +145,16 @@ export async function resolveThinkingAgent(
   })
 }
 
+/**
+ * Whether a session is a conversation's thinking agent: one it made, or the one
+ * Settings names. Such an agent acts for a human who is listening, so what that
+ * human would decide goes back through the conversation rather than past it.
+ */
+export async function isThinkingAgent(session: AgentSession): Promise<boolean> {
+  if (session.voiceSessionId && session.title.startsWith(THINKING_TITLE_PREFIX)) return true
+  return (await getSettings()).openaiDelegation.agentSessionId === session.id
+}
+
 async function startable(session: AgentSession): Promise<boolean> {
   const { environment } = await getAgentSessionWithEnvironment(session.id)
   return sessionStartability(session, environment).startable

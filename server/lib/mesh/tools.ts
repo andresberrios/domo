@@ -19,6 +19,7 @@ import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPo
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import { notifyHuman } from '../notifications'
+import { isThinkingAgent } from '../voice/delegation'
 import {
   addAgentSubscription,
   appendAgentEvent,
@@ -48,7 +49,8 @@ import {
   removeAgentSubscription,
   startManualCronRun,
   updateDevEnvironment,
-  updateProject
+  updateProject,
+  voiceUserSpokeSince
 } from '../repo'
 import { sessionStartability } from '../../../shared/retention'
 import type {
@@ -394,7 +396,8 @@ export const MESH_TOOLS = [
     name: 'answer_permission_request',
     description:
       'Answer a permission request an agent is blocked on (get_agent lists them, with option ids). Only for agents you '
-      + 'spawned; anything else is the human\'s decision.',
+      + 'spawned; anything else is the human\'s decision. As the thinking agent of a voice conversation, only once the '
+      + 'human there has decided, and then for any agent.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -611,7 +614,7 @@ export const MESH_TOOLS = [
     name: 'retire_dev_environment',
     description:
       'Retire a development environment: its container and its worktree are destroyed, so uncommitted work in it '
-      + 'is lost. Commits stay in the project\'s repository. The branch Domo made for it is deleted if every commit '
+      + 'is lost, and a build under way is stopped. Commits stay in the project\'s repository. The branch Domo made for it is deleted if every commit '
       + 'on it is also on another branch, and kept otherwise; the result says which. The records are kept — the '
       + 'environment and the full transcript of every coding agent that ran in it stay readable — but those agents '
       + 'can never be started again.',
@@ -955,15 +958,26 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'answer_permission_request': {
       const target = await requireAgent(args.agentId)
       if (target.id === caller.id) throw new Error('An agent cannot answer its own permission requests.')
-      await assertOwns(caller, target, 'answering its permission request')
+      // A conversation's thinking agent is the hands of a human who is listening
+      // and hears every request (the voice runtime says each one). It answers
+      // what they decided, for any agent, as the voice agent's own tool does;
+      // and only once they have spoken since the request, never on its own.
+      const voiceSessionId = caller.voiceSessionId && await isThinkingAgent(caller) ? caller.voiceSessionId : null
+      if (!voiceSessionId) await assertOwns(caller, target, 'answering its permission request')
       const permission = (await listPermissions(target.id, true)).find(entry => entry.id === args.permissionId)
       if (!permission) throw new Error(`No pending permission request ${args.permissionId} for that agent; it may already have been answered.`)
+      if (voiceSessionId && !(await voiceUserSpokeSince(voiceSessionId, permission.createdAt))) {
+        throw new Error(
+          'The human in your voice conversation has not answered this request yet. Put it in your answer (what the '
+          + 'agent wants to do, and the options) and answer it once they have decided.'
+        )
+      }
       const optionId = args.reject === true ? null : String(args.optionId ?? '')
       if (optionId === '') throw new Error('Pass optionId, or reject: true.')
       if (optionId !== null && !permission.options.some(option => option.optionId === optionId)) {
         throw new Error(`No option ${optionId}. Options: ${permission.options.map(option => `${option.optionId} (${option.name})`).join(', ')}.`)
       }
-      await acpManager.answerPermission(target.id, permission.id, optionId, `agent:${caller.id}`)
+      await acpManager.answerPermission(target.id, permission.id, optionId, voiceSessionId ? 'voice-agent' : `agent:${caller.id}`)
       await appendAgentEvent(caller.id, 'mesh_permission_answered', {
         agentId: target.id, title: target.title, permissionId: permission.id, request: permission.title, optionId
       })

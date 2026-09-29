@@ -772,6 +772,15 @@ export async function countVoiceMessagesAfter(sessionId: string, afterSeq: numbe
   return row?.count ?? 0
 }
 
+/** Whether the human said anything in a conversation after `since` (an ISO time, as rows store it). */
+export async function voiceUserSpokeSince(sessionId: string, since: string): Promise<boolean> {
+  const row = await queryOne<{ spoke: boolean }>(
+    `select exists(select 1 from voice_messages where session_id = $1 and role = 'user' and created_at > $2) as spoke`,
+    [sessionId, since]
+  )
+  return !!row?.spoke
+}
+
 export async function appendVoiceMessage(input: {
   sessionId: string
   role: VoiceMessage['role']
