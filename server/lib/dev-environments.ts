@@ -23,7 +23,7 @@ import {
   run,
   type ContainerInspection
 } from './dev-env/docker'
-import { cacheMountTargets, ensureCacheVolumes, pnpmGlobalConfigArgs, resolveCaches } from './dev-env/caches'
+import { cacheMountTargets, ensureCacheVolumes, PNPM_SHARED_DIRS, pnpmSetupArgs, resolveCaches } from './dev-env/caches'
 import { defaultInstallCommand, presentLockfiles } from './dev-env/dependencies'
 import { createHostWorktree, hostWorktreePath } from './dev-env/host-worktree'
 import { alignUserArgs, planAlignment } from './dev-env/user-alignment'
@@ -228,6 +228,25 @@ const SSH_HOME_SCRIPT = [
   'for entry in "$@"; do ln -sfn "$host/$entry" "$dir/$entry"; done'
 ].join('\n')
 
+/**
+ * How long each step of a creation took, logged once it is done: creation is
+ * what people wait on, and a guess about which step is slow is no substitute.
+ */
+function stepTimer() {
+  const start = Date.now()
+  let last = start
+  const steps: string[] = []
+  const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`
+  return {
+    mark(step: string) {
+      const now = Date.now()
+      steps.push(`${step} ${seconds(now - last)}`)
+      last = now
+    },
+    summary: () => `${seconds(Date.now() - start)} (${steps.join(', ')})`
+  }
+}
+
 export async function createEnvironment(input: {
   projectId: string
   name: string
@@ -252,6 +271,7 @@ async function create(
   const containerName = `${resourcePrefix()}${id}`
   await createDevEnvironmentRow({ id, projectId: project.id, name, containerName, workspacePath })
 
+  const timer = stepTimer()
   try {
     // The definition, build contexts and Dockerfiles are read from the project's own
     // checkout; the environment gets a worktree of its own beside it (`host-worktree.ts`).
@@ -265,7 +285,9 @@ async function create(
     const codexConfigDir = await toolConfigDir('NUXT_CODEX_CONFIG_DIR', '.codex')
 
     const settings = await getSettings()
+    timer.mark('config')
     const runtimeVolume = await ensureRuntimeVolume()
+    timer.mark('runtime volume')
     // A browser is worth having and is not worth failing an environment over:
     // it is several hundred megabytes fetched from two networks, and an
     // environment with no browser still runs agents perfectly well.
@@ -275,6 +297,7 @@ async function create(
         return null
       })
       : null
+    timer.mark('browser volume')
     // A clean checkout of the last commit, as git users expect of a worktree,
     // plus the ignored files the project needs to run (a `.env`). Nothing has
     // to be reconciled inside the container afterwards.
@@ -287,6 +310,7 @@ async function create(
     })
     // At once, so a creation that fails after this still knows which branch it made.
     await updateDevEnvironment(id, { branch: worktree.branch.name, branchCreated: worktree.branch.created })
+    timer.mark('worktree')
     const canonicalPath = canonicalWorkspacePath(id)
     const baseGitPath = canonicalBaseGitPath(project.id)
     const caches = resolveCaches(resolved.config.caches)
@@ -298,6 +322,7 @@ async function create(
       repoPath: project.repoPath
     })
     const metadata = await readImageMetadata(imageName, id)
+    timer.mark('image')
     const remoteUser = resolveRemoteUser(resolved.config, metadata)
     const home = homeDirectory(remoteUser)
     // Bind mounts are fixed at `docker run`, so the setting applies to
@@ -335,6 +360,7 @@ async function create(
       homeOverlay: overlay,
       dockerSocket
     }))
+    timer.mark('container')
     const inspection = await inspectContainer(containerId)
     if (!inspection) throw new Error('The environment container was created but could not be inspected.')
     await updateDevEnvironment(id, {
@@ -353,6 +379,7 @@ async function create(
     // published ports and its `host.docker.internal` live in this namespace.
     if (dockerSocket) await ensureEnvironmentNetwork(id)
 
+    timer.mark('preflight')
     // Before anything runs as the remote user, which may be about to get a new uid.
     await alignRemoteUser({ containerId: inspection.id, remoteUser, worktreePath: worktree.worktreePath })
     // Before anything addresses the checkout by the path the rest of Domo, the
@@ -364,7 +391,11 @@ async function create(
     // Every environment's installs write here, as whichever user each one runs as.
     const cacheTargets = cacheMountTargets(caches)
     if (cacheTargets.length) {
-      await run('docker', [...execArgs({ containerId: inspection.id, user: 'root' }), 'chmod', '1777', ...cacheTargets])
+      const shared = caches.pnpm ? PNPM_SHARED_DIRS : []
+      await run('docker', [
+        ...execArgs({ containerId: inspection.id, user: 'root' }),
+        'sh', '-c', 'mkdir -p "$@" && chmod 1777 "$@"', 'sh', ...cacheTargets, ...shared
+      ])
     }
     // No `chown` of the checkout: it is the host's own worktree now, not a
     // root-owned tar extraction, and its files belong to the developer.
@@ -395,21 +426,25 @@ async function create(
         'sh', '-c', SSH_HOME_SCRIPT, 'sh', `${home}/.ssh`, `${home}/.ssh-host`, ...overlay.ssh.links
       ], { input: overlay.ssh.config })
     }
-    // Before any install: pnpm finds the shared store through its global config.
+    // Before any install: pnpm finds the shared store, and its virtual store
+    // on the same volume, through its global config (`caches.ts`).
     if (caches.pnpm) {
       await run('docker', [
         ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home } }),
-        ...pnpmGlobalConfigArgs()
+        ...pnpmSetupArgs({ environmentId: id, checkout: canonicalPath })
       ])
     }
     // After the preflight, because it runs the CLI out of the runtime volume.
     await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
+    timer.mark('home')
     // The worktree has no `node_modules` or `.venv`: dependencies are installed
-    // here, for this container's platform, never copied from the host. A
-    // project with a `postCreateCommand` installs its own way instead.
-    const install = resolved.config.postCreateCommand
-      ? null
-      : await installDependencies({ containerId: inspection.id, user: remoteUser, home, workspacePath, checkout: worktree.worktreePath })
+    // here, for this container's platform, never copied from the host. On by
+    // default unless the project installs its own way (`postCreateCommand`);
+    // `installDependencies` says either explicitly.
+    const install = (resolved.config.installDependencies ?? !resolved.config.postCreateCommand)
+      ? await installDependencies({ containerId: inspection.id, user: remoteUser, home, workspacePath, checkout: worktree.worktreePath })
+      : null
+    timer.mark('install')
     if (resolved.config.postCreateCommand) {
       await run('docker', [
         ...execArgs({ containerId: inspection.id, user: remoteUser, workdir: workspacePath, env: { HOME: home } }),
@@ -419,8 +454,10 @@ async function create(
       })
     }
 
+    timer.mark('postCreateCommand')
     const environment = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     await refreshEnvironmentPorts(id)
+    console.info(`[dev-env] created ${id} in ${timer.summary()}`)
     return {
       ...((await getDevEnvironment(id)) ?? environment),
       workspaceSeed: seedReport({ ...worktree.seed, install, branch: worktree.branch })

@@ -11,19 +11,25 @@ import { resourcePrefix, run } from './docker'
  * pnpm is the exception: it is configured in the remote user's global pnpm
  * config (`~/.config/pnpm/config.yaml`), not by variable, because a variable
  * outranks the project's own `pnpm-workspace.yaml` and the global file does
- * not. Measured on pnpm 11 and 12: the file moves the store, and a project
- * that says `enableGlobalVirtualStore: false` gets its way. The global virtual
- * store is on by default, so the project's `node_modules` holds only symlinks
- * into the store — which is what makes sharing it save disk as well as
- * downloads, because the store and the checkout are on different mounts and a
- * hardlink cannot cross one (measured: a plain store install copies all of
- * it, 1.3 GB for a Nuxt app). Its cost is that a package in the store cannot
- * reach the project's hidden hoist directory from its real path. Nuxt resolves
- * a module's module dependencies that way (`@nuxt/icon` for `@nuxt/ui`), which
- * a project fixes by hoisting exactly those (`publicHoistPattern`, as Domo's
- * own does). A module that resolves from `@nuxt/kit`'s real path
- * (`@nuxtjs/i18n`) cannot be fixed by hoisting, and that project turns the
- * global virtual store off. Domo never hoists for a project.
+ * not. Measured on pnpm 11 and 12.
+ *
+ * A hardlink cannot cross mounts, and the checkout is a bind mount of the
+ * host's disk, so pnpm's usual layout would copy every package into it
+ * (measured: 1.3 GB for a Nuxt app, per environment). So each environment's
+ * virtual store (`node_modules/.pnpm`) lives on the cache volume beside the
+ * store (`virtualStoreDir`), where pnpm hardlinks, and the checkout's
+ * `node_modules` holds only symlinks into it. That directory also gets a
+ * `node_modules` symlink back to the checkout's: tools that resolve an
+ * undeclared package by walking up from a package's real path (Nuxt's kit
+ * does, for module dependencies and `vue-i18n`) then pass the hidden hoist
+ * directory and reach the project's own dependencies, as they do in a normal
+ * install. pnpm's global virtual store was tried and rejected: nothing on that
+ * walk leads back to the project. A package that takes the project's root to
+ * be whatever precedes the first `/node_modules/` in its own path (the Caddy
+ * wrapper did) still gets it wrong.
+ *
+ * pnpm's metadata cache and the pnpm versions it downloads for a project's
+ * `packageManager` pin are shared too: both are keyed by what they hold.
  *
  * Only caches that are safe to share are built in: each is keyed by content
  * or by version, never by the project that wrote it. A project adds its own in
@@ -34,7 +40,7 @@ import { resourcePrefix, run } from './docker'
 
 export const CACHES_ROOT = '/opt/domo-caches'
 
-/** The variables each built-in is pointed at its directory by; pnpm has none, see `PNPM_GLOBAL_CONFIG`. */
+/** The variables each built-in is pointed at its directory by; pnpm has none, see `pnpmGlobalConfig`. */
 export const BUILTIN_CACHES: Record<string, Record<string, string>> = {
   pnpm: {},
   npm: { npm_config_cache: `${CACHES_ROOT}/npm` },
@@ -49,17 +55,33 @@ export const BUILTIN_CACHES: Record<string, Record<string, string>> = {
 /** What `.domo.json` may say: `false` for none of the built-ins, or per name a container path (custom) or `false` (off). */
 export type CachesConfig = false | Record<string, string | false>
 
-/** Settings for the remote user's global pnpm config, each written unless the file already sets it. */
-export const PNPM_GLOBAL_CONFIG: Record<string, string> = {
-  storeDir: `${CACHES_ROOT}/pnpm`,
-  enableGlobalVirtualStore: 'true'
+/** Each environment's virtual store, by id: what retiring it removes from the volume. */
+export const PNPM_PROJECTS_DIR = `${CACHES_ROOT}/pnpm-projects`
+/** The pnpm versions pnpm downloads to honour a project's `packageManager` pin. */
+export const PNPM_MANAGERS_DIR = `${CACHES_ROOT}/pnpm-managers`
+
+export function pnpmProjectDir(environmentId: string): string {
+  return `${PNPM_PROJECTS_DIR}/${environmentId}`
 }
+
+/** Settings for the remote user's global pnpm config, each written unless the file already sets it. */
+export function pnpmGlobalConfig(environmentId: string): Record<string, string> {
+  return {
+    storeDir: `${CACHES_ROOT}/pnpm`,
+    cacheDir: `${CACHES_ROOT}/pnpm-cache`,
+    virtualStoreDir: `${pnpmProjectDir(environmentId)}/.pnpm`,
+    enableGlobalVirtualStore: 'false'
+  }
+}
+
+/** The shared directories pnpm writes into, which every environment's user has to be able to write. */
+export const PNPM_SHARED_DIRS = [`${CACHES_ROOT}/pnpm`, `${CACHES_ROOT}/pnpm-cache`, PNPM_PROJECTS_DIR, PNPM_MANAGERS_DIR]
 
 export interface ResolvedCaches {
   /** The shared volume of built-ins, mounted at `CACHES_ROOT`, or null when all are off. */
   shared: { volume: string } | null
   env: Record<string, string>
-  /** Whether pnpm's global config is to point at the shared store (`PNPM_GLOBAL_CONFIG`). */
+  /** Whether pnpm is to be pointed at the shared store (`pnpmGlobalConfig`). */
   pnpm: boolean
   custom: Array<{ name: string, volume: string, target: string }>
 }
@@ -86,12 +108,20 @@ export function resolveCaches(config: CachesConfig | undefined): ResolvedCaches 
 }
 
 /**
- * Appends each `PNPM_GLOBAL_CONFIG` setting the remote user's global pnpm
- * config does not have yet, so an image's own choice stands. Keys and values
- * arrive as argv, never interpolated into the script.
+ * Sets pnpm up for one environment, as its remote user: the environment's
+ * virtual store directory with its `node_modules` link back to the checkout,
+ * the shared directory of downloaded pnpm versions, and each global config
+ * setting the file does not have yet, so an image's own choice stands.
+ * Everything arrives as argv, never interpolated into the script.
  */
-export const PNPM_GLOBAL_CONFIG_SCRIPT = [
+export const PNPM_SETUP_SCRIPT = [
   'set -e',
+  'project="$1"; modules="$2"; managers="$3"; shift 3',
+  'mkdir -p "$project"',
+  'ln -sfn "$modules" "$project/node_modules"',
+  'data="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm"',
+  'mkdir -p "$data"',
+  '[ -e "$data/package-manager-store" ] || ln -s "$managers" "$data/package-manager-store"',
   'dir="${XDG_CONFIG_HOME:-$HOME/.config}/pnpm"',
   'mkdir -p "$dir"',
   'file="$dir/config.yaml"',
@@ -102,9 +132,25 @@ export const PNPM_GLOBAL_CONFIG_SCRIPT = [
   'done'
 ].join('\n')
 
-export function pnpmGlobalConfigArgs(): string[] {
-  return ['sh', '-c', PNPM_GLOBAL_CONFIG_SCRIPT, 'sh', ...Object.entries(PNPM_GLOBAL_CONFIG).flat()]
+export function pnpmSetupArgs(input: { environmentId: string, checkout: string }): string[] {
+  return [
+    'sh', '-c', PNPM_SETUP_SCRIPT, 'sh',
+    pnpmProjectDir(input.environmentId), `${input.checkout}/node_modules`, PNPM_MANAGERS_DIR,
+    ...Object.entries(pnpmGlobalConfig(input.environmentId)).flat()
+  ]
 }
+
+/**
+ * Removes the virtual stores of the environments named, from a helper
+ * container on the cache volume, and lists what is left there: whether one
+ * went is decided by looking, as everywhere in the sweep.
+ */
+export const PNPM_PROJECTS_SWEEP_SCRIPT = [
+  'dir="$1"; shift',
+  'for id in "$@"; do if [ -e "$dir/$id" ]; then echo "removing $id"; rm -rf "$dir/$id"; fi; done',
+  'for entry in "$dir"/*; do [ -e "$entry" ] && echo "left ${entry##*/}"; done',
+  'true'
+].join('\n')
 
 /** The container paths every cache is mounted at, which the remote user has to be able to write whatever uid it is. */
 export function cacheMountTargets(caches: ResolvedCaches): string[] {

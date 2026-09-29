@@ -116,14 +116,13 @@ Every environment gets a locked git worktree in
   `domo-dev-caches` volume (`caches.ts`). Tools find it by environment
   variable, except pnpm, which is set in the remote user's global
   `config.yaml`: a variable would outrank the project's `pnpm-workspace.yaml`.
-  The store and the checkout are on different mounts, and a hardlink cannot
-  cross one, so without pnpm's global virtual store every install copies. It
-  is on by default. A package in the store cannot reach the project's hidden
-  hoist directory, so a project whose tools resolve undeclared packages hoists
-  exactly those (`publicHoistPattern`, as Domo does for Nuxt's module
-  dependencies) or turns the store off (`enableGlobalVirtualStore: false`:
-  `@nuxtjs/i18n` resolves from `@nuxt/kit`'s real path). Domo never hoists for
-  a project.
+  A hardlink cannot cross mounts, so each environment's virtual store is on
+  the cache volume (`pnpm-projects/<id>`, removed by the sweep), hardlinked
+  from the store, with a `node_modules` link back to the checkout's. A walk up
+  from a package's real path then reaches the hidden hoist and the project's
+  own dependencies, as in a normal install. pnpm's global virtual store
+  cannot do that, and Nuxt modules fail on it. Domo never hoists for a
+  project.
 - **On a Linux daemon the checkout keeps the host's uids**, so creation
   renumbers the remote user to the worktree's owner (`user-alignment.ts`).
   Docker Desktop maps ownership and needs nothing.

@@ -96,19 +96,18 @@ into the container. Several agents can share one environment.
   the environment checks it out instead. Uncommitted changes stay on your
   machine. A project with no commits yet is offered its first one when you
   create an environment. Gitignored `.env` files are copied in.
-  `node_modules`, `.venv` and other dependency folders never are: without a
-  `postCreateCommand`, Domo installs by lockfile inside the environment
-  (pnpm, npm, yarn, bun, uv), for the container's platform.
+  `node_modules`, `.venv` and other dependency folders never are: Domo
+  installs by lockfile inside the environment (pnpm, npm, yarn, bun, uv), for
+  the container's platform, unless the project turns that off.
 - The worktree shares your repository's branches and commits. A branch an
   agent makes is in your checkout at once, and yours are visible to it, so
   there is nothing to export or import. It also means an agent can move your
   branches.
 - Package caches (pnpm, npm, yarn, pip, uv, Go) are shared by every
-  environment. pnpm keeps each package once for all of them and links it into
-  `node_modules` (its global virtual store). A tool that resolves packages it
-  did not declare can then miss them: hoist exactly those with
-  `publicHoistPattern` in your `pnpm-workspace.yaml`, or set
-  `enableGlobalVirtualStore: false` there to install a full copy instead.
+  environment. pnpm keeps each package once for all of them: an
+  environment's `node_modules` holds links, not copies. A package that finds
+  your project's root from its own location on disk will look in the wrong
+  place; install such tools on the system instead.
 - **Retiring** an environment destroys its container, worktree and every
   container, network, volume and image tag it made on the Docker daemon. Its
   commits stay in your repository; commit anything you want to keep first.
@@ -177,9 +176,12 @@ error.
     "forwardPorts": [3000, "5432/tcp"],
     "portsAttributes": { "3000": { "label": "Web app", "protocol": "http" } },
 
-    // A string runs through `sh -c`. An array is argv. Replaces Domo's own
-    // install by lockfile.
-    "postCreateCommand": "pnpm install",
+    // A string runs through `sh -c`. An array is argv.
+    "postCreateCommand": "pnpm db:migrate",
+
+    // Domo's own install by lockfile (pnpm, npm, yarn, bun, uv), run before
+    // postCreateCommand. Default: on, unless there is a postCreateCommand.
+    "installDependencies": true,
 
     // Shared caches. Built-ins are on; turn one off with false (or all of
     // them with "caches": false), or add a volume shared by name.

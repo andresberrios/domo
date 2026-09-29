@@ -120,7 +120,7 @@ vi.mock('../../server/lib/dev-env/host-worktree', () => hostWorktree)
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
 
 const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
-const { PNPM_GLOBAL_CONFIG_SCRIPT } = await import('../../server/lib/dev-env/caches')
+const { PNPM_SETUP_SCRIPT } = await import('../../server/lib/dev-env/caches')
 const {
   cleanupEnvironment,
   containerExecArgs,
@@ -1348,6 +1348,29 @@ describe('createEnvironment', () => {
       expect(dockerCalls().some(args => args.includes('--frozen-lockfile'))).toBe(false)
       expect(created.workspaceSeed.install).toBeNull()
     })
+
+    it('installs before the project\'s own postCreateCommand when it asks for both, and never when it turns it off', async () => {
+      await writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+        devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', installDependencies: true, postCreateCommand: 'make seed' }
+      }), 'utf8')
+      await lockfile('pnpm-lock.yaml')
+
+      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+      const install = dockerCalls().findIndex(args => args.includes('--frozen-lockfile'))
+      const postCreate = dockerCalls().findIndex(args => args.includes('make seed'))
+      expect(install).toBeGreaterThan(-1)
+      expect(install).toBeLessThan(postCreate)
+
+      run.mockClear()
+      await writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+        devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', installDependencies: false }
+      }), 'utf8')
+      await lockfile('pnpm-lock.yaml')
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work 2' })
+      expect(dockerCalls().some(args => args.includes('--frozen-lockfile'))).toBe(false)
+      expect(created.workspaceSeed.install).toBeNull()
+    })
   })
 
   it('mounts the shared caches, points tools at them, and opens them to every environment\'s user', async () => {
@@ -1359,11 +1382,15 @@ describe('createEnvironment', () => {
     // pnpm by its global config instead, as the remote user: a variable would
     // outrank the project's own pnpm-workspace.yaml.
     expect(runCall.some(arg => arg.startsWith('pnpm_config_'))).toBe(false)
-    const pnpmConfig = dockerCalls().find(args => args.includes(PNPM_GLOBAL_CONFIG_SCRIPT))!
+    const pnpmConfig = dockerCalls().find(args => args.includes(PNPM_SETUP_SCRIPT))!
     expect(pnpmConfig.slice(0, 3)).toEqual(['exec', '--user', 'vscode'])
-    expect(pnpmConfig.slice(-4)).toEqual(['storeDir', '/opt/domo-caches/pnpm', 'enableGlobalVirtualStore', 'true'])
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    expect(pnpmConfig).toContain(`/opt/domo-caches/pnpm-projects/${id}/.pnpm`)
+    expect(pnpmConfig).toContain(`/worktrees/${id}/node_modules`)
     expect(dockerCalls()).toContainEqual(['volume', 'create', '--label', 'domo.cache=true', 'domo-dev-caches'])
-    expect(dockerCalls()).toContainEqual(['exec', '--user', 'root', 'container-sha', 'chmod', '1777', '/opt/domo-caches'])
+    expect(dockerCalls().find(args => args.includes('mkdir -p "$@" && chmod 1777 "$@"'))).toEqual(expect.arrayContaining([
+      '/opt/domo-caches', '/opt/domo-caches/pnpm', '/opt/domo-caches/pnpm-cache', '/opt/domo-caches/pnpm-projects', '/opt/domo-caches/pnpm-managers'
+    ]))
   })
 
   describe('the checkout owner\'s uid', () => {

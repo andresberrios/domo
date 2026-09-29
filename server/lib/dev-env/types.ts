@@ -29,6 +29,11 @@ export interface DevEnvironmentConfig {
   portsAttributes: Record<string, PortAttributes>
   /** A string runs through `sh -c`; an array is argv. Absent, Domo installs by lockfile (`dependencies.ts`). */
   postCreateCommand?: string | string[]
+  /**
+   * Whether Domo installs dependencies by lockfile, before `postCreateCommand`.
+   * Default: yes, unless the project has a `postCreateCommand`.
+   */
+  installDependencies?: boolean
   /** Shared caches: built-ins on unless turned off, plus custom named volumes (`caches.ts`). */
   caches?: false | Record<string, string | false>
   /** Globs of ignored files copied into each new worktree; the default copies `.env` files, `[]` copies none. */

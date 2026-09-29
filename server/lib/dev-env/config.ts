@@ -31,7 +31,7 @@ export const GITHUB_CLI_FEATURE = 'ghcr.io/devcontainers/features/github-cli:1'
  */
 const SUPPORTED_KEYS = [
   'image', 'build', 'features', 'docker', 'remoteUser',
-  'containerEnv', 'forwardPorts', 'portsAttributes', 'postCreateCommand', 'caches', 'copyIgnored'
+  'containerEnv', 'forwardPorts', 'portsAttributes', 'postCreateCommand', 'installDependencies', 'caches', 'copyIgnored'
 ] as const
 
 const BUILD_KEYS = ['dockerfile', 'context', 'args', 'target'] as const
@@ -204,6 +204,10 @@ export function validate(input: unknown, repoPath: string): DevEnvironmentConfig
       if (!isPlainObject(attributes)) fail(`portsAttributes.${port}`, 'must be an object.')
     }
     config.portsAttributes = input.portsAttributes as Record<string, PortAttributes>
+  }
+  if (input.installDependencies !== undefined) {
+    if (typeof input.installDependencies !== 'boolean') fail('installDependencies', 'must be true or false.')
+    config.installDependencies = input.installDependencies
   }
   if (input.postCreateCommand !== undefined) {
     const command = input.postCreateCommand

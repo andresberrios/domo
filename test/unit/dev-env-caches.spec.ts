@@ -6,32 +6,64 @@ import { promisify } from 'node:util'
 
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_CACHES, CACHES_ROOT, cacheMountTargets, pnpmGlobalConfigArgs, resolveCaches } from '../../server/lib/dev-env/caches'
+import {
+  BUILTIN_CACHES,
+  CACHES_ROOT,
+  cacheMountTargets,
+  PNPM_MANAGERS_DIR,
+  pnpmProjectDir,
+  pnpmSetupArgs,
+  resolveCaches
+} from '../../server/lib/dev-env/caches'
 import { defaultInstallCommand } from '../../server/lib/dev-env/dependencies'
 import { alignUserArgs, ALIGN_USER_SCRIPT, planAlignment } from '../../server/lib/dev-env/user-alignment'
 
-describe('the global pnpm config', () => {
+describe('pnpm setup', () => {
   const run = promisify(execFile)
-  async function configure(existing?: string): Promise<string> {
-    const home = await mkdtemp(join(tmpdir(), 'domo-pnpm-home-'))
+  /** The setup script as creation runs it, with scratch paths for the volume's directories. */
+  async function setUp(existing?: string) {
+    const root = await mkdtemp(join(tmpdir(), 'domo-pnpm-setup-'))
+    const home = join(root, 'home')
+    await mkdir(home)
     if (existing !== undefined) {
       await mkdir(join(home, '.config', 'pnpm'), { recursive: true })
       await writeFile(join(home, '.config', 'pnpm', 'config.yaml'), existing)
     }
-    const [program, ...args] = pnpmGlobalConfigArgs()
-    await run(program!, args, { env: { PATH: process.env.PATH, HOME: home } })
-    const written = await readFile(join(home, '.config', 'pnpm', 'config.yaml'), 'utf8')
-    await rm(home, { recursive: true, force: true })
-    return written
+    const args = pnpmSetupArgs({ environmentId: 'env_1', checkout: '/worktrees/env_1' })
+    // The directories it makes, moved under the scratch root; the config it
+    // writes, and the argv's shape, are creation's.
+    const moved = args.map((arg, index) => index >= 4 && index <= 6 && arg.startsWith(CACHES_ROOT) ? join(root, arg) : arg)
+    await run(moved[0]!, moved.slice(1), { env: { PATH: process.env.PATH, HOME: home } })
+    const read = async (path: string) => (await run('readlink', [path])).stdout.trim()
+    const result = {
+      config: await readFile(join(home, '.config', 'pnpm', 'config.yaml'), 'utf8'),
+      modulesLink: await read(join(root, pnpmProjectDir('env_1'), 'node_modules')),
+      managersLink: await read(join(home, '.local', 'share', 'pnpm', 'package-manager-store'))
+    }
+    await rm(root, { recursive: true, force: true })
+    return { ...result, root }
   }
 
-  it('points pnpm at the shared store with the global virtual store on', async () => {
-    expect(await configure()).toBe(`storeDir: ${CACHES_ROOT}/pnpm\nenableGlobalVirtualStore: true\n`)
+  it('puts the environment\'s virtual store on the volume, linked back to the checkout, and shares downloaded pnpm versions', async () => {
+    const { config, modulesLink, managersLink, root } = await setUp()
+
+    expect(config).toBe([
+      `storeDir: ${CACHES_ROOT}/pnpm`,
+      `cacheDir: ${CACHES_ROOT}/pnpm-cache`,
+      `virtualStoreDir: ${CACHES_ROOT}/pnpm-projects/env_1/.pnpm`,
+      'enableGlobalVirtualStore: false',
+      ''
+    ].join('\n'))
+    // What a walk up from a package's real path reaches: the project's own dependencies.
+    expect(modulesLink).toBe('/worktrees/env_1/node_modules')
+    expect(managersLink).toBe(join(root, PNPM_MANAGERS_DIR))
   })
 
   it('leaves a setting the image already made, and adds the rest', async () => {
-    expect(await configure('enableGlobalVirtualStore: false\n'))
-      .toBe(`enableGlobalVirtualStore: false\nstoreDir: ${CACHES_ROOT}/pnpm\n`)
+    const { config } = await setUp('storeDir: /elsewhere\n')
+    expect(config.split('\n')[0]).toBe('storeDir: /elsewhere')
+    expect(config.match(/^storeDir:/gm)).toHaveLength(1)
+    expect(config).toContain('virtualStoreDir: ')
   })
 })
 

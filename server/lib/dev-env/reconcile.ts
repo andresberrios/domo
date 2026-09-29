@@ -1,5 +1,7 @@
 import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover, Project } from '../../../shared/types'
 import { listDevEnvironments, listProjects, markEnvironmentCleaned, setEnvironmentLeftovers } from '../repo'
+import { CACHES_ROOT, PNPM_PROJECTS_SWEEP_SCRIPT, pnpmProjectDir, sharedCacheVolumeName } from './caches'
+import { run } from './docker'
 import { deleteMergedBranch, hostWorktreeExists, hostWorktreePath, listHostWorktrees, removeHostWorktree, type BranchOutcome } from './host-worktree'
 import {
   describeLeftovers,
@@ -10,6 +12,7 @@ import {
   type Leftover,
   type RemovalOutcome
 } from './leftovers'
+import { RUNTIME_IMAGE } from './runtime-volume'
 
 /**
  * Reconcile what Docker has against what the rows say should be left.
@@ -100,6 +103,11 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   const branches = await settleBranches(claimants, projects, worktrees.failed)
   outcome.removed.push(...worktrees.removed)
   outcome.failed.push(...worktrees.failed)
+  // After the container that installed into it, like the worktree.
+  const dependencies = await removeDependencyLeftovers(claimants)
+  outcome.removed.push(...dependencies.removed)
+  outcome.failed.push(...dependencies.failed)
+  unattributed.push(...dependencies.unattributed)
   const remaining = new Map<string, EnvironmentLeftover[]>()
   for (const failure of outcome.failed) {
     const list = remaining.get(failure.environmentId) ?? []
@@ -181,6 +189,41 @@ export async function removeWorktreeLeftovers(
     if (result.error) outcome.failed.push({ ...leftover, error: result.error })
     else outcome.removed.push(leftover)
   }
+  return outcome
+}
+
+/**
+ * The cache-volume half: each environment's pnpm virtual store
+ * (`caches.ts`), a directory named by its id. Removed for a claimant from a
+ * helper container, in one run for the whole pass, and decided by listing the
+ * directory afterwards. A live environment's is never touched, and one no row
+ * knows is reported, not removed. Nothing at all when the volume does not
+ * exist: asking would create it.
+ */
+export async function removeDependencyLeftovers(
+  claimants: DevEnvironment[]
+): Promise<RemovalOutcome & { unattributed: string[] }> {
+  const outcome = { removed: [] as Leftover[], failed: [] as RemovalOutcome['failed'], unattributed: [] as string[] }
+  const volume = sharedCacheVolumeName()
+  const exists = await run('docker', ['volume', 'inspect', volume], { allowFailure: true })
+    .then(result => result.stdout.trim().startsWith('[') && result.stdout.trim() !== '[]', () => false)
+  if (!exists) return outcome
+  const claimed = claimants.filter(environment =>
+    !!environment.retiredAt || environment.leftovers.some(owed => owed.kind === 'dependencies'))
+  const dir = '/c/pnpm-projects'
+  const listed = await run('docker', [
+    'run', '--rm', '--volume', `${volume}:/c`, RUNTIME_IMAGE,
+    'sh', '-c', PNPM_PROJECTS_SWEEP_SCRIPT, 'sh', dir, ...claimed.map(environment => environment.id)
+  ]).then(result => result.stdout.split('\n').map(line => line.trim()).filter(Boolean))
+  const removing = new Set(listed.filter(line => line.startsWith('removing ')).map(line => line.slice('removing '.length)))
+  const left = new Set(listed.filter(line => line.startsWith('left ')).map(line => line.slice('left '.length)))
+  const known = new Set((await listDevEnvironments(undefined, true)).map(environment => environment.id))
+  for (const environment of claimed) {
+    const leftover = { kind: 'dependencies' as const, name: `${volume}:${pnpmProjectDir(environment.id).slice(CACHES_ROOT.length + 1)}`, environmentId: environment.id }
+    if (left.has(environment.id)) outcome.failed.push({ ...leftover, error: 'It could not be deleted from the cache volume. Run the cleanup again.' })
+    else if (removing.has(environment.id)) outcome.removed.push(leftover)
+  }
+  for (const id of left) if (!known.has(id)) outcome.unattributed.push(`dependencies ${volume}:pnpm-projects/${id}`)
   return outcome
 }
 

@@ -223,8 +223,10 @@ describe('Domo itself, a Nuxt app on pnpm', () => {
     // `nuxt prepare` is its postinstall, so this is also Nuxt resolving its modules from the global virtual store.
     expect(created.workspaceSeed.install).toEqual({ command: 'pnpm install --frozen-lockfile', error: null })
     const environment = await environmentNamed('nuxt-probe')
-    // node_modules is links into the shared store, not a copy on the host's disk.
-    await expect(inside(environment, 'readlink node_modules/nuxt')).resolves.toMatch(/\/opt\/domo-caches\/pnpm\//)
+    // node_modules is links into the environment's virtual store on the cache
+    // volume, hardlinked from the shared store: not a copy on the host's disk.
+    await expect(inside(environment, 'readlink node_modules/nuxt')).resolves.toContain(`/opt/domo-caches/pnpm-projects/${environment.id}/.pnpm/`)
+    await expect(inside(environment, 'stat -c %h "$(readlink -f node_modules/nuxt/package.json)"')).resolves.not.toBe('1')
 
     await exec('docker', [
       'exec', '--detach', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,

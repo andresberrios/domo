@@ -184,6 +184,7 @@ describe('validation', () => {
     ['forwardPorts', { image: 'i', forwardPorts: [{}] }, /forwardPorts may only contain numbers and strings/],
     ['portsAttributes', { image: 'i', portsAttributes: { 3000: 'web' } }, /portsAttributes\.3000 must be an object/],
     ['postCreateCommand', { image: 'i', postCreateCommand: 7 }, /postCreateCommand must be a string/],
+    ['installDependencies', { image: 'i', installDependencies: 'yes' }, /installDependencies must be true or false/],
     ['caches', { image: 'i', caches: [] }, /caches must be false or an object/],
     ['caches', { image: 'i', caches: { Gradle: '/g' } }, /caches\.Gradle must be named with lowercase/],
     ['caches', { image: 'i', caches: { pnpm: '/elsewhere' } }, /caches\.pnpm is built in/],

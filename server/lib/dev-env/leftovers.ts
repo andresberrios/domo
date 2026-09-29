@@ -81,7 +81,7 @@ export interface ObservedResources {
 
 type Observed = ObservedResource & { kind: LeftoverKind }
 
-const KIND_ORDER: LeftoverKind[] = ['container', 'network', 'volume', 'image', 'worktree']
+const KIND_ORDER: LeftoverKind[] = ['container', 'network', 'volume', 'image', 'worktree', 'dependencies']
 
 /**
  * Flattened in removal order. The order is load-bearing: a container goes
@@ -95,8 +95,10 @@ function flatten(present: ObservedResources): Observed[] {
     network: present.networks ?? [],
     volume: present.volumes,
     image: present.images,
-    // Not Docker's: observed on the host by `reconcile.ts`, never listed here.
-    worktree: []
+    // Not Docker's: observed on the host and on the cache volume by
+    // `reconcile.ts`, never listed here.
+    worktree: [],
+    dependencies: []
   }
   return KIND_ORDER.flatMap(kind => lists[kind].map(entry =>
     typeof entry === 'string' ? { kind, name: entry } : { kind, ...entry }))
@@ -333,7 +335,7 @@ function bareError(error: string): string {
     .trim()
 }
 
-const HOLDING: Record<Exclude<LeftoverKind, 'container' | 'worktree'>, { one: string, many: string }> = {
+const HOLDING: Record<Exclude<LeftoverKind, 'container' | 'worktree' | 'dependencies'>, { one: string, many: string }> = {
   volume: { one: 'still has it mounted', many: 'still have it mounted' },
   network: { one: 'is still connected to it', many: 'are still connected to it' },
   image: { one: 'was made from it', many: 'were made from it' }
@@ -356,7 +358,9 @@ export function explainRefusal(input: {
   blockers: string[]
 }): string {
   const bare = bareError(input.error)
-  const holding = input.leftover.kind === 'container' || input.leftover.kind === 'worktree' ? null : HOLDING[input.leftover.kind]
+  const holding = input.leftover.kind === 'container' || input.leftover.kind === 'worktree' || input.leftover.kind === 'dependencies'
+    ? null
+    : HOLDING[input.leftover.kind]
   if (holding && input.blockers.length === 1) {
     return `Container ${input.blockers[0]} ${holding.one}. `
       + `Remove it (docker rm -f ${input.blockers[0]}) and run the cleanup again.`

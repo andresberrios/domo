@@ -331,7 +331,8 @@ export interface DevEnvironment {
 }
 
 /** `worktree` is an environment's checkout on the host; its name is the path. */
-export type LeftoverKind = 'container' | 'network' | 'volume' | 'image' | 'worktree'
+/** `dependencies`: an environment's pnpm virtual store, a directory on the shared cache volume. */
+export type LeftoverKind = 'container' | 'network' | 'volume' | 'image' | 'worktree' | 'dependencies'
 
 /** One Docker resource that should no longer exist and still does. */
 export interface EnvironmentLeftover {
