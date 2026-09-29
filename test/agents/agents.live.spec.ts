@@ -97,6 +97,9 @@ afterAll(async () => {
   }
   if (environment) await retireEnvironment(environment.id).catch(() => {})
   await removeCachedImages(PREFIX)
+  // Shared by this run's environments only; the runtime and browser volumes are kept for the next run.
+  const { sharedCacheVolumeName } = await import('../../server/lib/dev-env/caches')
+  await docker('volume', 'rm', sharedCacheVolumeName())
   await mesh?.close()
   for (const path of [repoPath, hostCwd]) {
     if (path) await rm(dirname(path), { recursive: true, force: true })
