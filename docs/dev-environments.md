@@ -117,12 +117,19 @@ Every environment gets a locked git worktree in
   variable, except pnpm, which is set in the remote user's global
   `config.yaml`: a variable would outrank the project's `pnpm-workspace.yaml`.
   A hardlink cannot cross mounts, so each environment's virtual store is on
-  the cache volume (`pnpm-projects/<id>`, removed by the sweep), hardlinked
+  the cache volume (`pnpm/projects/<id>`, removed by the sweep), hardlinked
   from the store, with a `node_modules` link back to the checkout's. A walk up
   from a package's real path then reaches the hidden hoist and the project's
   own dependencies, as in a normal install. pnpm's global virtual store
   cannot do that, and Nuxt modules fail on it. Domo never hoists for a
-  project.
+  project. Everything pnpm keeps there is under `pnpm/`, made by the
+  environment's user with mode 755: pnpm 12.8 silently copies from a store in
+  a world-writable directory.
+- **An image-based definition is built once**, kept as `<prefix>image-<hash>`
+  (the generated config plus the base image's id), and tagged for each later
+  environment (`image.ts`). A Dockerfile (`build`) is always built. A cached
+  image is rebuilt after a week, so a moving `latest` Feature or base catches
+  up, and an older unused one is untagged at retirement.
 - **On a Linux daemon the checkout keeps the host's uids**, so creation
   renumbers the remote user to the worktree's owner (`user-alignment.ts`).
   Docker Desktop maps ownership and needs nothing.

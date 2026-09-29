@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -11,6 +11,7 @@ import {
   CACHES_ROOT,
   cacheMountTargets,
   PNPM_MANAGERS_DIR,
+  PNPM_ROOT,
   pnpmProjectDir,
   pnpmSetupArgs,
   resolveCaches
@@ -32,25 +33,28 @@ describe('pnpm setup', () => {
     const args = pnpmSetupArgs({ environmentId: 'env_1', checkout: '/worktrees/env_1' })
     // The directories it makes, moved under the scratch root; the config it
     // writes, and the argv's shape, are creation's.
-    const moved = args.map((arg, index) => index >= 4 && index <= 6 && arg.startsWith(CACHES_ROOT) ? join(root, arg) : arg)
+    const moved = args.map((arg, index) => index >= 4 && index <= 7 && arg.startsWith(CACHES_ROOT) ? join(root, arg) : arg)
     await run(moved[0]!, moved.slice(1), { env: { PATH: process.env.PATH, HOME: home } })
     const read = async (path: string) => (await run('readlink', [path])).stdout.trim()
     const result = {
       config: await readFile(join(home, '.config', 'pnpm', 'config.yaml'), 'utf8'),
       modulesLink: await read(join(root, pnpmProjectDir('env_1'), 'node_modules')),
-      managersLink: await read(join(home, '.local', 'share', 'pnpm', 'package-manager-store'))
+      managersLink: await read(join(home, '.local', 'share', 'pnpm', 'package-manager-store')),
+      rootMode: ((await stat(join(root, PNPM_ROOT))).mode & 0o777).toString(8)
     }
     await rm(root, { recursive: true, force: true })
     return { ...result, root }
   }
 
   it('puts the environment\'s virtual store on the volume, linked back to the checkout, and shares downloaded pnpm versions', async () => {
-    const { config, modulesLink, managersLink, root } = await setUp()
+    const { config, modulesLink, managersLink, rootMode, root } = await setUp()
+    // Writable by its user only: pnpm 12.8 copies from a store in a world-writable directory.
+    expect(rootMode).toBe('755')
 
     expect(config).toBe([
-      `storeDir: ${CACHES_ROOT}/pnpm`,
-      `cacheDir: ${CACHES_ROOT}/pnpm-cache`,
-      `virtualStoreDir: ${CACHES_ROOT}/pnpm-projects/env_1/.pnpm`,
+      `storeDir: ${CACHES_ROOT}/pnpm/store`,
+      `cacheDir: ${CACHES_ROOT}/pnpm/cache`,
+      `virtualStoreDir: ${CACHES_ROOT}/pnpm/projects/env_1/.pnpm`,
       'enableGlobalVirtualStore: false',
       ''
     ].join('\n'))

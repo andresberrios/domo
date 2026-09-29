@@ -23,7 +23,7 @@ import {
   run,
   type ContainerInspection
 } from './dev-env/docker'
-import { cacheMountTargets, ensureCacheVolumes, PNPM_SHARED_DIRS, pnpmSetupArgs, resolveCaches } from './dev-env/caches'
+import { cacheMountTargets, ensureCacheVolumes, pnpmSetupArgs, resolveCaches } from './dev-env/caches'
 import { defaultInstallCommand, presentLockfiles } from './dev-env/dependencies'
 import { createHostWorktree, hostWorktreePath } from './dev-env/host-worktree'
 import { alignUserArgs, planAlignment } from './dev-env/user-alignment'
@@ -31,7 +31,7 @@ import { seedReport } from './dev-env/workspace-seed'
 import { environmentResources, observeEnvironmentResources, ownedResources } from './dev-env/leftovers'
 import { sweepEnvironmentResources, type CleanupReport } from './dev-env/reconcile'
 import { resolveHomeOverlay } from './dev-env/home-overlay'
-import { buildEnvironmentImage } from './dev-env/image'
+import { buildEnvironmentImage, collectCachedImages } from './dev-env/image'
 import {
   browserEnv,
   CHROME_EXECUTABLE,
@@ -229,6 +229,18 @@ const SSH_HOME_SCRIPT = [
 ].join('\n')
 
 /**
+ * `Promise.all`, except that it waits for every one to finish before it
+ * throws: a creation that fails cleans up after itself, and an image build
+ * still running then would leave an image behind that nothing claims.
+ */
+async function allSettledOrThrow<T extends readonly unknown[]>(work: [...{ [K in keyof T]: Promise<T[K]> }]): Promise<T> {
+  const settled = await Promise.allSettled(work)
+  const failed = settled.find(result => result.status === 'rejected')
+  if (failed) throw (failed as PromiseRejectedResult).reason
+  return settled.map(result => (result as PromiseFulfilledResult<unknown>).value) as unknown as T
+}
+
+/**
  * How long each step of a creation took, logged once it is done: creation is
  * what people wait on, and a guess about which step is slow is no substitute.
  */
@@ -242,6 +254,15 @@ function stepTimer() {
       const now = Date.now()
       steps.push(`${step} ${seconds(now - last)}`)
       last = now
+    },
+    /** A step run alongside others: timed on its own, and marked by whatever waits for it. */
+    async measure<T>(step: string, work: Promise<T>): Promise<T> {
+      const began = Date.now()
+      try {
+        return await work
+      } finally {
+        steps.push(`${step} ${seconds(Date.now() - began)}`)
+      }
     },
     summary: () => `${seconds(Date.now() - start)} (${steps.join(', ')})`
   }
@@ -286,43 +307,45 @@ async function create(
 
     const settings = await getSettings()
     timer.mark('config')
-    const runtimeVolume = await ensureRuntimeVolume()
-    timer.mark('runtime volume')
-    // A browser is worth having and is not worth failing an environment over:
-    // it is several hundred megabytes fetched from two networks, and an
-    // environment with no browser still runs agents perfectly well.
-    const browserVolume = settings.browserTools
-      ? await ensureBrowserVolume().catch((error) => {
-        console.warn(`[dev-env] no headless browser for ${id}: ${error}`)
-        return null
-      })
-      : null
-    timer.mark('browser volume')
-    // A clean checkout of the last commit, as git users expect of a worktree,
-    // plus the ignored files the project needs to run (a `.env`). Nothing has
-    // to be reconciled inside the container afterwards.
-    const worktree = await createHostWorktree({
-      repoPath: project.repoPath,
-      projectId: project.id,
-      environmentId: id,
-      branch: safeName,
-      copyIgnored: resolved.config.copyIgnored
-    })
-    // At once, so a creation that fails after this still knows which branch it made.
-    await updateDevEnvironment(id, { branch: worktree.branch.name, branchCreated: worktree.branch.created })
-    timer.mark('worktree')
+    const caches = resolveCaches(resolved.config.caches)
+    // Independent of each other, and together most of a creation: the shared
+    // volumes (slow once per install), the worktree and the image.
+    const [runtimeVolume, browserVolume, worktree, imageName] = await allSettledOrThrow([
+      timer.measure('runtime volume', ensureRuntimeVolume()),
+      // A browser is worth having and is not worth failing an environment over:
+      // it is several hundred megabytes fetched from two networks, and an
+      // environment with no browser still runs agents perfectly well.
+      timer.measure('browser volume', settings.browserTools
+        ? ensureBrowserVolume().catch((error) => {
+          console.warn(`[dev-env] no headless browser for ${id}: ${error}`)
+          return null
+        })
+        : Promise.resolve(null)),
+      // A clean checkout of the last commit, as git users expect of a worktree,
+      // plus the ignored files the project needs to run (a `.env`). Nothing has
+      // to be reconciled inside the container afterwards.
+      timer.measure('worktree', createHostWorktree({
+        repoPath: project.repoPath,
+        projectId: project.id,
+        environmentId: id,
+        branch: safeName,
+        copyIgnored: resolved.config.copyIgnored
+      }).then(async (made) => {
+        // At once, so a creation that fails after this still knows which branch it made.
+        await updateDevEnvironment(id, { branch: made.branch.name, branchCreated: made.branch.created })
+        return made
+      })),
+      timer.measure('image', ensureCacheVolumes(caches).then(() => buildEnvironmentImage({
+        config: resolved.config,
+        environmentId: id,
+        name,
+        repoPath: project.repoPath
+      })))
+    ])
     const canonicalPath = canonicalWorkspacePath(id)
     const baseGitPath = canonicalBaseGitPath(project.id)
-    const caches = resolveCaches(resolved.config.caches)
-    await ensureCacheVolumes(caches)
-    const imageName = await buildEnvironmentImage({
-      config: resolved.config,
-      environmentId: id,
-      name,
-      repoPath: project.repoPath
-    })
     const metadata = await readImageMetadata(imageName, id)
-    timer.mark('image')
+    timer.mark('prepared')
     const remoteUser = resolveRemoteUser(resolved.config, metadata)
     const home = homeDirectory(remoteUser)
     // Bind mounts are fixed at `docker run`, so the setting applies to
@@ -390,12 +413,9 @@ async function create(
     ])
     // Every environment's installs write here, as whichever user each one runs as.
     const cacheTargets = cacheMountTargets(caches)
+    // Not pnpm's own directories: the environment's user makes those (`PNPM_ROOT`).
     if (cacheTargets.length) {
-      const shared = caches.pnpm ? PNPM_SHARED_DIRS : []
-      await run('docker', [
-        ...execArgs({ containerId: inspection.id, user: 'root' }),
-        'sh', '-c', 'mkdir -p "$@" && chmod 1777 "$@"', 'sh', ...cacheTargets, ...shared
-      ])
+      await run('docker', [...execArgs({ containerId: inspection.id, user: 'root' }), 'chmod', '1777', ...cacheTargets])
     }
     // No `chown` of the checkout: it is the host's own worktree now, not a
     // root-owned tar extraction, and its files belong to the developer.
@@ -731,6 +751,7 @@ async function retire(id: string): Promise<CleanupReport> {
   // After the environment's container is gone, or its runtime volume is still
   // in use.
   await collectRuntimeVolumes().catch(() => {})
+  await collectCachedImages().catch(() => {})
   await collectBrowserVolumes().catch(() => {})
   return report
 }

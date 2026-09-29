@@ -1,6 +1,6 @@
 import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover, Project } from '../../../shared/types'
 import { listDevEnvironments, listProjects, markEnvironmentCleaned, setEnvironmentLeftovers } from '../repo'
-import { CACHES_ROOT, PNPM_PROJECTS_SWEEP_SCRIPT, pnpmProjectDir, sharedCacheVolumeName } from './caches'
+import { CACHES_ROOT, PNPM_PROJECTS_DIR, PNPM_PROJECTS_SWEEP_SCRIPT, pnpmProjectDir, sharedCacheVolumeName } from './caches'
 import { run } from './docker'
 import { deleteMergedBranch, hostWorktreeExists, hostWorktreePath, listHostWorktrees, removeHostWorktree, type BranchOutcome } from './host-worktree'
 import {
@@ -210,7 +210,7 @@ export async function removeDependencyLeftovers(
   if (!exists) return outcome
   const claimed = claimants.filter(environment =>
     !!environment.retiredAt || environment.leftovers.some(owed => owed.kind === 'dependencies'))
-  const dir = '/c/pnpm-projects'
+  const dir = `/c/${PNPM_PROJECTS_DIR.slice(CACHES_ROOT.length + 1)}`
   const listed = await run('docker', [
     'run', '--rm', '--volume', `${volume}:/c`, RUNTIME_IMAGE,
     'sh', '-c', PNPM_PROJECTS_SWEEP_SCRIPT, 'sh', dir, ...claimed.map(environment => environment.id)
@@ -223,7 +223,7 @@ export async function removeDependencyLeftovers(
     if (left.has(environment.id)) outcome.failed.push({ ...leftover, error: 'It could not be deleted from the cache volume. Run the cleanup again.' })
     else if (removing.has(environment.id)) outcome.removed.push(leftover)
   }
-  for (const id of left) if (!known.has(id)) outcome.unattributed.push(`dependencies ${volume}:pnpm-projects/${id}`)
+  for (const id of left) if (!known.has(id)) outcome.unattributed.push(`dependencies ${volume}:${dir.slice(3)}/${id}`)
   return outcome
 }
 

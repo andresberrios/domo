@@ -449,7 +449,7 @@ describe('an environment for a project with no .domo.json', () => {
       .resolves.toBe('666')
 
     // pnpm's virtual store for it is on the cache volume, linked back to the checkout.
-    await expect(inContainer(environment, 'readlink', `/opt/domo-caches/pnpm-projects/${environment.id}/node_modules`))
+    await expect(inContainer(environment, 'readlink', `/opt/domo-caches/pnpm/projects/${environment.id}/node_modules`))
       .resolves.toBe(`/worktrees/${environment.id}/node_modules`)
 
     // The project's own checkout was only read.
@@ -475,7 +475,7 @@ describe('an environment for a project with no .domo.json', () => {
     expect(image.stdout, 'the environment image outlived its environment').toBe('')
     // And its virtual store went from the cache volume, which stays.
     const onVolume = await run('docker', [
-      'run', '--rm', '--volume', `${sharedCacheVolumeName()}:/c`, 'busybox:1.37', 'ls', '/c/pnpm-projects'
+      'run', '--rm', '--volume', `${sharedCacheVolumeName()}:/c`, 'busybox:1.37', 'ls', '/c/pnpm/projects'
     ])
     expect(onVolume.stdout.split('\n')).not.toContain(environment.id)
   }, HOUR / 4)

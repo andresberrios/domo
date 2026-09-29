@@ -179,7 +179,9 @@ function isShared(resource: Observed): boolean {
   }
   if (resource.kind === 'container') return resource.name === `${prefix}port-helper`
   if (resource.kind === 'image') {
+    // A definition's cached image (`image.ts`) is every environment's that uses it.
     return resource.name === `${prefix}port-helper` || resource.name.startsWith(`${prefix}port-helper:`)
+      || resource.name.startsWith(`${prefix}image-`)
   }
   return false
 }

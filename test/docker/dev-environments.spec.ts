@@ -1286,6 +1286,26 @@ describe('createEnvironment', () => {
       expect(created.workspaceSeed).toEqual({ paths: ['a.ts'], total: 1, copied: ['dev.pem'], install: null, branch: { name: 'api-work', created: true } })
     })
 
+    it('lets the image build it runs alongside finish before it cleans up a failed creation', async () => {
+      hostWorktree.createHostWorktree.mockRejectedValueOnce(new Error('/repo has no commits yet'))
+      let built = false
+      buildEnvironmentImage.mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50))
+        built = true
+        return 'domo-dev-env_1'
+      })
+      let builtWhenClaimed: boolean | null = null
+      repo.setEnvironmentLeftovers.mockImplementationOnce(async () => {
+        builtWhenClaimed = built
+        return null
+      })
+
+      await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(/no commits yet/)
+
+      // Otherwise the image it tags would appear after the sweep, claimed by nothing.
+      expect(builtWhenClaimed).toBe(true)
+    })
+
     it('fails creation with nothing run when the worktree cannot be cut, and claims the worktree anyway', async () => {
       hostWorktree.createHostWorktree.mockRejectedValueOnce(new Error('/repo has no commits yet'))
 
@@ -1385,12 +1405,12 @@ describe('createEnvironment', () => {
     const pnpmConfig = dockerCalls().find(args => args.includes(PNPM_SETUP_SCRIPT))!
     expect(pnpmConfig.slice(0, 3)).toEqual(['exec', '--user', 'vscode'])
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
-    expect(pnpmConfig).toContain(`/opt/domo-caches/pnpm-projects/${id}/.pnpm`)
+    expect(pnpmConfig).toContain(`/opt/domo-caches/pnpm/projects/${id}/.pnpm`)
     expect(pnpmConfig).toContain(`/worktrees/${id}/node_modules`)
     expect(dockerCalls()).toContainEqual(['volume', 'create', '--label', 'domo.cache=true', 'domo-dev-caches'])
-    expect(dockerCalls().find(args => args.includes('mkdir -p "$@" && chmod 1777 "$@"'))).toEqual(expect.arrayContaining([
-      '/opt/domo-caches', '/opt/domo-caches/pnpm', '/opt/domo-caches/pnpm-cache', '/opt/domo-caches/pnpm-projects', '/opt/domo-caches/pnpm-managers'
-    ]))
+    expect(dockerCalls()).toContainEqual(['exec', '--user', 'root', 'container-sha', 'chmod', '1777', '/opt/domo-caches'])
+    // Never pnpm's own directories as root: pnpm 12.8 copies from a store it does not own.
+    expect(dockerCalls().some(args => args[2] === 'root' && args.some(arg => arg.startsWith('/opt/domo-caches/pnpm')))).toBe(false)
   })
 
   describe('the checkout owner\'s uid', () => {

@@ -307,7 +307,8 @@ describe.skipIf(!daemon)('binds outside the checkout, the socket, and host netwo
       '--mount', `type=bind,source=${HOME}/cachevol/data,target=/d`,
       NODE, 'true'])
     const out = JSON.parse((await cli(['inspect', 'inspected'])).stdout)[0]
-    expect(out.HostConfig.Binds).toEqual([`${HOME}/.aws:/root/.aws:ro`, '/var/run/docker.sock:/var/run/docker.sock'])
+    // In either order: the daemon does not keep the order the client sent.
+    expect([...out.HostConfig.Binds].sort()).toEqual([`${HOME}/.aws:/root/.aws:ro`, '/var/run/docker.sock:/var/run/docker.sock'].sort())
     expect(out.HostConfig.Mounts).toEqual([{ Type: 'bind', Source: `${HOME}/cachevol/data`, Target: '/d' }])
     const sources = Object.fromEntries(out.Mounts.map((mount: any) => [mount.Destination, [mount.Type, mount.Source]]))
     expect(sources).toEqual({

@@ -31,6 +31,9 @@ import { resourcePrefix, run } from './docker'
  * pnpm's metadata cache and the pnpm versions it downloads for a project's
  * `packageManager` pin are shared too: both are keyed by what they hold.
  *
+ * The first environment's user creates these directories (`PNPM_ROOT`), and
+ * they stay its: an image whose remote user has another uid cannot share them.
+ *
  * Only caches that are safe to share are built in: each is keyed by content
  * or by version, never by the project that wrote it. A project adds its own in
  * `.domo.json` (`caches: { "<name>": "/path/in/container" }`), each a volume of
@@ -55,10 +58,17 @@ export const BUILTIN_CACHES: Record<string, Record<string, string>> = {
 /** What `.domo.json` may say: `false` for none of the built-ins, or per name a container path (custom) or `false` (off). */
 export type CachesConfig = false | Record<string, string | false>
 
+/**
+ * Everything pnpm keeps on the volume, in one directory the environment's user
+ * creates and nobody else can write: pnpm 12.8 copies instead of hardlinking
+ * when its store sits directly in a world-writable directory such as
+ * `CACHES_ROOT` (measured; 11.25 and 12.6 do not).
+ */
+export const PNPM_ROOT = `${CACHES_ROOT}/pnpm`
 /** Each environment's virtual store, by id: what retiring it removes from the volume. */
-export const PNPM_PROJECTS_DIR = `${CACHES_ROOT}/pnpm-projects`
+export const PNPM_PROJECTS_DIR = `${PNPM_ROOT}/projects`
 /** The pnpm versions pnpm downloads to honour a project's `packageManager` pin. */
-export const PNPM_MANAGERS_DIR = `${CACHES_ROOT}/pnpm-managers`
+export const PNPM_MANAGERS_DIR = `${PNPM_ROOT}/managers`
 
 export function pnpmProjectDir(environmentId: string): string {
   return `${PNPM_PROJECTS_DIR}/${environmentId}`
@@ -67,15 +77,13 @@ export function pnpmProjectDir(environmentId: string): string {
 /** Settings for the remote user's global pnpm config, each written unless the file already sets it. */
 export function pnpmGlobalConfig(environmentId: string): Record<string, string> {
   return {
-    storeDir: `${CACHES_ROOT}/pnpm`,
-    cacheDir: `${CACHES_ROOT}/pnpm-cache`,
+    storeDir: `${PNPM_ROOT}/store`,
+    cacheDir: `${PNPM_ROOT}/cache`,
     virtualStoreDir: `${pnpmProjectDir(environmentId)}/.pnpm`,
     enableGlobalVirtualStore: 'false'
   }
 }
 
-/** The shared directories pnpm writes into, which every environment's user has to be able to write. */
-export const PNPM_SHARED_DIRS = [`${CACHES_ROOT}/pnpm`, `${CACHES_ROOT}/pnpm-cache`, PNPM_PROJECTS_DIR, PNPM_MANAGERS_DIR]
 
 export interface ResolvedCaches {
   /** The shared volume of built-ins, mounted at `CACHES_ROOT`, or null when all are off. */
@@ -116,8 +124,9 @@ export function resolveCaches(config: CachesConfig | undefined): ResolvedCaches 
  */
 export const PNPM_SETUP_SCRIPT = [
   'set -e',
-  'project="$1"; modules="$2"; managers="$3"; shift 3',
-  'mkdir -p "$project"',
+  'root="$1"; project="$2"; modules="$3"; managers="$4"; shift 4',
+  'mkdir -p -m 755 "$root"',
+  'mkdir -p "$project" "$managers"',
   'ln -sfn "$modules" "$project/node_modules"',
   'data="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm"',
   'mkdir -p "$data"',
@@ -135,7 +144,7 @@ export const PNPM_SETUP_SCRIPT = [
 export function pnpmSetupArgs(input: { environmentId: string, checkout: string }): string[] {
   return [
     'sh', '-c', PNPM_SETUP_SCRIPT, 'sh',
-    pnpmProjectDir(input.environmentId), `${input.checkout}/node_modules`, PNPM_MANAGERS_DIR,
+    PNPM_ROOT, pnpmProjectDir(input.environmentId), `${input.checkout}/node_modules`, PNPM_MANAGERS_DIR,
     ...Object.entries(pnpmGlobalConfig(input.environmentId)).flat()
   ]
 }
