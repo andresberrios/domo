@@ -158,9 +158,8 @@ interface Turn {
    * round trips *after* the adapter answered. For that whole window the slot
    * still says "a turn is running" while the adapter is idle, and a `steer`
    * landing in it is sent to an adapter with nothing to steer. claude-agent-acp
-   * answers `promptRequired` and hands it back; codex-acp and OpenCode ignore
-   * the opt-in and start a detached turn — the exact thing this file exists to
-   * stop. So the flag is raised the instant the request answers, and a delivery
+   * answers `promptRequired` and hands it back; codex-acp ignores the opt-in
+   * and starts a detached turn — the exact thing this file exists to stop. So the flag is raised the instant the request answers, and a delivery
    * that sees it queues instead: the drain right behind it is what sends it.
    */
   settled: boolean

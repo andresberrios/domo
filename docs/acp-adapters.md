@@ -35,3 +35,11 @@ or when an adapter acts in an unexpected way. Everything else is in
   environment first** (`adapterEnv()` in `server/lib/acp/adapter-process.ts`).
   Inherited `CLAUDE_*` variables or a host `TMPDIR` in a container have both
   caused this error, and the logs said nothing else.
+- **An adapter can start a turn that nobody prompted.** This happens when the
+  agent wakes on a schedule, when a background task it launched finishes, or
+  when codex-acp is steered while idle (it ignores `idleBehavior`). No
+  `session/prompt` is outstanding, so nothing on the wire says when the turn
+  ends. `AgentRuntime` opens a turn in `this.turn` and ends it after a period
+  of quiet (`adapterTurnWindows`). Do not shorten those windows. Ending a turn
+  early drains the inbox into an adapter that is still working, and the prompt
+  lands in the adapter's own queue, which Domo cannot see.
