@@ -170,7 +170,7 @@ async function upgradeEnvironment() {
     toast.add(result.stranded.length
       ? {
           title: 'Environment upgraded',
-          description: `${result.stranded.join(', ')} shared the old container's network or processes and must be created again: bring the stack up.`,
+          description: `${result.stranded.join(', ')} shared the old container's network or processes and must be created again: \`docker compose up -d --force-recreate\`.`,
           color: 'warning'
         }
       : { title: 'Environment upgraded', description: 'Its sessions resume on the new container.', color: 'success' })

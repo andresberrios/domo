@@ -903,7 +903,9 @@ export interface EnvironmentUpgradeReport {
   /**
    * Its services that shared the old container's network, PID or IPC
    * namespace. They name the old container, fixed at their create, so a start
-   * cannot mend them: bringing the stack up again recreates them.
+   * cannot mend them, and neither can `compose up`, which only starts a
+   * container whose config is unchanged. Only a recreate does
+   * (`--force-recreate`). Named as the environment sees them.
    */
   stranded: string[]
 }
@@ -1158,7 +1160,7 @@ async function namespaceSharers(environmentId: string, ownContainerId: string): 
   const shares = `container:${ownContainerId}`
   return described.stdout.split('\n').map(line => line.trim()).filter(Boolean).flatMap((line) => {
     const [name = '', ...modes] = line.split('\t')
-    return modes.includes(shares) ? [name.replace(/^\//, '')] : []
+    return modes.includes(shares) ? [name.replace(/^\//, '').replace(`${environmentId}-`, '')] : []
   })
 }
 

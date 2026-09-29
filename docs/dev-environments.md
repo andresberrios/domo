@@ -185,8 +185,9 @@ Every environment gets a locked git worktree in
   the run. The proxy joins a network only when a container is created on it, so
   the new container is reconnected to every network labelled `domo.env=<id>`.
   Services created with `network_mode: host`, `--pid host` or `--ipc host`
-  hold `container:<old id>` and cannot be mended: they are named in the report,
-  and bringing the stack up again recreates them.
+  hold `container:<old id>` and cannot be mended: they are named in the report.
+  `docker compose up` does not recreate them (measured: it starts the existing
+  container, which fails on the missing namespace). `--force-recreate` does.
 
 - **Retirement is done when Docker no longer has the resources, not when
   `docker` exited.** A failed `volume rm` looks the same for a volume in use

@@ -2005,7 +2005,7 @@ describe('upgradeEnvironment', () => {
 
     const report = await upgradeEnvironment('env_1')
 
-    expect(report.stranded).toEqual(['env_1-db'])
+    expect(report.stranded).toEqual(['db'])
     expect(report.networks).toEqual(['env_1_default'])
     expect(dockerAt('network', 'connect', 'env_1_default', 'new-sha')).toBeGreaterThan(dockerAt('run', '--detach'))
   })

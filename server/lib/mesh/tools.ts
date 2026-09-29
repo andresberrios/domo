@@ -904,7 +904,8 @@ export const MESH_TOOLS = [
       + 'the project\'s definition, and Domo\'s current settings. Its worktree, branch, installed dependencies and every '
       + 'agent session\'s history carry over, and the sessions resume on their next message; a turn running in it is '
       + 'interrupted. Anything installed in the container outside the checkout and the home is gone, and '
-      + 'postCreateCommand runs again. Services its own Docker stack runs are stopped: bring the stack up again.',
+      + 'postCreateCommand runs again. Services its own Docker stack runs are stopped: bring the stack up again, and '
+      + 'recreate the ones listed as stranded (docker compose up -d --force-recreate).',
     inputSchema: {
       type: 'object',
       properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
@@ -1642,7 +1643,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         adapters: report.runtime.from === report.runtime.to ? 'unchanged' : 'updated',
         home: report.home,
         stackContainersStopped: report.stopped,
-        // Services created into the old container's namespace: only bringing the stack up again recreates them.
+        // Services created into the old container's namespace: a start fails, only a recreate mends them.
         stranded: report.stranded
       }
     }
