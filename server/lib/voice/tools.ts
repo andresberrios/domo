@@ -7,7 +7,7 @@ import { listAdapterCatalog } from '../acp/models'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptDigest, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
 import { describeSeed } from '../dev-env/workspace-seed'
-import { cleanupEnvironment, createEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
+import { beginEnvironment, cleanupEnvironment, startEnvironment, stopEnvironment } from '../dev-environments'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import {
@@ -474,7 +474,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_dev_environment',
       description:
-        'Create a new isolated development environment for a project: a container with its own git worktree of the repository, on a new branch named after the environment, made from the last commit. If a branch of that name already exists it is checked out instead, and the result says so: tell the user. This can take a while; tell the user it is starting rather than waiting silently.',
+        'Create a new isolated development environment for a project: a container with its own git worktree of the repository, on a new branch named after the environment, made from the last commit. If a branch of that name already exists it is checked out instead, and the note saying it is running says so: tell the user. It returns at once while the build takes minutes; tell the user it has started, and you will be told when it is running or has failed.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -488,13 +488,30 @@ export const voiceTools: Record<string, VoiceTool> = {
       const project = await resolveProject(args.project)
       const name = String(args.name ?? '').trim()
       if (!name) throw new Error('A name is required.')
-      const environment = await createEnvironment({ projectId: project.id, name })
+      // A build takes minutes, far past a spoken turn, so the call answers at
+      // once and the outcome is said when it lands, in whichever conversation
+      // is live by then.
+      const { environment, built } = await beginEnvironment({ projectId: project.id, name })
+      const say = async (note: string) => {
+        const { voiceManager } = await import('./runtime')
+        await voiceManager.active()?.injectNote(note)
+      }
+      built.then(
+        ready => say(
+          `Development environment "${ready.name}" is running at ${ready.workspacePath}. ${describeSeed(ready.workspaceSeed)} `
+          + 'Tell the user in a sentence.'
+        ),
+        error => say(
+          `Development environment "${environment.name}" failed to build: `
+          + `${error instanceof Error ? error.message : String(error)}. Tell the user in a sentence.`
+        )
+      ).catch(error => console.warn(`[voice] could not say how environment ${environment.id} went: ${error}`))
       return {
         id: environment.id,
         name: environment.name,
         status: environment.status,
         workspace: environment.workspacePath,
-        checkout: describeSeed(environment.workspaceSeed)
+        note: 'Building; this takes a few minutes. You will be told when it is running or has failed.'
       }
     }
   },

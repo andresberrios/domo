@@ -51,7 +51,7 @@ const acpManager = {
 }
 const devEnvironments = {
   safeEnvironmentName: (name: string) => name,
-  createEnvironment: vi.fn(),
+  beginEnvironment: vi.fn(),
   startEnvironment: vi.fn(),
   stopEnvironment: vi.fn(),
   cleanupEnvironment: vi.fn()
@@ -78,6 +78,9 @@ vi.mock('../../server/lib/acp/manager', () => ({
 }))
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
 vi.mock('../../server/lib/projects', () => projects)
+// The conversation a background result is said in.
+const spoken = vi.hoisted(() => ({ injectNote: vi.fn(async (_text: string) => {}) }))
+vi.mock('../../server/lib/voice/runtime', () => ({ voiceManager: { active: () => spoken } }))
 vi.mock('../../server/lib/settings', () => ({
   getSettings: async () => ({ defaultCwd: '/workspace', autoTitle: true })
 }))
@@ -621,20 +624,40 @@ describe('retire_project', () => {
 })
 
 describe('create_dev_environment', () => {
-  it('creates an environment for the named project', async () => {
+  it('answers at once, and says how the build went when it lands', async () => {
     repo.listProjects.mockResolvedValue([project()])
-    devEnvironments.createEnvironment.mockResolvedValue({
-      ...environment(),
-      workspaceSeed: { paths: ['app/main.css'], total: 1, copied: ['.env'], install: null }
+    let finish!: (value: any) => void
+    devEnvironments.beginEnvironment.mockResolvedValue({
+      environment: { ...environment(), status: 'creating' },
+      built: new Promise((resolve) => { finish = resolve })
     })
 
     const result = await voiceTools.create_dev_environment!.handler({ project: 'domo', name: 'feature-auth' }, ctx)
 
-    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({ projectId: 'prj_1', name: 'feature-auth' })
-    expect(result).toMatchObject({ id: 'env_1', name: 'feature-auth', status: 'running' })
-    // The voice agent is told what stayed on the host and what came along, so it can say so.
-    expect(result).toMatchObject({ checkout: expect.stringContaining('1 uncommitted path stays on the host') })
-    expect(result.checkout).toContain('Copied .env')
+    expect(devEnvironments.beginEnvironment).toHaveBeenCalledWith({ projectId: 'prj_1', name: 'feature-auth' })
+    expect(result).toMatchObject({ id: 'env_1', name: 'feature-auth', status: 'creating' })
+    expect(spoken.injectNote).not.toHaveBeenCalled()
+
+    finish({ ...environment(), workspaceSeed: { paths: ['app/main.css'], total: 1, copied: ['.env'], install: null } })
+    await vi.waitFor(() => expect(spoken.injectNote).toHaveBeenCalledOnce())
+    const note = spoken.injectNote.mock.calls[0]![0]
+    expect(note).toContain('"feature-auth" is running')
+    // What stayed on the host and what came along, so the user hears it.
+    expect(note).toContain('1 uncommitted path stays on the host')
+    expect(note).toContain('Copied .env')
+  })
+
+  it('says why a build failed', async () => {
+    repo.listProjects.mockResolvedValue([project()])
+    spoken.injectNote.mockClear()
+    const failed = Promise.reject(new Error('postCreateCommand failed: exit 1'))
+    failed.catch(() => {})
+    devEnvironments.beginEnvironment.mockResolvedValue({ environment: { ...environment(), status: 'creating' }, built: failed })
+
+    await voiceTools.create_dev_environment!.handler({ project: 'domo', name: 'feature-auth' }, ctx)
+
+    await vi.waitFor(() => expect(spoken.injectNote).toHaveBeenCalledOnce())
+    expect(spoken.injectNote.mock.calls[0]![0]).toContain('failed to build: postCreateCommand failed: exit 1')
   })
 
   it('refuses an empty name', async () => {
@@ -642,7 +665,7 @@ describe('create_dev_environment', () => {
 
     await expect(voiceTools.create_dev_environment!.handler({ project: 'domo', name: ' ' }, ctx))
       .rejects.toThrow('A name is required.')
-    expect(devEnvironments.createEnvironment).not.toHaveBeenCalled()
+    expect(devEnvironments.beginEnvironment).not.toHaveBeenCalled()
   })
 })
 
