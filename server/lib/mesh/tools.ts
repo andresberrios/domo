@@ -3,8 +3,6 @@ import { listAdapterCatalog } from '../acp/models'
 import { assertSessionStartable } from '../acp/startable'
 import { applyAgentSessionPatch } from '../acp/session-settings'
 import { transcriptPage, TRANSCRIPT_DIGEST_KINDS } from '../acp/transcript-digest'
-import { exportBranch, listEnvironmentBranches, resolveIntoBranch } from '../dev-env/git-sync'
-import { importBranchIntoEnvironment, previewImport } from '../branch-import'
 import { describeSeed } from '../dev-env/workspace-seed'
 import { pinnedAdapterVersions } from '../dev-env/runtime-volume'
 import { inspectContainer, type ContainerInspection } from '../dev-env/docker'
@@ -109,6 +107,19 @@ function subscriptionWindow(turns: unknown, indefinitely: unknown): number | nul
 
 function describeWindow(remainingTurns: number | null): string | number {
   return remainingTurns === null ? 'indefinite' : remainingTurns
+}
+
+/**
+ * Where a host session a caller spawns runs when it names no directory: the
+ * caller's own, or, for a caller in an environment, whose directory exists
+ * only in its container, that environment's project checkout.
+ */
+async function hostCwdFor(caller: AgentSession): Promise<string> {
+  if (!caller.devEnvironmentId) return caller.cwd
+  const environment = await getDevEnvironment(caller.devEnvironmentId)
+  const project = environment ? await getProject(environment.projectId) : null
+  if (!project) throw new Error('Pass cwd: an absolute path on the host for the new session.')
+  return project.repoPath
 }
 
 /**
@@ -417,10 +428,17 @@ export const MESH_TOOLS = [
           description: 'Permission mode id from list_models, for that harness (e.g. how freely it may edit and run commands). Omit for the default.'
         },
         devEnvironmentId: {
-          type: 'string',
-          description: 'Run it in this development environment (from list_projects); it must be running. Agents in an environment spawn into the same one by default.'
+          type: ['string', 'null'],
+          description: 'The development environment to run the new agent in, from list_projects; it must be running. '
+            + 'Omit it, or pass null, for a session on the host, even when you are in an environment yourself. '
+            + 'Your own environment\'s id is in $DOMO_DEV_ENVIRONMENT_ID.'
         },
-        cwd: { type: 'string', description: 'Absolute working directory, for an agent on the host. Defaults to yours.' },
+        cwd: {
+          type: 'string',
+          description: 'Absolute working directory on the host, for a host session. Defaults to yours when you are on '
+            + 'the host, and to your environment\'s project checkout when you are in a development environment. '
+            + 'Ignored with devEnvironmentId.'
+        },
         notifyWhenDone: {
           type: 'boolean',
           description: 'Be messaged when it finishes a turn, and when it needs a permission or fails. Default true. Set false for work you will not follow up.'
@@ -531,8 +549,10 @@ export const MESH_TOOLS = [
   {
     name: 'retire_project',
     description:
-      'Retire a project and all its development environments: their containers and copies of the checkout are '
-      + 'destroyed. Transcripts stay readable, but the agents in them can never run again. Irreversible.',
+      'Retire a project and every one of its development environments: their containers and worktrees are '
+      + 'destroyed, and each branch Domo made for one is deleted if fully merged. The records are kept — the project, the environments and the full transcript of '
+      + 'every coding agent that ran in them stay readable — but those agents can never be started again, and '
+      + 'nothing inside a container can be brought back.',
     inputSchema: {
       type: 'object',
       properties: { projectId: { type: 'string', description: 'Project id, from list_projects.' } },
@@ -543,21 +563,17 @@ export const MESH_TOOLS = [
   {
     name: 'create_dev_environment',
     description:
-      'Create an isolated development environment for a project: a container with its own copy of the repository. '
-      + 'Returns at once with status "creating"; building takes minutes. You are messaged when it is running or has '
-      + 'failed, and get_dev_environment shows status and lastError at any time.',
+      'Create a new isolated development environment for a project: a container with its own git worktree of the '
+      + 'repository, on a new branch named after the environment and made from the project\'s last commit. If a '
+      + 'branch of that name already exists it is checked out instead, with its commits, and the message saying it '
+      + 'is running says so: tell the user, since it may not be what they meant. Uncommitted work on the host stays there; gitignored '
+      + '`.env` files are copied. Returns at once with status "creating"; building takes minutes. You are messaged '
+      + 'when it is running or has failed, and get_dev_environment shows status and lastError at any time.',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string', description: 'Project id, from list_projects.' },
-        name: { type: 'string', description: 'Short name, e.g. "feature-auth".' },
-        workingTree: {
-          type: 'string',
-          enum: ['discard', 'carry'],
-          description:
-            'Uncommitted work on the host: "discard" (default) starts from the project\'s last commit; "carry" '
-            + 'copies it over and commits it there.'
-        },
+        name: { type: 'string', description: 'Short name, e.g. "feature-auth". The new branch is named after it.' },
         notifyWhenReady: { type: 'boolean', description: 'Message you when it is running or has failed. Default true.' }
       },
       required: ['projectId', 'name'],
@@ -570,7 +586,7 @@ export const MESH_TOOLS = [
       'Details of a development environment: status (creating, running, stopped, error), lastError, workspace path, '
       + 'the adapter versions it runs against the ones Domo installs today, what `docker` reaches from inside it '
       + '(host: the host\'s daemon, shared; own: a private daemon; none), any Docker resources a cleanup could not '
-      + 'remove, its git branches, and the agents in it.',
+      + 'remove, the branch it was made on, and the agents in it.',
     inputSchema: {
       type: 'object',
       properties: { environmentId },
@@ -594,8 +610,11 @@ export const MESH_TOOLS = [
   {
     name: 'retire_dev_environment',
     description:
-      'Retire a development environment: its container and copy of the checkout are destroyed. Transcripts stay '
-      + 'readable, but its agents can never run again. Irreversible; export branches you need first.',
+      'Retire a development environment: its container and its worktree are destroyed, so uncommitted work in it '
+      + 'is lost. Commits stay in the project\'s repository. The branch Domo made for it is deleted if every commit '
+      + 'on it is also on another branch, and kept otherwise; the result says which. The records are kept — the '
+      + 'environment and the full transcript of every coding agent that ran in it stay readable — but those agents '
+      + 'can never be started again.',
     inputSchema: {
       type: 'object',
       properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
@@ -644,42 +663,6 @@ export const MESH_TOOLS = [
         environmentId
       },
       required: ['port'],
-      additionalProperties: false
-    }
-  },
-  {
-    name: 'export_branch',
-    description:
-      'Copy a branch out of a development environment into the project\'s checkout on the host. Fast-forward only: it '
-      + 'never rewrites or merges anything on the host.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        branch: { type: 'string', description: 'Branch in the environment. Defaults to the one checked out there.' },
-        into: {
-          type: 'string',
-          description: 'Host branch to fast-forward. Defaults to the same name; an empty string fetches without touching a branch.'
-        },
-        devEnvironmentId: environmentId
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: 'import_branch',
-    description:
-      'Copy a branch from the project\'s checkout on the host into a development environment and merge it there, e.g. '
-      + 'to bring the environment up to date. Uncommitted work there is committed first; a conflicting merge is aborted '
-      + 'and the commits are left on a side branch. Every agent in the environment is told. dryRun shows what would happen.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        branch: { type: 'string', description: 'Branch to write in the environment.' },
-        from: { type: 'string', description: 'Ref in the host checkout to send. Defaults to the same name.' },
-        dryRun: { type: 'boolean', description: 'Only report what the import would do.' },
-        devEnvironmentId: environmentId
-      },
-      required: ['branch'],
       additionalProperties: false
     }
   },
@@ -988,7 +971,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'spawn_agent': {
-      const devEnvironmentId = args.devEnvironmentId ?? caller.devEnvironmentId ?? null
+      // Only where it was asked for: an omitted id is the host, wherever the caller runs.
+      const devEnvironmentId: string | null = args.devEnvironmentId || null
       if (devEnvironmentId) {
         const environment = await requireEnvironment(devEnvironmentId)
         if (environment.status !== 'running') {
@@ -1001,7 +985,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const session = await acpManager.create({
         adapter: isAgentAdapter(args.adapter) ? args.adapter : caller.adapter,
         title: args.title,
-        cwd: devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : caller.cwd),
+        cwd: devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : await hostCwdFor(caller)),
         devEnvironmentId,
         voiceSessionId: caller.voiceSessionId ?? null,
         model: args.model ?? null,
@@ -1124,8 +1108,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'create_dev_environment': {
       const { environment, built } = await beginEnvironment({
         projectId: args.projectId,
-        name: String(args.name ?? ''),
-        workingTree: args.workingTree === 'carry' ? 'carry' : 'discard'
+        name: String(args.name ?? '')
       })
       // Building takes minutes, far past any tool call's patience, so the call
       // answers with the row and the result arrives as a note.
@@ -1163,10 +1146,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         listAgentSessions(true)
       ])
       const pinned = pinnedAdapterVersions()
-      const running = environment.status === 'running' && inspection?.running
-      const branches = running
-        ? await listEnvironmentBranches(environment.id).catch(error => ({ error: error instanceof Error ? error.message : String(error) }))
-        : null
       return {
         id: environment.id,
         name: environment.name,
@@ -1190,11 +1169,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         ...environment.leftovers.length
           ? { leftovers: environment.leftovers.map(({ kind, name, error }) => ({ resource: `${kind} ${name}`, error })) }
           : {},
-        branches: branches
-          ? 'error' in branches
-            ? branches
-            : { current: branches.current, all: branches.branches.map(branch => branch.name) }
-          : 'unavailable while the environment is not running',
+        ...environment.branch ? { branch: environment.branch, branchCreated: environment.branchCreated } : {},
         agents: sessions
           .filter(session => session.devEnvironmentId === environment.id && !session.archived)
           .map(session => ({ id: session.id, title: session.title, status: session.status }))
@@ -1226,7 +1201,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         sessionsStoodDown: retirement.sessions.map(session => ({ id: session.id, title: session.title })),
         // Empty unless Docker refused something. Nothing retries it: each names
         // what is in the way, and retry_environment_cleanup is the second ask.
-        leftovers: retirement.leftovers
+        leftovers: retirement.leftovers,
+        branch: retirement.branch
       }
     }
 
@@ -1275,23 +1251,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         url: forwarded.url,
         note: 'The URL works on the human\'s machine, where Domo runs.'
       }
-    }
-
-    case 'export_branch': {
-      const environment = await environmentFor(caller, args.devEnvironmentId, 'devEnvironmentId')
-      const branch = String(args.branch ?? '').trim() || (await listEnvironmentBranches(environment.id)).current
-      if (!branch) {
-        throw new Error('That environment has no branch checked out; name the branch to export.')
-      }
-      return exportBranch({ environmentId: environment.id, branch, into: resolveIntoBranch(branch, args.into) })
-    }
-
-    case 'import_branch': {
-      const environment = await environmentFor(caller, args.devEnvironmentId, 'devEnvironmentId')
-      const branch = String(args.branch ?? '').trim()
-      if (!branch) throw new Error('Name the branch to write in the environment.')
-      if (args.dryRun === true) return previewImport({ environmentId: environment.id, branch, from: args.from })
-      return importBranchIntoEnvironment({ environmentId: environment.id, branch, from: args.from })
     }
 
     case 'schedule_task': {

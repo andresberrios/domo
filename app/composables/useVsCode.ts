@@ -9,7 +9,7 @@ import type { DevEnvironment } from '~~/shared/types'
  * one request.
  */
 export function useVsCodeHref(environment: MaybeRefOrGetter<DevEnvironment | null | undefined>) {
-  const { data: settings } = useFetch('/api/settings', { key: 'settings', lazy: true })
+  const { data: settings } = useSettings()
 
   const ready = computed(() => {
     const value = toValue(environment)

@@ -150,7 +150,8 @@ export function useProjects() {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       retiredAt: row.retired_at ?? null,
-      adapterVersions: row.adapter_versions ?? null
+      adapterVersions: row.adapter_versions ?? null,
+      cleanedAt: row.cleaned_at ?? null
     })).sort((a, b) => a.name.localeCompare(b.name))
   )
   const projects = computed(() =>
@@ -176,11 +177,14 @@ export function useDevEnvironments() {
       remoteUser: row.remote_user ?? null,
       status: row.status,
       lastError: row.last_error ?? null,
+      branch: row.branch ?? null,
+      branchCreated: !!row.branch_created,
       leftovers: row.leftovers ?? [],
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       retiredAt: row.retired_at ?? null,
-      adapterVersions: row.adapter_versions ?? null
+      adapterVersions: row.adapter_versions ?? null,
+      cleanedAt: row.cleaned_at ?? null
     })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   )
   const environments = computed(() =>
@@ -237,27 +241,35 @@ export function useCronJobs() {
   return { jobs, isReady }
 }
 
-export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
-  const { data, isReady } = useLiveQuery(
-    (q) => {
-      const id = toValue(agentSessionId)
-      if (!id) return undefined
-      return q.from({ event: agentEventsCollection(id) })
-    },
-    [() => toValue(agentSessionId)]
-  )
+function toAgentEvent(row: any): AgentEvent {
+  return {
+    id: row.id,
+    agentSessionId: row.agent_session_id,
+    seq: asNumber(row.seq),
+    type: row.type,
+    payload: row.payload,
+    createdAt: row.created_at
+  }
+}
 
-  const events = computed<AgentEvent[]>(() =>
-    (data.value ?? [])
-      .map((row: any) => ({
-        id: row.id,
-        agentSessionId: row.agent_session_id,
-        seq: asNumber(row.seq),
-        type: row.type,
-        payload: row.payload,
-        createdAt: row.created_at
-      }))
-      .sort((a, b) => a.seq - b.seq)
+const bySeq = (a: { seq: number }, b: { seq: number }) => a.seq - b.seq
+
+/**
+ * One session's transcript log, in order.
+ *
+ * Read off the change stream rather than through a live query: a transcript is
+ * the one list here that grows without bound and is rewritten while it is on
+ * screen, so what a delta costs has to be independent of how long the agent has
+ * been working. See `useSyncedLog`.
+ */
+export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
+  const { items: events, isReady } = useSyncedLog<any, AgentEvent>(
+    () => {
+      const id = toValue(agentSessionId)
+      return id ? agentEventsCollection(id) : null
+    },
+    toAgentEvent,
+    bySeq
   )
 
   return { events, isReady }
@@ -299,29 +311,28 @@ export function useAgentInbox(agentSessionId: MaybeRefOrGetter<string | null | u
   return { messages, queued, isReady }
 }
 
-export function useVoiceMessages(voiceSessionId: MaybeRefOrGetter<string | null | undefined>) {
-  const { data, isReady } = useLiveQuery(
-    (q) => {
-      const id = toValue(voiceSessionId)
-      if (!id) return undefined
-      return q.from({ message: voiceMessagesCollection(id) })
-    },
-    [() => toValue(voiceSessionId)]
-  )
+function toVoiceMessage(row: any): VoiceMessage {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    seq: asNumber(row.seq),
+    role: row.role,
+    text: row.text ?? '',
+    toolName: row.tool_name ?? null,
+    meta: row.meta ?? null,
+    createdAt: row.created_at
+  }
+}
 
-  const messages = computed<VoiceMessage[]>(() =>
-    (data.value ?? [])
-      .map((row: any) => ({
-        id: row.id,
-        sessionId: row.session_id,
-        seq: asNumber(row.seq),
-        role: row.role,
-        text: row.text ?? '',
-        toolName: row.tool_name ?? null,
-        meta: row.meta ?? null,
-        createdAt: row.created_at
-      }))
-      .sort((a, b) => a.seq - b.seq)
+/** One conversation's transcript, in order. A growing log, like `useAgentEvents`. */
+export function useVoiceMessages(voiceSessionId: MaybeRefOrGetter<string | null | undefined>) {
+  const { items: messages, isReady } = useSyncedLog<any, VoiceMessage>(
+    () => {
+      const id = toValue(voiceSessionId)
+      return id ? voiceMessagesCollection(id) : null
+    },
+    toVoiceMessage,
+    bySeq
   )
 
   return { messages, isReady }

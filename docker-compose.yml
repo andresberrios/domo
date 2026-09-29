@@ -3,6 +3,13 @@
 #
 #   docker compose up -d
 #
+# A second, fully separate stack — its own containers, volume and database, for
+# running a checkout whose code is not trusted with the real data yet — is the
+# same file under another project name and other host ports:
+#
+#   COMPOSE_PROJECT_NAME=domo-perf DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
+#     docker compose up -d postgres electric
+#
 name: domo
 
 services:
@@ -14,7 +21,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
     ports:
-      - '54321:5432'
+      - '${DOMO_PG_PORT:-54321}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     command:
@@ -37,7 +44,7 @@ services:
       # Nuxt server proxies every shape request. Do not do this in production.
       ELECTRIC_INSECURE: 'true'
     ports:
-      - '30000:3000'
+      - '${DOMO_ELECTRIC_PORT:-30000}:3000'
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,7 +89,7 @@ services:
       # publication from colliding with the `electric` service's.
       ELECTRIC_REPLICATION_STREAM_ID: domo_e2e
     ports:
-      - '30001:3000'
+      - '${DOMO_ELECTRIC_E2E_PORT:-30001}:3000'
     depends_on:
       postgres:
         condition: service_healthy

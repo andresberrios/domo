@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import type { WorkspaceAlias } from '../dev-env/canonical-mounts'
 import { run } from '../dev-env/docker'
 import { keyedSerial } from '../keyed-serial'
 import { dataDir } from '../paths'
@@ -100,7 +101,8 @@ export interface DoodProxyInput {
   containerReference: string
   /** Where the checkout appears inside the environment. */
   workspacePath: string
-  workspaceVolume: string
+  /** The display path and the canonical bind mount it is a symlink to. */
+  workspaceAlias?: WorkspaceAlias
   /** A small image guaranteed to be present; the caller owns the pin. */
   helperImage: string
   onDroppedPorts?(ports: PublishedPort[]): void
@@ -168,7 +170,7 @@ async function startProxy(input: DoodProxyInput): Promise<DoodProxy> {
         ns,
         scope: {
           workspacePath: input.workspacePath,
-          workspaceVolume: input.workspaceVolume,
+          workspaceAlias: input.workspaceAlias,
           labels: doodLabels(input.environmentId),
           dockerSocket: doodSocketPath(input.environmentId)
         },

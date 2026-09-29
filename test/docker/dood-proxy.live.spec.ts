@@ -49,7 +49,7 @@ describe.skipIf(!daemon)('DooD socket proxy', () => {
     await inVolume('mkdir -p /w/app && echo hello > /w/app/file.txt && echo root > /w/root.txt')
 
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
-    await run('docker', ['run', '-d', '--name', ENV_CONTAINER, HELPER, 'sleep', '600'])
+    await run('docker', ['run', '-d', '--name', ENV_CONTAINER, '-v', `${VOLUME}:${WORKSPACE}`, HELPER, 'sleep', '600'])
 
     socketDir = await mkdtemp(join(tmpdir(), 'domo-dood-'))
     const ns = namespaceFor(ENV_ID)
@@ -57,7 +57,7 @@ describe.skipIf(!daemon)('DooD socket proxy', () => {
       socketPath: join(socketDir, 'docker.sock'),
       layers: [scopeLayer({
         ns,
-        scope: { workspacePath: WORKSPACE, workspaceVolume: VOLUME, labels: { 'domo.env': ENV_ID } },
+        scope: { workspacePath: WORKSPACE, labels: { 'domo.env': ENV_ID } },
         engine: createEngineClient('/var/run/docker.sock'),
         ownContainer: ENV_CONTAINER,
         ensureSubpaths: async (_volume, subpaths) => {

@@ -9,9 +9,10 @@ import {
   type DoodScope
 } from '../../server/lib/dood/rewrite'
 
+const WORKSPACE_VOLUME = 'domo-dev-env_abc-workspace'
 const scope: DoodScope = {
   workspacePath: '/workspaces/domo',
-  workspaceVolume: 'domo-dev-env_abc-workspace',
+  mounts: [{ destination: '/workspaces/domo', kind: 'volume', volume: WORKSPACE_VOLUME, readOnly: false }],
   labels: { 'domo.env': 'env_abc' }
 }
 
@@ -42,16 +43,16 @@ describe('rewriteContainerCreate — mounts', () => {
       scope
     )
     expect(mountsOf(result)).toEqual([
-      { Type: 'volume', Source: scope.workspaceVolume, Target: '/app', ReadOnly: false, VolumeOptions: { Subpath: 'app' } }
+      { Type: 'volume', Source: WORKSPACE_VOLUME, Target: '/app', ReadOnly: false, VolumeOptions: { Subpath: 'app' } }
     ])
     expect((result.spec.HostConfig as { Binds: string[] }).Binds).toEqual([])
-    expect(result.requiredSubpaths).toEqual([{ volume: scope.workspaceVolume, subpath: 'app' }])
+    expect(result.requiredSubpaths).toEqual([{ volume: WORKSPACE_VOLUME, subpath: 'app' }])
   })
 
   it('mounts the whole volume with no subpath for the workspace root', () => {
     const result = rewriteContainerCreate({ HostConfig: { Binds: ['/workspaces/domo:/src:ro'] } }, scope)
     expect(mountsOf(result)).toEqual([
-      { Type: 'volume', Source: scope.workspaceVolume, Target: '/src', ReadOnly: true }
+      { Type: 'volume', Source: WORKSPACE_VOLUME, Target: '/src', ReadOnly: true }
     ])
     // The root always exists, so nothing has to be created for it.
     expect(result.requiredSubpaths).toEqual([])
@@ -79,9 +80,9 @@ describe('rewriteContainerCreate — mounts', () => {
       scope
     )
     expect(mountsOf(result)).toEqual([
-      { Type: 'volume', Source: scope.workspaceVolume, Target: '/srv', ReadOnly: true, VolumeOptions: { Subpath: 'server' } }
+      { Type: 'volume', Source: WORKSPACE_VOLUME, Target: '/srv', ReadOnly: true, VolumeOptions: { Subpath: 'server' } }
     ])
-    expect(result.requiredSubpaths).toEqual([{ volume: scope.workspaceVolume, subpath: 'server' }])
+    expect(result.requiredSubpaths).toEqual([{ volume: WORKSPACE_VOLUME, subpath: 'server' }])
   })
 
   it('reports each required subpath once', () => {
@@ -89,7 +90,7 @@ describe('rewriteContainerCreate — mounts', () => {
       { HostConfig: { Binds: ['/workspaces/domo/app:/a', '/workspaces/domo/app:/b'] } },
       scope
     )
-    expect(result.requiredSubpaths).toEqual([{ volume: scope.workspaceVolume, subpath: 'app' }])
+    expect(result.requiredSubpaths).toEqual([{ volume: WORKSPACE_VOLUME, subpath: 'app' }])
   })
 })
 
@@ -278,7 +279,7 @@ describe('rewriteContainerCreate — names', () => {
     expect(hostConfig.Mounts).toEqual([
       { Type: 'volume', Source: 'env_abc-cache', Target: '/c' },
       { Type: 'volume', Target: '/anon' },
-      { Type: 'volume', Source: scope.workspaceVolume, Target: '/app', ReadOnly: false, VolumeOptions: { Subpath: 'app' } }
+      { Type: 'volume', Source: WORKSPACE_VOLUME, Target: '/app', ReadOnly: false, VolumeOptions: { Subpath: 'app' } }
     ])
   })
 

@@ -33,7 +33,10 @@ function environment(id: string, projectId: string, name: string, status: DevEnv
     updatedAt: '2026-01-02T00:00:00.000Z',
     retiredAt: null,
     leftovers: [],
-    adapterVersions: null
+    adapterVersions: null,
+    branch: null,
+    branchCreated: false,
+    cleanedAt: null
   }
 }
 

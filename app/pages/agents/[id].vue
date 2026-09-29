@@ -15,13 +15,14 @@ const { permissions, pending } = usePermissions(agentId)
 const { queued } = useAgentInbox(agentId)
 const condensed = useCondensedTranscript()
 
-const { data: fetched, refresh } = await useFetch<AgentSession>(
-  () => `/api/agents/${agentId.value}`,
-  { lazy: true }
-)
-
-/** Live-synced row wins; the fetch is only there for the first paint. */
-const session = computed<AgentSession | null>(() => synced.value ?? fetched.value ?? null)
+/**
+ * The session is read the same way everything else on this page is: off the
+ * shape. There used to be a `GET /api/agents/:id` beside it, to put a title on
+ * screen a moment sooner, but it fetched a row the browser was already being
+ * sent — and every write below had to remember to re-fetch it, which is a
+ * second way for the page to be right and a second way for it to be stale.
+ */
+const session = computed<AgentSession | null>(() => synced.value)
 
 /**
  * The environment *including* a retired one, whatever the sidebar switch says.
@@ -59,7 +60,6 @@ async function start() {
   starting.value = true
   try {
     await $fetch(`/api/agents/${agentId.value}/start`, { method: 'POST' })
-    await refresh()
   } catch (error: any) {
     toast.add({
       title: 'Could not start the adapter',
@@ -75,7 +75,6 @@ async function saveTitle() {
   if (!titleDraft.value.trim()) return
   await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { title: titleDraft.value.trim() } })
   renaming.value = false
-  await refresh()
 }
 
 async function archive() {
@@ -91,7 +90,6 @@ async function archive() {
 async function unarchive() {
   await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { archived: false } })
   toast.add({ title: 'Agent unarchived', color: 'neutral' })
-  await refresh()
 }
 
 async function purge() {
@@ -196,7 +194,7 @@ const menuItems = computed(() => [
       <div class="flex h-full min-h-0 flex-col">
         <ServiceBanner />
         <AgentUnstartableBanner v-if="session && blocked" :session="session" :reason="blocked" />
-        <AgentErrorBanner v-else-if="session" :session="session" @retried="refresh" />
+        <AgentErrorBanner v-else-if="session" :session="session" />
 
         <div v-if="!events.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
           <div class="max-w-sm text-center">
@@ -213,22 +211,20 @@ const menuItems = computed(() => [
         </div>
 
         <!--
-          The transcript must own its scroll box. Without `overflow-y-auto` here it
-          spills out of its flex slot, the dashboard body scrolls instead, and the
-          pinned permission cards and composer paint on top of the messages.
-          The outer `relative` box (not the scroller) anchors UChatMessages'
-          absolutely positioned jump-to-bottom button so it doesn't scroll away.
+          The transcript owns its scroll box, because the virtualiser inside it
+          measures rows against that element. `min-h-0` is what keeps it inside
+          this flex column: without it the box grows to its content, the
+          dashboard body scrolls instead, and the pinned permission cards and
+          the composer paint on top of the messages.
         -->
-        <div v-else-if="session" class="relative flex min-h-0 flex-1 flex-col">
-          <div class="min-h-0 flex-1 overflow-y-auto">
-            <AgentTranscript
-              :session="session"
-              :events="events"
-              :permissions="permissions"
-              :condensed="condensed"
-            />
-          </div>
-        </div>
+        <AgentTranscript
+          v-else-if="session"
+          class="min-h-0 flex-1"
+          :session="session"
+          :events="events"
+          :permissions="permissions"
+          :condensed="condensed"
+        />
 
         <div v-if="pending.length && !blocked" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
           <PermissionCard

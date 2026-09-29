@@ -105,7 +105,7 @@ alter table dev_environments add column if not exists config_path text;
 alter table dev_environments add column if not exists remote_user text;
 update dev_environments set remote_user = 'node'
 where remote_user is null and container_id is null and workspace_path = '/workspace/repo';
--- Retired: the container, the workspace volume and the image are gone and the
+-- Retired: the container, the worktree and the image are gone and the
 -- row is not. It is what makes every session that ran here unstartable, and it
 -- is also the only record left of where those sessions ran.
 alter table dev_environments add column if not exists retired_at text;
@@ -113,6 +113,14 @@ alter table dev_environments add column if not exists retired_at text;
 -- state; each entry names what is blocking it, and the row is kept even once
 -- nothing else references it so that a later cleanup can still find them.
 alter table dev_environments add column if not exists leftovers jsonb not null default '[]'::jsonb;
+-- When a sweep confirmed a retired environment owes nothing. From then on the
+-- row claims nothing, so a path or a name derived from its id is never removed
+-- again, whatever later appears there. Written once.
+alter table dev_environments add column if not exists cleaned_at text;
+-- The branch the worktree was created on, and whether Domo made it. Only a
+-- branch Domo made is deleted at retirement, and only once fully merged.
+alter table dev_environments add column if not exists branch text;
+alter table dev_environments add column if not exists branch_created boolean not null default false;
 do $$ begin
   if exists (select 1 from information_schema.columns
               where table_name = 'dev_environments' and column_name = 'deleted_at') then

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { DevEnvironment, Project, WorkspaceSeedReport } from '~~/shared/types'
+import { safeEnvironmentName } from '~~/shared/dev-environments'
+import type { DevEnvironment, Project, RepositoryState, WorkspaceSeedReport } from '~~/shared/types'
 
 /**
  * A new dev environment for one project. Shared by the sidebar's per-project
@@ -13,45 +14,76 @@ const emit = defineEmits<{ created: [environment: DevEnvironment] }>()
 const toast = useToast()
 const name = ref('')
 const submitting = ref(false)
-// Off by default: an environment seeded from a dirty host tree used to carry that
-// work back out inside the agent's own branch, invisibly. On, the same changes are
-// carried but committed, so they are still visible in the export.
-const carry = ref(false)
+const repository = ref<RepositoryState | null>(null)
+const committing = ref(false)
 
-watch(open, (isOpen) => {
-  if (isOpen) {
-    name.value = ''
-    carry.value = false
+/** A worktree is cut from a commit, so a project without one is offered its first before anything else. */
+async function readRepository() {
+  repository.value = null
+  if (!props.project) return
+  repository.value = await $fetch<RepositoryState>(`/api/projects/${props.project.id}/repository`).catch(() => null)
+}
+
+watch([open, () => props.project?.id], ([isOpen]) => {
+  if (!isOpen) return
+  name.value = ''
+  readRepository()
+}, { immediate: true })
+
+const needsFirstCommit = computed(() => !!repository.value && !repository.value.hasCommits)
+
+/** The branch the name becomes, and the branch of that name if there already is one. */
+const branchName = computed(() => safeEnvironmentName(name.value.trim()))
+const existingBranch = computed(() =>
+  repository.value?.branches.find(branch => branch.name === branchName.value) ?? null)
+
+async function createFirstCommit() {
+  if (!props.project) return
+  committing.value = true
+  try {
+    await $fetch(`/api/projects/${props.project.id}/initial-commit`, { method: 'POST' })
+    await readRepository()
+  } catch (error: any) {
+    toast.add({
+      title: 'Could not create the first commit',
+      description: error?.data?.statusMessage ?? error?.message,
+      color: 'error'
+    })
+  } finally {
+    committing.value = false
   }
-})
+}
 
-/** What the copy did with the host's uncommitted work, when there was any. */
+/** How the worktree started, for the toast. */
 function seedDescription(seed: WorkspaceSeedReport | undefined): string {
-  const copied = 'The repository was copied into its container.'
-  if (!seed || seed.total === 0) return copied
-  const paths = `${seed.total} uncommitted ${seed.total === 1 ? 'path' : 'paths'}`
-  return seed.mode === 'carry'
-    ? `${copied} ${paths} were carried over and committed there.`
-    : `${copied} ${paths} were left behind; it starts from the last commit.`
+  if (!seed) return 'It starts from your last commit.'
+  const start = seed.branch && !seed.branch.created
+    ? `It is on your existing branch ${seed.branch.name}, checked out with its commits. Retiring it keeps that branch.`
+    : `It is on a new branch${seed.branch ? `, ${seed.branch.name},` : ''} made from your last commit.`
+  const parts = [seed.total
+    ? `${start} ${seed.total} uncommitted ${seed.total === 1 ? 'path stays' : 'paths stay'} on your machine.`
+    : start]
+  if (seed.copied.length) parts.push(`Copied ${seed.copied.join(', ')}.`)
+  if (seed.install?.error) parts.push(`\`${seed.install.command}\` failed: ${seed.install.error}`)
+  return parts.join(' ')
 }
 
 async function submit() {
   const value = name.value.trim()
-  if (!value || !props.project) return
+  if (!value || !props.project || needsFirstCommit.value || existingBranch.value?.checkedOut) return
   submitting.value = true
   try {
     const environment = await $fetch<DevEnvironment & { workspaceSeed?: WorkspaceSeedReport }>(
       '/api/dev-environments',
-      {
-        method: 'POST',
-        body: { projectId: props.project.id, name: value, workingTree: carry.value ? 'carry' : 'discard' }
-      }
+      { method: 'POST', body: { projectId: props.project.id, name: value } }
     )
     open.value = false
     toast.add({
       title: `${value} is ready`,
       description: seedDescription(environment.workspaceSeed),
-      color: 'success'
+      color: environment.workspaceSeed?.install?.error || environment.workspaceSeed?.branch?.created === false
+        ? 'warning'
+        : 'success'
     })
     emit('created', environment)
   } catch (error: any) {
@@ -71,11 +103,29 @@ async function submit() {
     v-model:open="open"
     title="New development environment"
     :description="project
-      ? `A container of its own for ${project.name}, with a private copy of the checkout. Creating it copies the repository, which takes a moment.`
-      : 'A container of its own, with a private copy of the checkout.'"
+      ? `A container of its own for ${project.name}, with its own git worktree and branch, starting from your last commit.`
+      : 'A container of its own, with its own git worktree and branch of the project.'"
   >
     <template #body>
-      <UFormField label="Name" hint="Also names the branch you will work on">
+      <UAlert
+        v-if="needsFirstCommit"
+        class="mb-4"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-git-commit-horizontal"
+        title="This project has no commits yet"
+        :description="repository?.repository
+          ? `An environment starts from a commit. Domo can commit everything in the project${repository.filesToCommit !== null ? ` (${repository.filesToCommit} ${repository.filesToCommit === 1 ? 'file' : 'files'}, respecting .gitignore)` : ''} as the first one.`
+          : 'An environment starts from a commit. Domo can make this folder a git repository and commit everything in it as the first one.'"
+        :actions="[{ label: 'Create first commit', color: 'warning', loading: committing, onClick: createFirstCommit }]"
+      />
+      <UFormField
+        label="Name"
+        hint="Also names its branch"
+        :help="branchName && !existingBranch
+          ? `Creates the branch ${branchName} from your last commit. Retiring the environment deletes it once every commit on it is also on another branch.`
+          : undefined"
+      >
         <UInput
           v-model="name"
           placeholder="feature-auth"
@@ -84,12 +134,23 @@ async function submit() {
           @keyup.enter="submit"
         />
       </UFormField>
-
-      <USwitch
-        v-model="carry"
+      <UAlert
+        v-if="existingBranch?.checkedOut"
         class="mt-4"
-        label="Carry uncommitted changes from the host"
-        description="Off, it starts from your last commit. On, whatever is uncommitted in your checkout is copied over and committed there, so it stays visible if you merge the branch back."
+        color="error"
+        variant="subtle"
+        icon="i-lucide-git-branch"
+        :title="`The branch ${existingBranch.name} is checked out elsewhere`"
+        description="Git allows a branch in one worktree at a time, and your own checkout may be the one using it. Pick another name."
+      />
+      <UAlert
+        v-else-if="existingBranch"
+        class="mt-4"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-git-branch"
+        :title="`The branch ${existingBranch.name} already exists`"
+        description="The environment will check it out, with the commits it already has, instead of making a new branch. Retiring the environment keeps it. Pick another name for a fresh branch."
       />
     </template>
 
@@ -100,7 +161,7 @@ async function submit() {
           label="Create environment"
           icon="i-lucide-monitor"
           :loading="submitting"
-          :disabled="!name.trim() || !project"
+          :disabled="!name.trim() || !project || needsFirstCommit || !!existingBranch?.checkedOut"
           @click="submit"
         />
       </div>

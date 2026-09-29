@@ -1,5 +1,7 @@
 import { posix } from 'node:path'
 
+import { resolveWorkspaceAlias, type WorkspaceAlias } from '../dev-env/canonical-mounts'
+
 /**
  * Where a bind source an environment names really is, on the shared daemon.
  *
@@ -154,6 +156,15 @@ export function containingMount(path: string, table: EnvironmentMount[]): Enviro
 export interface ResolveOptions {
   /** This environment's proxy socket on the daemon's host. */
   dockerSocket?: string
+  /**
+   * The environment's own checkout, when its `workspacePath` is a symlink to
+   * a canonical bind-mount destination rather than the mount itself (a
+   * worktree environment — see `dev-env/canonical-mounts.ts`). `docker
+   * inspect`'s mount table only ever names the real, canonical destination,
+   * never the symlink, so a bind source an agent gives via the legacy path
+   * has to be resolved through this before it is matched against the table.
+   */
+  workspaceAlias?: WorkspaceAlias
 }
 
 function refusal(path: string, table: EnvironmentMount[], workspace: string | null, reason?: string): string {
@@ -161,19 +172,26 @@ function refusal(path: string, table: EnvironmentMount[], workspace: string | nu
   const hint = sibling && sibling.destination === `${path}-host`
     ? ` The host's own copy is mounted at ${path}-host — mount that instead.`
     : ''
-  const where = workspace ? `the checkout (${workspace}), a named volume,` : 'a named volume'
+  const where = workspace ? `the checkout (${workspace}),` : 'a named volume'
   return `${path} ${reason ?? 'exists only inside this dev environment'}, so a container on the shared Docker daemon `
     + `cannot mount it. Put what it needs in ${where} or one of the home directories Domo mounts from the host.${hint}`
 }
 
-/** Where one bind source really is. `path` is normalised here; `workspace` only improves the refusal's wording. */
+/**
+ * Where one bind source really is. `path` is normalised and, when the
+ * environment's checkout is aliased (a worktree bind-mounted at a canonical
+ * path and symlinked from the legacy one), resolved through that alias
+ * before anything is matched against the mount table — `workspace` only
+ * improves the refusal's wording.
+ */
 export function resolveBindSource(
   rawPath: string,
   table: EnvironmentMount[],
   options: ResolveOptions = {},
   workspace: string | null = null
 ): BindResolution {
-  const path = normalizeSource(rawPath)
+  const normalized = normalizeSource(rawPath)
+  const path = options.workspaceAlias ? resolveWorkspaceAlias(normalized, options.workspaceAlias) : normalized
   if (DOCKER_SOCKET_PATHS.includes(path)) {
     if (!options.dockerSocket) return { kind: 'refuse', message: `${path} is not available in this dev environment.` }
     return { kind: 'socket', source: options.dockerSocket }

@@ -159,67 +159,17 @@ describe('projects', () => {
     expect(response.status).toBe(400)
   })
 
-  // Two honest states and nothing else: a typo must not fall through to the
-  // default, because the default is the one that discards the host's work.
-  it('refuses a workingTree it does not understand', async () => {
-    const response = await fetch('/api/dev-environments', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ projectId: 'prj_nope', name: 'api', workingTree: 'keep' })
-    })
-
-    expect(response.status).toBe(400)
-    expect((await response.json()).statusMessage).toMatch(/discard.*carry/)
+  // The retry for a cleanup Docker refused. Nothing retries on a timer, so
+  // this route is the whole of the second attempt on the HTTP surface.
+  it('says the environment is not there when a cleanup is asked for one that is not', async () => {
+    const response = await fetch('/api/dev-environments/env_nope/cleanup', { method: 'POST' })
+    expect(response.status).toBe(500)
+    expect((await response.json()).statusMessage).toMatch(/Development environment not found/)
   })
 
-  // The export itself needs a container; these are the routes and their errors.
-  // `test/server/git-sync.spec.ts` drives the real git both ways.
-  it('will not export a branch without naming one', async () => {
-    const response = await fetch('/api/dev-environments/env_nope/export', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ into: 'main' })
-    })
-
-    expect(response.status).toBe(400)
-  })
-
-  it.each(['import', 'import-plan'])('will not %s a branch without naming the one to write', async (route) => {
-    const response = await fetch(`/api/dev-environments/env_nope/${route}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ from: 'main' })
-    })
-
-    expect(response.status).toBe(400)
-  })
-
-  it('says which part is missing when the environment is not there', async () => {
-    for (const request of [
-      fetch('/api/dev-environments/env_nope/branches'),
-      fetch('/api/dev-environments/env_nope/export', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ branch: 'main' })
-      }),
-      fetch('/api/dev-environments/env_nope/import', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ branch: 'main' })
-      }),
-      fetch('/api/dev-environments/env_nope/import-plan', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ branch: 'main' })
-      }),
-      // The retry for a cleanup Docker refused. Nothing retries on a timer, so
-      // this route is the whole of the second attempt on the HTTP surface.
-      fetch('/api/dev-environments/env_nope/cleanup', { method: 'POST' })
-    ]) {
-      const response = await request
-      expect(response.status).toBe(500)
-      expect((await response.json()).statusMessage).toMatch(/Development environment not found/)
-    }
+  it('reports a project\'s repository state, and refuses a first commit for an unknown project', async () => {
+    expect((await fetch('/api/projects/prj_nope/repository')).status).toBe(404)
+    expect((await fetch('/api/projects/prj_nope/initial-commit', { method: 'POST' })).status).toBe(404)
   })
 })
 

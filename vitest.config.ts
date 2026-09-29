@@ -155,6 +155,24 @@ export default defineConfig(async () => ({
         }
       },
 
+      // 7. Development environments made and retired the way a person does it:
+      //    the real app in a real Chromium, against a real Docker daemon and
+      //    real git. Needs Postgres, the `electric-e2e` service, Docker and a
+      //    Chromium. Opt in: `pnpm test:environments`.
+      {
+        resolve: { alias },
+        test: {
+          name: 'environments-live',
+          environment: 'node',
+          include: ['test/environments/**/*.live.spec.ts'],
+          // One server, one browser, and tests that build on each other.
+          fileParallelism: false,
+          globalSetup: [resolve(rootDir, 'test/environments/global-setup.ts')],
+          hookTimeout: 900_000,
+          testTimeout: 600_000
+        }
+      },
+
       // 6. Real coding agents, in a real environment, on real accounts: the one
       //    boundary every other layer stops at. Needs Postgres *and* Docker *and*
       //    a Claude and a Codex login, so it can never be part of the default

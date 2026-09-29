@@ -39,6 +39,9 @@ const environment = ref<DevEnvironment>({
   retiredAt: null,
   leftovers: [],
   adapterVersions: null,
+  branch: null,
+  branchCreated: false,
+  cleanedAt: null,
 })
 
 const agent: AgentSession = {

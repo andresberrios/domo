@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import type { AppSettings } from '~~/shared/types'
 
 const toast = useToast()
-const { data: settings, refresh } = await useFetch<AppSettings>('/api/settings')
+const { data: settings, refresh } = await useSettingsForm()
 const vscodeSshHost = ref('')
 const homeMountsText = ref('')
 const browserTools = ref(true)

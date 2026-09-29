@@ -87,14 +87,17 @@ describe.skipIf(!daemon)('an environment\'s own view of the shared daemon', () =
       await run('docker', ['run', '--rm', '-v', `${env.volume}:/w`, IMAGE, 'sh', '-c',
         `mkdir -p /w/site && echo 'site of ${env.id}' > /w/site/index.html`])
       // A stand-in for the environment's own container: the label that marks it
-      // as one, and nothing that would put it in its own environment's lists.
-      await run('docker', ['run', '-d', '--name', env.container, '--label', 'domo.dood=true', IMAGE, 'sleep', '900'])
+      // as one, its checkout, and nothing that would put it in its own
+      // environment's lists.
+      await run('docker', [
+        'run', '-d', '--name', env.container, '--label', 'domo.dood=true', '-v', `${env.volume}:${WORKSPACE}`,
+        IMAGE, 'sleep', '900'
+      ])
       env.shortId = (await run('docker', ['inspect', '--format', '{{.Config.Hostname}}', env.container])).stdout
       env.socket = (await ensureDoodProxy({
         environmentId: env.id,
         containerReference: env.container,
         workspacePath: WORKSPACE,
-        workspaceVolume: env.volume,
         helperImage: IMAGE
       })).socketPath
     }
