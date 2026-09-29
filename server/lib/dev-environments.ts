@@ -1160,7 +1160,9 @@ async function namespaceSharers(environmentId: string, ownContainerId: string): 
   const shares = `container:${ownContainerId}`
   return described.stdout.split('\n').map(line => line.trim()).filter(Boolean).flatMap((line) => {
     const [name = '', ...modes] = line.split('\t')
-    return modes.includes(shares) ? [name.replace(/^\//, '').replace(`${environmentId}-`, '')] : []
+    if (!modes.includes(shares)) return []
+    const shown = name.replace(/^\//, '')
+    return [shown.startsWith(`${environmentId}-`) ? shown.slice(environmentId.length + 1) : shown]
   })
 }
 
