@@ -10,6 +10,8 @@ import { canonicalGitdirFileContents } from '../../server/lib/dev-env/canonical-
 import {
   createHostWorktree,
   createInitialCommit,
+  deleteMergedBranch,
+  listBranches,
   hostCommonGitDir,
   removeHostWorktree,
   repositoryState,
@@ -89,7 +91,8 @@ describe('createHostWorktree', () => {
   })
 
   it('works on a branch named for the environment, so its commits outlive the worktree', async () => {
-    const { worktreePath } = await create(undefined, 'env_1', 'feature-auth')
+    const { worktreePath, branch } = await create(undefined, 'env_1', 'feature-auth')
+    expect(branch).toEqual({ name: 'feature-auth', created: true })
     expect(await git(worktreePath, 'symbolic-ref', '--short', 'HEAD')).toBe('feature-auth')
     expect(await git(repo, 'rev-parse', 'feature-auth')).toBe(await git(repo, 'rev-parse', 'HEAD'))
 
@@ -101,7 +104,8 @@ describe('createHostWorktree', () => {
   it('continues on a branch that already exists, and refuses one checked out elsewhere', async () => {
     await git(repo, 'branch', 'existing')
     await git(repo, '-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '--quiet', '--allow-empty', '-m', 'after the branch')
-    const { worktreePath } = await create(undefined, 'env_1', 'existing')
+    const { worktreePath, branch } = await create(undefined, 'env_1', 'existing')
+    expect(branch).toEqual({ name: 'existing', created: false })
     expect(await git(worktreePath, 'log', '-1', '--format=%s')).toBe('initial')
 
     await expect(create(undefined, 'env_2', 'existing')).rejects.toThrow(/Could not check out the branch existing/)
@@ -191,7 +195,9 @@ describe('createHostWorktree', () => {
 
 describe('repositoryState and createInitialCommit', () => {
   it('reports a checkout with commits as ready, and never commits on top of its history', async () => {
-    expect(await repositoryState(repo)).toEqual({ repository: true, hasCommits: true, filesToCommit: null })
+    expect(await repositoryState(repo)).toEqual({
+      repository: true, hasCommits: true, filesToCommit: null, branches: [{ name: 'main', checkedOut: true }]
+    })
     await expect(createInitialCommit(repo)).rejects.toThrow(/already has commits/)
     expect(await git(repo, 'rev-list', '--count', 'HEAD')).toBe('1')
   })
@@ -204,7 +210,7 @@ describe('repositoryState and createInitialCommit', () => {
     await writeFile(join(fresh, 'index.ts'), 'export {}\n')
     await writeFile(join(fresh, 'node_modules', 'pkg', 'index.js'), '\n')
 
-    expect(await repositoryState(fresh)).toEqual({ repository: true, hasCommits: false, filesToCommit: 2 })
+    expect(await repositoryState(fresh)).toEqual({ repository: true, hasCommits: false, filesToCommit: 2, branches: [] })
     await createInitialCommit(fresh)
 
     expect(await repositoryState(fresh)).toMatchObject({ hasCommits: true })
@@ -218,9 +224,55 @@ describe('repositoryState and createInitialCommit', () => {
     await mkdir(plain)
     await writeFile(join(plain, 'README.md'), '# hi\n')
 
-    expect(await repositoryState(plain)).toEqual({ repository: false, hasCommits: false, filesToCommit: null })
+    expect(await repositoryState(plain)).toEqual({ repository: false, hasCommits: false, filesToCommit: null, branches: [] })
     await createInitialCommit(plain)
     expect(await git(plain, 'log', '--format=%s')).toBe('Initial commit')
+  })
+})
+
+describe('deleteMergedBranch', () => {
+  const commit = (cwd: string, message: string) =>
+    git(cwd, '-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '--quiet', '--allow-empty', '-m', message)
+
+  it('deletes a branch with nothing of its own, once its worktree is gone', async () => {
+    await create(undefined, 'env_1', 'untouched')
+    // Checked out, so kept, and said where.
+    expect(await deleteMergedBranch(repo, 'untouched')).toMatchObject({ deleted: false, reason: expect.stringContaining('checked out in') })
+
+    await removeHostWorktree({ repoPath: repo, environmentId: 'env_1' })
+    // Also on `aaa`, which sorts first: the reason names the checkout's own branch.
+    await git(repo, 'branch', 'aaa')
+    expect(await deleteMergedBranch(repo, 'untouched')).toEqual({
+      name: 'untouched', deleted: true, reason: 'Every commit on it is also on main.'
+    })
+    expect(await git(repo, 'branch', '--list', 'untouched')).toBe('')
+    // And a branch that is already gone is nothing to report.
+    expect(await deleteMergedBranch(repo, 'untouched')).toBeNull()
+  })
+
+  it('keeps a branch with commits no other branch has, until they are merged', async () => {
+    const { worktreePath } = await create(undefined, 'env_1', 'work')
+    await commit(worktreePath, 'one')
+    await commit(worktreePath, 'two')
+    await removeHostWorktree({ repoPath: repo, environmentId: 'env_1' })
+
+    expect(await deleteMergedBranch(repo, 'work')).toEqual({
+      name: 'work', deleted: false, reason: '2 commits are on it and on no other branch.'
+    })
+    expect(await git(repo, 'log', '-1', '--format=%s', 'work')).toBe('two')
+
+    await git(repo, 'merge', '--quiet', '--ff-only', 'work')
+    expect(await deleteMergedBranch(repo, 'work')).toMatchObject({ deleted: true })
+  })
+
+  it('lists local branches and whether a worktree has each checked out', async () => {
+    await git(repo, 'branch', 'free')
+    await create(undefined, 'env_1', 'taken')
+    expect((await listBranches(repo)).sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { name: 'free', checkedOut: false },
+      { name: 'main', checkedOut: true },
+      { name: 'taken', checkedOut: true }
+    ])
   })
 })
 

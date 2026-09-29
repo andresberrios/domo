@@ -119,6 +119,8 @@ export interface CreateHostWorktreeInput {
 }
 
 export interface CreateHostWorktreeResult {
+  /** The branch it works on, and whether this made it (false: it already existed and was checked out). */
+  branch: { name: string, created: boolean }
   worktreePath: string
   gitdirFilePath: string
   /** The project's real `.git`, which the container mounts at `canonicalBaseGitPath`. */
@@ -162,7 +164,7 @@ export async function createHostWorktree(input: CreateHostWorktreeInput): Promis
     await mkdir(dirname(join(worktreePath, path)), { recursive: true })
     await copyFile(join(input.repoPath, path), join(worktreePath, path))
   }
-  return { worktreePath, gitdirFilePath, commonGitDir, seed: { paths: dirtyPaths, copied } }
+  return { branch: { name: branch, created: !existing }, worktreePath, gitdirFilePath, commonGitDir, seed: { paths: dirtyPaths, copied } }
 }
 
 /**
@@ -234,6 +236,70 @@ async function domoRegistration(repoPath: string, path: string): Promise<'domo' 
   return 'none'
 }
 
+/** What happened to an environment's branch when it was retired. */
+export interface BranchOutcome {
+  name: string
+  deleted: boolean
+  /** Why, in a sentence: which branch already has its commits, or what is only on it. */
+  reason: string
+}
+
+/**
+ * Delete a branch an environment made, once nothing is lost by it: every
+ * commit on it is also on another branch, local or remote, and no worktree has
+ * it checked out. Otherwise it is kept and the reason said. Null when there is
+ * no such branch any more.
+ *
+ * Only ever the branch recorded at creation, and only one Domo created: an
+ * agent may have switched the worktree to another, and a branch that existed
+ * before the environment is the developer's. A squash-merged branch has
+ * commits no other branch has, so it is kept, which is the safe mistake.
+ */
+export async function deleteMergedBranch(repoPath: string, branch: string): Promise<BranchOutcome | null> {
+  const ref = `refs/heads/${branch}`
+  const tip = (await run('git', ['-C', repoPath, 'rev-parse', '--verify', '--quiet', ref], { allowFailure: true })
+    .catch(() => ({ stdout: '' }))).stdout.trim()
+  if (!tip) return null
+  const listed = await run('git', ['-C', repoPath, 'worktree', 'list', '--porcelain'])
+  for (const block of listed.stdout.split('\n\n')) {
+    const lines = block.split('\n')
+    if (!lines.includes(`branch ${ref}`)) continue
+    const path = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length)
+    return { name: branch, deleted: false, reason: `It is checked out in ${path}.` }
+  }
+  const containing = (await run('git', [
+    '-C', repoPath, 'for-each-ref', '--contains', tip, '--format=%(refname:short)', 'refs/heads', 'refs/remotes'
+  ])).stdout.split('\n').filter(name => name && name !== branch)
+  if (!containing.length) {
+    const unique = (await run('git', [
+      '-C', repoPath, 'rev-list', '--count', tip, '--not', `--exclude=${branch}`, '--branches', '--remotes'
+    ])).stdout.trim()
+    return {
+      name: branch,
+      deleted: false,
+      reason: `${unique} ${unique === '1' ? 'commit is' : 'commits are'} on it and on no other branch.`
+    }
+  }
+  // Only if it still points where it did: never a branch that moved meanwhile.
+  await run('git', ['-C', repoPath, 'update-ref', '-d', ref, tip])
+  // Named by the branch the developer's checkout is on, when that is one of them.
+  const current = (await run('git', ['-C', repoPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { allowFailure: true })
+    .catch(() => ({ stdout: '' }))).stdout.trim()
+  return { name: branch, deleted: true, reason: `Every commit on it is also on ${containing.includes(current) ? current : containing[0]}.` }
+}
+
+/** Local branches, and whether a worktree (the developer's checkout included) has each checked out. */
+export async function listBranches(repoPath: string): Promise<Array<{ name: string, checkedOut: boolean }>> {
+  const names = (await run('git', ['-C', repoPath, 'for-each-ref', '--format=%(refname:short)', 'refs/heads'], { allowFailure: true })
+    .catch(() => ({ stdout: '' }))).stdout.split('\n').filter(Boolean)
+  const listed = await run('git', ['-C', repoPath, 'worktree', 'list', '--porcelain'], { allowFailure: true })
+    .catch(() => ({ stdout: '' }))
+  const checkedOut = new Set(listed.stdout.split('\n')
+    .filter(line => line.startsWith('branch refs/heads/'))
+    .map(line => line.slice('branch refs/heads/'.length)))
+  return names.map(name => ({ name, checkedOut: checkedOut.has(name) }))
+}
+
 /** Whether a worktree is on disk for this environment — the observation the leftover sweep decides on. */
 export function hostWorktreeExists(repoPath: string, environmentId: string): Promise<boolean> {
   return exists(hostWorktreePath(repoPath, environmentId))
@@ -248,10 +314,12 @@ export async function listHostWorktrees(repoPath: string): Promise<string[]> {
 /** Whether the checkout can have a worktree cut from it, and what a first commit would hold. */
 export async function repositoryState(repoPath: string): Promise<RepositoryState> {
   const isRepository = await stat(join(repoPath, '.git')).then(() => true, () => false)
-  if (!isRepository) return { repository: false, hasCommits: false, filesToCommit: null }
-  if (await headExists(repoPath)) return { repository: true, hasCommits: true, filesToCommit: null }
+  if (!isRepository) return { repository: false, hasCommits: false, filesToCommit: null, branches: [] }
+  if (await headExists(repoPath)) {
+    return { repository: true, hasCommits: true, filesToCommit: null, branches: await listBranches(repoPath) }
+  }
   const { stdout } = await run('git', ['-C', repoPath, 'ls-files', '--others', '--cached', '--exclude-standard', '-z'], { trimOutput: false })
-  return { repository: true, hasCommits: false, filesToCommit: stdout.split('\0').filter(Boolean).length }
+  return { repository: true, hasCommits: false, filesToCommit: stdout.split('\0').filter(Boolean).length, branches: [] }
 }
 
 /**

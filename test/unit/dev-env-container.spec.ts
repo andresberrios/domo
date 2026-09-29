@@ -243,7 +243,7 @@ describe('containerRunArgs', () => {
     expect(mounts).toContain('type=volume,source=domo-dev-caches,target=/opt/domo-caches')
     expect(mounts).toContain('type=volume,source=domo-dev-cache-gradle,target=/home/vscode/.gradle/caches')
     expect(mounts.join(' ')).not.toContain('node_modules')
-    expect(values(args, '--env')).toContain('pnpm_config_store_dir=/opt/domo-caches/pnpm')
+    expect(values(args, '--env')).toContain('npm_config_cache=/opt/domo-caches/npm')
   })
 
   it('lets the project\'s own containerEnv override where a cache points', () => {

@@ -92,8 +92,9 @@ of a project, created beside your checkout in `.domo-worktrees/` and mounted
 into the container. Several agents can share one environment.
 
 - The worktree is on a branch named after the environment, made at your last
-  commit, or checked out if you already have that branch; uncommitted changes
-  stay on your machine. A project with no commits yet is offered its first one when you
+  commit. If you already have a branch of that name, the dialog warns you and
+  the environment checks it out instead. Uncommitted changes stay on your
+  machine. A project with no commits yet is offered its first one when you
   create an environment. Gitignored `.env` files are copied in.
   `node_modules`, `.venv` and other dependency folders never are: without a
   `postCreateCommand`, Domo installs by lockfile inside the environment
@@ -104,10 +105,15 @@ into the container. Several agents can share one environment.
   branches.
 - Package caches (pnpm, npm, yarn, pip, uv, Go) are shared by every
   environment. pnpm keeps each package once for all of them and links it into
-  `node_modules`.
+  `node_modules` (its global virtual store). A tool that resolves packages it
+  did not declare can then miss them: hoist exactly those with
+  `publicHoistPattern` in your `pnpm-workspace.yaml`, or set
+  `enableGlobalVirtualStore: false` there to install a full copy instead.
 - **Retiring** an environment destroys its container, worktree and every
   container, network, volume and image tag it made on the Docker daemon. Its
   commits stay in your repository; commit anything you want to keep first.
+  The branch Domo made for it is deleted if every commit on it is also on
+  another branch, and kept otherwise. A branch it reused is never deleted.
   The agent transcripts and the environment's record are kept.
 - **Stopping** an environment stops the containers it started.
 - **Open in VS Code** attaches VS Code to the container. You need the Dev

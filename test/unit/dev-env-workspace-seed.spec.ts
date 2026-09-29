@@ -66,14 +66,24 @@ describe('seedReport', () => {
 
 describe('describeSeed', () => {
   it('says it starts from the last commit, and says what stayed behind so an absent change is never silent', () => {
-    expect(describeSeed(seedReport({ paths: [] }))).toBe('It starts from the project\'s last commit.')
+    expect(describeSeed(seedReport({ paths: [], branch: { name: 'api', created: true } }))).toBe(
+      'It is on a new branch, api, made from the project\'s last commit. '
+      + 'Retiring the environment deletes that branch if every commit on it is also on another branch.'
+    )
     expect(describeSeed(seedReport({ paths: ['a.ts', 'b.ts'] }))).toContain('2 uncommitted paths stay on the host')
   })
 
   it('names what was copied and how dependencies were installed, and a failed install loudly', () => {
     expect(describeSeed(seedReport({ paths: [], copied: ['.env'], install: { command: 'pnpm install --frozen-lockfile', error: null } })))
-      .toBe('It starts from the project\'s last commit. Copied .env from the host. Installed dependencies with `pnpm install --frozen-lockfile`.')
+      .toMatch(/ Copied \.env from the host\. Installed dependencies with `pnpm install --frozen-lockfile`\.$/)
     expect(describeSeed(seedReport({ paths: [], install: { command: 'npm ci', error: 'the image has no npm' } })))
       .toContain('`npm ci` failed, so dependencies may be missing: the image has no npm')
+  })
+
+  it('warns that an existing branch was reused rather than made, and that retiring keeps it', () => {
+    const text = describeSeed(seedReport({ paths: [], branch: { name: 'main-ish', created: false } }))
+    expect(text).toContain('It is on the branch main-ish, which already existed, so it was checked out')
+    expect(text).toContain('Retiring the environment keeps that branch.')
+    expect(text).not.toContain('new branch')
   })
 })

@@ -54,12 +54,13 @@ const devEnvironments = vi.hoisted(() => ({
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
   // What a cleanup with a working daemon reports: nothing left over.
-  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [] })),
+  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [], branches: [] as any[] })),
   cleanupEnvironment: vi.fn(async (): Promise<{
     removed: Array<{ kind: string, name: string, environmentId: string }>
     leftovers: Array<{ kind: string, name: string, environmentId: string, error: string }>
     unattributed: string[]
-  }> => ({ removed: [], leftovers: [], unattributed: [] }))
+    branches: any[]
+  }> => ({ removed: [], leftovers: [], unattributed: [], branches: [] }))
 }))
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
@@ -283,14 +284,15 @@ describe('the agent-mesh MCP endpoint', () => {
     expect(acp.deliver).toHaveBeenLastCalledWith(target.id, expect.objectContaining({ delivery: 'queue' }))
   })
 
-  it('spawns a peer into the caller\'s own environment and adapter', async () => {
+  it('spawns a peer into an environment only when asked, and on the host otherwise', async () => {
     const environment = await runningEnvironment('own')
     const caller = await session('caller', { adapter: 'codex', devEnvironmentId: environment.id })
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
       title: 'docs',
       prompt: 'write the README',
-      // Ignored: an agent in an environment always spawns its peer there.
+      devEnvironmentId: environment.id,
+      // Ignored: a session in an environment runs in its workspace.
       cwd: '/elsewhere'
     })).body)
 
@@ -305,6 +307,17 @@ describe('the agent-mesh MCP endpoint', () => {
     await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
       { type: 'mesh_spawned', payload: { agentId: body.id, title: 'docs' } }
     ])
+
+    // Omitted, null or empty: the host, in the environment's project checkout
+    // unless a directory is named, however the caller runs.
+    for (const devEnvironmentId of [undefined, null, '']) {
+      acp.create.mockClear()
+      await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'host', prompt: 'p', devEnvironmentId })
+      expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/tmp/domo-mesh', devEnvironmentId: null }))
+    }
+    acp.create.mockClear()
+    await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'host', prompt: 'p', cwd: '/tmp/elsewhere' })
+    expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/tmp/elsewhere', devEnvironmentId: null }))
   })
 
   it('lets a host agent spawn a peer into a running development environment', async () => {
@@ -672,7 +685,7 @@ describe('projects and dev environments', () => {
     // `leftovers` is what Docker would not remove: empty here and normally, and
     // reported rather than swallowed, so a peer agent is not told a retirement
     // was clean when gigabytes are still on the disk.
-    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [], leftovers: [] })
+    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [], leftovers: [], branch: null })
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
@@ -715,7 +728,8 @@ describe('projects and dev environments', () => {
         environmentId: environment.id,
         error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
       }],
-      unattributed: []
+      unattributed: [],
+      branches: []
     })
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'retry_environment_cleanup', {

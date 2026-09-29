@@ -47,7 +47,8 @@ async function retire() {
 const cascade = computed(() => {
   const environments = props.environmentCount === 1 ? '1 development environment' : `${props.environmentCount} development environments`
   const agents = props.agentCount === 1 ? '1 coding agent session' : `${props.agentCount} coding agent sessions`
-  return `Destroys ${environments}: each container, its copy of the checkout and any Docker-in-Docker volume. `
+  return `Destroys ${environments}: each container, its worktree and any Docker-in-Docker volume. `
+    + 'Commits stay in your repository; each branch Domo made for one is deleted if every commit on it is also on another branch. '
     + `The records are kept — this project, those environments and ${agents} inside them stay readable — but those `
     + `agents can never be started again. The checkout at ${props.project.repoPath} is left alone; anything only `
     + 'inside an environment is lost.'

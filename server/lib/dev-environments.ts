@@ -1,6 +1,7 @@
 import { access, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { safeEnvironmentName } from '../../shared/dev-environments'
 import type { DevEnvironment, Project, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
@@ -22,7 +23,7 @@ import {
   run,
   type ContainerInspection
 } from './dev-env/docker'
-import { cacheMountTargets, ensureCacheVolumes, resolveCaches } from './dev-env/caches'
+import { cacheMountTargets, ensureCacheVolumes, pnpmGlobalConfigArgs, resolveCaches } from './dev-env/caches'
 import { defaultInstallCommand, presentLockfiles } from './dev-env/dependencies'
 import { createHostWorktree, hostWorktreePath } from './dev-env/host-worktree'
 import { alignUserArgs, planAlignment } from './dev-env/user-alignment'
@@ -75,9 +76,7 @@ function dockerReadyTimeout(): number {
  */
 const lifecycle = keyedSerial()
 
-export function safeEnvironmentName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase()
-}
+export { safeEnvironmentName }
 
 function containerReference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
@@ -286,6 +285,8 @@ async function create(
       branch: safeName,
       copyIgnored: resolved.config.copyIgnored
     })
+    // At once, so a creation that fails after this still knows which branch it made.
+    await updateDevEnvironment(id, { branch: worktree.branch.name, branchCreated: worktree.branch.created })
     const canonicalPath = canonicalWorkspacePath(id)
     const baseGitPath = canonicalBaseGitPath(project.id)
     const caches = resolveCaches(resolved.config.caches)
@@ -394,6 +395,13 @@ async function create(
         'sh', '-c', SSH_HOME_SCRIPT, 'sh', `${home}/.ssh`, `${home}/.ssh-host`, ...overlay.ssh.links
       ], { input: overlay.ssh.config })
     }
+    // Before any install: pnpm finds the shared store through its global config.
+    if (caches.pnpm) {
+      await run('docker', [
+        ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home } }),
+        ...pnpmGlobalConfigArgs()
+      ])
+    }
     // After the preflight, because it runs the CLI out of the runtime volume.
     await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
     // The worktree has no `node_modules` or `.venv`: dependencies are installed
@@ -415,7 +423,7 @@ async function create(
     await refreshEnvironmentPorts(id)
     return {
       ...((await getDevEnvironment(id)) ?? environment),
-      workspaceSeed: seedReport({ ...worktree.seed, install })
+      workspaceSeed: seedReport({ ...worktree.seed, install, branch: worktree.branch })
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -659,7 +667,7 @@ export function retireEnvironment(id: string): Promise<CleanupReport> {
 
 async function retire(id: string): Promise<CleanupReport> {
   const environment = await getDevEnvironment(id)
-  if (!environment) return { removed: [], leftovers: [], unattributed: [] }
+  if (!environment) return { removed: [], leftovers: [], unattributed: [], branches: [] }
   stopEnvironmentForwarders(id)
   // The proxy first: nothing may create anything in the environment's name
   // while it is being taken apart. Its relay and its redirect go with it, and
@@ -715,7 +723,8 @@ async function settle(id: string, report: CleanupReport): Promise<CleanupReport>
   return {
     removed: report.removed.filter(leftover => leftover.environmentId === id),
     leftovers: report.leftovers.filter(leftover => leftover.environmentId === id),
-    unattributed: report.unattributed
+    unattributed: report.unattributed,
+    branches: report.branches.filter(branch => branch.environmentId === id)
   }
 }
 

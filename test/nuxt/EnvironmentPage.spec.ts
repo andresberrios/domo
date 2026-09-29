@@ -38,6 +38,8 @@ const environment = ref<DevEnvironment>({
   updatedAt: '2026-01-02T00:00:00.000Z',
   retiredAt: null,
   leftovers: [],
+  branch: null,
+  branchCreated: false,
   cleanedAt: null,
 })
 

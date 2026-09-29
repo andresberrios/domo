@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { branchOnRetirement, describeBranchOutcome } from '~~/shared/dev-environments'
 import type { DevEnvironment } from '~~/shared/types'
 
 /**
@@ -57,7 +58,10 @@ async function retire() {
   confirmingRetire.value = false
   busy.value = true
   try {
-    await $fetch(`/api/dev-environments/${props.environment.id}`, { method: 'DELETE' })
+    const result = await $fetch(`/api/dev-environments/${props.environment.id}`, { method: 'DELETE' })
+    toast.add(result.leftovers.length
+      ? { title: 'Environment retired, but not everything could be removed', description: result.leftovers[0]!.error, color: 'warning' }
+      : { title: `${props.environment.name} retired`, description: describeBranchOutcome(result.branch) || 'Its records stay readable.', color: 'neutral' })
   } catch (error: any) {
     report(error, 'Could not retire the environment')
   } finally {
@@ -152,7 +156,7 @@ const items = computed(() => retired.value
     <ConfirmModal
       v-model:open="confirmingRetire"
       :title="`Retire ${environment.name}?`"
-      description="Destroys the container, its copy of the checkout and any Docker-in-Docker volume. The records are kept — this environment and the full transcript of every coding agent that ran in it stay readable — but those agents can never be started again, and work that has not been pushed or exported is lost."
+      :description="`Destroys the container, its worktree and any Docker-in-Docker volume, so uncommitted work in it is lost. ${branchOnRetirement(environment)} The records are kept — this environment and the full transcript of every coding agent that ran in it stay readable — but those agents can never be started again.`"
       confirm-label="Retire environment"
       :loading="busy"
       @confirm="retire"

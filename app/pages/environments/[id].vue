@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { branchOnRetirement, describeBranchOutcome } from '~~/shared/dev-environments'
+
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
@@ -98,7 +100,7 @@ async function retireEnvironment() {
           description: result.leftovers[0]!.error,
           color: 'warning'
         }
-      : { title: 'Environment retired', description: 'Its records stay readable.', color: 'neutral' })
+      : { title: 'Environment retired', description: describeBranchOutcome(result.branch) || 'Its records stay readable.', color: 'neutral' })
     // The row is still here — it is the record — but the actions are not, so
     // the project is the more useful place to land.
     await router.push(project.value ? `/projects/${project.value.id}` : '/')
@@ -197,7 +199,7 @@ async function retryCleanup() {
           variant="subtle"
           icon="i-lucide-archive"
           title="Retired"
-          :description="`The container, its copy of the checkout and its image were destroyed ${relativeTime(environment.retiredAt)}. This page is the record of it: the sessions that ran here are still readable and can no longer be started. Nothing about the environment itself can be restored.`"
+          :description="`The container, its worktree and its image were destroyed ${relativeTime(environment.retiredAt)}. This page is the record of it: the sessions that ran here are still readable and can no longer be started. Nothing about the environment itself can be restored.`"
         />
 
         <UAlert
@@ -232,6 +234,17 @@ async function retryCleanup() {
             <div class="flex gap-4 px-4 py-2.5">
               <dt class="w-32 shrink-0 text-muted">Workspace</dt>
               <dd class="min-w-0 flex-1 truncate font-mono text-xs">{{ environment.workspacePath }}</dd>
+            </div>
+            <div v-if="environment.branch" class="flex gap-4 px-4 py-2.5">
+              <dt class="w-32 shrink-0 text-muted">Branch</dt>
+              <dd class="min-w-0 flex-1">
+                <span class="font-mono text-xs">{{ environment.branch }}</span>
+                <span class="ms-2 text-xs text-muted">
+                  {{ environment.branchCreated
+                    ? 'Made for this environment. Retiring it deletes the branch once every commit on it is also on another branch.'
+                    : 'Your existing branch, reused. Retiring the environment keeps it.' }}
+                </span>
+              </dd>
             </div>
             <div class="flex gap-4 px-4 py-2.5">
               <dt class="w-32 shrink-0 text-muted">Container</dt>
@@ -313,7 +326,7 @@ async function retryCleanup() {
         v-if="environment"
         v-model:open="confirmingRetire"
         :title="`Retire ${environment.name}?`"
-        :description="`Destroys the container, its copy of the checkout and any Docker-in-Docker volume. ${agents.length === 1 ? 'The 1 coding agent session' : `All ${agents.length} coding agent sessions`} inside it stay readable and can never be started again, and work that has not been pushed or exported is lost.`"
+        :description="`Destroys the container, its worktree and any Docker-in-Docker volume, so uncommitted work in it is lost. ${branchOnRetirement(environment)} ${agents.length === 1 ? 'The 1 coding agent session' : `All ${agents.length} coding agent sessions`} inside it stay readable and can never be started again.`"
         confirm-label="Retire environment"
         :loading="busy"
         @confirm="retireEnvironment"

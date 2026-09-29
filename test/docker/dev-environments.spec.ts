@@ -42,11 +42,12 @@ const dood = {
 // A real directory inside the scratch repo, because creation stats it for the owner's uid.
 const fakeWorktree = (repoPath: string, environmentId: string) => join(repoPath, '.wt', environmentId)
 const hostWorktree = {
-  createHostWorktree: vi.fn(async (input: { repoPath: string, environmentId: string, copyIgnored?: string[] }) => {
+  createHostWorktree: vi.fn(async (input: { repoPath: string, environmentId: string, branch: string, copyIgnored?: string[] }) => {
     const worktreePath = fakeWorktree(input.repoPath, input.environmentId)
     await mkdir(worktreePath, { recursive: true })
     hostWorktree.onDisk.add(worktreePath)
     return {
+      branch: { name: input.branch, created: true },
       worktreePath,
       gitdirFilePath: `${worktreePath}.container-gitdir`,
       commonGitDir: `${input.repoPath}/.git`,
@@ -59,6 +60,8 @@ const hostWorktree = {
   hostWorktreeExists: vi.fn(async (repoPath: string, environmentId: string) => hostWorktree.onDisk.has(fakeWorktree(repoPath, environmentId))),
   listHostWorktrees: vi.fn(async (repoPath: string) => [...hostWorktree.onDisk]
     .filter(path => path.startsWith(`${repoPath}/.wt/`)).map(path => path.slice(`${repoPath}/.wt/`.length))),
+  deleteMergedBranch: vi.fn(async (_repoPath: string, branch: string) =>
+    ({ name: branch, deleted: true, reason: 'Every commit on it is also on main.' })),
   removeHostWorktree: vi.fn(async (input: { repoPath: string, environmentId: string }) => {
     hostWorktree.onDisk.delete(fakeWorktree(input.repoPath, input.environmentId))
     return [] as string[]
@@ -117,6 +120,7 @@ vi.mock('../../server/lib/dev-env/host-worktree', () => hostWorktree)
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
 
 const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
+const { PNPM_GLOBAL_CONFIG_SCRIPT } = await import('../../server/lib/dev-env/caches')
 const {
   cleanupEnvironment,
   containerExecArgs,
@@ -157,6 +161,8 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     updatedAt: '2026-01-01T00:00:00.000Z',
     retiredAt: null,
     leftovers: [],
+    branch: null,
+    branchCreated: false,
     cleanedAt: null,
     ...overrides
   }
@@ -618,6 +624,33 @@ describe('start, stop and remove', () => {
 
       expect(report.leftovers).toEqual([expect.objectContaining({ kind: 'worktree', error: expect.stringContaining('left alone') })])
       expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+    })
+
+    it('deletes the branch Domo made once the worktree is gone, and reports what it did', async () => {
+      const made = { ...retired, branch: 'api-work', branchCreated: true }
+      repo.getDevEnvironment.mockResolvedValue(environment({ branch: 'api-work', branchCreated: true }))
+      repo.listDevEnvironments.mockResolvedValue([made])
+      daemon({})
+      inspectContainer.mockResolvedValue(null)
+
+      const report = await retireEnvironment('env_1')
+
+      expect(hostWorktree.deleteMergedBranch).toHaveBeenCalledWith(API.repoPath, 'api-work')
+      const removed = hostWorktree.removeHostWorktree.mock.invocationCallOrder[0]!
+      expect(removed).toBeLessThan(hostWorktree.deleteMergedBranch.mock.invocationCallOrder[0]!)
+      expect(report.branches).toEqual([{ environmentId: 'env_1', name: 'api-work', deleted: true, reason: 'Every commit on it is also on main.' }])
+    })
+
+    it('never touches a branch it reused, nor one while the worktree is still there', async () => {
+      repo.listDevEnvironments.mockResolvedValue([{ ...retired, branch: 'theirs', branchCreated: false }])
+      daemon({})
+      expect((await reconcileEnvironmentResources()).branches).toEqual([])
+
+      repo.listDevEnvironments.mockResolvedValue([{ ...retired, branch: 'api-work', branchCreated: true }])
+      hostWorktree.onDisk.add(worktree)
+      hostWorktree.removeHostWorktree.mockResolvedValueOnce([worktree])
+      expect((await reconcileEnvironmentResources()).branches).toEqual([])
+      expect(hostWorktree.deleteMergedBranch).not.toHaveBeenCalled()
     })
 
     it('is never touched for a live environment, and one no row knows is reported, not removed', async () => {
@@ -1244,13 +1277,13 @@ describe('createEnvironment', () => {
       hostWorktree.createHostWorktree.mockImplementationOnce(async (input) => {
         const worktreePath = fakeWorktree(input.repoPath, input.environmentId)
         await mkdir(worktreePath, { recursive: true })
-        return { worktreePath, gitdirFilePath: `${worktreePath}.container-gitdir`, commonGitDir: `${input.repoPath}/.git`, seed: { paths: ['a.ts'], copied: ['dev.pem'] } }
+        return { branch: { name: input.branch, created: true }, worktreePath, gitdirFilePath: `${worktreePath}.container-gitdir`, commonGitDir: `${input.repoPath}/.git`, seed: { paths: ['a.ts'], copied: ['dev.pem'] } }
       })
 
       const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
       expect(hostWorktree.createHostWorktree).toHaveBeenCalledWith(expect.objectContaining({ copyIgnored: ['*.pem'] }))
-      expect(created.workspaceSeed).toEqual({ paths: ['a.ts'], total: 1, copied: ['dev.pem'], install: null })
+      expect(created.workspaceSeed).toEqual({ paths: ['a.ts'], total: 1, copied: ['dev.pem'], install: null, branch: { name: 'api-work', created: true } })
     })
 
     it('fails creation with nothing run when the worktree cannot be cut, and claims the worktree anyway', async () => {
@@ -1273,7 +1306,7 @@ describe('createEnvironment', () => {
         const worktreePath = fakeWorktree(input.repoPath, input.environmentId)
         await mkdir(worktreePath, { recursive: true })
         await writeFile(join(worktreePath, name), '', 'utf8')
-        return { worktreePath, gitdirFilePath: `${worktreePath}.container-gitdir`, commonGitDir: `${input.repoPath}/.git`, seed: { paths: [], copied: [] } }
+        return { branch: { name: input.branch, created: true }, worktreePath, gitdirFilePath: `${worktreePath}.container-gitdir`, commonGitDir: `${input.repoPath}/.git`, seed: { paths: [], copied: [] } }
       })
     }
     const noPostCreate = () => writeFile(join(repoPath, '.domo.json'), JSON.stringify({
@@ -1322,7 +1355,13 @@ describe('createEnvironment', () => {
 
     const runCall = dockerCalls().find(args => args[0] === 'run')!
     expect(runCall).toContain('type=volume,source=domo-dev-caches,target=/opt/domo-caches')
-    expect(runCall).toContain('pnpm_config_store_dir=/opt/domo-caches/pnpm')
+    expect(runCall).toContain('npm_config_cache=/opt/domo-caches/npm')
+    // pnpm by its global config instead, as the remote user: a variable would
+    // outrank the project's own pnpm-workspace.yaml.
+    expect(runCall.some(arg => arg.startsWith('pnpm_config_'))).toBe(false)
+    const pnpmConfig = dockerCalls().find(args => args.includes(PNPM_GLOBAL_CONFIG_SCRIPT))!
+    expect(pnpmConfig.slice(0, 3)).toEqual(['exec', '--user', 'vscode'])
+    expect(pnpmConfig.slice(-4)).toEqual(['storeDir', '/opt/domo-caches/pnpm', 'enableGlobalVirtualStore', 'true'])
     expect(dockerCalls()).toContainEqual(['volume', 'create', '--label', 'domo.cache=true', 'domo-dev-caches'])
     expect(dockerCalls()).toContainEqual(['exec', '--user', 'root', 'container-sha', 'chmod', '1777', '/opt/domo-caches'])
   })

@@ -292,8 +292,15 @@ export interface DevEnvironment {
   lastError: string | null
   createdAt: string
   updatedAt: string
+  /** The branch the worktree was created on. An agent may have switched it since. */
+  branch: string | null
   /**
-   * When the container, its workspace volume and its image were destroyed.
+   * Whether Domo made `branch` (false: it existed and was checked out). Only
+   * a branch Domo made is deleted at retirement, and only when fully merged.
+   */
+  branchCreated: boolean
+  /**
+   * When the container, its worktree and its image were destroyed.
    *
    * The row outlives them, which is the whole point: it is the only record of
    * where the sessions that ran here ran, and it is what makes every one of
@@ -342,6 +349,8 @@ export interface WorkspaceSeedReport {
   copied: string[]
   /** The dependency install Domo ran because the project defines no `postCreateCommand`, if any. */
   install: { command: string, error: string | null } | null
+  /** The branch the worktree is on; `created: false` means an existing branch was checked out. */
+  branch: { name: string, created: boolean } | null
 }
 
 /** Whether a project's checkout can have a worktree cut from it yet. */
@@ -350,6 +359,8 @@ export interface RepositoryState {
   hasCommits: boolean
   /** Files the first commit would contain, respecting `.gitignore`; null when there is no repository to ask. */
   filesToCommit: number | null
+  /** Local branches, so a name that would reuse one can be said before creating. */
+  branches: Array<{ name: string, checkedOut: boolean }>
 }
 
 export interface DevEnvironmentPort {

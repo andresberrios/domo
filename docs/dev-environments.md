@@ -114,12 +114,16 @@ Every environment gets a locked git worktree in
 - **Dependency folders never cross from the host**: they hold the host's
   platform's binaries. Installs run in the container against the shared
   `domo-dev-caches` volume (`caches.ts`). Tools find it by environment
-  variable. pnpm reads `pnpm_config_store_dir` and ignores `store-dir` in an
-  `.npmrc` and `npm_config_store_dir`. The store and the checkout are on
-  different mounts, and a hardlink cannot cross one, so without pnpm's global
-  virtual store every install copies. With it, hoisting has to be public
-  (`shamefully_hoist`): a package in the store cannot reach the project's
-  hidden hoist directory, and Nuxt fails to resolve module dependencies.
+  variable, except pnpm, which is set in the remote user's global
+  `config.yaml`: a variable would outrank the project's `pnpm-workspace.yaml`.
+  The store and the checkout are on different mounts, and a hardlink cannot
+  cross one, so without pnpm's global virtual store every install copies. It
+  is on by default. A package in the store cannot reach the project's hidden
+  hoist directory, so a project whose tools resolve undeclared packages hoists
+  exactly those (`publicHoistPattern`, as Domo does for Nuxt's module
+  dependencies) or turns the store off (`enableGlobalVirtualStore: false`:
+  `@nuxtjs/i18n` resolves from `@nuxt/kit`'s real path). Domo never hoists for
+  a project.
 - **On a Linux daemon the checkout keeps the host's uids**, so creation
   renumbers the remote user to the worktree's owner (`user-alignment.ts`).
   Docker Desktop maps ownership and needs nothing.
@@ -145,6 +149,11 @@ Every environment gets a locked git worktree in
   left (`cleaned_at`). A path or name reusing its id after that belongs to
   somebody else. It is never marked while Docker cannot be asked, anything is
   owed, or its project is missing.
+- **Each environment's worktree is on a branch named after it**
+  (`dev_environments.branch`). The sweep deletes that branch once the
+  worktree is gone, only if Domo made it (`branch_created`) and every commit
+  on it is on another branch; otherwise it is kept and the retirement says
+  why. Never any other branch the worktree was switched to.
 - **A claimed worktree path is force-removed only if git lists it locked with
   Domo's reason.** Anything else there is reported, not removed.
 - **`retired_at` is lifecycle, and `status` is health.** A retired row that

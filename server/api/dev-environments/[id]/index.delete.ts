@@ -17,6 +17,7 @@ export default defineEventHandler(async (event) => {
     cronJobsDisabled: retirement.cronJobsDisabled,
     subscriptionsRemoved: retirement.subscriptionsRemoved,
     permissionsCancelled: retirement.permissionsCancelled,
-    leftovers: retirement.leftovers
+    leftovers: retirement.leftovers,
+    branch: retirement.branch
   }
 })

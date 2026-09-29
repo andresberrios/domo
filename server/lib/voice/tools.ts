@@ -456,7 +456,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'retire_project',
       description:
-        'Retire a project and all of its development environments: their containers and copies of the checkout are destroyed for good. The records are kept — every coding agent transcript stays readable — but those agents can never run again. Always confirm with the user before calling it.',
+        'Retire a project and all of its development environments: their containers and worktrees are destroyed for good, and each branch Domo made for one is deleted if fully merged. The records are kept — every coding agent transcript stays readable — but those agents can never run again. Always confirm with the user before calling it.',
       parameters: {
         type: Type.OBJECT,
         properties: { project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' } },
@@ -474,7 +474,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_dev_environment',
       description:
-        'Create a new isolated development environment for a project: a container with its own git worktree of the repository, starting from the last commit. This can take a while; tell the user it is starting rather than waiting silently.',
+        'Create a new isolated development environment for a project: a container with its own git worktree of the repository, on a new branch named after the environment, made from the last commit. If a branch of that name already exists it is checked out instead, and the result says so: tell the user. This can take a while; tell the user it is starting rather than waiting silently.',
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -528,7 +528,7 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'retire_dev_environment',
       description:
-        'Retire a development environment: its container and its copy of the checkout are destroyed for good. The records are kept — the transcript of every coding agent that ran in it stays readable — but those agents can never run again. Always confirm with the user before calling it.',
+        'Retire a development environment: its container and its worktree are destroyed for good, so uncommitted work in it is lost. Commits stay in the repository, and the branch Domo made for it is deleted if every commit on it is also on another branch; the result says which. The records are kept — the transcript of every coding agent that ran in it stays readable — but those agents can never run again. Always confirm with the user before calling it.',
       parameters: {
         type: Type.OBJECT,
         properties: { environment: { type: Type.STRING, description: 'Environment id or name, from list_dev_environments.' } },
@@ -545,7 +545,8 @@ export const voiceTools: Record<string, VoiceTool> = {
         // Empty unless Docker refused something. Worth telling the user about:
         // it is disk space nothing will ever use, and nothing retries it until
         // somebody removes what it names and calls retry_environment_cleanup.
-        leftovers: retirement.leftovers
+        leftovers: retirement.leftovers,
+        branch: retirement.branch
       }
     }
   },

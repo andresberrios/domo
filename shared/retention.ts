@@ -41,7 +41,7 @@ export function sessionStartability(
     if (environment.retiredAt) {
       return {
         startable: false,
-        reason: `The development environment "${environment.name}" was retired: its container and its copy of the checkout no longer exist.`
+        reason: `The development environment "${environment.name}" was retired: its container and its worktree no longer exist.`
       }
     }
     return { startable: true }

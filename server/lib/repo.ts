@@ -149,6 +149,8 @@ function mapDevEnvironment(r: any): DevEnvironment {
     lastError: r.last_error ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    branch: r.branch ?? null,
+    branchCreated: !!r.branch_created,
     retiredAt: r.retired_at ?? null,
     leftovers: r.leftovers ?? [],
     cleanedAt: r.cleaned_at ?? null
@@ -386,7 +388,7 @@ export async function updateDevEnvironment(
   id: string,
   patch: Partial<Pick<DevEnvironment,
     'name' | 'status' | 'lastError' | 'containerName' | 'containerId'
-    | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser'>>
+    | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser' | 'branch' | 'branchCreated'>>
 ): Promise<DevEnvironment | null> {
   const sets = ['updated_at = $2']
   const params: any[] = [id, nowIso()]
@@ -403,6 +405,8 @@ export async function updateDevEnvironment(
   if (patch.configSource !== undefined) push('config_source', patch.configSource)
   if (patch.configPath !== undefined) push('config_path', patch.configPath)
   if (patch.remoteUser !== undefined) push('remote_user', patch.remoteUser)
+  if (patch.branch !== undefined) push('branch', patch.branch)
+  if (patch.branchCreated !== undefined) push('branch_created', patch.branchCreated)
   const row = await queryOne(`update dev_environments set ${sets.join(', ')} where id = $1 returning *`, params)
   if (!row) return null
   const environment = mapDevEnvironment(row)

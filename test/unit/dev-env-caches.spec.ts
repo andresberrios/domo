@@ -1,19 +1,48 @@
+import { execFile } from 'node:child_process'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
+
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_CACHES, CACHES_ROOT, cacheMountTargets, resolveCaches } from '../../server/lib/dev-env/caches'
+import { BUILTIN_CACHES, CACHES_ROOT, cacheMountTargets, pnpmGlobalConfigArgs, resolveCaches } from '../../server/lib/dev-env/caches'
 import { defaultInstallCommand } from '../../server/lib/dev-env/dependencies'
 import { alignUserArgs, ALIGN_USER_SCRIPT, planAlignment } from '../../server/lib/dev-env/user-alignment'
+
+describe('the global pnpm config', () => {
+  const run = promisify(execFile)
+  async function configure(existing?: string): Promise<string> {
+    const home = await mkdtemp(join(tmpdir(), 'domo-pnpm-home-'))
+    if (existing !== undefined) {
+      await mkdir(join(home, '.config', 'pnpm'), { recursive: true })
+      await writeFile(join(home, '.config', 'pnpm', 'config.yaml'), existing)
+    }
+    const [program, ...args] = pnpmGlobalConfigArgs()
+    await run(program!, args, { env: { PATH: process.env.PATH, HOME: home } })
+    const written = await readFile(join(home, '.config', 'pnpm', 'config.yaml'), 'utf8')
+    await rm(home, { recursive: true, force: true })
+    return written
+  }
+
+  it('points pnpm at the shared store with the global virtual store on', async () => {
+    expect(await configure()).toBe(`storeDir: ${CACHES_ROOT}/pnpm\nenableGlobalVirtualStore: true\n`)
+  })
+
+  it('leaves a setting the image already made, and adds the rest', async () => {
+    expect(await configure('enableGlobalVirtualStore: false\n'))
+      .toBe(`enableGlobalVirtualStore: false\nstoreDir: ${CACHES_ROOT}/pnpm\n`)
+  })
+})
 
 describe('resolveCaches', () => {
   it('turns every built-in on by default, pointing each tool at the shared volume by the variable it reads', () => {
     const caches = resolveCaches(undefined)
 
     expect(caches.shared).toEqual({ volume: 'domo-dev-caches' })
-    // Measured: the variable, not an `.npmrc` or `npm_config_store_dir`, is what moves pnpm's store.
-    expect(caches.env.pnpm_config_store_dir).toBe(`${CACHES_ROOT}/pnpm`)
-    // And the global virtual store is what makes the project's node_modules symlinks, not copies.
-    expect(caches.env.pnpm_config_enable_global_virtual_store).toBe('true')
-    expect(caches.env.pnpm_config_shamefully_hoist).toBe('true')
+    // pnpm by its global config file, never a variable: a variable outranks the project's own settings.
+    expect(caches.pnpm).toBe(true)
+    expect(Object.keys(caches.env).some(key => key.startsWith('pnpm_config_'))).toBe(false)
     for (const name of Object.keys(BUILTIN_CACHES)) {
       for (const variable of Object.keys(BUILTIN_CACHES[name]!)) expect(caches.env, variable).toHaveProperty(variable)
     }
@@ -23,11 +52,11 @@ describe('resolveCaches', () => {
 
   it('turns one built-in off by name, and all of them off with false', () => {
     const withoutPnpm = resolveCaches({ pnpm: false })
-    expect(withoutPnpm.env).not.toHaveProperty('pnpm_config_store_dir')
+    expect(withoutPnpm.pnpm).toBe(false)
     expect(withoutPnpm.env).toHaveProperty('npm_config_cache')
 
     const none = resolveCaches(false)
-    expect(none).toEqual({ shared: null, env: {}, custom: [] })
+    expect(none).toEqual({ shared: null, env: {}, pnpm: false, custom: [] })
     expect(cacheMountTargets(none)).toEqual([])
   })
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeEnvironmentName } from '~~/shared/dev-environments'
 import type { DevEnvironment, Project, RepositoryState, WorkspaceSeedReport } from '~~/shared/types'
 
 /**
@@ -31,6 +32,11 @@ watch([open, () => props.project?.id], ([isOpen]) => {
 
 const needsFirstCommit = computed(() => !!repository.value && !repository.value.hasCommits)
 
+/** The branch the name becomes, and the branch of that name if there already is one. */
+const branchName = computed(() => safeEnvironmentName(name.value.trim()))
+const existingBranch = computed(() =>
+  repository.value?.branches.find(branch => branch.name === branchName.value) ?? null)
+
 async function createFirstCommit() {
   if (!props.project) return
   committing.value = true
@@ -51,9 +57,12 @@ async function createFirstCommit() {
 /** How the worktree started, for the toast. */
 function seedDescription(seed: WorkspaceSeedReport | undefined): string {
   if (!seed) return 'It starts from your last commit.'
+  const start = seed.branch && !seed.branch.created
+    ? `It is on your existing branch ${seed.branch.name}, checked out with its commits. Retiring it keeps that branch.`
+    : `It is on a new branch${seed.branch ? `, ${seed.branch.name},` : ''} made from your last commit.`
   const parts = [seed.total
-    ? `It starts from your last commit; ${seed.total} uncommitted ${seed.total === 1 ? 'path stays' : 'paths stay'} on your machine.`
-    : 'It starts from your last commit.']
+    ? `${start} ${seed.total} uncommitted ${seed.total === 1 ? 'path stays' : 'paths stay'} on your machine.`
+    : start]
   if (seed.copied.length) parts.push(`Copied ${seed.copied.join(', ')}.`)
   if (seed.install?.error) parts.push(`\`${seed.install.command}\` failed: ${seed.install.error}`)
   return parts.join(' ')
@@ -61,7 +70,7 @@ function seedDescription(seed: WorkspaceSeedReport | undefined): string {
 
 async function submit() {
   const value = name.value.trim()
-  if (!value || !props.project || needsFirstCommit.value) return
+  if (!value || !props.project || needsFirstCommit.value || existingBranch.value?.checkedOut) return
   submitting.value = true
   try {
     const environment = await $fetch<DevEnvironment & { workspaceSeed?: WorkspaceSeedReport }>(
@@ -72,7 +81,9 @@ async function submit() {
     toast.add({
       title: `${value} is ready`,
       description: seedDescription(environment.workspaceSeed),
-      color: environment.workspaceSeed?.install?.error ? 'warning' : 'success'
+      color: environment.workspaceSeed?.install?.error || environment.workspaceSeed?.branch?.created === false
+        ? 'warning'
+        : 'success'
     })
     emit('created', environment)
   } catch (error: any) {
@@ -92,8 +103,8 @@ async function submit() {
     v-model:open="open"
     title="New development environment"
     :description="project
-      ? `A container of its own for ${project.name}, with its own git worktree starting from your last commit.`
-      : 'A container of its own, with its own git worktree of the project.'"
+      ? `A container of its own for ${project.name}, with its own git worktree and branch, starting from your last commit.`
+      : 'A container of its own, with its own git worktree and branch of the project.'"
   >
     <template #body>
       <UAlert
@@ -108,7 +119,13 @@ async function submit() {
           : 'An environment starts from a commit. Domo can make this folder a git repository and commit everything in it as the first one.'"
         :actions="[{ label: 'Create first commit', color: 'warning', loading: committing, onClick: createFirstCommit }]"
       />
-      <UFormField label="Name" hint="Also names the branch you will work on">
+      <UFormField
+        label="Name"
+        hint="Also names its branch"
+        :help="branchName && !existingBranch
+          ? `Creates the branch ${branchName} from your last commit. Retiring the environment deletes it once every commit on it is also on another branch.`
+          : undefined"
+      >
         <UInput
           v-model="name"
           placeholder="feature-auth"
@@ -117,6 +134,24 @@ async function submit() {
           @keyup.enter="submit"
         />
       </UFormField>
+      <UAlert
+        v-if="existingBranch?.checkedOut"
+        class="mt-4"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-git-branch"
+        :title="`The branch ${existingBranch.name} is checked out elsewhere`"
+        description="Git allows a branch in one worktree at a time, and your own checkout may be the one using it. Pick another name."
+      />
+      <UAlert
+        v-else-if="existingBranch"
+        class="mt-4"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-git-branch"
+        :title="`The branch ${existingBranch.name} already exists`"
+        description="The environment will check it out, with the commits it already has, instead of making a new branch. Retiring the environment keeps it. Pick another name for a fresh branch."
+      />
     </template>
 
     <template #footer>
@@ -126,7 +161,7 @@ async function submit() {
           label="Create environment"
           icon="i-lucide-monitor"
           :loading="submitting"
-          :disabled="!name.trim() || !project || needsFirstCommit"
+          :disabled="!name.trim() || !project || needsFirstCommit || !!existingBranch?.checkedOut"
           @click="submit"
         />
       </div>

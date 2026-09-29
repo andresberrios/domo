@@ -1,6 +1,6 @@
 import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover, Project } from '../../../shared/types'
 import { listDevEnvironments, listProjects, markEnvironmentCleaned, setEnvironmentLeftovers } from '../repo'
-import { hostWorktreeExists, hostWorktreePath, listHostWorktrees, removeHostWorktree } from './host-worktree'
+import { deleteMergedBranch, hostWorktreeExists, hostWorktreePath, listHostWorktrees, removeHostWorktree, type BranchOutcome } from './host-worktree'
 import {
   describeLeftovers,
   observeEnvironmentResources,
@@ -45,11 +45,16 @@ export interface CleanupReport {
    * removed — see `unattributedResources` — and named so a person can decide.
    */
   unattributed: string[]
+  /**
+   * The branches of environments whose worktree went this pass: deleted when
+   * fully merged, kept with the reason otherwise (`deleteMergedBranch`).
+   */
+  branches: Array<BranchOutcome & { environmentId: string }>
   /** Set when Docker could not be asked at all: nothing was removed and nothing was recorded. */
   unreachable?: string
 }
 
-const EMPTY: CleanupReport = { removed: [], leftovers: [], unattributed: [] }
+const EMPTY: CleanupReport = { removed: [], leftovers: [], unattributed: [], branches: [] }
 
 function describe(leftover: Leftover): string {
   return `${leftover.kind} ${leftover.name}`
@@ -92,6 +97,7 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   // After Docker's: the container that mounts a worktree has gone by now, or
   // it is itself a leftover and the worktree stays with it.
   const worktrees = await removeWorktreeLeftovers(claimants, projects)
+  const branches = await settleBranches(claimants, projects, worktrees.failed)
   outcome.removed.push(...worktrees.removed)
   outcome.failed.push(...worktrees.failed)
   const remaining = new Map<string, EnvironmentLeftover[]>()
@@ -114,7 +120,36 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
     const looked = projects.some(project => project.id === environment.projectId)
     if (environment.retiredAt && !owed.length && looked) await markEnvironmentCleaned(environment.id)
   }
-  return { removed: outcome.removed, leftovers: outcome.failed, unattributed }
+  return { removed: outcome.removed, leftovers: outcome.failed, unattributed, branches }
+}
+
+/**
+ * The branch half: once a claimant's worktree is gone, the branch Domo made for
+ * it goes too if nothing would be lost (`deleteMergedBranch`). A branch that
+ * existed before the environment is never touched, and neither is any other
+ * branch the worktree may have been switched to. A worktree still there keeps
+ * its branch checked out, so its branch waits for the pass that removes it.
+ */
+async function settleBranches(
+  claimants: DevEnvironment[],
+  projects: Project[],
+  failed: Array<{ environmentId: string }>
+): Promise<CleanupReport['branches']> {
+  const repoPaths = new Map(projects.map(project => [project.id, project.repoPath]))
+  const blocked = new Set(failed.map(failure => failure.environmentId))
+  const outcomes: CleanupReport['branches'] = []
+  for (const environment of claimants) {
+    const repoPath = repoPaths.get(environment.projectId)
+    if (!repoPath || !environment.branch || !environment.branchCreated || blocked.has(environment.id)) continue
+    if (await hostWorktreeExists(repoPath, environment.id)) continue
+    const outcome = await deleteMergedBranch(repoPath, environment.branch).catch(error => ({
+      name: environment.branch!,
+      deleted: false,
+      reason: `It could not be checked: ${error instanceof Error ? error.message : String(error)}`
+    }))
+    if (outcome) outcomes.push({ ...outcome, environmentId: environment.id })
+  }
+  return outcomes
 }
 
 /**
@@ -251,6 +286,9 @@ async function pass(): Promise<CleanupReport> {
   lastUnreachable = null
   for (const removed of report.removed) {
     console.warn(`[dev-env] removed leftover ${describe(removed)} from retired environment ${removed.environmentId}`)
+  }
+  for (const branch of report.branches) {
+    console.warn(`[dev-env] ${branch.deleted ? 'deleted' : 'kept'} branch ${branch.name} of environment ${branch.environmentId}. ${branch.reason}`)
   }
   if (report.unattributed.length && lastUnattributed !== report.unattributed.join(',')) {
     lastUnattributed = report.unattributed.join(',')

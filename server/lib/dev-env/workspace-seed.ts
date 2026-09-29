@@ -83,22 +83,29 @@ export function seedReport(input: {
   paths: string[]
   copied?: string[]
   install?: WorkspaceSeedReport['install']
+  branch?: WorkspaceSeedReport['branch']
 }): WorkspaceSeedReport {
   return {
     paths: input.paths.slice(0, MAX_REPORTED_PATHS),
     total: input.paths.length,
     copied: input.copied ?? [],
-    install: input.install ?? null
+    install: input.install ?? null,
+    branch: input.branch ?? null
   }
 }
 
 /** One or two English sentences about how the worktree started, for a tool result or a toast. */
 export function describeSeed(report: WorkspaceSeedReport): string {
   const sentences: string[] = []
+  const reused = report.branch && !report.branch.created
+  const start = reused
+    ? `It is on the branch ${report.branch!.name}, which already existed, so it was checked out with the commits it had rather than created. `
+      + 'Retiring the environment keeps that branch. If reusing it was not intended, retire this environment and create one with another name.'
+    : `It is on a new branch${report.branch ? `, ${report.branch.name},` : ''} made from the project's last commit. `
+      + 'Retiring the environment deletes that branch if every commit on it is also on another branch.'
   sentences.push(report.total === 0
-    ? 'It starts from the project\'s last commit.'
-    : `It starts from the project's last commit; ${report.total} uncommitted `
-      + `${report.total === 1 ? 'path stays' : 'paths stay'} on the host.`)
+    ? start
+    : `${start} ${report.total} uncommitted ${report.total === 1 ? 'path stays' : 'paths stay'} on the host.`)
   if (report.copied.length) sentences.push(`Copied ${report.copied.join(', ')} from the host.`)
   if (report.install?.error) {
     sentences.push(`\`${report.install.command}\` failed, so dependencies may be missing: ${report.install.error}`)

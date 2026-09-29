@@ -173,6 +173,8 @@ export function useDevEnvironments() {
       remoteUser: row.remote_user ?? null,
       status: row.status,
       lastError: row.last_error ?? null,
+      branch: row.branch ?? null,
+      branchCreated: !!row.branch_created,
       leftovers: row.leftovers ?? [],
       createdAt: row.created_at,
       updatedAt: row.updated_at,

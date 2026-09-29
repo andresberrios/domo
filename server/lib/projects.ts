@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 
 import type { AgentSession, EnvironmentLeftover, Project } from '../../shared/types'
 import { acpManager } from './acp/manager'
+import type { BranchOutcome } from './dev-env/host-worktree'
 import { retireEnvironment } from './dev-environments'
 import { normalizeCwd } from './paths'
 import {
@@ -65,6 +66,12 @@ export interface EnvironmentRetirement {
    * never claims to have finished when it has not.
    */
   leftovers: EnvironmentLeftover[]
+  /**
+   * The branch Domo made for it, deleted when every commit on it is also on
+   * another branch and kept otherwise, with why. Null when Domo made none, or
+   * it was gone already.
+   */
+  branch: BranchOutcome | null
 }
 
 /**
@@ -76,7 +83,7 @@ export interface EnvironmentRetirement {
  */
 async function standDown(
   session: AgentSession
-): Promise<Omit<EnvironmentRetirement, 'sessions' | 'leftovers'>> {
+): Promise<Omit<EnvironmentRetirement, 'sessions' | 'leftovers' | 'branch'>> {
   // The adapter first: everything below describes a session that has stopped,
   // and it has not stopped until the process is down.
   acpManager.stop(session.id)
@@ -110,7 +117,8 @@ export async function retireProjectEnvironment(environmentId: string): Promise<E
     cronJobsDisabled: 0,
     subscriptionsRemoved: 0,
     permissionsCancelled: 0,
-    leftovers: []
+    leftovers: [],
+    branch: null
   }
   for (const session of await listAgentSessionsInEnvironment(environmentId)) {
     const counts = await standDown(session)
@@ -121,6 +129,8 @@ export async function retireProjectEnvironment(environmentId: string): Promise<E
   }
   const cleanup = await retireEnvironment(environmentId)
   result.leftovers = cleanup.leftovers.map(({ kind, name, error }) => ({ kind, name, error }))
+  const branch = cleanup.branches[0]
+  result.branch = branch ? { name: branch.name, deleted: branch.deleted, reason: branch.reason } : null
   return result
 }
 
