@@ -2304,6 +2304,28 @@ describe('a turn the agent starts for itself', () => {
     expect(row.summary).toBe('The build finished. It is green.')
   })
 
+  it('opens no turn for an update that is about the session, not work in it', async () => {
+    const { agent, connection } = await attached()
+
+    // Each of these arrives with no turn running in normal use — the title
+    // most of all: claude-agent-acp generates it after a turn has ended and
+    // publishes it a couple of seconds later.
+    await wake(connection, { sessionUpdate: 'session_info_update', title: 'Background task', updatedAt: new Date().toISOString() })
+    await wake(connection, { sessionUpdate: 'config_option_update', configOptions: [] })
+    await wake(connection, { sessionUpdate: 'available_commands_update', availableCommands: [] })
+    await wake(connection, { sessionUpdate: 'current_mode_update', currentModeId: 'default' })
+    await wake(connection, { sessionUpdate: 'usage_update', used: 10, size: 1000 })
+    // Then real work, so there is something to wait for: notifications are
+    // handled in order, so by the time it is seen every update above was too.
+    await wake(connection, textChunk('Actually working now.'))
+    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_start'))
+
+    const types = await typesOf(agent.id)
+    expect(types.filter(type => type === 'turn_start')).toHaveLength(1)
+    // The one turn is the text's: nothing ahead of it opened one.
+    expect(types.slice(types.indexOf('turn_start'))).toEqual(['turn_start', 'agent_message'])
+  })
+
   it('drains the inbox behind it, which is the part that was silently lost', async () => {
     const prompts: string[] = []
     const { acpManager, agent, connection } = await attached('Self-started', {

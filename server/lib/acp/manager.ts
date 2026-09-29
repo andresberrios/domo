@@ -103,30 +103,36 @@ const STEERING_METHOD = '_session/steering'
 const STEERING_META = { steering: { idleBehavior: 'promptRequired' } }
 
 /**
- * The `session/update` kinds that are *about* a session rather than work done
- * in it, and so must never be read as a turn beginning.
- *
- * A deny-list and not an allow-list on purpose: a kind wrongly counted as work
- * costs one spurious turn that ends on its own twenty seconds later, while a
- * kind wrongly left out reproduces the bug this exists to fix — a session stuck
- * at `thinking` with its inbox stranded. Of the two, only the second is silent.
- *
- * `available_commands_update` is the one that would really bite.
- * claude-agent-acp sends it from a `setTimeout(…, 0)` scheduled *inside*
- * `loadSession`, so it lands after the load response and can outrun the end of
- * `boot()` — that is, after `restoring` has been cleared, on a session that is
- * only attaching and has no turn of any kind.
- */
-/**
  * The statuses that claim a session is mid-something, and so are the ones a
  * live adapter with no turn and no waiter can disprove. See `reconcileStatus`.
  */
 const BUSY_STATUSES = new Set<AgentSessionStatus>(['starting', 'thinking', 'awaiting-permission', 'error'])
 
+/**
+ * The `session/update` kinds that are *about* a session rather than work done
+ * in it, and so must never be read as a turn beginning.
+ *
+ * A deny-list and not an allow-list on purpose: a kind wrongly counted as work
+ * costs a spurious turn — a "started on its own" line in the transcript, a
+ * minute at `thinking`, a note to every subscriber — while a kind wrongly left
+ * out reproduces the bug this exists to fix: a session stuck at `thinking` with
+ * its inbox stranded. Of the two, only the second is silent.
+ *
+ * Every entry here is one that arrives with no turn running in normal use.
+ * `session_info_update` is claude-agent-acp's generated title, which it asks
+ * the CLI for *after* a turn ends, in the background, and publishes a couple of
+ * seconds later — after Domo has already closed the turn.
+ * `available_commands_update` is sent from a `setTimeout(…, 0)` scheduled
+ * inside `loadSession`, so it lands after the load response and can outrun the
+ * end of `boot()` — after `restoring` has been cleared, on a session that is
+ * only attaching.
+ */
 const SESSION_STATE_UPDATES = new Set([
   'usage_update',
   'available_commands_update',
-  'current_mode_update'
+  'current_mode_update',
+  'config_option_update',
+  'session_info_update'
 ])
 
 /**
