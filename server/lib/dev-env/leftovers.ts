@@ -7,7 +7,7 @@ import { resourcePrefix, run } from './docker'
  * is allowed to remove.
  *
  * An environment owns two sorts of thing on the daemon. What it *is* is named
- * from its id — its container, its workspace volume, its image and, for a
+ * from its id — its container, its image and, for a
  * Docker-in-Docker one, `dind-var-lib-docker-<id>` — so a cleanup that failed
  * is findable by name hours later: the row survives retirement and names them
  * again with certainty. What it *made* through its Docker proxy
@@ -20,7 +20,7 @@ import { resourcePrefix, run } from './docker'
  * resource is removed only because a row claims it — a retired environment
  * claims everything named from its id or labelled with it, and any
  * environment claims whatever a cleanup already wrote down as owed. Everything
- * else is left alone: a live environment's volume (the only copy of an agent's
+ * else is left alone: a live environment's worktree (the only copy of an agent's
  * work) and the stack it is running, the shared hash-named runtime and browser
  * volumes, the port helper every environment's published ports go through, a
  * second Domo install's resources on the same daemon, a name this does not
@@ -33,11 +33,6 @@ export interface Leftover {
   name: string
   /** The environment whose row claims it. */
   environmentId: string
-}
-
-/** The named volume that holds an environment's checkout. Derived from the id, so it needs no column. */
-export function workspaceVolumeName(environmentId: string): string {
-  return `${resourcePrefix()}${environmentId}-workspace`.toLowerCase()
 }
 
 const DIND_VOLUME = 'dind-var-lib-docker-'
@@ -57,7 +52,6 @@ export function environmentResources(environmentId: string): Leftover[] {
   const prefix = resourcePrefix()
   return [
     { kind: 'container', name: `${prefix}${environmentId}`.toLowerCase(), environmentId },
-    { kind: 'volume', name: workspaceVolumeName(environmentId), environmentId },
     { kind: 'volume', name: `${DIND_VOLUME}${environmentId}`, environmentId },
     { kind: 'image', name: `${prefix}${environmentId}`.toLowerCase(), environmentId }
   ]
@@ -68,7 +62,7 @@ export interface ObservedResource {
   name: string
   /**
    * The environment a label or a name says it belongs to: `domo.envId` on the
-   * environment's own container and workspace volume, `domo.env` on what it
+   * environment's own container, `domo.env` on what it
    * made through its proxy, the id inside a `domo-<id>/…` image tag or a
    * `dind-var-lib-docker-<id>` volume.
    */
@@ -87,7 +81,7 @@ export interface ObservedResources {
 
 type Observed = ObservedResource & { kind: LeftoverKind }
 
-const KIND_ORDER: LeftoverKind[] = ['container', 'network', 'volume', 'image']
+const KIND_ORDER: LeftoverKind[] = ['container', 'network', 'volume', 'image', 'worktree', 'dependencies']
 
 /**
  * Flattened in removal order. The order is load-bearing: a container goes
@@ -100,7 +94,11 @@ function flatten(present: ObservedResources): Observed[] {
     container: present.containers,
     network: present.networks ?? [],
     volume: present.volumes,
-    image: present.images
+    image: present.images,
+    // Not Docker's: observed on the host and on the cache volume by
+    // `reconcile.ts`, never listed here.
+    worktree: [],
+    dependencies: []
   }
   return KIND_ORDER.flatMap(kind => lists[kind].map(entry =>
     typeof entry === 'string' ? { kind, name: entry } : { kind, ...entry }))
@@ -175,11 +173,15 @@ export function ownedResources(environmentId: string, present: ObservedResources
 function isShared(resource: Observed): boolean {
   const prefix = resourcePrefix()
   if (resource.kind === 'volume') {
+    // The caches (`caches.ts`) belong to every environment at once.
     return resource.name.startsWith(`${prefix}runtime-`) || resource.name.startsWith(`${prefix}browser-`)
+      || resource.name === `${prefix}caches` || resource.name.startsWith(`${prefix}cache-`)
   }
   if (resource.kind === 'container') return resource.name === `${prefix}port-helper`
   if (resource.kind === 'image') {
+    // A definition's cached image (`image.ts`) is every environment's that uses it.
     return resource.name === `${prefix}port-helper` || resource.name.startsWith(`${prefix}port-helper:`)
+      || resource.name.startsWith(`${prefix}image-`)
   }
   return false
 }
@@ -335,7 +337,7 @@ function bareError(error: string): string {
     .trim()
 }
 
-const HOLDING: Record<Exclude<LeftoverKind, 'container'>, { one: string, many: string }> = {
+const HOLDING: Record<Exclude<LeftoverKind, 'container' | 'worktree' | 'dependencies'>, { one: string, many: string }> = {
   volume: { one: 'still has it mounted', many: 'still have it mounted' },
   network: { one: 'is still connected to it', many: 'are still connected to it' },
   image: { one: 'was made from it', many: 'were made from it' }
@@ -358,7 +360,9 @@ export function explainRefusal(input: {
   blockers: string[]
 }): string {
   const bare = bareError(input.error)
-  const holding = input.leftover.kind === 'container' ? null : HOLDING[input.leftover.kind]
+  const holding = input.leftover.kind === 'container' || input.leftover.kind === 'worktree' || input.leftover.kind === 'dependencies'
+    ? null
+    : HOLDING[input.leftover.kind]
   if (holding && input.blockers.length === 1) {
     return `Container ${input.blockers[0]} ${holding.one}. `
       + `Remove it (docker rm -f ${input.blockers[0]}) and run the cleanup again.`

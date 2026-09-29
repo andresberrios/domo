@@ -1,6 +1,8 @@
 import { BROWSER_ROOT } from './browser-volume'
+import { canonicalBaseGitPath, canonicalWorkspacePath } from './canonical-mounts'
 import { run } from './docker'
 import { CONTAINER_SSH_AUTH_SOCK, type HomeOverlay } from './home-overlay'
+import { CACHES_ROOT, type ResolvedCaches } from './caches'
 import { DOOD_FEATURE } from './config'
 import type {
   DevEnvironmentConfig,
@@ -140,6 +142,21 @@ export function homeDirectory(user: string): string {
   return user === 'root' ? '/root' : `/home/${user}`
 }
 
+/**
+ * The three host paths a worktree-backed workspace needs bind-mounted into
+ * the container — see `dev-env/canonical-mounts.ts` for why there are three,
+ * and `dev-env/host-worktree.ts` for how each is made.
+ */
+export interface WorkspaceMounts {
+  /** The environment's own linked git worktree. */
+  hostWorktreePath: string
+  /** The small container-only `.git` file, mounted *over* the worktree's own so the host's stays valid for `git worktree remove`. */
+  hostGitdirFilePath: string
+  /** The project's base checkout's `.git`, shared read-write by every environment of this project. */
+  hostBaseGitPath: string
+  projectId: string
+}
+
 export interface RunContainerInput {
   environmentId: string
   projectId: string
@@ -148,8 +165,11 @@ export interface RunContainerInput {
   config: DevEnvironmentConfig
   metadata: ImageMetadata
   remoteUser: string
+  /** The legacy/display path (`/workspaces/<name>`) every other part of Domo still targets — a symlink to the canonical mount, created after the container starts (`workspaceAliasArgs`). */
   workspacePath: string
-  workspaceVolume: string
+  workspace: WorkspaceMounts
+  /** The shared caches and the variables that point each tool at them (`caches.ts`). */
+  caches: ResolvedCaches
   runtimeVolume: string
   /** The shared headless-browser volume, when the install has one. */
   browserVolume: string | null
@@ -193,10 +213,35 @@ export function containerRunArgs(input: RunContainerInput): string[] {
     // `--network host` shares its network (`hostModes` in `dood/rewrite.ts`).
     // Docker's default is `private`, which no other container can join.
     '--ipc', 'shareable',
-    ...mountArg({ source: input.workspaceVolume, target: input.workspacePath }),
+    // The environment's checkout: a bind mount of its host worktree, at a
+    // canonical path — never at `workspacePath` directly, which is a symlink
+    // to this, created once the container is up (`workspaceAliasArgs`).
+    ...mountArg({ type: 'bind', source: input.workspace.hostWorktreePath, target: canonicalWorkspacePath(input.environmentId) }),
+    // Overrides the worktree's own `.git` (copied through by the bind above)
+    // with one that names this container's mount of the base checkout,
+    // rather than the host's real path. The host's own `.git` is never
+    // touched, so `git worktree remove` keeps working there.
+    ...mountArg({
+      type: 'bind',
+      source: input.workspace.hostGitdirFilePath,
+      target: `${canonicalWorkspacePath(input.environmentId)}/.git`,
+      readonly: true
+    }),
+    // The project's base checkout's `.git` — shared, read-write, by every
+    // environment of this project, the same way the worktrees it backs
+    // already share one object database on the host.
+    ...mountArg({
+      type: 'bind',
+      source: input.workspace.hostBaseGitPath,
+      target: canonicalBaseGitPath(input.workspace.projectId)
+    }),
     // Node and the ACP adapters, shared by every environment and never written to.
     ...mountArg({ source: input.runtimeVolume, target: '/opt/domo', readonly: true })
   ]
+  // Written to by every environment's installs (`caches.ts`). Nothing from the
+  // host's own dependency trees is ever among them.
+  if (input.caches.shared) args.push(...mountArg({ source: input.caches.shared.volume, target: CACHES_ROOT }))
+  for (const cache of input.caches.custom) args.push(...mountArg({ source: cache.volume, target: cache.target }))
   // Chromium, its libraries and its fonts, shared by every environment. Not on
   // anything's PATH and not named by any container-wide variable: the browser
   // needs `LD_LIBRARY_PATH` to find the libraries beside it, and setting that
@@ -230,6 +275,8 @@ export function containerRunArgs(input: RunContainerInput): string[] {
   }
   args.push('--env', `DOMO_DEV_ENVIRONMENT_ID=${input.environmentId}`)
   for (const [key, value] of Object.entries(input.homeOverlay.env)) args.push('--env', `${key}=${value}`)
+  // Before the image's and the project's own, which win: a later `--env` of the same name replaces it.
+  for (const [key, value] of Object.entries(input.caches.env)) args.push('--env', `${key}=${value}`)
   // The project's own containerEnv wins over anything a Feature contributed.
   for (const [key, value] of Object.entries({ ...input.metadata.containerEnv, ...input.config.containerEnv })) {
     args.push('--env', `${key}=${value}`)

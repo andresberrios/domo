@@ -87,22 +87,33 @@ Some model names exist under both prefixes.
 
 ## Development environments
 
-A development environment is a long-lived container with its own copy of a
-project's checkout, stored in a Docker volume. Several agents can share one
-environment.
+A development environment is a long-lived container with its own git worktree
+of a project, created beside your checkout in `.domo-worktrees/` and mounted
+into the container. Several agents can share one environment.
 
-- The copy starts at your last commit. Uncommitted changes stay on your
-  machine, unless you turn on **Carry uncommitted changes from the host** when
-  you create the environment. Ignored files such as `node_modules` and `.env`
-  are copied.
-- To bring work back, use **Export branch**, or the `export_branch` tool. It
-  fetches the branch into your checkout and only fast-forwards your local
-  branch. **Import branch** sends a branch from your checkout into the
-  environment.
-- **Retiring** an environment destroys its container and volumes, including
-  the checkout, and every container, network, volume and image tag it made on
-  the Docker daemon. Push or export anything you want to keep first. The agent
-  transcripts and the environment's record are kept.
+- The worktree is on a branch named after the environment, made at your last
+  commit. If you already have a branch of that name, the dialog warns you and
+  the environment checks it out instead. Uncommitted changes stay on your
+  machine. A project with no commits yet is offered its first one when you
+  create an environment. Gitignored `.env` files are copied in.
+  `node_modules`, `.venv` and other dependency folders never are: Domo
+  installs by lockfile inside the environment (pnpm, npm, yarn, bun, uv), for
+  the container's platform, unless the project turns that off.
+- The worktree shares your repository's branches and commits. A branch an
+  agent makes is in your checkout at once, and yours are visible to it, so
+  there is nothing to export or import. It also means an agent can move your
+  branches.
+- Package caches (pnpm, npm, yarn, pip, uv, Go) are shared by every
+  environment. pnpm keeps each package once for all of them: an
+  environment's `node_modules` holds links, not copies. A package that finds
+  your project's root from its own location on disk will look in the wrong
+  place; install such tools on the system instead.
+- **Retiring** an environment destroys its container, worktree and every
+  container, network, volume and image tag it made on the Docker daemon. Its
+  commits stay in your repository; commit anything you want to keep first.
+  The branch Domo made for it is deleted if every commit on it is also on
+  another branch, and kept otherwise. A branch it reused is never deleted.
+  The agent transcripts and the environment's record are kept.
 - **Stopping** an environment stops the containers it started.
 - **Open in VS Code** attaches VS Code to the container. You need the Dev
   Containers extension. If VS Code runs on another machine, set **VS Code SSH
@@ -166,7 +177,18 @@ error.
     "portsAttributes": { "3000": { "label": "Web app", "protocol": "http" } },
 
     // A string runs through `sh -c`. An array is argv.
-    "postCreateCommand": "pnpm install"
+    "postCreateCommand": "pnpm db:migrate",
+
+    // Domo's own install by lockfile (pnpm, npm, yarn, bun, uv), run before
+    // postCreateCommand. Default: on, unless there is a postCreateCommand.
+    "installDependencies": true,
+
+    // Shared caches. Built-ins are on; turn one off with false (or all of
+    // them with "caches": false), or add a volume shared by name.
+    "caches": { "go": false, "gradle": "/home/dev/.gradle/caches" },
+
+    // Gitignored files copied into each new worktree. Default: `.env` files.
+    "copyIgnored": ["**/.env", "**/.env.*", "config/local.yml"]
   }
 }
 ```

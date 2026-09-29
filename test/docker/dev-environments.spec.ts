@@ -22,7 +22,6 @@ const run = vi.fn(async (_program: string, _args: string[], _options?: unknown) 
 // on a Mac it answers "Docker Desktop" and the socket test below fails.
 const dockerServerOs = vi.fn(async () => 'Ubuntu 24.04.3 LTS')
 const inspectContainer = vi.fn()
-const populateWorkspaceVolume = vi.fn(async () => undefined)
 const copyIntoContainer = vi.fn(async () => undefined)
 const buildEnvironmentImage = vi.fn(async (_input?: unknown) => 'domo-dev-env_1')
 const readImageMetadata = vi.fn()
@@ -38,6 +37,36 @@ const dood = {
   ensureEnvironmentNetwork: vi.fn(async () => undefined),
   stopEnvironmentContainers: vi.fn(async () => undefined)
 }
+// Real git, against a real repository, is `dev-env-host-worktree.spec.ts`;
+// here the worktree is only a step in the order of things and a set of paths.
+// A real directory inside the scratch repo, because creation stats it for the owner's uid.
+const fakeWorktree = (repoPath: string, environmentId: string) => join(repoPath, '.wt', environmentId)
+const hostWorktree = {
+  createHostWorktree: vi.fn(async (input: { repoPath: string, environmentId: string, branch: string, copyIgnored?: string[] }) => {
+    const worktreePath = fakeWorktree(input.repoPath, input.environmentId)
+    await mkdir(worktreePath, { recursive: true })
+    hostWorktree.onDisk.add(worktreePath)
+    return {
+      branch: { name: input.branch, created: true },
+      worktreePath,
+      gitdirFilePath: `${worktreePath}.container-gitdir`,
+      commonGitDir: `${input.repoPath}/.git`,
+      seed: { paths: [] as string[], copied: [] as string[] }
+    }
+  }),
+  hostWorktreePath: (repoPath: string, environmentId: string) => fakeWorktree(repoPath, environmentId),
+  // What the sweep observes on the host: a set it removes from, like `daemon()`.
+  onDisk: new Set<string>(),
+  hostWorktreeExists: vi.fn(async (repoPath: string, environmentId: string) => hostWorktree.onDisk.has(fakeWorktree(repoPath, environmentId))),
+  listHostWorktrees: vi.fn(async (repoPath: string) => [...hostWorktree.onDisk]
+    .filter(path => path.startsWith(`${repoPath}/.wt/`)).map(path => path.slice(`${repoPath}/.wt/`.length))),
+  deleteMergedBranch: vi.fn(async (_repoPath: string, branch: string) =>
+    ({ name: branch, deleted: true, reason: 'Every commit on it is also on main.' })),
+  removeHostWorktree: vi.fn(async (input: { repoPath: string, environmentId: string }) => {
+    hostWorktree.onDisk.delete(fakeWorktree(input.repoPath, input.environmentId))
+    return [] as string[]
+  })
+}
 const repo = {
   createDevEnvironmentRow: vi.fn(),
   // Removal tombstones the row rather than deleting it, and the row is kept
@@ -46,12 +75,16 @@ const repo = {
   // What the sweep after a cleanup writes when Docker still has something a
   // retired row claims.
   setEnvironmentLeftovers: vi.fn(async (_id: string, _leftovers: unknown[], _health?: unknown) => null),
+  // What ends a retired row's claim, once a pass has seen nothing of it left.
+  markEnvironmentCleaned: vi.fn(async (_id: string) => null),
   getDevEnvironment: vi.fn(),
   getProject: vi.fn(),
   updateDevEnvironment: vi.fn(),
   upsertDevEnvironmentPort: vi.fn(),
   // What the sweep after a cleanup compares Docker against.
-  listDevEnvironments: vi.fn(async (): Promise<DevEnvironment[]> => [])
+  listDevEnvironments: vi.fn(async (): Promise<DevEnvironment[]> => []),
+  // Where the sweep finds each environment's worktree on the host.
+  listProjects: vi.fn(async (): Promise<Array<{ id: string, name: string, repoPath: string }>> => [])
 }
 
 vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
@@ -59,7 +92,6 @@ vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
   run,
   dockerServerOs,
   inspectContainer,
-  populateWorkspaceVolume,
   copyIntoContainer,
   resourcePrefix: () => 'domo-dev-'
 }))
@@ -82,11 +114,13 @@ vi.mock('../../server/lib/dev-environment-ports', () => ({
 }))
 vi.mock('../../server/lib/repo', () => repo)
 vi.mock('../../server/lib/dood/manager', () => dood)
+vi.mock('../../server/lib/dev-env/host-worktree', () => hostWorktree)
 // Settings live in Postgres, and this project has none. The home overlay is the
 // only thing here that reads them.
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => ({ homeMounts: state.homeMounts }) }))
 
 const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
+const { PNPM_SETUP_SCRIPT } = await import('../../server/lib/dev-env/caches')
 const {
   cleanupEnvironment,
   containerExecArgs,
@@ -127,6 +161,9 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     updatedAt: '2026-01-01T00:00:00.000Z',
     retiredAt: null,
     leftovers: [],
+    branch: null,
+    branchCreated: false,
+    cleanedAt: null,
     ...overrides
   }
 }
@@ -215,6 +252,8 @@ function daemon(state: Partial<FakeDaemon> = {}): FakeDaemon {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  hostWorktree.onDisk.clear()
+  repo.listProjects.mockResolvedValue([])
   // Never the developer's own `~/.claude`: what the seed copies must not depend
   // on what happens to be in the home directory running the suite.
   process.env.NUXT_CLAUDE_CONFIG_DIR = join(tmpdir(), 'domo-no-such-claude-config')
@@ -324,7 +363,8 @@ describe('start, stop and remove', () => {
       environmentId: 'env_1',
       containerReference: 'container-sha',
       workspacePath: '/workspaces/api',
-      workspaceVolume: 'domo-dev-env_1-workspace'
+      // `docker inspect` names only the canonical mount; the display path is a symlink to it.
+      workspaceAlias: { legacyPath: '/workspaces/api', canonicalPath: '/worktrees/env_1' }
     }))
     const started = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'start')]!
     expect(dood.ensureDoodProxy.mock.invocationCallOrder[0]).toBeLessThan(started)
@@ -460,14 +500,14 @@ describe('start, stop and remove', () => {
     repo.listDevEnvironments.mockResolvedValue([retired])
     const fake = daemon({
       containers: ['domo-dev-env_1'],
-      volumes: ['domo-dev-env_1-workspace', 'dind-var-lib-docker-abc'],
+      volumes: ['dind-var-lib-docker-env_1', 'dind-var-lib-docker-abc'],
       images: ['domo-dev-env_1'],
       labels: { 'domo-dev-env_1': { envId: 'env_1' } }
     })
     inspectContainer.mockResolvedValue({
       id: 'container-sha',
       labels: {},
-      namedVolumes: ['domo-dev-env_1-workspace', 'dind-var-lib-docker-abc'],
+      namedVolumes: ['dind-var-lib-docker-env_1', 'dind-var-lib-docker-abc'],
       publishedPorts: []
     })
 
@@ -479,14 +519,150 @@ describe('start, stop and remove', () => {
       { allowFailure: true }
     )
     // `docker rm --volumes` only takes anonymous volumes, so both named ones go
-    // by name: the DinD one by inspection, the workspace by the sweep.
+    // by name: one by inspection, the one named from the id by the sweep.
     expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-abc'])
-    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-env_1'])
     expect(dockerCalls()).toContainEqual(['image', 'rm', 'domo-dev-env_1'])
     expect(fake).toMatchObject({ containers: [], volumes: [], images: [] })
     expect(report.leftovers).toEqual([])
     expect(collectRuntimeVolumes).toHaveBeenCalled()
     expect(repo.retireDevEnvironmentRow).toHaveBeenCalledWith('env_1')
+  })
+
+  describe('the worktree, as a leftover the sweep owns', () => {
+    const API = { id: 'prj_1', name: 'api', repoPath: '/Users/me/src/api' }
+    const worktree = fakeWorktree(API.repoPath, 'env_1')
+    const retired = environment({ retiredAt: '2026-01-02T00:00:00.000Z' })
+    beforeEach(() => {
+      repo.listProjects.mockResolvedValue([API])
+      hostWorktree.onDisk.add(worktree)
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    it('is removed after the container that mounted it, and reported removed', async () => {
+      repo.getDevEnvironment.mockResolvedValue(environment())
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({ containers: ['domo-dev-env_1'], labels: { 'domo-dev-env_1': { envId: 'env_1' } } })
+      inspectContainer.mockResolvedValue({ id: 'container-sha', labels: {}, namedVolumes: [], publishedPorts: [] })
+
+      const report = await retireEnvironment('env_1')
+
+      expect(hostWorktree.removeHostWorktree).toHaveBeenCalledWith({ repoPath: API.repoPath, environmentId: 'env_1' })
+      const removed = hostWorktree.removeHostWorktree.mock.invocationCallOrder[0]!
+      const containerGone = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'rm')]!
+      expect(containerGone).toBeLessThan(removed)
+      expect(report.removed).toContainEqual({ kind: 'worktree', name: worktree, environmentId: 'env_1' })
+      expect(report.leftovers).toEqual([])
+    })
+
+    it('is recorded as owed, naming the path, when it would not go', async () => {
+      repo.getDevEnvironment.mockResolvedValue(environment())
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({})
+      inspectContainer.mockResolvedValue(null)
+      hostWorktree.removeHostWorktree.mockResolvedValueOnce([worktree])
+
+      const report = await retireEnvironment('env_1')
+
+      expect(report.leftovers).toEqual([expect.objectContaining({ kind: 'worktree', name: worktree })])
+      expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith('env_1',
+        [expect.objectContaining({ kind: 'worktree', name: worktree, error: expect.stringContaining(worktree) })],
+        expect.objectContaining({ status: 'error' }))
+    })
+
+    it('ends the row\'s claim once a pass has seen nothing of it left, and never claims again', async () => {
+      repo.getDevEnvironment.mockResolvedValue(environment())
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({ containers: ['domo-dev-env_1'], labels: { 'domo-dev-env_1': { envId: 'env_1' } } })
+      inspectContainer.mockResolvedValue(null)
+
+      await retireEnvironment('env_1')
+      expect(repo.markEnvironmentCleaned).toHaveBeenCalledWith('env_1')
+
+      // Something later appears at the same path and under the same derived
+      // name. A cleaned row claims neither, and they are its id's, so known.
+      hostWorktree.removeHostWorktree.mockClear()
+      hostWorktree.onDisk.add(worktree)
+      const fake = daemon({ containers: ['domo-dev-env_1'] })
+      repo.listDevEnvironments.mockResolvedValue([{ ...retired, cleanedAt: '2026-01-03T00:00:00.000Z' }])
+
+      const report = await reconcileEnvironmentResources()
+
+      expect(hostWorktree.removeHostWorktree).not.toHaveBeenCalled()
+      expect(fake.containers).toEqual(['domo-dev-env_1'])
+      expect(report.removed).toEqual([])
+    })
+
+    it('keeps the claim while anything is owed, and when Docker could not be asked', async () => {
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({})
+      hostWorktree.removeHostWorktree.mockResolvedValueOnce([worktree])
+      await reconcileEnvironmentResources()
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+
+      run.mockRejectedValue(new Error('docker ps failed: Cannot connect to the Docker daemon'))
+      await reconcileEnvironmentResources()
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+    })
+
+    it('keeps the claim when its project is not there to find the worktree by', async () => {
+      repo.listProjects.mockResolvedValue([])
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({})
+
+      await reconcileEnvironmentResources()
+
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+    })
+
+    it('reports a claimed path that is not Domo\'s worktree, and leaves it', async () => {
+      repo.listDevEnvironments.mockResolvedValue([retired])
+      daemon({})
+      hostWorktree.removeHostWorktree.mockRejectedValueOnce(new Error(`${worktree} is not the locked worktree Domo made for this environment, so it was left alone.`))
+
+      const report = await reconcileEnvironmentResources()
+
+      expect(report.leftovers).toEqual([expect.objectContaining({ kind: 'worktree', error: expect.stringContaining('left alone') })])
+      expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
+    })
+
+    it('deletes the branch Domo made once the worktree is gone, and reports what it did', async () => {
+      const made = { ...retired, branch: 'api-work', branchCreated: true }
+      repo.getDevEnvironment.mockResolvedValue(environment({ branch: 'api-work', branchCreated: true }))
+      repo.listDevEnvironments.mockResolvedValue([made])
+      daemon({})
+      inspectContainer.mockResolvedValue(null)
+
+      const report = await retireEnvironment('env_1')
+
+      expect(hostWorktree.deleteMergedBranch).toHaveBeenCalledWith(API.repoPath, 'api-work')
+      const removed = hostWorktree.removeHostWorktree.mock.invocationCallOrder[0]!
+      expect(removed).toBeLessThan(hostWorktree.deleteMergedBranch.mock.invocationCallOrder[0]!)
+      expect(report.branches).toEqual([{ environmentId: 'env_1', name: 'api-work', deleted: true, reason: 'Every commit on it is also on main.' }])
+    })
+
+    it('never touches a branch it reused, nor one while the worktree is still there', async () => {
+      repo.listDevEnvironments.mockResolvedValue([{ ...retired, branch: 'theirs', branchCreated: false }])
+      daemon({})
+      expect((await reconcileEnvironmentResources()).branches).toEqual([])
+
+      repo.listDevEnvironments.mockResolvedValue([{ ...retired, branch: 'api-work', branchCreated: true }])
+      hostWorktree.onDisk.add(worktree)
+      hostWorktree.removeHostWorktree.mockResolvedValueOnce([worktree])
+      expect((await reconcileEnvironmentResources()).branches).toEqual([])
+      expect(hostWorktree.deleteMergedBranch).not.toHaveBeenCalled()
+    })
+
+    it('is never touched for a live environment, and one no row knows is reported, not removed', async () => {
+      hostWorktree.onDisk.add(fakeWorktree(API.repoPath, 'env_stranger'))
+      repo.listDevEnvironments.mockResolvedValue([environment()])
+      daemon({})
+
+      const report = await reconcileEnvironmentResources()
+
+      expect(hostWorktree.removeHostWorktree).not.toHaveBeenCalled()
+      expect(report.unattributed).toEqual([`worktree ${fakeWorktree(API.repoPath, 'env_stranger')}`])
+    })
   })
 
   it('leaves a named volume the project mounted itself alone, and reads the mounts first', async () => {
@@ -518,7 +694,7 @@ describe('start, stop and remove', () => {
     const fake = daemon({
       containers: ['env_1-web', 'env_2-web', 'domo-dev-port-helper'],
       networks: ['env_1-default', 'env_2-default'],
-      volumes: ['env_1-data', 'env_2-data', 'domo-dev-env_1-workspace', 'domo-dev-runtime-abc123'],
+      volumes: ['env_1-data', 'env_2-data', 'dind-var-lib-docker-env_1', 'domo-dev-runtime-abc123'],
       images: [
         'domo-env_1/docker.io/library/app:dev', 'domo-env_2/docker.io/library/app:dev',
         'domo-dev-port-helper:0123456789ab', 'postgres:16'
@@ -547,7 +723,7 @@ describe('start, stop and remove', () => {
       'container env_1-web',
       'network env_1-default',
       'volume env_1-data',
-      'volume domo-dev-env_1-workspace',
+      'volume dind-var-lib-docker-env_1',
       'image domo-env_1/docker.io/library/app:dev'
     ])
     // A live environment's stack, the port helper every environment shares,
@@ -576,7 +752,6 @@ describe('start, stop and remove', () => {
     expect(repo.retireDevEnvironmentRow).toHaveBeenCalledWith('env_1')
     expect(report.leftovers.map(leftover => `${leftover.kind} ${leftover.name}`)).toEqual([
       'container domo-dev-env_1',
-      'volume domo-dev-env_1-workspace',
       'volume dind-var-lib-docker-env_1',
       'image domo-dev-env_1'
     ])
@@ -585,7 +760,7 @@ describe('start, stop and remove', () => {
     // rewrites it from what Docker really has.
     expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith(
       'env_1',
-      expect.arrayContaining([expect.objectContaining({ name: 'domo-dev-env_1-workspace' })]),
+      expect.arrayContaining([expect.objectContaining({ name: 'dind-var-lib-docker-env_1' })]),
       { status: 'error', lastError: expect.stringMatching(/could not be reached/) }
     )
   })
@@ -624,9 +799,9 @@ describe('a cleanup that Docker refuses', () => {
 
   it('reports the volume it could not remove, naming what is holding it', async () => {
     const fake = daemon({
-      volumes: ['domo-dev-env_1-workspace'],
-      refuses: ['domo-dev-env_1-workspace'],
-      holders: { 'domo-dev-env_1-workspace': ['tidy-runner'] }
+      volumes: ['dind-var-lib-docker-env_1'],
+      refuses: ['dind-var-lib-docker-env_1'],
+      holders: { 'dind-var-lib-docker-env_1': ['tidy-runner'] }
     })
     repo.getDevEnvironment.mockResolvedValue(environment())
     repo.listDevEnvironments.mockResolvedValue([RETIRED])
@@ -638,7 +813,7 @@ describe('a cleanup that Docker refuses', () => {
     expect(report.leftovers).toEqual([
       expect.objectContaining({
         kind: 'volume',
-        name: 'domo-dev-env_1-workspace',
+        name: 'dind-var-lib-docker-env_1',
         error: 'Container tidy-runner still has it mounted. '
           + 'Remove it (docker rm -f tidy-runner) and run the cleanup again.'
       })
@@ -649,17 +824,17 @@ describe('a cleanup that Docker refuses', () => {
     // shows.
     expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith(
       'env_1',
-      [expect.objectContaining({ kind: 'volume', name: 'domo-dev-env_1-workspace', error: expect.any(String) })],
+      [expect.objectContaining({ kind: 'volume', name: 'dind-var-lib-docker-env_1', error: expect.any(String) })],
       { status: 'error', lastError: expect.stringContaining('docker rm -f tidy-runner') }
     )
-    expect(fake.volumes).toEqual(['domo-dev-env_1-workspace'])
+    expect(fake.volumes).toEqual(['dind-var-lib-docker-env_1'])
   })
 
   it('never retries on its own, however long nobody asks', async () => {
     daemon({
-      volumes: ['domo-dev-env_1-workspace'],
-      refuses: ['domo-dev-env_1-workspace'],
-      holders: { 'domo-dev-env_1-workspace': ['tidy-runner'] }
+      volumes: ['dind-var-lib-docker-env_1'],
+      refuses: ['dind-var-lib-docker-env_1'],
+      holders: { 'dind-var-lib-docker-env_1': ['tidy-runner'] }
     })
     repo.getDevEnvironment.mockResolvedValue(environment())
     repo.listDevEnvironments.mockResolvedValue([RETIRED])
@@ -681,15 +856,15 @@ describe('a cleanup that Docker refuses', () => {
   it('removes it when the cleanup is asked for again, once the holder has gone', async () => {
     // The retry: whoever read the message removed the container it named, and
     // asked again. Same sweep, same attribution rule, nothing automatic.
-    const fake = daemon({ volumes: ['domo-dev-env_1-workspace'] })
+    const fake = daemon({ volumes: ['dind-var-lib-docker-env_1'] })
     repo.getDevEnvironment.mockResolvedValue(RETIRED)
     repo.listDevEnvironments.mockResolvedValue([RETIRED])
 
     const report = await cleanupEnvironment('env_1')
 
-    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'domo-dev-env_1-workspace'])
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-env_1'])
     expect(fake.volumes).toEqual([])
-    expect(report.removed.map(leftover => leftover.name)).toEqual(['domo-dev-env_1-workspace'])
+    expect(report.removed.map(leftover => leftover.name)).toEqual(['dind-var-lib-docker-env_1'])
     expect(report.leftovers).toEqual([])
     // Cleared, and the row stops reporting itself broken, which is what a
     // retried cleanup is for.
@@ -703,9 +878,9 @@ describe('a cleanup that Docker refuses', () => {
     const broken = environment({
       status: 'error',
       lastError: 'postCreateCommand failed: exit 1',
-      leftovers: [{ kind: 'volume', name: 'domo-dev-env_1-workspace', error: 'not confirmed' }]
+      leftovers: [{ kind: 'volume', name: 'dind-var-lib-docker-env_1', error: 'not confirmed' }]
     })
-    daemon({ volumes: ['domo-dev-env_1-workspace'] })
+    daemon({ volumes: ['dind-var-lib-docker-env_1'] })
     repo.getDevEnvironment.mockResolvedValue(broken)
     repo.listDevEnvironments.mockResolvedValue([broken])
 
@@ -724,7 +899,7 @@ describe('a cleanup that Docker refuses', () => {
   it('never touches a live environment, whatever else it finds', async () => {
     const fake = daemon({
       containers: ['domo-dev-env_live'],
-      volumes: ['domo-dev-env_1-workspace', 'domo-dev-env_live-workspace', 'domo-dev-env_stranger-workspace'],
+      volumes: ['dind-var-lib-docker-env_1', 'dind-var-lib-docker-env_live', 'dind-var-lib-docker-env_stranger'],
       images: ['domo-dev-env_live']
     })
     repo.listDevEnvironments.mockResolvedValue([RETIRED, environment({ id: 'env_live' })])
@@ -733,13 +908,13 @@ describe('a cleanup that Docker refuses', () => {
 
     // A live environment's workspace volume is the only copy of an agent's
     // work, and a name no row claims belongs to somebody else.
-    expect(fake.volumes).toEqual(['domo-dev-env_live-workspace', 'domo-dev-env_stranger-workspace'])
+    expect(fake.volumes).toEqual(['dind-var-lib-docker-env_live', 'dind-var-lib-docker-env_stranger'])
     expect(fake.containers).toEqual(['domo-dev-env_live'])
     expect(fake.images).toEqual(['domo-dev-env_live'])
   })
 
   it('asks Docker nothing at all when no environment has ever existed', async () => {
-    daemon({ volumes: ['domo-dev-env_1-workspace'] })
+    daemon({ volumes: ['dind-var-lib-docker-env_1'] })
     repo.listDevEnvironments.mockResolvedValue([])
 
     await reconcileEnvironmentResources()
@@ -750,15 +925,15 @@ describe('a cleanup that Docker refuses', () => {
   })
 
   it('names a resource no row accounts for, and leaves it exactly where it is', async () => {
-    const fake = daemon({ volumes: ['domo-dev-env_pruned-workspace'] })
+    const fake = daemon({ volumes: ['domo-dev-env_pruned-state'] })
     repo.listDevEnvironments.mockResolvedValue([environment()])
 
     const report = await reconcileEnvironmentResources()
 
     // It may be a second install's, and this database cannot tell. Saying so is
     // free; acting on it would cost somebody else their checkout.
-    expect(report.unattributed).toEqual(['volume domo-dev-env_pruned-workspace'])
-    expect(fake.volumes).toEqual(['domo-dev-env_pruned-workspace'])
+    expect(report.unattributed).toEqual(['volume domo-dev-env_pruned-state'])
+    expect(fake.volumes).toEqual(['domo-dev-env_pruned-state'])
   })
 
   it('records nothing when Docker cannot be asked, rather than calling it clean', async () => {
@@ -844,7 +1019,7 @@ describe('createEnvironment', () => {
     await rm(hostHome, { recursive: true, force: true })
   })
 
-  it('builds, runs, preflights, chowns and only then runs postCreateCommand', async () => {
+  it('cuts the worktree, runs, preflights, links the workspace path and only then runs postCreateCommand', async () => {
     await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
     expect(buildEnvironmentImage).toHaveBeenCalledWith(expect.objectContaining({
@@ -852,17 +1027,19 @@ describe('createEnvironment', () => {
       name: 'API work',
       config: expect.objectContaining({ image: 'ghcr.io/acme/dev:latest' })
     }))
+    // The worktree exists, and already agrees with its HEAD, before the
+    // container that mounts it is even created.
+    const cut = hostWorktree.createHostWorktree.mock.invocationCallOrder[0]!
+    const ran = run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args[0] === 'run')]!
+    expect(cut).toBeLessThan(ran)
     const order = [
       stepAt('run', 'domo-dev-env_1'),
       stepAt('git', '--version'),
       stepAt('/opt/domo/node/bin/node'),
-      stepAt('chown'),
+      // The path the rest of Domo uses exists before anything addresses it.
+      stepAt('ln -sfn', '/workspaces/api-work'),
       // The container's own git config, which replaced `git config --global`.
       stepAt('cat > "$1"', '/home/vscode/.gitconfig'),
-      // The copied working tree is reconciled with the HEAD copied beside it before
-      // anything else can look at the checkout — and after the git config, which is
-      // where the identity a carried commit needs comes from.
-      stepAt('git reset --hard --quiet'),
       // The seed runs the CLI out of the runtime volume, so it belongs after the
       // preflight that proves the runtime volume can run at all.
       stepAt('claude', '--version'),
@@ -871,6 +1048,23 @@ describe('createEnvironment', () => {
     ]
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(order.includes(-1)).toBe(false)
+  })
+
+  it('never chowns the checkout or reconciles it inside the container: it is the host\'s own worktree', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const calls = dockerCalls()
+    expect(calls.some(args => args.includes('chown') && args.includes('--recursive'))).toBe(false)
+    expect(calls.flat().join('\n')).not.toContain('git reset --hard')
+  })
+
+  it('links the workspace path to the canonical mount as root, with both paths as argv', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    const link = dockerCalls().find(args => args.some(arg => arg.includes('ln -sfn')))!
+    expect(link.slice(0, 4)).toEqual(['exec', '--user', 'root', 'container-sha'])
+    expect(link.slice(-2)).toEqual([`/worktrees/${id}`, '/workspaces/api-work'])
   })
 
   it('mounts a Docker proxy that is already listening when the environment asked for Docker', async () => {
@@ -1045,17 +1239,22 @@ describe('createEnvironment', () => {
     expect(copyIntoContainer).not.toHaveBeenCalled()
   })
 
-  it('copies the checkout into a volume and declares its ports', async () => {
+  it('cuts a host worktree for the checkout, mounts it at its canonical path, and declares its ports', async () => {
     await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
-    expect(dockerCalls()).toContainEqual([
-      'volume', 'create', '--label', `domo.envId=${id}`, `domo-dev-${id}-workspace`
-    ])
-    expect(populateWorkspaceVolume).toHaveBeenCalledWith(expect.objectContaining({
-      source: repoPath,
-      volume: `domo-dev-${id}-workspace`
-    }))
+    expect(hostWorktree.createHostWorktree).toHaveBeenCalledWith({
+      repoPath,
+      projectId: 'prj_1',
+      environmentId: id,
+      // The environment's name is the branch it works on.
+      branch: 'api-work',
+      copyIgnored: undefined
+    })
+    // The only volumes made are the shared caches: nothing holds, or is tarred into, a copy of the checkout.
+    const made = dockerCalls().filter(args => args[0] === 'volume' && args[1] === 'create').map(args => args.at(-1))
+    expect(made).toEqual(['domo-dev-caches'])
+    expect(dockerCalls().some(args => args[0] === 'tar' || args.includes('tar'))).toBe(false)
     expect(repo.upsertDevEnvironmentPort).toHaveBeenCalledWith(expect.objectContaining({
       innerPort: 3000,
       protocol: 'tcp',
@@ -1064,116 +1263,218 @@ describe('createEnvironment', () => {
     expect(repo.updateDevEnvironment).toHaveBeenCalledWith(id, expect.objectContaining({
       configSource: 'domo',
       configPath: '.domo.json',
-      remoteUser: 'vscode'
+      remoteUser: 'vscode',
+      // The row keeps the path everything else addresses; it is the symlink.
+      workspacePath: '/workspaces/api-work'
     }))
   })
 
-  /**
-   * The tar copies the host's *working tree*, so until this runs the environment's
-   * files and the HEAD beside them disagree — and the agent's first `git add -A`
-   * sweeps the host's uncommitted work into a branch that is exported back as if
-   * the agent had written it. That is the bug; these are its terms.
-   */
-  describe('the copied working tree', () => {
-    /** The reconcile script, as the one `docker exec` that carries it. */
-    function reconcileCall(): string[] | undefined {
-      return dockerCalls().find(args => args.some(arg => arg.includes('git rev-parse --verify --quiet HEAD')))
+  describe('the host\'s checkout', () => {
+    it('hands the project\'s copyIgnored to the worktree, and reports what stayed and what came along', async () => {
+      await writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+        devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', copyIgnored: ['*.pem'], postCreateCommand: 'true' }
+      }), 'utf8')
+      hostWorktree.createHostWorktree.mockImplementationOnce(async (input) => {
+        const worktreePath = fakeWorktree(input.repoPath, input.environmentId)
+        await mkdir(worktreePath, { recursive: true })
+        return { branch: { name: input.branch, created: true }, worktreePath, gitdirFilePath: `${worktreePath}.container-gitdir`, commonGitDir: `${input.repoPath}/.git`, seed: { paths: ['a.ts'], copied: ['dev.pem'] } }
+      })
+
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+      expect(hostWorktree.createHostWorktree).toHaveBeenCalledWith(expect.objectContaining({ copyIgnored: ['*.pem'] }))
+      expect(created.workspaceSeed).toEqual({ paths: ['a.ts'], total: 1, copied: ['dev.pem'], install: null, branch: { name: 'api-work', created: true } })
+    })
+
+    it('lets the image build it runs alongside finish before it cleans up a failed creation', async () => {
+      hostWorktree.createHostWorktree.mockRejectedValueOnce(new Error('/repo has no commits yet'))
+      let built = false
+      buildEnvironmentImage.mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50))
+        built = true
+        return 'domo-dev-env_1'
+      })
+      let builtWhenClaimed: boolean | null = null
+      repo.setEnvironmentLeftovers.mockImplementationOnce(async () => {
+        builtWhenClaimed = built
+        return null
+      })
+
+      await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(/no commits yet/)
+
+      // Otherwise the image it tags would appear after the sweep, claimed by nothing.
+      expect(builtWhenClaimed).toBe(true)
+    })
+
+    it('fails creation with nothing run when the worktree cannot be cut, and claims the worktree anyway', async () => {
+      hostWorktree.createHostWorktree.mockRejectedValueOnce(new Error('/repo has no commits yet'))
+
+      await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(/no commits yet/)
+
+      expect(dockerCalls().some(args => args[0] === 'run')).toBe(false)
+      const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+      // Written down before anything is confirmed, so a crash mid-cleanup still knows where to look.
+      expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith(id, expect.arrayContaining([
+        expect.objectContaining({ kind: 'worktree', name: fakeWorktree(repoPath, id) })
+      ]))
+    })
+  })
+
+  describe('dependencies', () => {
+    async function lockfile(name: string) {
+      hostWorktree.createHostWorktree.mockImplementationOnce(async (input) => {
+        const worktreePath = fakeWorktree(input.repoPath, input.environmentId)
+        await mkdir(worktreePath, { recursive: true })
+        await writeFile(join(worktreePath, name), '', 'utf8')
+        return { branch: { name: input.branch, created: true }, worktreePath, gitdirFilePath: `${worktreePath}.container-gitdir`, commonGitDir: `${input.repoPath}/.git`, seed: { paths: [], copied: [] } }
+      })
     }
+    const noPostCreate = () => writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+      devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode' }
+    }), 'utf8')
 
-    it('is reset to HEAD as the environment\'s own user, with a HOME git can read', async () => {
-      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    it('installs by lockfile, frozen, as the user in the checkout, when the project has no postCreateCommand', async () => {
+      await noPostCreate()
+      await lockfile('pnpm-lock.yaml')
 
-      const call = reconcileCall()!
-      expect(call.slice(0, 8)).toEqual([
-        'exec', '--user', 'vscode', '--workdir', '/workspaces/api-work', '--env', 'HOME=/home/vscode', 'container-sha'
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+      expect(dockerCalls()).toContainEqual([
+        'exec', '--user', 'vscode', '--workdir', '/workspaces/api-work', '--env', 'HOME=/home/vscode', 'container-sha',
+        'pnpm', 'install', '--frozen-lockfile'
       ])
-      // The mode and the workspace are argv, never spliced into the script.
-      expect(call.slice(-3)).toEqual(['discard', '/workspaces/api-work', expect.stringContaining('chore: carry')])
-      expect(call.join('\n')).toContain('git clean -fdq')
+      expect(created.workspaceSeed.install).toEqual({ command: 'pnpm install --frozen-lockfile', error: null })
     })
 
-    it('commits instead of resetting when the caller asks for the host\'s work', async () => {
-      await createEnvironment({ projectId: 'prj_1', name: 'API work', workingTree: 'carry' })
-
-      expect(reconcileCall()!.slice(-3)[0]).toBe('carry')
-    })
-
-    it('reports what the host had uncommitted, so an absent change is never a silent one', async () => {
-      run.mockImplementation(async (program, args) => {
-        if (program === 'git' && args.includes('status')) {
-          return { stdout: ' M app/assets/css/main.css\0?? scratch.md\0', stderr: '' }
-        }
+    it('reports a failed install rather than failing the environment', async () => {
+      await noPostCreate()
+      await lockfile('package-lock.json')
+      run.mockImplementation(async (_program, args) => {
+        if (args.at(-1) === 'ci') throw new Error('npm ci failed: lockfile out of date')
         return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
       })
 
       const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
-      expect(run).toHaveBeenCalledWith('git', ['-C', repoPath, 'status', '--porcelain', '-z'], expect.anything())
-      expect(created.workspaceSeed).toEqual({
-        mode: 'discard',
-        paths: ['app/assets/css/main.css', 'scratch.md'],
-        total: 2,
-        commit: null
-      })
+      expect(created.status).toBe('running')
+      expect(created.workspaceSeed.install).toEqual({ command: 'npm ci', error: 'npm ci failed: lockfile out of date' })
     })
 
-    it('reports the commit a carried tree landed on', async () => {
-      run.mockImplementation(async (program, args) => {
-        if (program === 'git' && args.includes('status')) return { stdout: ' M a.ts\0', stderr: '' }
-        if (args.some(arg => typeof arg === 'string' && arg.includes('git rev-parse --verify'))) {
-          return { stdout: 'c0ffee1234567890', stderr: '' }
-        }
-        return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
-      })
+    it('leaves the install to a project that has a postCreateCommand', async () => {
+      await lockfile('pnpm-lock.yaml')
 
-      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work', workingTree: 'carry' })
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
-      expect(created.workspaceSeed).toMatchObject({ mode: 'carry', total: 1, commit: 'c0ffee1234567890' })
+      expect(dockerCalls().some(args => args.includes('--frozen-lockfile'))).toBe(false)
+      expect(created.workspaceSeed.install).toBeNull()
     })
 
-    // Better no environment than one whose files its own git does not describe:
-    // that is exactly the state the export cannot be trusted from.
-    it('fails creation, and cleans up, when the reconcile cannot run', async () => {
-      run.mockImplementation(async (_program, args) => {
-        if (args.some(arg => typeof arg === 'string' && arg.includes('git reset --hard'))) {
-          throw new Error('docker exec failed: fatal: detected dubious ownership')
-        }
-        return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
-      })
+    it('installs before the project\'s own postCreateCommand when it asks for both, and never when it turns it off', async () => {
+      await writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+        devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', installDependencies: true, postCreateCommand: 'make seed' }
+      }), 'utf8')
+      await lockfile('pnpm-lock.yaml')
 
-      await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' }))
-        .rejects.toThrow(/reconcile the copied checkout/)
+      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
-      const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
-      expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith(id, expect.arrayContaining([
-        expect.objectContaining({ kind: 'volume', name: `domo-dev-${id}-workspace` })
-      ]))
+      const install = dockerCalls().findIndex(args => args.includes('--frozen-lockfile'))
+      const postCreate = dockerCalls().findIndex(args => args.includes('make seed'))
+      expect(install).toBeGreaterThan(-1)
+      expect(install).toBeLessThan(postCreate)
+
+      run.mockClear()
+      await writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+        devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', installDependencies: false }
+      }), 'utf8')
+      await lockfile('pnpm-lock.yaml')
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work 2' })
+      expect(dockerCalls().some(args => args.includes('--frozen-lockfile'))).toBe(false)
+      expect(created.workspaceSeed.install).toBeNull()
     })
   })
 
-  it('mounts the shared runtime volume read-only, and the checkout at the workspace', async () => {
+  it('mounts the shared caches, points tools at them, and opens them to every environment\'s user', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const runCall = dockerCalls().find(args => args[0] === 'run')!
+    expect(runCall).toContain('type=volume,source=domo-dev-caches,target=/opt/domo-caches')
+    expect(runCall).toContain('npm_config_cache=/opt/domo-caches/npm')
+    // pnpm by its global config instead, as the remote user: a variable would
+    // outrank the project's own pnpm-workspace.yaml.
+    expect(runCall.some(arg => arg.startsWith('pnpm_config_'))).toBe(false)
+    const pnpmConfig = dockerCalls().find(args => args.includes(PNPM_SETUP_SCRIPT))!
+    expect(pnpmConfig.slice(0, 3)).toEqual(['exec', '--user', 'vscode'])
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    expect(pnpmConfig).toContain(`/opt/domo-caches/pnpm/projects/${id}/.pnpm`)
+    expect(pnpmConfig).toContain(`/worktrees/${id}/node_modules`)
+    expect(dockerCalls()).toContainEqual(['volume', 'create', '--label', 'domo.cache=true', 'domo-dev-caches'])
+    expect(dockerCalls()).toContainEqual(['exec', '--user', 'root', 'container-sha', 'chmod', '1777', '/opt/domo-caches'])
+    // Never pnpm's own directories as root: pnpm 12.8 copies from a store it does not own.
+    expect(dockerCalls().some(args => args[2] === 'root' && args.some(arg => arg.startsWith('/opt/domo-caches/pnpm')))).toBe(false)
+  })
+
+  describe('the checkout owner\'s uid', () => {
+    const idAnswers = (uid: string) => run.mockImplementation(async (_program, args) => {
+      if (args.at(-2) === '-u' && args.at(-3) === 'id') return { stdout: uid, stderr: '' }
+      return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
+    })
+    const renumbered = () => dockerCalls().find(args => args.some(arg => arg.includes('usermod')))
+
+    it('renumbers the user to the owner on a Linux daemon, before anything runs as it', async () => {
+      idAnswers(String((process.getuid?.() ?? 1000) + 1))
+
+      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+      const call = renumbered()!
+      expect(call.slice(0, 4)).toEqual(['exec', '--user', 'root', 'container-sha'])
+      expect(call.slice(-3)).toEqual(['vscode', String(process.getuid?.()), String(process.getgid?.())])
+      const gitconfig = stepAt('cat > "$1"', '/home/vscode/.gitconfig')
+      expect(dockerCalls().indexOf(call)).toBeLessThan(gitconfig)
+    })
+
+    it('leaves Docker Desktop, which maps ownership itself, and matching ids alone', async () => {
+      idAnswers(String(process.getuid?.()))
+      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      expect(renumbered()).toBeUndefined()
+
+      run.mockClear()
+      dockerServerOs.mockResolvedValue('Docker Desktop')
+      idAnswers(String((process.getuid?.() ?? 1000) + 1))
+      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      expect(renumbered()).toBeUndefined()
+      dockerServerOs.mockResolvedValue('Ubuntu 24.04.3 LTS')
+    })
+  })
+
+  it('mounts the runtime read-only, and the worktree, its .git override and the base .git as binds', async () => {
     await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
     const runCall = dockerCalls().find(args => args[0] === 'run')!
+    const worktree = fakeWorktree(repoPath, id)
     expect(runCall).toContain('type=volume,source=domo-dev-runtime-abc123,target=/opt/domo,readonly')
-    expect(runCall).toContain(`type=volume,source=domo-dev-${id}-workspace,target=/workspaces/api-work`)
+    expect(runCall).toContain(`type=bind,source=${worktree},target=/worktrees/${id}`)
+    expect(runCall).toContain(`type=bind,source=${worktree}.container-gitdir,target=/worktrees/${id}/.git,readonly`)
+    expect(runCall).toContain(`type=bind,source=${repoPath}/.git,target=/worktrees/.base/prj_1`)
+    expect(runCall.join('\n')).not.toContain('target=/workspaces/api-work')
     expect(runCall).not.toContain('--privileged')
   })
 
-  // A data dir inside the project would otherwise be copied into its own environment.
-  it.each([
-    ['at the top level', '.data', '.data'],
-    ['nested', join('tools', 'state', 'domo'), join('tools', 'state', 'domo')],
-    ['outside it', null, null]
-  ])('leaves the Domo data dir out of the copy when it is %s', async (_label, inside, excluded) => {
-    process.env.NUXT_DATA_DIR = inside ? join(repoPath, inside) : dataRoot
-
+  it('marks the canonical mount and the base .git safe in the container\'s git config', async () => {
     await createEnvironment({ projectId: 'prj_1', name: 'API work' })
 
-    expect(populateWorkspaceVolume).toHaveBeenCalledWith(expect.objectContaining({
-      exclude: excluded ? [excluded] : []
-    }))
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    const write = run.mock.calls.find(([, args]) => args.at(-1) === '/home/vscode/.gitconfig')!
+    const contents = (write[2] as { input: string }).input
+    expect(contents).toContain(`directory = /worktrees/${id}`)
+    expect(contents).toContain('directory = /worktrees/.base/prj_1')
+  })
+
+  it('makes no pnpm store and runs no install for a project without a pnpm lockfile', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    expect(dockerCalls().flat().join('\n')).not.toContain('pnpm-store')
+    expect(dockerCalls().some(args => args.includes('--store-dir'))).toBe(false)
   })
 
   it.each([
@@ -1203,9 +1504,9 @@ describe('createEnvironment', () => {
     // look for; the sweep after it removes and clears.
     expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith(id, [
       expect.objectContaining({ kind: 'container', name: `domo-dev-${id}` }),
-      expect.objectContaining({ kind: 'volume', name: `domo-dev-${id}-workspace` }),
       expect.objectContaining({ kind: 'volume', name: `dind-var-lib-docker-${id}` }),
-      expect.objectContaining({ kind: 'image', name: `domo-dev-${id}` })
+      expect.objectContaining({ kind: 'image', name: `domo-dev-${id}` }),
+      expect.objectContaining({ kind: 'worktree', name: fakeWorktree(repoPath, id) })
     ])
   })
 
@@ -1221,11 +1522,12 @@ describe('createEnvironment', () => {
       rows.set(id, { ...rows.get(id)!, leftovers })
       return null
     })
+    repo.listProjects.mockResolvedValue([{ id: 'prj_1', name: 'api', repoPath }])
     let fake!: FakeDaemon
     buildEnvironmentImage.mockImplementation(async ({ environmentId }: any) => {
       // What a half-made environment and its postCreateCommand's stack leave.
       fake = daemon({
-        volumes: [`domo-dev-${environmentId}-workspace`, `${environmentId}-db`],
+        volumes: [`dind-var-lib-docker-${environmentId}`, `${environmentId}-db`],
         images: [`domo-dev-${environmentId}`],
         containers: [`${environmentId}-db`],
         labels: { [`${environmentId}-db`]: { env: environmentId } }
@@ -1236,6 +1538,10 @@ describe('createEnvironment', () => {
     await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow('feature build failed')
 
     expect(fake).toMatchObject({ containers: [], volumes: [], images: [] })
+    // The worktree it had already cut goes too, claimed like the rest.
+    const id = [...rows.keys()][0]!
+    expect(hostWorktree.removeHostWorktree).toHaveBeenCalledWith({ repoPath, environmentId: id })
+    expect(hostWorktree.onDisk.size).toBe(0)
     // Confirmed gone, so it owes nothing any more.
     expect([...rows.values()][0]!.leftovers).toEqual([])
   })

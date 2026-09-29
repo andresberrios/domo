@@ -135,9 +135,35 @@ describe('resolveBindSource', () => {
   })
 })
 
+describe('resolveBindSource — a worktree environment', () => {
+  // `docker inspect` names the real mounts; `/workspaces/app` is only a
+  // symlink to the canonical one, so it is in no table.
+  const worktreeTable = mountTableFromInspect({
+    Mounts: [
+      { Type: 'bind', Source: '/host_mnt/Users/me/src/.domo-worktrees/env_abc', Destination: '/worktrees/env_abc', RW: true },
+      { Type: 'bind', Source: '/Users/me/src/.domo-worktrees/env_abc.container-gitdir', Destination: '/worktrees/env_abc/.git', RW: false },
+      { Type: 'bind', Source: '/Users/me/src/app/.git', Destination: '/worktrees/.base/prj_1', RW: true }
+    ]
+  })
+  const workspaceAlias = { legacyPath: '/workspaces/app', canonicalPath: '/worktrees/env_abc' }
+  const viaAlias = (path: string) => resolveBindSource(path, worktreeTable, { workspaceAlias }, '/workspaces/app')
+
+  it('resolves a bind given by the legacy path to the host worktree, as it would by the canonical one', () => {
+    expect(viaAlias('/workspaces/app/db/init')).toEqual({ kind: 'bind', source: '/Users/me/src/.domo-worktrees/env_abc/db/init', readOnly: false })
+    expect(viaAlias('/workspaces/app')).toEqual(viaAlias('/worktrees/env_abc'))
+  })
+
+  it('refuses the legacy path without the alias, which is the failure it exists to prevent', () => {
+    expect(resolveBindSource('/workspaces/app/db/init', worktreeTable, {}, '/workspaces/app').kind).toBe('refuse')
+  })
+
+  it('hands a service the container\'s .git override read-only, never the host checkout\'s own', () => {
+    expect(viaAlias('/workspaces/app/.git')).toEqual({ kind: 'bind', source: '/Users/me/src/.domo-worktrees/env_abc.container-gitdir', readOnly: true })
+  })
+})
+
 const scope: DoodScope = {
   workspacePath: '/workspaces/app',
-  workspaceVolume: 'domo-dev-env_abc-workspace',
   labels: { 'domo.env': 'env_abc' },
   mounts: table,
   dockerSocket: SOCKET

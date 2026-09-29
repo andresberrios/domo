@@ -68,7 +68,7 @@ vi.mock('../../server/lib/dev-environments', async (importOriginal) => {
       // What a cleanup with a real daemon behind it reports: nothing left over.
       // The failing case is `test/docker/dev-environments.spec.ts`, where the
       // daemon is faked at the process boundary and can refuse.
-      return { removed: [], leftovers: [], unattributed: [] }
+      return { removed: [], leftovers: [], unattributed: [], branches: [] }
     },
     ensureEnvironmentRunning: async (id: string) => {
       const { getDevEnvironment: read } = await import('../../server/lib/repo')

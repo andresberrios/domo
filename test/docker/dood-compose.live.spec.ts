@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { canonicalWorkspacePath } from '../../server/lib/dev-env/canonical-mounts'
 import { run } from '../../server/lib/dev-env/docker'
 import { portHelperImage, portHelperName } from '../../server/lib/dev-env/port-helper'
 import { ensureDoodProxy, stopDoodProxy } from '../../server/lib/dood/manager'
@@ -17,7 +18,10 @@ import type { PublishedPort } from '../../server/lib/dood/rewrite'
  *
  * Compose is worth its own file because it is not the Docker CLI — it speaks
  * the Engine API directly, so nothing a `docker run` test proves carries over
- * to it for free. It runs through `manager.ts` rather than a bare proxy so
+ * to it for free. The stand-in mounts its checkout as a real environment does:
+ * a host directory bind-mounted at `/worktrees/<id>`, with `/workspaces/<name>`
+ * a symlink to it, so a compose file naming the display path goes through the
+ * alias in `binds.ts`. It runs through `manager.ts` rather than a bare proxy so
  * that the Docker work is the real one: a stand-in for the environment's own
  * container really joins the stack's network, which is exactly what makes a
  * plain `compose down` fail on "active endpoints" unless the proxy detaches it
@@ -27,7 +31,6 @@ import type { PublishedPort } from '../../server/lib/dood/rewrite'
  */
 
 const ENV_ID = 'env_composeprobe'
-const VOLUME = 'domo-dood-compose-workspace'
 const WORKSPACE = '/workspaces/probe'
 const PROJECT = 'domodoodprobe'
 const ENV_CONTAINER = 'domo-dood-compose-env'
@@ -37,11 +40,9 @@ const daemon = await run('docker', ['info', '--format', '{{.ServerVersion}}'], {
 
 let proxy: DoodProxy
 let workDir: string
+let checkout: string
 let socketDir: string
 const dropped: PublishedPort[] = []
-
-const inVolume = (script: string) =>
-  run('docker', ['run', '--rm', '-v', `${VOLUME}:/w`, 'alpine:3', 'sh', '-c', script])
 
 const compose = (args: string[], allowFailure = false) =>
   run('docker', ['compose', '-p', PROJECT, ...args], {
@@ -65,14 +66,16 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     socketDir = await mkdtemp('/tmp/ddc-')
     process.env.NUXT_DOOD_SOCKET_DIR = socketDir
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
-    await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
-    await run('docker', ['volume', 'create', VOLUME])
-    // The file the service will read comes from the workspace volume, which on
-    // the host daemon does not exist as a path at all.
-    await inVolume("mkdir -p /w/site && echo 'from-the-workspace' > /w/site/index.html")
-    await run('docker', ['run', '-d', '--name', ENV_CONTAINER, 'alpine:3', 'sleep', '600'])
+    workDir = await realpath(await mkdtemp(join(tmpdir(), 'domo-dood-compose-')))
+    // The checkout, on the host: what the service reads and writes.
+    checkout = join(workDir, 'checkout')
+    await mkdir(join(checkout, 'site'), { recursive: true })
+    await writeFile(join(checkout, 'site', 'index.html'), 'from-the-workspace')
+    await run('docker', [
+      'run', '-d', '--name', ENV_CONTAINER, '-v', `${checkout}:${canonicalWorkspacePath(ENV_ID)}`, 'alpine:3',
+      'sh', '-c', `mkdir -p /workspaces && ln -s ${canonicalWorkspacePath(ENV_ID)} ${WORKSPACE} && sleep 600`
+    ])
 
-    workDir = await mkdtemp(join(tmpdir(), 'domo-dood-compose-'))
     await writeFile(join(workDir, 'compose.yaml'), [
       'services:',
       '  web:',
@@ -80,6 +83,7 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
       '    command: ["sleep", "300"]',
       '    volumes:',
       `      - ${WORKSPACE}/site:/usr/share/site:ro`,
+      `      - ${WORKSPACE}:/checkout`,
       '      - data:/data',
       '    ports:',
       '      - "8080:8080"',
@@ -92,7 +96,7 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
       environmentId: ENV_ID,
       containerReference: ENV_CONTAINER,
       workspacePath: WORKSPACE,
-      workspaceVolume: VOLUME,
+      workspaceAlias: { legacyPath: WORKSPACE, canonicalPath: canonicalWorkspacePath(ENV_ID) },
       helperImage: 'alpine:3',
       onDroppedPorts: ports => { dropped.push(...ports) }
     })
@@ -103,7 +107,6 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     await stopDoodProxy(ENV_ID)
     await run('docker', ['rm', '-f', ENV_CONTAINER], { allowFailure: true })
     await removeEnvironmentResources(ENV_ID)
-    await run('docker', ['volume', 'rm', '-f', VOLUME], { allowFailure: true })
     await run('docker', ['rm', '-f', portHelperName()], { allowFailure: true })
     await run('docker', ['rmi', portHelperImage()], { allowFailure: true })
     delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
@@ -117,14 +120,18 @@ describe.skipIf(!daemon)('DooD proxy under docker compose', () => {
     const ids = (await compose(['ps', '-q'])).stdout.split('\n').filter(Boolean)
     expect(ids.length).toBe(1)
 
-    // The bind became a volume+subpath mount, so the service really sees the
-    // workspace even though its path does not exist on the host at all.
+    // The display path went through the alias to the host directory behind
+    // the environment's bind mount.
     const seen = await run('docker', ['exec', ids[0]!, 'cat', '/usr/share/site/index.html'])
     expect(seen.stdout).toBe('from-the-workspace')
 
     // …and read-only, as the compose file asked.
     const readonly = await run('docker', ['exec', ids[0]!, 'sh', '-c', 'touch /usr/share/site/nope'], { allowFailure: true })
     expect(readonly.stderr).toMatch(/[Rr]ead-only/)
+
+    // …and what a service writes to the checkout lands on the host.
+    await run('docker', ['exec', ids[0]!, 'sh', '-c', 'echo from-the-service > /checkout/written'])
+    expect(await readFile(join(checkout, 'written'), 'utf8')).toBe('from-the-service\n')
 
     // `ports: 8080:8080` was asked for and must not have reached the host.
     const bindings = await run('docker', ['inspect', '--format', '{{json .HostConfig.PortBindings}}', ids[0]!])

@@ -55,7 +55,9 @@ const children = [
   // dev environment then gets `connection refused` from the mesh. (On a Linux
   // host `host-gateway` is the bridge address, which a loopback listener never
   // answers on either.)
-  spawn('nuxt', ['dev', '--port', port, '--public'], { stdio: 'inherit' })
+  // Anything else on the command line is Nuxt's: `pnpm dev --tunnel` is the
+  // one that gets used, which puts the dev server behind a public URL.
+  spawn('nuxt', ['dev', '--port', port, '--public', ...process.argv.slice(2)], { stdio: 'inherit' })
 ]
 
 console.log(`\n  ➜ HTTPS: https://${address}/\n`)

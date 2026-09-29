@@ -10,9 +10,7 @@ if (!isAgentAdapter(adapterId.value)) {
 }
 const adapter = computed(() => agentAdapterInfo(adapterId.value as any))
 
-const { data: settings, refresh: refreshSettings } = await useFetch<
-  AppSettings & { hasOpenCodeKey: boolean, hasOpenCodeAuth: boolean }
->('/api/settings')
+const { data: settings, refresh: refreshSettings } = await useSettingsForm()
 const { data: probe, status: probeStatus, error: probeError, refresh: refreshProbe } = await useFetch<{
   models: Array<{ id: string, name: string }>
   current: string | null

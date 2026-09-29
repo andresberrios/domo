@@ -76,7 +76,7 @@ const modelItems = computed(() => [
   ...typedModels.value.map(id => ({ label: id, value: id }))
 ])
 
-const { data: settings } = await useFetch('/api/settings', { lazy: true })
+const { data: settings } = useSettings()
 
 // The mode this session starts in, preselected to the install's
 // default for the chosen adapter. Never a sentinel: an empty v-model would show
@@ -316,7 +316,7 @@ async function create() {
           <template #help>
             <span class="text-xs text-muted">
               The local checkout is {{ selectedProject.repoPath }} on this machine.
-              Environments are containers with a private copy of it, and can be
+              Environments are containers, each with its own git worktree of it, and can be
               shared by multiple agents.
             </span>
           </template>

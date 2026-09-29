@@ -186,6 +186,24 @@ describe('homeOverlay', () => {
 
       expect(config.indexOf('    helper =\n')).toBeLessThan(config.indexOf('!gh auth git-credential'))
     })
+
+    // Git checks ownership on the real path, and a worktree's display path is
+    // only a symlink to it: marking just `/workspaces/api` safe is not enough.
+    it('marks a worktree\'s canonical mount and its base .git safe as well as the display path', () => {
+      const config = containerGitconfig({
+        containerHome: '/home/vscode',
+        workspacePath: '/workspaces/api',
+        safeDirectories: ['/worktrees/env_1', '/worktrees/.base/prj_1'],
+        includeHostConfig: false
+      })
+      const safe = config.slice(config.indexOf('[safe]'), config.indexOf('[credential]'))
+
+      expect(safe.split('\n').filter(line => line.includes('directory ='))).toEqual([
+        '    directory = /workspaces/api',
+        '    directory = /worktrees/env_1',
+        '    directory = /worktrees/.base/prj_1'
+      ])
+    })
   })
 
   /**

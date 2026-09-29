@@ -169,7 +169,6 @@ describe.skipIf(!daemon)('an environment\'s own image tags on the shared daemon'
         environmentId: env.id,
         containerReference: env.container,
         workspacePath: WORKSPACE,
-        workspaceVolume: env.volume,
         helperImage: BASE
       })).socketPath
     }

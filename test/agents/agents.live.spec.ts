@@ -1,8 +1,10 @@
 import { rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import type { AgentAdapter, DevEnvironment } from '~~/shared/types'
+import { removeCachedImages } from '../helpers/cached-images'
 import {
   assistantText,
   eventsOfType,
@@ -94,9 +96,13 @@ afterAll(async () => {
     acpManager.stop(id)
   }
   if (environment) await retireEnvironment(environment.id).catch(() => {})
+  await removeCachedImages(PREFIX)
+  // Shared by this run's environments only; the runtime and browser volumes are kept for the next run.
+  const { sharedCacheVolumeName } = await import('../../server/lib/dev-env/caches')
+  await docker('volume', 'rm', sharedCacheVolumeName())
   await mesh?.close()
   for (const path of [repoPath, hostCwd]) {
-    if (path) await rm(path, { recursive: true, force: true })
+    if (path) await rm(dirname(path), { recursive: true, force: true })
   }
 
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX
@@ -421,10 +427,10 @@ function answerPermissions(agentSessionId: string) {
 }
 
 describe('cleanup', () => {
-  it('leaves no container, volume or image behind', async () => {
+  it('leaves no container, worktree or image behind', async () => {
     const { retireEnvironment } = await import('../../server/lib/dev-environments')
     const { acpManager } = await import('../../server/lib/acp/manager')
-    const { workspaceVolumeName } = await import('../../server/lib/dev-environments')
+    const { hostWorktreeExists } = await import('../../server/lib/dev-env/host-worktree')
     const { environmentImageName } = await import('../../server/lib/dev-env/image')
 
     for (const id of sessions.splice(0)) {
@@ -436,7 +442,7 @@ describe('cleanup', () => {
     environment = null as any
 
     expect(await docker('ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`)).toBe('')
-    expect(await docker('volume', 'ls', '--quiet', '--filter', `name=^${workspaceVolumeName(id)}$`)).toBe('')
+    expect(await hostWorktreeExists(repoPath, id)).toBe(false)
     expect(await docker('images', '--quiet', environmentImageName(id))).toBe('')
     // The shared runtime volume is deliberately kept: it is the expensive part.
   }, HOUR / 4)

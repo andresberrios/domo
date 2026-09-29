@@ -20,20 +20,26 @@
  * environment here, and nothing in this file changes it.
  */
 
+import type { WorkspaceAlias } from '../dev-env/canonical-mounts'
 import { resolveBindSource, type EnvironmentMount } from './binds'
 
 /** What an environment's containers are translated *into*. */
 export interface DoodScope {
   /** Where the checkout appears inside the environment, e.g. `/workspaces/domo`. */
   workspacePath: string
-  /** The named volume that path is really backed by. */
-  workspaceVolume: string
+  /**
+   * `workspacePath` is a symlink to this real bind-mount destination, so a
+   * bind source addressed via it has to be resolved through the alias before
+   * it is matched against `mounts` — `docker inspect` only ever names the
+   * real destination.
+   */
+  workspaceAlias?: WorkspaceAlias
   /** Stamped on every container so retiring the environment can sweep by label. */
   labels: Record<string, string>
   /**
    * The environment container's own mount table (`binds.ts`), which every
-   * bind source is resolved against. The checkout is added when it is not in
-   * it, so a scope with none still translates the workspace.
+   * bind source is resolved against, read from `docker inspect`. The checkout
+   * is only in it as the environment really mounts it.
    */
   mounts?: EnvironmentMount[]
   /** This environment's proxy socket on the daemon's host: what `/var/run/docker.sock` means to a service. */
@@ -140,15 +146,6 @@ function renderBind(bind: ParsedBind, source: string, forceReadOnly: boolean): s
   let options = bind.options
   if (forceReadOnly && !bind.readOnly) options = [...options.filter(option => option !== 'rw'), 'ro']
   return [source, bind.target, ...(options.length ? [options.join(',')] : [])].join(':')
-}
-
-/** The environment's mount table, with the checkout in it whether or not the caller read one. */
-function mountTable(scope: DoodScope): EnvironmentMount[] {
-  const table = [...(scope.mounts ?? [])]
-  if (!table.some(mount => mount.destination === scope.workspacePath)) {
-    table.push({ destination: scope.workspacePath, kind: 'volume', volume: scope.workspaceVolume, readOnly: false })
-  }
-  return table
 }
 
 function parsePortKey(key: string, bindings: unknown): PublishedPort | null {
@@ -354,8 +351,13 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?:
   const mounts: MountSpec[] = Array.isArray(hostConfig.Mounts)
     ? (hostConfig.Mounts as MountSpec[]).map(mount => ({ ...mount }))
     : []
-  const table = mountTable(scope)
-  const resolve = (source: string) => resolveBindSource(source, table, { dockerSocket: scope.dockerSocket }, scope.workspacePath)
+  const table = scope.mounts ?? []
+  const resolve = (source: string) => resolveBindSource(
+    source,
+    table,
+    { dockerSocket: scope.dockerSocket, workspaceAlias: scope.workspaceAlias },
+    scope.workspacePath
+  )
 
   const claim = (volume: string, subpath: string, envReadOnly: boolean) => {
     if (!subpath || envReadOnly) return
@@ -402,8 +404,7 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?:
   // Long syntax.
   const longMounts: MountSpec[] = []
   for (const mount of mounts) {
-    if (mount.Type === 'volume' && names && typeof mount.Source === 'string' && isNamedVolumeSource(mount.Source)
-      && mount.Source !== scope.workspaceVolume) {
+    if (mount.Type === 'volume' && names && typeof mount.Source === 'string' && isNamedVolumeSource(mount.Source)) {
       longMounts.push({ ...mount, Source: names.volume(mount.Source) })
       continue
     }

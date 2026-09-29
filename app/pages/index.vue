@@ -4,7 +4,7 @@ const { sessions: agents } = useAgentSessions()
 const { pending } = usePermissions()
 const { environments } = useDevEnvironments()
 
-const { data: settings } = await useFetch('/api/settings', { lazy: true })
+const { data: settings } = useSettings()
 
 const { creating, startConversation } = useNewConversation()
 const newAgentOpen = ref(false)

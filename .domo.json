@@ -1,0 +1,13 @@
+{
+  "devEnvironment": {
+    // Domo's built-in definition, plus Caddy: `pnpm dev` runs it from PATH in
+    // front of Nuxt, and a Feature builds it into the cached image.
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+    "features": {
+      "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+      "ghcr.io/devcontainers/features/github-cli:1": { "version": "latest" },
+      "ghcr.io/devcontainers-extra/features/caddy:1": { "version": "2.11.4", "golangVersion": "none" }
+    },
+    "docker": true
+  }
+}

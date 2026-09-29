@@ -49,54 +49,21 @@ const devEnvironments = vi.hoisted(() => ({
     name: input.name,
     status: 'running',
     workspacePath: '/workspaces/env_new',
-    workspaceSeed: { mode: input.workingTree ?? 'discard', paths: [], total: 0, commit: null }
+    workspaceSeed: { paths: [], total: 0, copied: [], install: null }
   })),
   startEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'running' })),
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
   // What a cleanup with a working daemon reports: nothing left over.
-  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [] })),
+  retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [], branches: [] as any[] })),
   cleanupEnvironment: vi.fn(async (): Promise<{
     removed: Array<{ kind: string, name: string, environmentId: string }>
     leftovers: Array<{ kind: string, name: string, environmentId: string, error: string }>
     unattributed: string[]
-  }> => ({ removed: [], leftovers: [], unattributed: [] }))
+    branches: any[]
+  }> => ({ removed: [], leftovers: [], unattributed: [], branches: [] }))
 }))
 
 vi.mock('../../server/lib/dev-environments', () => devEnvironments)
-
-// The sync itself is `git-sync.spec.ts`, with real git on both ends; here it
-// is only what the mesh decides before calling it. `resolveIntoBranch` /
-// `resolveFromRef` stay real, because those decisions are the point.
-const gitSync = vi.hoisted(() => ({
-  exportBranch: vi.fn(async (input: any) => ({
-    ref: `refs/remotes/domo-env/env/${input.branch}`,
-    sha: 'f00d',
-    commits: [],
-    into: input.into,
-    result: input.into ? 'fast-forwarded' : 'not-merged'
-  })),
-  listEnvironmentBranches: vi.fn(async () => ({ current: 'work-in-here', branches: [] }))
-}))
-
-// The import's own decisions — which branch, and who gets told — are
-// `test/unit/branch-import.spec.ts`; here it is only what the mesh hands over.
-const branchImport = vi.hoisted(() => ({
-  importBranchIntoEnvironment: vi.fn(async (input: any) => ({
-    branch: input.branch,
-    requested: input.branch,
-    from: input.from ?? input.branch,
-    sha: 'f00d',
-    commits: [],
-    result: 'fast-forwarded',
-    notified: []
-  }))
-}))
-vi.mock('../../server/lib/branch-import', () => branchImport)
-
-vi.mock('../../server/lib/dev-env/git-sync', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../server/lib/dev-env/git-sync')>(),
-  ...gitSync
-}))
 
 // The real one spawns an adapter to ask it; that belongs to `adapter-models.spec.ts`.
 const catalog = vi.hoisted(() => vi.fn(async (_adapter?: string) => ({
@@ -168,9 +135,6 @@ beforeEach(async () => {
   devEnvironments.stopEnvironment.mockClear()
   devEnvironments.retireEnvironment.mockClear()
   devEnvironments.cleanupEnvironment.mockClear()
-  gitSync.exportBranch.mockClear()
-  branchImport.importBranchIntoEnvironment.mockClear()
-  gitSync.listEnvironmentBranches.mockClear()
 })
 
 describe('the agent-mesh MCP endpoint', () => {
@@ -222,8 +186,6 @@ describe('the agent-mesh MCP endpoint', () => {
       'update_dev_environment',
       'retire_dev_environment',
       'retry_environment_cleanup',
-      'export_branch',
-      'import_branch',
       'schedule_task',
       'list_scheduled_tasks',
       'update_scheduled_task',
@@ -322,14 +284,15 @@ describe('the agent-mesh MCP endpoint', () => {
     expect(acp.deliver).toHaveBeenLastCalledWith(target.id, expect.objectContaining({ delivery: 'queue' }))
   })
 
-  it('spawns a peer into the caller\'s own environment and adapter', async () => {
+  it('spawns a peer into an environment only when asked, and on the host otherwise', async () => {
     const environment = await runningEnvironment('own')
     const caller = await session('caller', { adapter: 'codex', devEnvironmentId: environment.id })
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
       title: 'docs',
       prompt: 'write the README',
-      // Ignored: an agent in an environment always spawns its peer there.
+      devEnvironmentId: environment.id,
+      // Ignored: a session in an environment runs in its workspace.
       cwd: '/elsewhere'
     })).body)
 
@@ -344,6 +307,17 @@ describe('the agent-mesh MCP endpoint', () => {
     await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
       { type: 'mesh_spawned', payload: { agentId: body.id, title: 'docs' } }
     ])
+
+    // Omitted, null or empty: the host, in the environment's project checkout
+    // unless a directory is named, however the caller runs.
+    for (const devEnvironmentId of [undefined, null, '']) {
+      acp.create.mockClear()
+      await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'host', prompt: 'p', devEnvironmentId })
+      expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/tmp/domo-mesh', devEnvironmentId: null }))
+    }
+    acp.create.mockClear()
+    await callTool(mintMeshToken(caller.id), 'spawn_agent', { title: 'host', prompt: 'p', cwd: '/tmp/elsewhere' })
+    expect(acp.create).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/tmp/elsewhere', devEnvironmentId: null }))
   })
 
   it('lets a host agent spawn a peer into a running development environment', async () => {
@@ -665,29 +639,9 @@ describe('projects and dev environments', () => {
 
     expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
       projectId: project.id,
-      name: 'feature-x',
-      workingTree: 'discard'
+      name: 'feature-x'
     })
     expect(body).toMatchObject({ id: 'env_new', name: 'feature-x', status: 'running' })
-  })
-
-  // The host's uncommitted work is left behind unless the caller says otherwise:
-  // an agent asking for an environment has no idea what its human left in the tree.
-  it('carries the host working tree only when the caller asks for it', async () => {
-    const caller = await session('caller')
-    const project = await createProject({ name: 'domo', repoPath })
-
-    await callTool(mintMeshToken(caller.id), 'create_dev_environment', {
-      projectId: project.id,
-      name: 'feature-y',
-      workingTree: 'carry'
-    })
-
-    expect(devEnvironments.createEnvironment).toHaveBeenCalledWith({
-      projectId: project.id,
-      name: 'feature-y',
-      workingTree: 'carry'
-    })
   })
 
   it('starts, stops and renames a development environment', async () => {
@@ -731,7 +685,7 @@ describe('projects and dev environments', () => {
     // `leftovers` is what Docker would not remove: empty here and normally, and
     // reported rather than swallowed, so a peer agent is not told a retirement
     // was clean when gigabytes are still on the disk.
-    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [], leftovers: [] })
+    expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [], leftovers: [], branch: null })
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
@@ -774,7 +728,8 @@ describe('projects and dev environments', () => {
         environmentId: environment.id,
         error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
       }],
-      unattributed: []
+      unattributed: [],
+      branches: []
     })
 
     const body = resultOf((await callTool(mintMeshToken(caller.id), 'retry_environment_cleanup', {
@@ -792,124 +747,5 @@ describe('projects and dev environments', () => {
         error: 'Container tidy-runner still has it mounted. Remove it (docker rm -f tidy-runner) and run the cleanup again.'
       }]
     })
-  })
-})
-
-describe('export_branch', () => {
-  let repoPath: string
-
-  async function environmentFor(name = 'env') {
-    const project = await createProject({ name: 'domo', repoPath })
-    return createDevEnvironmentRow({
-      projectId: project.id,
-      name,
-      containerName: `domo-${name}`,
-      workspacePath: '/workspace'
-    })
-  }
-
-  beforeEach(async () => {
-    repoPath = await mkdtemp(join(tmpdir(), 'domo-mesh-repo-'))
-    await mkdir(join(repoPath, '.git'))
-  })
-
-  afterEach(async () => {
-    await rm(repoPath, { recursive: true, force: true })
-  })
-
-  it('defaults to the caller\'s own environment, its checked-out branch and the same name on the host', async () => {
-    const environment = await environmentFor()
-    const caller = await session('caller', { devEnvironmentId: environment.id })
-
-    const body = resultOf((await callTool(mintMeshToken(caller.id), 'export_branch')).body)
-
-    expect(gitSync.listEnvironmentBranches).toHaveBeenCalledWith(environment.id)
-    expect(gitSync.exportBranch).toHaveBeenCalledWith({
-      environmentId: environment.id,
-      branch: 'work-in-here',
-      into: 'work-in-here'
-    })
-    expect(body).toMatchObject({ result: 'fast-forwarded', into: 'work-in-here' })
-  })
-
-  it('takes another environment, branch and local branch when it is given them', async () => {
-    const environment = await environmentFor('other')
-    const caller = await session('caller')
-
-    await callTool(mintMeshToken(caller.id), 'export_branch', {
-      devEnvironmentId: environment.id,
-      branch: 'feature',
-      into: 'review'
-    })
-
-    expect(gitSync.listEnvironmentBranches).not.toHaveBeenCalled()
-    expect(gitSync.exportBranch).toHaveBeenCalledWith({
-      environmentId: environment.id,
-      branch: 'feature',
-      into: 'review'
-    })
-  })
-
-  it('reads an empty `into` as "fetch it, touch nothing"', async () => {
-    const environment = await environmentFor()
-    const caller = await session('caller', { devEnvironmentId: environment.id })
-
-    await callTool(mintMeshToken(caller.id), 'export_branch', { branch: 'feature', into: '' })
-
-    expect(gitSync.exportBranch).toHaveBeenCalledWith(expect.objectContaining({ into: null }))
-  })
-
-  it('tells a host session it has to name an environment', async () => {
-    const caller = await session('caller')
-
-    const { body } = await callTool(mintMeshToken(caller.id), 'export_branch', { branch: 'main' })
-
-    expect(body.result.isError).toBe(true)
-    expect(body.result.content[0].text).toMatch(/pass devEnvironmentId/)
-    expect(gitSync.exportBranch).not.toHaveBeenCalled()
-  })
-
-  it('imports into the caller\'s own environment, from the same name on the host', async () => {
-    const environment = await environmentFor()
-    const caller = await session('caller', { devEnvironmentId: environment.id })
-
-    const body = resultOf((await callTool(mintMeshToken(caller.id), 'import_branch', { branch: 'main' })).body)
-
-    expect(branchImport.importBranchIntoEnvironment).toHaveBeenCalledWith({
-      environmentId: environment.id,
-      branch: 'main',
-      from: undefined
-    })
-    expect(body).toMatchObject({ branch: 'main', result: 'fast-forwarded' })
-  })
-
-  it('takes another environment and a differently named host ref for an import', async () => {
-    const environment = await environmentFor('other')
-    const caller = await session('caller')
-
-    await callTool(mintMeshToken(caller.id), 'import_branch', {
-      devEnvironmentId: environment.id,
-      branch: 'staging',
-      from: 'main'
-    })
-
-    expect(branchImport.importBranchIntoEnvironment).toHaveBeenCalledWith({
-      environmentId: environment.id,
-      branch: 'staging',
-      from: 'main'
-    })
-  })
-
-  // Unlike an export there is nothing to fall back to: an import with no target
-  // branch has nowhere to put anything.
-  it('refuses an import with no branch named', async () => {
-    const environment = await environmentFor()
-    const caller = await session('caller', { devEnvironmentId: environment.id })
-
-    const { body } = await callTool(mintMeshToken(caller.id), 'import_branch', { branch: '  ' })
-
-    expect(body.result.isError).toBe(true)
-    expect(body.result.content[0].text).toMatch(/Name the branch/)
-    expect(branchImport.importBranchIntoEnvironment).not.toHaveBeenCalled()
   })
 })

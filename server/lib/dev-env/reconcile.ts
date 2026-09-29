@@ -1,13 +1,18 @@
-import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover } from '../../../shared/types'
-import { listDevEnvironments, setEnvironmentLeftovers } from '../repo'
+import type { DevEnvironment, DevEnvironmentStatus, EnvironmentLeftover, Project } from '../../../shared/types'
+import { listDevEnvironments, listProjects, markEnvironmentCleaned, setEnvironmentLeftovers } from '../repo'
+import { CACHES_ROOT, PNPM_PROJECTS_DIR, PNPM_PROJECTS_SWEEP_SCRIPT, pnpmProjectDir, sharedCacheVolumeName } from './caches'
+import { run } from './docker'
+import { deleteMergedBranch, hostWorktreeExists, hostWorktreePath, listHostWorktrees, removeHostWorktree, type BranchOutcome } from './host-worktree'
 import {
   describeLeftovers,
   observeEnvironmentResources,
   planLeftoverRemoval,
   removeLeftovers,
   unattributedResources,
-  type Leftover
+  type Leftover,
+  type RemovalOutcome
 } from './leftovers'
+import { RUNTIME_IMAGE } from './runtime-volume'
 
 /**
  * Reconcile what Docker has against what the rows say should be left.
@@ -43,11 +48,16 @@ export interface CleanupReport {
    * removed — see `unattributedResources` — and named so a person can decide.
    */
   unattributed: string[]
+  /**
+   * The branches of environments whose worktree went this pass: deleted when
+   * fully merged, kept with the reason otherwise (`deleteMergedBranch`).
+   */
+  branches: Array<BranchOutcome & { environmentId: string }>
   /** Set when Docker could not be asked at all: nothing was removed and nothing was recorded. */
   unreachable?: string
 }
 
-const EMPTY: CleanupReport = { removed: [], leftovers: [], unattributed: [] }
+const EMPTY: CleanupReport = { removed: [], leftovers: [], unattributed: [], branches: [] }
 
 function describe(leftover: Leftover): string {
   return `${leftover.kind} ${leftover.name}`
@@ -67,8 +77,11 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   // Worth the early return: an install that does not use development
   // environments at all must not log a Docker error every half hour.
   if (!environments.length) return EMPTY
+  // A retired row claims what is named from its id only until a pass has seen
+  // none of it left (`cleanedAt`). Nothing can be made for it after that, and a
+  // path or name reusing its id later belongs to somebody else.
   const claimants = environments.filter(
-    environment => environment.retiredAt || environment.leftovers.length
+    environment => (environment.retiredAt && !environment.cleanedAt) || environment.leftovers.length
   )
 
   let present
@@ -77,9 +90,24 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
   } catch (error) {
     return { ...EMPTY, unreachable: error instanceof Error ? error.message : String(error) }
   }
-  const unattributed = unattributedResources({ environments, present })
+  const projects = await listProjects(true)
+  const unattributed = [
+    ...unattributedResources({ environments, present }),
+    ...await unattributedWorktrees(environments, projects)
+  ]
 
   const outcome = await removeLeftovers(planLeftoverRemoval({ environments: claimants, present }))
+  // After Docker's: the container that mounts a worktree has gone by now, or
+  // it is itself a leftover and the worktree stays with it.
+  const worktrees = await removeWorktreeLeftovers(claimants, projects)
+  const branches = await settleBranches(claimants, projects, worktrees.failed)
+  outcome.removed.push(...worktrees.removed)
+  outcome.failed.push(...worktrees.failed)
+  // After the container that installed into it, like the worktree.
+  const dependencies = await removeDependencyLeftovers(claimants)
+  outcome.removed.push(...dependencies.removed)
+  outcome.failed.push(...dependencies.failed)
+  unattributed.push(...dependencies.unattributed)
   const remaining = new Map<string, EnvironmentLeftover[]>()
   for (const failure of outcome.failed) {
     const list = remaining.get(failure.environmentId) ?? []
@@ -94,8 +122,125 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
     const settled = !owed.length && !environment.leftovers.length
       && (!wanted || (environment.status === wanted.status && environment.lastError === wanted.lastError))
     if (!settled) await setEnvironmentLeftovers(environment.id, owed, wanted)
+    // Confirmed clean: Docker was asked (an unreachable one returned above) and
+    // the host was looked at. Without its project the worktree could not be,
+    // so that row keeps its claim.
+    const looked = projects.some(project => project.id === environment.projectId)
+    if (environment.retiredAt && !owed.length && looked) await markEnvironmentCleaned(environment.id)
   }
-  return { removed: outcome.removed, leftovers: outcome.failed, unattributed }
+  return { removed: outcome.removed, leftovers: outcome.failed, unattributed, branches }
+}
+
+/**
+ * The branch half: once a claimant's worktree is gone, the branch Domo made for
+ * it goes too if nothing would be lost (`deleteMergedBranch`). A branch that
+ * existed before the environment is never touched, and neither is any other
+ * branch the worktree may have been switched to. A worktree still there keeps
+ * its branch checked out, so its branch waits for the pass that removes it.
+ */
+async function settleBranches(
+  claimants: DevEnvironment[],
+  projects: Project[],
+  failed: Array<{ environmentId: string }>
+): Promise<CleanupReport['branches']> {
+  const repoPaths = new Map(projects.map(project => [project.id, project.repoPath]))
+  const blocked = new Set(failed.map(failure => failure.environmentId))
+  const outcomes: CleanupReport['branches'] = []
+  for (const environment of claimants) {
+    const repoPath = repoPaths.get(environment.projectId)
+    if (!repoPath || !environment.branch || !environment.branchCreated || blocked.has(environment.id)) continue
+    if (await hostWorktreeExists(repoPath, environment.id)) continue
+    const outcome = await deleteMergedBranch(repoPath, environment.branch).catch(error => ({
+      name: environment.branch!,
+      deleted: false,
+      reason: `It could not be checked: ${error instanceof Error ? error.message : String(error)}`
+    }))
+    if (outcome) outcomes.push({ ...outcome, environmentId: environment.id })
+  }
+  return outcomes
+}
+
+/**
+ * The host half of a sweep: an environment's worktree, which is a directory
+ * beside its project's checkout rather than anything Docker lists.
+ *
+ * The same attribution rule as Docker's: a retired row claims its worktree,
+ * any row claims one a cleanup recorded as owed, and a live environment's is
+ * never touched — it is the only copy of its agent's uncommitted work.
+ * Whether it went is decided by looking at the disk afterwards.
+ */
+export async function removeWorktreeLeftovers(
+  claimants: DevEnvironment[],
+  projects: Project[]
+): Promise<RemovalOutcome> {
+  const outcome: RemovalOutcome = { removed: [], failed: [] }
+  const repoPaths = new Map(projects.map(project => [project.id, project.repoPath]))
+  for (const environment of claimants) {
+    const repoPath = repoPaths.get(environment.projectId)
+    if (!repoPath) continue
+    const claimed = !!environment.retiredAt || environment.leftovers.some(owed => owed.kind === 'worktree')
+    if (!claimed || !(await hostWorktreeExists(repoPath, environment.id))) continue
+    const leftover = { kind: 'worktree' as const, name: hostWorktreePath(repoPath, environment.id), environmentId: environment.id }
+    const result = await removeHostWorktree({ repoPath, environmentId: environment.id })
+      .then(left => left.length
+        ? { error: `Could not delete ${left.join(', ')}. Delete it by hand and run the cleanup again.` }
+        : { error: null },
+      error => ({ error: error instanceof Error ? error.message : String(error) }))
+    if (result.error) outcome.failed.push({ ...leftover, error: result.error })
+    else outcome.removed.push(leftover)
+  }
+  return outcome
+}
+
+/**
+ * The cache-volume half: each environment's pnpm virtual store
+ * (`caches.ts`), a directory named by its id. Removed for a claimant from a
+ * helper container, in one run for the whole pass, and decided by listing the
+ * directory afterwards. A live environment's is never touched, and one no row
+ * knows is reported, not removed. Nothing at all when the volume does not
+ * exist: asking would create it.
+ */
+export async function removeDependencyLeftovers(
+  claimants: DevEnvironment[]
+): Promise<RemovalOutcome & { unattributed: string[] }> {
+  const outcome = { removed: [] as Leftover[], failed: [] as RemovalOutcome['failed'], unattributed: [] as string[] }
+  const volume = sharedCacheVolumeName()
+  const exists = await run('docker', ['volume', 'inspect', volume], { allowFailure: true })
+    .then(result => result.stdout.trim().startsWith('[') && result.stdout.trim() !== '[]', () => false)
+  if (!exists) return outcome
+  const claimed = claimants.filter(environment =>
+    !!environment.retiredAt || environment.leftovers.some(owed => owed.kind === 'dependencies'))
+  const dir = `/c/${PNPM_PROJECTS_DIR.slice(CACHES_ROOT.length + 1)}`
+  const listed = await run('docker', [
+    'run', '--rm', '--volume', `${volume}:/c`, RUNTIME_IMAGE,
+    'sh', '-c', PNPM_PROJECTS_SWEEP_SCRIPT, 'sh', dir, ...claimed.map(environment => environment.id)
+  ]).then(result => result.stdout.split('\n').map(line => line.trim()).filter(Boolean))
+  const removing = new Set(listed.filter(line => line.startsWith('removing ')).map(line => line.slice('removing '.length)))
+  const left = new Set(listed.filter(line => line.startsWith('left ')).map(line => line.slice('left '.length)))
+  const known = new Set((await listDevEnvironments(undefined, true)).map(environment => environment.id))
+  for (const environment of claimed) {
+    const leftover = { kind: 'dependencies' as const, name: `${volume}:${pnpmProjectDir(environment.id).slice(CACHES_ROOT.length + 1)}`, environmentId: environment.id }
+    if (left.has(environment.id)) outcome.failed.push({ ...leftover, error: 'It could not be deleted from the cache volume. Run the cleanup again.' })
+    else if (removing.has(environment.id)) outcome.removed.push(leftover)
+  }
+  for (const id of left) if (!known.has(id)) outcome.unattributed.push(`dependencies ${volume}:${dir.slice(3)}/${id}`)
+  return outcome
+}
+
+/**
+ * Worktrees beside a project's checkout that no environment row knows —
+ * reported, never removed, for the same reason as Docker's: nothing here can
+ * tell another install's live checkout from garbage.
+ */
+async function unattributedWorktrees(environments: DevEnvironment[], projects: Project[]): Promise<string[]> {
+  const known = new Set(environments.map(environment => environment.id))
+  const found = new Set<string>()
+  for (const project of projects) {
+    for (const id of await listHostWorktrees(project.repoPath)) {
+      if (!known.has(id)) found.add(`worktree ${hostWorktreePath(project.repoPath, id)}`)
+    }
+  }
+  return [...found]
 }
 
 /**
@@ -184,6 +329,9 @@ async function pass(): Promise<CleanupReport> {
   lastUnreachable = null
   for (const removed of report.removed) {
     console.warn(`[dev-env] removed leftover ${describe(removed)} from retired environment ${removed.environmentId}`)
+  }
+  for (const branch of report.branches) {
+    console.warn(`[dev-env] ${branch.deleted ? 'deleted' : 'kept'} branch ${branch.name} of environment ${branch.environmentId}. ${branch.reason}`)
   }
   if (report.unattributed.length && lastUnattributed !== report.unattributed.join(',')) {
     lastUnattributed = report.unattributed.join(',')
