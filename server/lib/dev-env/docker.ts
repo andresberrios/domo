@@ -20,19 +20,51 @@ export interface ContainerInspection {
 export async function run(
   program: string,
   args: string[],
-  options: { cwd?: string, env?: NodeJS.ProcessEnv, input?: string, allowFailure?: boolean, trimOutput?: boolean } = {}
+  options: {
+    cwd?: string
+    env?: NodeJS.ProcessEnv
+    input?: string
+    allowFailure?: boolean
+    trimOutput?: boolean
+    /**
+     * Stops the command and everything it started, and rejects with the
+     * signal's reason. The whole process group, because a wrapper such as the
+     * Dev Container CLI leaves its own `docker build` running otherwise.
+     */
+    signal?: AbortSignal
+  } = {}
 ): Promise<{ stdout: string, stderr: string }> {
+  const { signal } = options
+  if (signal?.aborted) throw signal.reason
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(program, args, { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(program, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: !!signal
+    })
     let stdout = ''
     let stderr = ''
+    let aborted = false
+    const abort = () => {
+      aborted = true
+      try {
+        process.kill(-child.pid!, 'SIGTERM')
+      } catch {
+        child.kill('SIGTERM')
+      }
+    }
+    signal?.addEventListener('abort', abort, { once: true })
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', chunk => (stdout += chunk))
     child.stderr.on('data', chunk => (stderr += chunk))
     child.once('error', reject)
     child.once('close', (code) => {
-      if (code === 0 || options.allowFailure) {
+      signal?.removeEventListener('abort', abort)
+      if (aborted) {
+        reject(signal!.reason)
+      } else if (code === 0 || options.allowFailure) {
         resolvePromise({
           stdout: options.trimOutput === false ? stdout : stdout.trim(),
           stderr: stderr.trim()

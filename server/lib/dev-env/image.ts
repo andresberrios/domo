@@ -121,6 +121,8 @@ export async function buildEnvironmentImage(input: {
   environmentId: string
   name: string
   repoPath: string
+  /** Stops a build that is under way. A cached image is only tagged, which is too quick to be worth stopping. */
+  signal?: AbortSignal
 }): Promise<string> {
   if (!DEVCONTAINER_BIN) throw new Error('The packaged Dev Container CLI could not be found.')
   const imageName = environmentImageName(input.environmentId)
@@ -138,7 +140,10 @@ export async function buildEnvironmentImage(input: {
   return imageName
 }
 
-async function buildImage(input: { config: DevEnvironmentConfig, name: string, repoPath: string }, imageName: string): Promise<void> {
+async function buildImage(
+  input: { config: DevEnvironmentConfig, name: string, repoPath: string, signal?: AbortSignal },
+  imageName: string
+): Promise<void> {
   const scratch = await mkdtemp(join(tmpdir(), 'domo-dev-env-'))
   try {
     const configPath = join(scratch, '.devcontainer', 'devcontainer.json')
@@ -151,7 +156,7 @@ async function buildImage(input: { config: DevEnvironmentConfig, name: string, r
       '--workspace-folder', scratch,
       '--config', configPath,
       '--image-name', imageName
-    ], { allowFailure: true })
+    ], { allowFailure: true, signal: input.signal })
     const result = outcomeLine(output.stdout) ?? outcomeLine(output.stderr)
     if (result?.outcome !== 'success') {
       throw new Error(

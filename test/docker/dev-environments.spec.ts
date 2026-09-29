@@ -1307,6 +1307,22 @@ describe('createEnvironment', () => {
       expect(builtWhenClaimed).toBe(true)
     })
 
+    it('stops a build when the environment is retired under it, rather than making the retirement wait', async () => {
+      buildEnvironmentImage.mockImplementationOnce(async (input: any) => {
+        await new Promise((_resolve, reject) => input.signal.addEventListener('abort', () => reject(input.signal.reason)))
+        return 'never'
+      })
+      const creation = createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      creation.catch(() => {})
+      await vi.waitFor(() => expect(buildEnvironmentImage).toHaveBeenCalled())
+      const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+
+      await retireEnvironment(id)
+
+      await expect(creation).rejects.toThrow('It was retired while it was being built.')
+      expect(dockerCalls().some(args => args[0] === 'run')).toBe(false)
+    })
+
     it('fails creation with nothing run when the worktree cannot be cut, and claims the worktree anyway', async () => {
       hostWorktree.createHostWorktree.mockRejectedValueOnce(new Error('/repo has no commits yet'))
 

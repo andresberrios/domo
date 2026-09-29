@@ -82,6 +82,14 @@ function dockerReadyTimeout(): number {
  */
 const lifecycle = keyedSerial()
 
+/**
+ * The builds under way, so a retirement can stop one rather than queue behind
+ * it for the minutes an image build takes. Only the environment's own steps
+ * stop (its image, its install, its postCreateCommand, and the next step); the
+ * shared volumes another build may be waiting for are left to finish.
+ */
+const builds = new Map<string, AbortController>()
+
 export { safeEnvironmentName }
 
 function containerReference(environment: DevEnvironment): string {
@@ -250,13 +258,15 @@ async function allSettledOrThrow<T extends readonly unknown[]>(work: [...{ [K in
  * How long each step of a creation took, logged once it is done: creation is
  * what people wait on, and a guess about which step is slow is no substitute.
  */
-function stepTimer() {
+function stepTimer(signal?: AbortSignal) {
   const start = Date.now()
   let last = start
   const steps: string[] = []
   const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`
   return {
+    /** Also where a build that was asked to stop does, between steps. */
     mark(step: string) {
+      signal?.throwIfAborted()
       const now = Date.now()
       steps.push(`${step} ${seconds(now - last)}`)
       last = now
@@ -310,7 +320,11 @@ export async function beginEnvironment(
   // it: a start or a retirement asked for while it builds waits for the build
   // rather than racing it. The row is written first, outside the queue, so
   // the caller has an id to ask about the moment this returns.
-  const built = lifecycle(id, () => buildEnvironment({ id, name, safeName, workspacePath, containerName, project }))
+  const controller = new AbortController()
+  builds.set(id, controller)
+  const built = lifecycle(id, () => buildEnvironment({
+    id, name, safeName, workspacePath, containerName, project, signal: controller.signal
+  })).finally(() => builds.delete(id))
   // Whoever holds `built` sees the rejection; this only keeps a caller that
   // does not from crashing the process. The row already records the failure.
   built.catch(() => {})
@@ -325,9 +339,10 @@ async function buildEnvironment(input: {
   workspacePath: string
   containerName: string
   project: Project
+  signal: AbortSignal
 }): Promise<CreatedEnvironment> {
-  const { id, name, safeName, workspacePath, containerName, project } = input
-  const timer = stepTimer()
+  const { id, name, safeName, workspacePath, containerName, project, signal } = input
+  const timer = stepTimer(signal)
   try {
     // The definition, build contexts and Dockerfiles are read from the project's own
     // checkout; the environment gets a worktree of its own beside it (`host-worktree.ts`).
@@ -374,7 +389,8 @@ async function buildEnvironment(input: {
         config: resolved.config,
         environmentId: id,
         name,
-        repoPath: project.repoPath
+        repoPath: project.repoPath,
+        signal
       })))
     ])
     const canonicalPath = canonicalWorkspacePath(id)
@@ -498,14 +514,15 @@ async function buildEnvironment(input: {
     // default unless the project installs its own way (`postCreateCommand`);
     // `installDependencies` says either explicitly.
     const install = (resolved.config.installDependencies ?? !resolved.config.postCreateCommand)
-      ? await installDependencies({ containerId: inspection.id, user: remoteUser, home, workspacePath, checkout: worktree.worktreePath })
+      ? await installDependencies({ containerId: inspection.id, user: remoteUser, home, workspacePath, checkout: worktree.worktreePath, signal })
       : null
     timer.mark('install')
     if (resolved.config.postCreateCommand) {
       await run('docker', [
         ...execArgs({ containerId: inspection.id, user: remoteUser, workdir: workspacePath, env: { HOME: home } }),
         ...postCreateArgs(resolved.config.postCreateCommand)
-      ]).catch((error) => {
+      ], { signal }).catch((error) => {
+        if (signal.aborted) throw error
         throw new Error(`postCreateCommand failed: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
@@ -565,6 +582,7 @@ async function installDependencies(input: {
   workspacePath: string
   /** The worktree on the host, where the lockfiles are read. */
   checkout: string
+  signal: AbortSignal
 }): Promise<WorkspaceSeedReport['install']> {
   const command = defaultInstallCommand(await presentLockfiles(input.checkout))
   if (!command) return null
@@ -572,7 +590,7 @@ async function installDependencies(input: {
   const printed = command.join(' ')
   const available = await run('docker', [...exec, 'sh', '-c', 'command -v "$1"', 'sh', command[0]!]).then(() => true, () => false)
   if (!available) return { command: printed, error: `the image has no ${command[0]}` }
-  return run('docker', [...exec, ...command]).then(
+  return run('docker', [...exec, ...command], { signal: input.signal }).then(
     () => ({ command: printed, error: null }),
     error => ({ command: printed, error: error instanceof Error ? error.message : String(error) })
   )
@@ -755,6 +773,7 @@ async function ensureRunning(id: string): Promise<DevEnvironment> {
  * `acpManager` here would cycle back through this file.
  */
 export function retireEnvironment(id: string): Promise<CleanupReport> {
+  builds.get(id)?.abort(new Error('It was retired while it was being built.'))
   return lifecycle(id, () => retire(id))
 }
 
