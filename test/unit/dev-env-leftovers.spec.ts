@@ -61,9 +61,10 @@ function planned(input: Parameters<typeof planLeftoverRemoval>[0]): string[] {
 }
 
 describe('the names an environment owns', () => {
-  it('derives all three from the id, so a failed cleanup is findable later', () => {
+  it('derives all four from the id, so a failed cleanup is findable later', () => {
     expect(environmentResources('env_1').map(resource => `${resource.kind} ${resource.name}`)).toEqual([
       'container domo-dev-env_1',
+      'volume domo-dev-env_1-home',
       'volume dind-var-lib-docker-env_1',
       'image domo-dev-env_1'
     ])
@@ -71,7 +72,7 @@ describe('the names an environment owns', () => {
 
   it('claims nothing for a live environment, and everything for a retired one', () => {
     expect(claimedResources(environment())).toEqual([])
-    expect(claimedResources(RETIRED)).toHaveLength(3)
+    expect(claimedResources(RETIRED)).toHaveLength(4)
   })
 
   it('claims what a past cleanup wrote down, retired or not', () => {

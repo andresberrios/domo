@@ -118,6 +118,16 @@ registerEndpoint('/api/dev-environments/env_1/cleanup', {
   }
 })
 
+const upgradeStatus = { runtimeStale: true, home: 'migrated', blocked: null as string | null }
+registerEndpoint('/api/dev-environments/env_1/upgrade', { method: 'GET', handler: () => upgradeStatus })
+registerEndpoint('/api/dev-environments/env_1/upgrade', {
+  method: 'POST',
+  handler: async () => {
+    calls.push({ method: 'POST', path: '/api/dev-environments/env_1/upgrade' })
+    return { environment: environment.value, runtime: { from: 'a', to: 'b' }, home: 'migrated', networks: [], stopped: 1, stranded: ['db'] }
+  }
+})
+
 const Harness = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(EnvironmentPage) })
 })
@@ -225,6 +235,36 @@ describe('environment details page', { timeout: 30_000 }, () => {
     await vi.waitFor(() => expect(calls).toContainEqual(
       expect.objectContaining({ method: 'DELETE', path: '/api/dev-environments/env_1' })
     ))
+
+    wrapper.unmount()
+  })
+
+  it('offers newer adapters, and upgrades only after saying what carries over and what does not', async () => {
+    const wrapper = await mountPage()
+
+    const menu = document.body.querySelector<HTMLButtonElement>('button[aria-label="Environment actions"]')!
+    menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }))
+    menu.click()
+
+    const entry = await vi.waitFor(() => {
+      const found = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+        .find(element => element.textContent?.includes('Upgrade (new adapters)'))
+      expect(found).toBeTruthy()
+      return found!
+    })
+    entry.click()
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Upgrade feature-auth?'))
+    // An environment made before the home volume has its home copied first,
+    // and the agent mid-turn in it is interrupted.
+    expect(document.body.textContent).toContain('copied out of the old container')
+    expect(document.body.textContent).toContain('The agent working in it is interrupted')
+    expect(calls).toHaveLength(0)
+
+    buttonWithText('Upgrade environment')!.click()
+    await vi.waitFor(() => expect(calls).toContainEqual({ method: 'POST', path: '/api/dev-environments/env_1/upgrade' }))
+    // The one thing the row does not say: a service that has to be created again.
+    await vi.waitFor(() => expect(document.body.textContent).toContain('db shared the old container'))
 
     wrapper.unmount()
   })

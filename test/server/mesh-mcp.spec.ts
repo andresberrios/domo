@@ -85,6 +85,14 @@ const devEnvironments = vi.hoisted(() => ({
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
   // What a cleanup with a working daemon reports: nothing left over.
   retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [], branches: [] as any[] })),
+  upgradeEnvironment: vi.fn(async (id: string) => ({
+    environment: { id, name: 'env', status: 'running' },
+    runtime: { from: 'domo-dev-runtime-old', to: 'domo-dev-runtime-new' },
+    home: 'kept',
+    networks: [],
+    stopped: 1,
+    stranded: ['db']
+  })),
   cleanupEnvironment: vi.fn(async (): Promise<{
     removed: Array<{ kind: string, name: string, environmentId: string }>
     leftovers: Array<{ kind: string, name: string, environmentId: string, error: string }>
@@ -251,6 +259,7 @@ describe('the agent-mesh MCP endpoint', () => {
       'create_dev_environment',
       'get_dev_environment',
       'update_dev_environment',
+      'upgrade_dev_environment',
       'retire_dev_environment',
       'retry_environment_cleanup',
       'list_environment_ports',
@@ -761,6 +770,54 @@ describe('projects and dev environments', () => {
     // was clean when gigabytes are still on the disk.
     expect(body).toEqual({ id: environment.id, retired: true, sessionsStoodDown: [], leftovers: [], branch: null })
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
+  })
+
+  it('upgrades another environment, and tells each session in it where its next turn runs', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+    const inside = await session('inside', { devEnvironmentId: environment.id })
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'upgrade_dev_environment', {
+      environmentId: environment.id
+    })).body)
+
+    expect(body).toEqual({
+      id: environment.id,
+      status: 'running',
+      adapters: 'updated',
+      home: 'kept',
+      stackContainersStopped: 1,
+      stranded: ['db']
+    })
+    expect(devEnvironments.upgradeEnvironment).toHaveBeenCalledWith(environment.id)
+    expect(acp.stop.mock.invocationCallOrder[0]).toBeLessThan(devEnvironments.upgradeEnvironment.mock.invocationCallOrder[0]!)
+    expect(acp.stop).toHaveBeenCalledWith(inside.id)
+    await expect(listAgentEvents(inside.id)).resolves.toMatchObject([
+      { type: 'environment_upgraded', payload: { devEnvironmentId: environment.id, home: 'kept' } }
+    ])
+  })
+
+  it('refuses to upgrade the environment the caller is running in', async () => {
+    const project = await createProject({ name: 'domo', repoPath })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'env',
+      containerName: 'domo-env',
+      workspacePath: '/workspace'
+    })
+    const caller = await session('caller', { devEnvironmentId: environment.id })
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'upgrade_dev_environment', { environmentId: environment.id })
+
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toMatch(/Refusing to upgrade the environment/)
+    expect(devEnvironments.upgradeEnvironment).not.toHaveBeenCalled()
   })
 
   it('refuses to retire the environment the caller is running in', async () => {

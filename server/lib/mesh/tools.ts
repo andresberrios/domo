@@ -16,7 +16,7 @@ import {
   stopEnvironment
 } from '../dev-environments'
 import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPort } from '../dev-environment-ports'
-import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
+import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment, upgradeProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import { notifyHuman, readAgentFile, writeAgentFile } from '../notifications'
 import { getSettings } from '../settings'
@@ -898,6 +898,21 @@ export const MESH_TOOLS = [
     }
   },
   {
+    name: 'upgrade_dev_environment',
+    description:
+      'Give a development environment a new container: the current coding-agent adapters, its image rebuilt from '
+      + 'the project\'s definition, and Domo\'s current settings. Its worktree, branch, installed dependencies and every '
+      + 'agent session\'s history carry over, and the sessions resume on their next message; a turn running in it is '
+      + 'interrupted. Anything installed in the container outside the checkout and the home is gone, and '
+      + 'postCreateCommand runs again. Services its own Docker stack runs are stopped: bring the stack up again.',
+    inputSchema: {
+      type: 'object',
+      properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
+      required: ['environmentId'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'retire_dev_environment',
     description:
       'Retire a development environment: its container and its worktree are destroyed, so uncommitted work in it '
@@ -1613,6 +1628,23 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const name = String(args.name ?? '').trim()
       if (name) current = (await updateDevEnvironment(current.id, { name })) ?? current
       return { id: current.id, name: current.name, status: current.status }
+    }
+
+    case 'upgrade_dev_environment': {
+      // Its own adapter is stopped first, and the answer would never arrive.
+      if (caller.devEnvironmentId === args.environmentId) {
+        throw new Error('Refusing to upgrade the environment this agent session is running in. Ask the user or another agent to do it.')
+      }
+      const report = await upgradeProjectEnvironment(args.environmentId)
+      return {
+        id: args.environmentId,
+        status: report.environment.status,
+        adapters: report.runtime.from === report.runtime.to ? 'unchanged' : 'updated',
+        home: report.home,
+        stackContainersStopped: report.stopped,
+        // Services created into the old container's namespace: only bringing the stack up again recreates them.
+        stranded: report.stranded
+      }
     }
 
     case 'retire_dev_environment': {

@@ -23,6 +23,8 @@ const run = vi.fn(async (_program: string, _args: string[], _options?: unknown) 
 const dockerServerOs = vi.fn(async () => 'Ubuntu 24.04.3 LTS')
 const inspectContainer = vi.fn()
 const copyIntoContainer = vi.fn(async () => undefined)
+const copyOutOfContainer = vi.fn(async (_input: { containerId: string, path: string, consumerArgs: string[] }) => undefined)
+const dockerServerArch = vi.fn(async () => 'arm64')
 const buildEnvironmentImage = vi.fn(async (_input?: unknown) => 'domo-dev-env_1')
 const readImageMetadata = vi.fn()
 const ensureRuntimeVolume = vi.fn(async () => 'domo-dev-runtime-abc123')
@@ -36,7 +38,8 @@ const dood = {
     ({ socketPath: `/sockets/${environmentId}.sock`, close: async () => {} })),
   stopDoodProxy: vi.fn(async () => undefined),
   ensureEnvironmentNetwork: vi.fn(async () => undefined),
-  stopEnvironmentContainers: vi.fn(async () => undefined)
+  stopEnvironmentContainers: vi.fn(async () => 0),
+  ENVIRONMENT_LABEL: 'domo.env'
 }
 // Real git, against a real repository, is `dev-env-host-worktree.spec.ts`;
 // here the worktree is only a step in the order of things and a set of paths.
@@ -56,6 +59,8 @@ const hostWorktree = {
     }
   }),
   hostWorktreePath: (repoPath: string, environmentId: string) => fakeWorktree(repoPath, environmentId),
+  containerGitdirFilePath: (repoPath: string, environmentId: string) => `${fakeWorktree(repoPath, environmentId)}.container-gitdir`,
+  hostCommonGitDir: async (repoPath: string) => `${repoPath}/.git`,
   // What the sweep observes on the host: a set it removes from, like `daemon()`.
   onDisk: new Set<string>(),
   hostWorktreeExists: vi.fn(async (repoPath: string, environmentId: string) => hostWorktree.onDisk.has(fakeWorktree(repoPath, environmentId))),
@@ -94,6 +99,8 @@ vi.mock('../../server/lib/dev-env/docker', async (importOriginal) => ({
   dockerServerOs,
   inspectContainer,
   copyIntoContainer,
+  copyOutOfContainer,
+  dockerServerArch,
   resourcePrefix: () => 'domo-dev-'
 }))
 vi.mock('../../server/lib/dev-env/image', async (importOriginal) => ({
@@ -127,14 +134,17 @@ const {
   cleanupEnvironment,
   containerExecArgs,
   createEnvironment,
+  environmentUpgradeStatus,
   readEnvironmentFile,
   reconcileEnvironmentStatus,
   reconcileEnvironmentStatuses,
   retireEnvironment,
   startEnvironment,
   stopEnvironment,
+  upgradeEnvironment,
   writeEnvironmentFile
 } = await import('../../server/lib/dev-environments')
+const { runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
 
 const EMPTY_METADATA = {
   entrypoints: [],
@@ -753,6 +763,7 @@ describe('start, stop and remove', () => {
     expect(repo.retireDevEnvironmentRow).toHaveBeenCalledWith('env_1')
     expect(report.leftovers.map(leftover => `${leftover.kind} ${leftover.name}`)).toEqual([
       'container domo-dev-env_1',
+      'volume domo-dev-env_1-home',
       'volume dind-var-lib-docker-env_1',
       'image domo-dev-env_1'
     ])
@@ -1191,6 +1202,17 @@ describe('createEnvironment', () => {
     expect(order.includes(-1)).toBe(false)
   })
 
+  it('makes the home volume, labelled for the sweep, before the run that mounts it at the user\'s home', async () => {
+    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+
+    const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
+    const created = stepAt('volume', 'create', `domo-dev-${id}-home`)
+    expect(dockerCalls()[created]).toEqual(['volume', 'create', '--label', `domo.envId=${id}`, `domo-dev-${id}-home`])
+    const ran = stepAt('run', '--detach')
+    expect(created).toBeLessThan(ran)
+    expect(dockerCalls()[ran]).toContain(`type=volume,source=domo-dev-${id}-home,target=/home/vscode`)
+  })
+
   it('never chowns the checkout or reconciles it inside the container: it is the host\'s own worktree', async () => {
     await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
@@ -1392,9 +1414,9 @@ describe('createEnvironment', () => {
       branch: 'api-work',
       copyIgnored: undefined
     })
-    // The only volumes made are the shared caches: nothing holds, or is tarred into, a copy of the checkout.
+    // The only volumes made are the shared caches and the home: nothing holds, or is tarred into, a copy of the checkout.
     const made = dockerCalls().filter(args => args[0] === 'volume' && args[1] === 'create').map(args => args.at(-1))
-    expect(made).toEqual(['domo-dev-caches'])
+    expect(made.sort()).toEqual(['domo-dev-caches', `domo-dev-${id}-home`])
     expect(dockerCalls().some(args => args[0] === 'tar' || args.includes('tar'))).toBe(false)
     expect(repo.upsertDevEnvironmentPort).toHaveBeenCalledWith(expect.objectContaining({
       innerPort: 3000,
@@ -1661,6 +1683,7 @@ describe('createEnvironment', () => {
     // look for; the sweep after it removes and clears.
     expect(repo.setEnvironmentLeftovers).toHaveBeenCalledWith(id, [
       expect.objectContaining({ kind: 'container', name: `domo-dev-${id}` }),
+      expect.objectContaining({ kind: 'volume', name: `domo-dev-${id}-home` }),
       expect.objectContaining({ kind: 'volume', name: `dind-var-lib-docker-${id}` }),
       expect.objectContaining({ kind: 'image', name: `domo-dev-${id}` }),
       expect.objectContaining({ kind: 'worktree', name: fakeWorktree(repoPath, id) })
@@ -1779,5 +1802,235 @@ describe('createEnvironment', () => {
 
     await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow()
     expect(buildEnvironmentImage).not.toHaveBeenCalled()
+  })
+})
+
+describe('upgradeEnvironment', () => {
+  let repoPath: string
+  let hostHome: string
+  /** Whether the old container is still on the daemon. */
+  let oldRemoved: boolean
+  const HOME = 'domo-dev-env_1-home'
+
+  function oldContainer(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'old-sha',
+      name: 'domo-dev-env_1',
+      running: true,
+      labels: { 'domo.dood': 'true' },
+      namedVolumes: [HOME, 'domo-dev-runtime-old'],
+      mountDestinations: ['/worktrees/env_1', '/home/vscode', '/home/vscode/.ssh-host', '/home/vscode/.codex', '/opt/domo'],
+      publishedPorts: [],
+      ...overrides
+    }
+  }
+
+  /** A daemon with the old container on it, until `rm` takes it, and a new one once `run` makes it. */
+  function withContainers(old: ReturnType<typeof oldContainer> | null, answers: (args: string[]) => string | undefined = () => undefined) {
+    oldRemoved = !old
+    run.mockImplementation(async (_program, args) => {
+      if (args[0] === 'rm' && args.includes('old-sha')) oldRemoved = true
+      if (old && args[0] === 'stop' && args.includes('old-sha')) old.running = false
+      if (old && args[0] === 'start' && args.includes('old-sha')) old.running = true
+      return { stdout: answers(args) ?? (args[0] === 'run' && args[1] === '--detach' ? 'new-sha' : ''), stderr: '' }
+    })
+    inspectContainer.mockImplementation(async (reference: string) => {
+      if (reference === 'new-sha') return { ...oldContainer(), id: 'new-sha', running: true, namedVolumes: [] }
+      return old && !oldRemoved ? { ...old } : null
+    })
+  }
+
+  beforeEach(async () => {
+    repoPath = await mkdtemp(join(tmpdir(), 'domo-upgrade-repo-'))
+    hostHome = await mkdtemp(join(tmpdir(), 'domo-upgrade-home-'))
+    process.env.NUXT_HOME_OVERLAY_DIR = hostHome
+    state.homeMounts = []
+    await mkdir(join(repoPath, '.git'), { recursive: true })
+    await mkdir(fakeWorktree(repoPath, 'env_1'), { recursive: true })
+    hostWorktree.onDisk.add(fakeWorktree(repoPath, 'env_1'))
+    await writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+      devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', docker: true, postCreateCommand: 'make setup' }
+    }), 'utf8')
+    repo.getProject.mockResolvedValue({ id: 'prj_1', name: 'api', repoPath })
+    // Renamed since it was created: the stored path is what every transcript is keyed by.
+    repo.getDevEnvironment.mockResolvedValue(environment({ name: 'renamed', containerId: 'old-sha', workspacePath: '/workspaces/api' }))
+    repo.updateDevEnvironment.mockImplementation(async (_id: string, patch: any) => environment({ ...patch }))
+    withContainers(oldContainer())
+  })
+
+  afterEach(async () => {
+    delete process.env.NUXT_HOME_OVERLAY_DIR
+    await rm(repoPath, { recursive: true, force: true })
+    await rm(hostHome, { recursive: true, force: true })
+  })
+
+  /** The order of `docker` calls and of the proxy's steps, as one timeline. */
+  const at = (mock: { mock: { invocationCallOrder: number[] } }) => mock.mock.invocationCallOrder[0] ?? -1
+  const dockerAt = (...needles: string[]) => {
+    const index = stepAt(...needles)
+    return index < 0 ? -1 : run.mock.invocationCallOrder[run.mock.calls.findIndex(([, args]) => args === dockerCalls()[index])]!
+  }
+
+  it('builds first, takes the stack, container and proxy down, and runs the new one on the same home and stored path', async () => {
+    const report = await upgradeEnvironment('env_1')
+
+    const built = at(buildEnvironmentImage)
+    const stackStopped = at(dood.stopEnvironmentContainers)
+    const stopped = dockerAt('stop', 'old-sha')
+    const proxyDown = at(dood.stopDoodProxy)
+    const removed = dockerAt('rm', 'old-sha')
+    const proxyUp = at(dood.ensureDoodProxy)
+    const ran = dockerAt('run', '--detach')
+    const postCreate = dockerAt('make setup')
+    expect([built, stackStopped, stopped, proxyDown, removed, proxyUp, ran, postCreate].includes(-1)).toBe(false)
+    expect(built).toBeLessThan(stackStopped)
+    expect(stackStopped).toBeLessThan(stopped)
+    expect(stopped).toBeLessThan(proxyDown)
+    expect(proxyDown).toBeLessThan(removed)
+    expect(removed).toBeLessThan(proxyUp)
+    expect(proxyUp).toBeLessThan(ran)
+    expect(ran).toBeLessThan(postCreate)
+    // By name: the new container does not exist yet, and it takes the old one's.
+    expect(dood.ensureDoodProxy).toHaveBeenCalledWith(expect.objectContaining({ containerReference: 'domo-dev-env_1' }))
+
+    const runArgs = dockerCalls()[stepAt('run', '--detach')]!
+    expect(runArgs).toContain(`type=volume,source=${HOME},target=/home/vscode`)
+    expect(runArgs).toContain('type=volume,source=domo-dev-runtime-abc123,target=/opt/domo,readonly')
+    expect(runArgs).toContain(`type=bind,source=${fakeWorktree(repoPath, 'env_1')},target=/worktrees/env_1`)
+    expect(runArgs.slice(0, 4)).toEqual(['run', '--detach', '--name', 'domo-dev-env_1'])
+    // The alias the sessions' working directory is under, from the stored path, not the new name.
+    expect(stepAt('ln -sfn', '/workspaces/api')).toBeGreaterThan(-1)
+    expect(dockerCalls().flat().join('\n')).not.toContain('/workspaces/renamed')
+
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', expect.objectContaining({ containerId: 'new-sha' }))
+    expect(repo.updateDevEnvironment).toHaveBeenLastCalledWith('env_1', { status: 'running', lastError: null })
+    expect(report).toMatchObject({ runtime: { from: 'domo-dev-runtime-old', to: 'domo-dev-runtime-abc123' }, home: 'kept' })
+  })
+
+  it('never removes a volume and never touches the worktree', async () => {
+    await upgradeEnvironment('env_1')
+
+    expect(dockerCalls().some(args => args[0] === 'volume' && args[1] === 'rm')).toBe(false)
+    // Not `removeContainer()`, which takes a Docker-in-Docker volume with it.
+    expect(dockerCalls().find(args => args[0] === 'rm')).toEqual(['rm', '--force', 'old-sha'])
+    expect(hostWorktree.createHostWorktree).not.toHaveBeenCalled()
+    expect(hostWorktree.removeHostWorktree).not.toHaveBeenCalled()
+    expect(copyOutOfContainer).not.toHaveBeenCalled()
+  })
+
+  it('copies an older environment\'s home out of the stopped container into a volume, without what is mounted there', async () => {
+    withContainers(oldContainer({ namedVolumes: ['domo-dev-runtime-old'] }))
+
+    const report = await upgradeEnvironment('env_1')
+
+    expect(report.home).toBe('migrated')
+    const copy = copyOutOfContainer.mock.calls[0]![0]
+    expect(copy).toMatchObject({ containerId: 'old-sha', path: '/home/vscode' })
+    expect(copy.consumerArgs).toEqual(expect.arrayContaining([
+      `type=volume,source=${HOME},target=/mnt/vscode`, 'vscode/.ssh-host', 'vscode/.codex'
+    ]))
+    expect(copy.consumerArgs.join(' ')).not.toContain('vscode/worktrees')
+    const copied = copyOutOfContainer.mock.invocationCallOrder[0]!
+    expect(dockerAt('stop', 'old-sha')).toBeLessThan(copied)
+    expect(copied).toBeLessThan(dockerAt('rm', 'old-sha'))
+    expect(dockerCalls()[stepAt('run', '--detach')]).toContain(`type=volume,source=${HOME},target=/home/vscode`)
+  })
+
+  it('puts a failed copy back: the half-made volume goes and the old container starts again, and nothing says error', async () => {
+    withContainers(oldContainer({ namedVolumes: ['domo-dev-runtime-old'] }))
+    copyOutOfContainer.mockRejectedValueOnce(new Error('copying failed: no space left on device'))
+
+    await expect(upgradeEnvironment('env_1')).rejects.toThrow('no space left on device')
+
+    expect(stepAt('rm', 'old-sha')).toBe(-1)
+    expect(dockerCalls()).toContainEqual(['volume', 'rm', HOME])
+    expect(dockerCalls()).toContainEqual(['start', 'old-sha'])
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalledWith('env_1', expect.objectContaining({ status: 'error' }))
+  })
+
+  it('leaves everything running and writes no error when the image will not build', async () => {
+    buildEnvironmentImage.mockRejectedValueOnce(new Error('Feature not found'))
+
+    await expect(upgradeEnvironment('env_1')).rejects.toThrow('Feature not found')
+
+    expect(dood.stopEnvironmentContainers).not.toHaveBeenCalled()
+    expect(dood.stopDoodProxy).not.toHaveBeenCalled()
+    expect(stepAt('stop', 'old-sha')).toBe(-1)
+    expect(stepAt('rm', 'old-sha')).toBe(-1)
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalledWith('env_1', expect.objectContaining({ status: 'error' }))
+  })
+
+  it('says error once the old container is gone, and still removes no volume', async () => {
+    withContainers(oldContainer(), args => {
+      if (args[0] === 'run' && args[1] === '--detach') throw new Error('docker run failed: port is already allocated')
+      return undefined
+    })
+
+    await expect(upgradeEnvironment('env_1')).rejects.toThrow('port is already allocated')
+
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', expect.objectContaining({
+      status: 'error',
+      lastError: expect.stringContaining('could not be upgraded')
+    }))
+    expect(dockerCalls().some(args => args[0] === 'volume' && args[1] === 'rm')).toBe(false)
+  })
+
+  it('refuses an image that runs as another user, before stopping anything', async () => {
+    readImageMetadata.mockResolvedValue({ ...EMPTY_METADATA, remoteUser: 'node' })
+    await writeFile(join(repoPath, '.domo.json'), JSON.stringify({ devEnvironment: { image: 'node:22', docker: true } }), 'utf8')
+
+    await expect(upgradeEnvironment('env_1')).rejects.toThrow('"node"')
+
+    expect(stepAt('stop', 'old-sha')).toBe(-1)
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalledWith('env_1', expect.objectContaining({ status: 'error' }))
+  })
+
+  it('refuses an environment whose worktree is gone, before building anything', async () => {
+    hostWorktree.onDisk.clear()
+
+    await expect(upgradeEnvironment('env_1')).rejects.toThrow('worktree is gone')
+    expect(buildEnvironmentImage).not.toHaveBeenCalled()
+  })
+
+  it('puts the new container on the stacks\' networks, and names the services left in the old one\'s namespace', async () => {
+    withContainers(oldContainer(), (args) => {
+      if (args[0] === 'ps' && args.includes('label=domo.env=env_1')) return 'db-id\napp-id'
+      if (args[0] === 'inspect' && args.includes('db-id')) {
+        return '/env_1-db\tcontainer:old-sha\tprivate\tprivate\n/env_1-app\tenv_1_default\tprivate\tprivate'
+      }
+      if (args[0] === 'network' && args[1] === 'ls') return 'env_1_default'
+      return undefined
+    })
+
+    const report = await upgradeEnvironment('env_1')
+
+    expect(report.stranded).toEqual(['env_1-db'])
+    expect(report.networks).toEqual(['env_1_default'])
+    expect(dockerAt('network', 'connect', 'env_1_default', 'new-sha')).toBeGreaterThan(dockerAt('run', '--detach'))
+  })
+
+  it('gives an environment whose container is gone a new one, on the home volume it still has', async () => {
+    withContainers(null, args => (args[0] === 'volume' && args[1] === 'inspect' ? `[{"Name":"${HOME}"}]` : undefined))
+
+    const report = await upgradeEnvironment('env_1')
+
+    expect(report.home).toBe('kept')
+    expect(dockerCalls().some(args => args[0] === 'rm' || args[0] === 'stop')).toBe(false)
+    expect(dockerCalls()[stepAt('run', '--detach')]).toContain(`type=volume,source=${HOME},target=/home/vscode`)
+  })
+
+  it('reports newer adapters and where the home would come from, without changing anything', async () => {
+    withContainers(oldContainer({ namedVolumes: ['domo-dev-runtime-old'] }))
+
+    const status = await environmentUpgradeStatus('env_1')
+
+    expect(status).toEqual({
+      runtimeStale: true,
+      currentRuntime: 'domo-dev-runtime-old',
+      wantedRuntime: runtimeVolumeName('arm64'),
+      home: 'migrated',
+      blocked: null
+    })
+    expect(dockerCalls()).toEqual([])
   })
 })

@@ -14,6 +14,8 @@ or when an adapter acts in an unexpected way. Everything else is in
   because codex-acp's own range would install an older second copy. To confirm
   a bump, compare the model option *descriptions*: in claude-agent-acp 0.90.0,
   `sonnet` and `haiku` kept their ids and moved to Sonnet 5.5 and Haiku 5.5.
+  An environment keeps the adapters it was created with until it is upgraded
+  (`docs/dev-environments.md`).
 - **A daily cron job wakes the host agent `adapter-version-watch` to check for
   adapter releases.** Do not archive that session: if you do, the job stops.
 - **Do not set Claude Code's `availableModels` to widen the model list.** It is

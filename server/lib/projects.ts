@@ -5,7 +5,7 @@ import type { AgentSession, EnvironmentLeftover, Project } from '../../shared/ty
 import { acpManager } from './acp/manager'
 import type { BranchOutcome } from './dev-env/host-worktree'
 import { commitInitial, initRepository } from './dev-env/host-worktree'
-import { retireEnvironment } from './dev-environments'
+import { retireEnvironment, upgradeEnvironment, type EnvironmentUpgradeReport } from './dev-environments'
 import { inspectProjectPath } from './project-path'
 import {
   appendAgentEvent,
@@ -153,6 +153,32 @@ export async function retireProjectEnvironment(environmentId: string): Promise<E
   const branch = cleanup.branches[0]
   result.branch = branch ? { name: branch.name, deleted: branch.deleted, reason: branch.reason } : null
   return result
+}
+
+/**
+ * Upgrade an environment: its adapters are stopped, it gets a new container,
+ * and each session resumes on it where it left off.
+ *
+ * The adapters first, for a retirement's reason: one holding a `docker exec`
+ * into a container being removed. Nothing starts them again. A session
+ * reattaches with `session/load` the next time something is delivered to it,
+ * reading its state from the home volume, so a session nobody talks to costs
+ * nothing. Nothing else about them changes: schedules, subscriptions and
+ * pending permissions all still apply once the environment is back.
+ */
+export async function upgradeProjectEnvironment(environmentId: string): Promise<EnvironmentUpgradeReport> {
+  const sessions = await listAgentSessionsInEnvironment(environmentId)
+  for (const session of sessions) acpManager.stop(session.id)
+  const report = await upgradeEnvironment(environmentId)
+  // Where a session's next turn starting on a newer adapter came from.
+  for (const session of sessions) {
+    await appendAgentEvent(session.id, 'environment_upgraded', {
+      devEnvironmentId: environmentId,
+      runtime: report.runtime,
+      home: report.home
+    })
+  }
+  return report
 }
 
 /**

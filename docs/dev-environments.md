@@ -36,6 +36,7 @@ unexpected way.
 - Bind sources resolve against the environment container's own mounts
   (`binds.ts`). A path that exists only in the environment's image layer is
   refused by name. Otherwise the daemon's host would mount an empty directory.
+  The remote user's home is a volume, so a path under it resolves.
 - `network_mode: host`, `--pid host` and `--ipc host` become
   `container:<environment>`. That is why environments are created
   `--ipc shareable`.
@@ -154,6 +155,38 @@ Every environment gets a locked git worktree in
   down. A dead container reads `stopped` (an agent's next prompt or Start brings
   it back); a missing one is `error`. `creating`, `error` and retired rows are
   never rewritten by it.
+- **An upgrade replaces the container; nothing an agent would miss is in
+  it.** The checkout is the host worktree, dependencies are on the cache
+  volume, and the remote user's home is a volume (`<prefix><id>-home`,
+  `home-volume.ts`), because every adapter keeps what `session/load` reads
+  under `$HOME`. It must be `$HOME` itself: `~/.claude.json` sits directly in
+  it and Claude Code replaces files like it, so a file mount would keep a dead
+  inode. The stored `workspacePath` is reused, never derived from the name:
+  Claude Code keys transcripts by working directory.
+- **A volume is filled from the image only while it is empty.** So a creation
+  gets the image's home, and an upgrade does not: what a new image or Feature
+  puts in `$HOME` never reaches an upgraded environment. What Domo writes
+  there (git config, `~/.ssh`, pnpm config, Claude's onboarding) is written
+  again, or where missing.
+- **An environment created before the home volume has its home copied** out
+  of its stopped container (`docker cp`) into a new volume. `docker cp`
+  includes what is mounted under the path, so every mount under the home is
+  excluded, or the volume keeps a copy of the developer's `~/.ssh-host` and
+  `~/.codex`.
+- **Everything that can fail on its own account runs while the old container
+  is still there**: the image build, the refusals (a missing worktree, an image
+  whose remote user changed), the home copy. A failure there puts the
+  environment back and writes no `error`. Past `docker rm` it writes `error`,
+  and no volume is removed, so another upgrade can finish it. The container is
+  removed with a plain `docker rm`, never `removeContainer()`, which takes a
+  Docker-in-Docker volume with it.
+- **A replacement invalidates what points at the old container.** The proxy
+  caches its id and mounts, so it is stopped and started again by name before
+  the run. The proxy joins a network only when a container is created on it, so
+  the new container is reconnected to every network labelled `domo.env=<id>`.
+  Services created with `network_mode: host`, `--pid host` or `--ipc host`
+  hold `container:<old id>` and cannot be mended: they are named in the report,
+  and bringing the stack up again recreates them.
 
 - **Retirement is done when Docker no longer has the resources, not when
   `docker` exited.** A failed `volume rm` looks the same for a volume in use

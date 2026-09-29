@@ -60,6 +60,7 @@ const running = computed(() => environment.value?.status === 'running')
 const busy = ref(false)
 const renaming = ref(false)
 const confirmingRetire = ref(false)
+const confirmingUpgrade = ref(false)
 
 async function action(path: 'start' | 'stop') {
   busy.value = true
@@ -134,6 +135,54 @@ async function retryCleanup() {
   }
 }
 
+/**
+ * What a new container would bring, asked of the server because it is read off
+ * the current container's mounts, not stored. Not awaited: the page renders
+ * from Electric and must not wait on Docker.
+ */
+const { data: upgrade, refresh: refreshUpgrade } = useFetch(
+  () => `/api/dev-environments/${environmentId.value}/upgrade`,
+  { server: false, lazy: true, default: () => null }
+)
+
+const upgradeLabel = computed(() => (upgrade.value?.runtimeStale ? 'Upgrade (new adapters)' : 'Upgrade'))
+const upgradeDescription = computed(() => {
+  const working = agents.value.filter(agent => agent.status === 'thinking' || agent.status === 'awaiting-permission').length
+  const home = {
+    kept: 'The worktree, its dependencies and every session\'s history carry over, and the sessions resume on their next message.',
+    migrated: 'Its home, where every session\'s history is, is first copied out of the old container into a volume, so this and every later upgrade keeps it. The worktree and its dependencies carry over, and the sessions resume on their next message.',
+    lost: 'Its container is gone, and its home with it: the worktree and its dependencies carry over, but the sessions start without their history.'
+  }[upgrade.value?.home ?? 'kept']
+  return `Gives the environment a new container, with Domo's current coding-agent adapters and its image rebuilt. ${home} `
+    + (working ? `${working === 1 ? 'The agent working in it is' : `The ${working} agents working in it are`} interrupted. ` : '')
+    + 'Its Docker stack is stopped, anything installed in the container outside the checkout and the home is lost, and postCreateCommand runs again.'
+})
+
+/**
+ * The row comes back through Electric like any other write; what the reply
+ * adds is what is not on it: the services that have to be created again.
+ */
+async function upgradeEnvironment() {
+  busy.value = true
+  try {
+    const result = await $fetch(`/api/dev-environments/${environmentId.value}/upgrade`, { method: 'POST' })
+    confirmingUpgrade.value = false
+    toast.add(result.stranded.length
+      ? {
+          title: 'Environment upgraded',
+          description: `${result.stranded.join(', ')} shared the old container's network or processes and must be created again: bring the stack up.`,
+          color: 'warning'
+        }
+      : { title: 'Environment upgraded', description: 'Its sessions resume on the new container.', color: 'success' })
+    await refreshUpgrade()
+  } catch (error: any) {
+    confirmingUpgrade.value = false
+    toast.add({ title: 'Could not upgrade the environment', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  } finally {
+    busy.value = false
+  }
+}
+
 </script>
 
 <template>
@@ -172,7 +221,8 @@ async function retryCleanup() {
           <UDropdownMenu
             v-if="environment && !retired"
             :items="[[
-              { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } }
+              { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } },
+              { label: upgradeLabel, icon: 'i-lucide-circle-arrow-up', disabled: !!upgrade?.blocked, onSelect: () => { confirmingUpgrade = true } }
             ], [
               { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire = true } }
             ]]"
@@ -326,6 +376,16 @@ async function retryCleanup() {
         confirm-label="Retire environment"
         :loading="busy"
         @confirm="retireEnvironment"
+      />
+
+      <ConfirmModal
+        v-if="environment"
+        v-model:open="confirmingUpgrade"
+        :title="`Upgrade ${environment.name}?`"
+        :description="upgrade?.blocked ?? upgradeDescription"
+        confirm-label="Upgrade environment"
+        :loading="busy"
+        @confirm="upgradeEnvironment"
       />
     </template>
   </UDashboardPanel>

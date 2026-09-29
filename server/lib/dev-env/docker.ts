@@ -16,6 +16,8 @@ export interface ContainerInspection {
   namedVolumes: string[]
   /** Host paths bind-mounted into the container. */
   bindSources: string[]
+  /** Where every mount lands inside the container, binds included. */
+  mountDestinations: string[]
   publishedPorts: Array<{ innerPort: number, protocol: 'tcp' | 'udp', hostPort: number }>
 }
 
@@ -113,6 +115,8 @@ export async function inspectContainer(reference: string): Promise<ContainerInsp
       bindSources: ((container.Mounts ?? []) as Array<{ Type?: string, Source?: string }>)
         .filter(mount => mount.Type === 'bind' && mount.Source)
         .map(mount => mount.Source!),
+      mountDestinations: ((container.Mounts ?? []) as Array<{ Destination?: string }>)
+        .map(mount => mount.Destination ?? '').filter(Boolean),
       publishedPorts
     }
   } catch {
@@ -138,30 +142,16 @@ export async function dockerServerOs(): Promise<string> {
   return stdout || 'unknown'
 }
 
-/**
- * `tar` on the host piped into a `tar -x` that Docker runs, wherever that is.
- *
- * The host tree is never bind-mounted, so this does not depend on Docker Desktop
- * file sharing — or on the daemon being on this machine at all.
- */
-async function tarInto(input: {
-  source: string
-  /** Paths relative to `source` to copy. `['.']` is the whole tree. */
-  entries: string[]
-  exclude?: string[]
-  /** The `docker` argv that receives the archive on stdin. */
+/** One process's stdout piped into another's stdin; fails unless both exit 0. */
+function pipeInto(input: {
+  producer: { program: string, args: string[], env?: NodeJS.ProcessEnv }
+  /** The `docker` argv that receives the stream on stdin. */
   consumerArgs: string[]
   label: string
 }): Promise<void> {
-  const tarArgs = [
-    '-C', input.source,
-    ...(input.exclude ?? []).flatMap(path => ['--exclude', `./${path}`]),
-    '-cf', '-', ...input.entries
-  ]
-  await new Promise<void>((resolvePromise, reject) => {
-    // COPYFILE_DISABLE stops macOS tar from adding AppleDouble `._*` companion files.
-    const producer = spawn('tar', tarArgs, {
-      env: { ...process.env, COPYFILE_DISABLE: '1' },
+  return new Promise<void>((resolvePromise, reject) => {
+    const producer = spawn(input.producer.program, input.producer.args, {
+      env: input.producer.env,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     const consumer = spawn('docker', input.consumerArgs, { stdio: ['pipe', 'ignore', 'pipe'] })
@@ -181,6 +171,54 @@ async function tarInto(input: {
     }
     producer.once('close', done)
     consumer.once('close', done)
+  })
+}
+
+/**
+ * `tar` on the host piped into a `tar -x` that Docker runs, wherever that is.
+ *
+ * The host tree is never bind-mounted, so this does not depend on Docker Desktop
+ * file sharing — or on the daemon being on this machine at all.
+ */
+function tarInto(input: {
+  source: string
+  /** Paths relative to `source` to copy. `['.']` is the whole tree. */
+  entries: string[]
+  exclude?: string[]
+  consumerArgs: string[]
+  label: string
+}): Promise<void> {
+  return pipeInto({
+    producer: {
+      program: 'tar',
+      args: [
+        '-C', input.source,
+        ...(input.exclude ?? []).flatMap(path => ['--exclude', `./${path}`]),
+        '-cf', '-', ...input.entries
+      ],
+      // COPYFILE_DISABLE stops macOS tar from adding AppleDouble `._*` companion files.
+      env: { ...process.env, COPYFILE_DISABLE: '1' }
+    },
+    consumerArgs: input.consumerArgs,
+    label: input.label
+  })
+}
+
+/**
+ * `docker cp <container>:<path> -` piped into another `docker` command. Works on
+ * a stopped container. The archive has ownership in it by number, and holds
+ * whatever is mounted under the path too, binds included.
+ */
+export function copyOutOfContainer(input: {
+  containerId: string
+  path: string
+  consumerArgs: string[]
+  label: string
+}): Promise<void> {
+  return pipeInto({
+    producer: { program: 'docker', args: ['cp', `${input.containerId}:${input.path}`, '-'] },
+    consumerArgs: input.consumerArgs,
+    label: input.label
   })
 }
 

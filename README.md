@@ -166,6 +166,13 @@ into the container. Several agents can share one environment.
   every commit on it is also on another branch, and kept otherwise.
   The agent transcripts and the environment's record are kept.
 - **Stopping** an environment stops the containers it started.
+- **Upgrading** an environment gives it a new container, with Domo's current
+  agent adapters, its image rebuilt from `.domo.json`, and your current
+  settings. The worktree, installed dependencies and the home directory, where
+  each agent keeps its session history, carry over, and the sessions resume
+  on their next message. A turn running in it is interrupted, the containers
+  it started are stopped, anything installed in the container outside the
+  worktree and the home is lost, and `postCreateCommand` runs again.
 - **Open in VS Code** attaches VS Code to the container. You need the Dev
   Containers extension. If VS Code runs on another machine, set **VS Code SSH
   host** in Settings.
@@ -258,8 +265,8 @@ can push, open pull requests and use your cloud CLIs. The list is in
 **Settings → Development environments → Home directory mounts**. The default
 is `.ssh`, `.gitconfig`, `.config/gh`, `.config/gcloud`, `.aws` and `.kube`.
 
-- Mounts are read-write, and a change applies only to environments created
-  after it.
+- Mounts are read-write, and a change applies to environments created or
+  upgraded after it.
 - Domo includes your `~/.gitconfig` rather than replacing it, uses `gh` as
   the credential helper, and turns commit signing off.
 - Domo wraps your `~/.ssh/config` so macOS-only options such as `UseKeychain`

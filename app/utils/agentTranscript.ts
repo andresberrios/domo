@@ -108,7 +108,10 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
     `The agent's process stopped${payload?.code != null ? ` (exit code ${payload.code})` : ''}`,
   handed_off: () => 'Handed off to a new session',
   environment_retired: () =>
-    'Its development environment was retired — this session can no longer be started'
+    'Its development environment was retired — this session can no longer be started',
+  environment_upgraded: payload => payload?.home === 'lost'
+    ? 'Its development environment got a new container, without its old home — this session starts afresh'
+    : 'Its development environment got a new container — the next turn resumes on it'
 }
 
 function textFromContent(content: any): string {

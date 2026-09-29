@@ -303,14 +303,16 @@ const labelFilter = (environmentId: string) => `${ENVIRONMENT_LABEL}=${environme
 const lines = (text: string) => text.split('\n').map(line => line.trim()).filter(Boolean)
 
 /**
- * Stop what the environment started, for `stopEnvironment`. On a daemon of its
+ * Stop what the environment started, for `stopEnvironment` and an upgrade,
+ * and say how many. On a daemon of its
  * own the containers stopped with it; on the shared one they would go on
  * running — and holding memory and ports — with nobody looking at them.
  * Nothing restarts them: an agent brings its stack back up the way it did the
  * first time.
  */
-export async function stopEnvironmentContainers(environmentId: string): Promise<void> {
+export async function stopEnvironmentContainers(environmentId: string): Promise<number> {
   const found = await run('docker', ['ps', '-q', '--filter', `label=${labelFilter(environmentId)}`], { allowFailure: true })
   const ids = lines(found.stdout)
   if (ids.length) await run('docker', ['stop', ...ids], { allowFailure: true })
+  return ids.length
 }

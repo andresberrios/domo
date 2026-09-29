@@ -170,6 +170,11 @@ export interface RunContainerInput {
   workspace: WorkspaceMounts
   /** The shared caches and the variables that point each tool at them (`caches.ts`). */
   caches: ResolvedCaches
+  /**
+   * The remote user's home (`homeVolumeName`). A volume so that replacing the
+   * container keeps what every adapter resumes a session from.
+   */
+  homeVolume: string
   runtimeVolume: string
   /** The shared headless-browser volume, when the install has one. */
   browserVolume: string | null
@@ -239,6 +244,11 @@ export function containerRunArgs(input: RunContainerInput): string[] {
       source: input.workspace.hostBaseGitPath,
       target: canonicalBaseGitPath(input.workspace.projectId)
     }),
+    // The remote user's home, so that a new container — which is what an
+    // upgrade is — finds every session's state where it left it. An empty
+    // volume is filled from the image's home at the first mount, so a creation
+    // sees the image's own dotfiles, and the home overlay's binds nest inside.
+    ...mountArg({ source: input.homeVolume, target: home }),
     // Node and the ACP adapters, shared by every environment and never written to.
     ...mountArg({ source: input.runtimeVolume, target: '/opt/domo', readonly: true })
   ]

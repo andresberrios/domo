@@ -25,20 +25,40 @@ import {
   resolveRemoteUser
 } from './dev-env/container'
 import {
+  dockerServerArch,
   dockerServerOs,
   inspectContainer,
   resourcePrefix,
   run,
   type ContainerInspection
 } from './dev-env/docker'
-import { cacheMountTargets, ensureCacheVolumes, pnpmSetupArgs, resolveCaches } from './dev-env/caches'
+import {
+  cacheMountTargets,
+  ensureCacheVolumes,
+  pnpmSetupArgs,
+  resolveCaches,
+  type ResolvedCaches
+} from './dev-env/caches'
+import type { DevEnvironmentConfig } from './dev-env/types'
 import { defaultInstallCommand, presentLockfiles } from './dev-env/dependencies'
-import { createHostWorktree, hostWorktreePath } from './dev-env/host-worktree'
+import {
+  containerGitdirFilePath,
+  createHostWorktree,
+  hostCommonGitDir,
+  hostWorktreeExists,
+  hostWorktreePath
+} from './dev-env/host-worktree'
 import { alignUserArgs, planAlignment } from './dev-env/user-alignment'
 import { seedReport } from './dev-env/workspace-seed'
-import { environmentResources, observeEnvironmentResources, ownedResources } from './dev-env/leftovers'
+import {
+  environmentResources,
+  homeVolumeName,
+  observeEnvironmentResources,
+  ownedResources
+} from './dev-env/leftovers'
 import { sweepEnvironmentResources, type CleanupReport } from './dev-env/reconcile'
-import { resolveHomeOverlay } from './dev-env/home-overlay'
+import { resolveHomeOverlay, type HomeOverlay } from './dev-env/home-overlay'
+import { createHomeVolume, migrateHome } from './dev-env/home-volume'
 import { buildEnvironmentImage, collectCachedImages } from './dev-env/image'
 import {
   browserEnv,
@@ -51,7 +71,8 @@ import {
   collectRuntimeVolumes,
   ensureRuntimeVolume,
   pinnedAdapterVersions,
-  RUNTIME_ROOT
+  RUNTIME_ROOT,
+  runtimeVolumeName
 } from './dev-env/runtime-volume'
 import { ensureSeccompProfile } from './dev-env/seccomp'
 import {
@@ -59,6 +80,7 @@ import {
   doodSocketPath,
   ensureDoodProxy,
   ensureEnvironmentNetwork,
+  ENVIRONMENT_LABEL,
   stopDoodProxy,
   stopEnvironmentContainers
 } from './dood/manager'
@@ -383,7 +405,7 @@ async function buildEnvironment(input: {
     const caches = resolveCaches(resolved.config.caches)
     // Independent of each other, and together most of a creation: the shared
     // volumes (slow once per install), the worktree and the image.
-    const [runtimeVolume, browserVolume, worktree, imageName] = await allSettledOrThrow([
+    const [runtimeVolume, browserVolume, worktree, imageName, homeVolume] = await allSettledOrThrow([
       timer.measure('runtime volume', ensureRuntimeVolume()),
       // A browser is worth having and is not worth failing an environment over:
       // it is several hundred megabytes fetched from two networks, and an
@@ -414,7 +436,8 @@ async function buildEnvironment(input: {
         name,
         repoPath: project.repoPath,
         signal
-      })))
+      }))),
+      createHomeVolume(id)
     ])
     const canonicalPath = canonicalWorkspacePath(id)
     const baseGitPath = canonicalBaseGitPath(project.id)
@@ -450,6 +473,7 @@ async function buildEnvironment(input: {
         projectId: project.id
       },
       caches,
+      homeVolume,
       runtimeVolume,
       browserVolume,
       ports: declaredPorts,
@@ -471,87 +495,20 @@ async function buildEnvironment(input: {
       adapterVersions: pinnedAdapterVersions()
     })
 
-    // Before anything assumes the image can host an agent. `git config` below is itself
-    // one of the things a preflight failure would otherwise report as a bare `exit 127`.
-    await preflight(inspection.id, resolved.config.docker, browserVolume)
-    // Before `postCreateCommand`, which may already start a stack: its
-    // published ports and its `host.docker.internal` live in this namespace.
-    if (dockerSocket) await ensureEnvironmentNetwork(id)
-
-    timer.mark('preflight')
-    // Before anything runs as the remote user, which may be about to get a new uid.
-    await alignRemoteUser({ containerId: inspection.id, remoteUser, worktreePath: worktree.worktreePath })
-    // Before anything addresses the checkout by the path the rest of Domo, the
-    // project's config and its compose files all use.
-    await run('docker', [
-      ...execArgs({ containerId: inspection.id, user: 'root' }),
-      ...workspaceAliasArgs({ canonicalPath, legacyPath: workspacePath })
-    ])
-    // Every environment's installs write here, as whichever user each one runs as.
-    const cacheTargets = cacheMountTargets(caches)
-    // Not pnpm's own directories: the environment's user makes those (`PNPM_ROOT`).
-    if (cacheTargets.length) {
-      await run('docker', [...execArgs({ containerId: inspection.id, user: 'root' }), 'chmod', '1777', ...cacheTargets])
-    }
-    // No `chown` of the checkout: it is the host's own worktree now, not a
-    // root-owned tar extraction, and its files belong to the developer.
-    if (remoteUser !== 'root') {
-      // A mount target's missing parent (`~/.config`, when only `~/.config/gh`
-      // is mounted) is created by Docker as root, and gcloud then cannot write
-      // beside its own directory. Not recursive: the mounted content is the
-      // host's and stays as it is.
-      if (overlay.parentDirectories.length) {
-        await run('docker', [
-          ...execArgs({ containerId: inspection.id, user: 'root' }),
-          'chown', `${remoteUser}:`, ...overlay.parentDirectories
-        ]).catch((error) => {
-          console.warn(`[dev-env] could not hand the mounted home directories to ${remoteUser}: ${error}`)
-        })
-      }
-    }
-    // The container's own git config. It *includes* the host's rather than
-    // being it — see `containerGitconfig()` for why — and carries the
-    // safe.directory this used to set with `git config --global --add`.
-    await run('docker', [
-      ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home }, interactive: true }),
-      'sh', '-c', 'cat > "$1"', 'sh', `${home}/.gitconfig`
-    ], { input: overlay.gitconfig })
-    if (overlay.ssh) {
-      await run('docker', [
-        ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home }, interactive: true }),
-        'sh', '-c', SSH_HOME_SCRIPT, 'sh', `${home}/.ssh`, `${home}/.ssh-host`, ...overlay.ssh.links
-      ], { input: overlay.ssh.config })
-    }
-    // Before any install: pnpm finds the shared store, and its virtual store
-    // on the same volume, through its global config (`caches.ts`).
-    if (caches.pnpm) {
-      await run('docker', [
-        ...execArgs({ containerId: inspection.id, user: remoteUser, env: { HOME: home } }),
-        ...pnpmSetupArgs({ environmentId: id, checkout: canonicalPath })
-      ])
-    }
-    // After the preflight, because it runs the CLI out of the runtime volume.
-    await seedClaudeHome({ containerId: inspection.id, user: remoteUser, home })
-    timer.mark('home')
-    // The worktree has no `node_modules` or `.venv`: dependencies are installed
-    // here, for this container's platform, never copied from the host. On by
-    // default unless the project installs its own way (`postCreateCommand`);
-    // `installDependencies` says either explicitly.
-    const install = (resolved.config.installDependencies ?? !resolved.config.postCreateCommand)
-      ? await installDependencies({ containerId: inspection.id, user: remoteUser, home, workspacePath, checkout: worktree.worktreePath, signal })
-      : null
-    timer.mark('install')
-    if (resolved.config.postCreateCommand) {
-      await run('docker', [
-        ...execArgs({ containerId: inspection.id, user: remoteUser, workdir: workspacePath, env: { HOME: home } }),
-        ...postCreateArgs(resolved.config.postCreateCommand)
-      ], { signal }).catch((error) => {
-        if (signal.aborted) throw error
-        throw new Error(`postCreateCommand failed: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    }
-
-    timer.mark('postCreateCommand')
+    const install = await setUpContainer({
+      id,
+      containerId: inspection.id,
+      config: resolved.config,
+      remoteUser,
+      workspacePath,
+      worktreePath: worktree.worktreePath,
+      caches,
+      overlay,
+      browserVolume,
+      dockerSocket,
+      timer,
+      signal
+    })
     const environment = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     await refreshEnvironmentPorts(id)
     console.info(`[dev-env] created ${id} in ${timer.summary()}`)
@@ -590,6 +547,116 @@ async function buildEnvironment(input: {
     await sweepEnvironmentResources()
     throw error
   }
+}
+
+/**
+ * Everything a freshly run container needs before an agent works in it, for a
+ * creation and an upgrade alike: an upgrade's container is new, and its
+ * writable layer has none of it. What lands in the home volume (the pnpm
+ * config, Claude's onboarding) is written only where it is missing; the git
+ * config and the ssh directory are written again, from a home overlay that may
+ * have changed since.
+ */
+async function setUpContainer(input: {
+  id: string
+  containerId: string
+  config: DevEnvironmentConfig
+  remoteUser: string
+  workspacePath: string
+  /** The worktree on the host. */
+  worktreePath: string
+  caches: ResolvedCaches
+  overlay: HomeOverlay
+  browserVolume: string | null
+  dockerSocket: string | null
+  timer: ReturnType<typeof stepTimer>
+  /** A retirement asking the build to stop: the install and `postCreateCommand` stop with it. */
+  signal: AbortSignal
+}): Promise<WorkspaceSeedReport['install']> {
+  const { id, containerId, config, remoteUser, workspacePath, worktreePath, caches, overlay, browserVolume, dockerSocket, timer, signal } = input
+  const home = homeDirectory(remoteUser)
+  const canonicalPath = canonicalWorkspacePath(id)
+  // Before anything assumes the image can host an agent. `git config` below is itself
+  // one of the things a preflight failure would otherwise report as a bare `exit 127`.
+  await preflight(containerId, config.docker, browserVolume)
+  // Before `postCreateCommand`, which may already start a stack: its
+  // published ports and its `host.docker.internal` live in this namespace.
+  if (dockerSocket) await ensureEnvironmentNetwork(id)
+
+  timer.mark('preflight')
+  // Before anything runs as the remote user, which may be about to get a new uid.
+  await alignRemoteUser({ containerId, remoteUser, worktreePath })
+  // Before anything addresses the checkout by the path the rest of Domo, the
+  // project's config and its compose files all use.
+  await run('docker', [
+    ...execArgs({ containerId, user: 'root' }),
+    ...workspaceAliasArgs({ canonicalPath, legacyPath: workspacePath })
+  ])
+  // Every environment's installs write here, as whichever user each one runs as.
+  const cacheTargets = cacheMountTargets(caches)
+  // Not pnpm's own directories: the environment's user makes those (`PNPM_ROOT`).
+  if (cacheTargets.length) {
+    await run('docker', [...execArgs({ containerId, user: 'root' }), 'chmod', '1777', ...cacheTargets])
+  }
+  // No `chown` of the checkout: it is the host's own worktree now, not a
+  // root-owned tar extraction, and its files belong to the developer.
+  if (remoteUser !== 'root') {
+    // A mount target's missing parent (`~/.config`, when only `~/.config/gh`
+    // is mounted) is created by Docker as root, and gcloud then cannot write
+    // beside its own directory. Not recursive: the mounted content is the
+    // host's and stays as it is.
+    if (overlay.parentDirectories.length) {
+      await run('docker', [
+        ...execArgs({ containerId, user: 'root' }),
+        'chown', `${remoteUser}:`, ...overlay.parentDirectories
+      ]).catch((error) => {
+        console.warn(`[dev-env] could not hand the mounted home directories to ${remoteUser}: ${error}`)
+      })
+    }
+  }
+  // The container's own git config. It *includes* the host's rather than
+  // being it — see `containerGitconfig()` for why — and carries the
+  // safe.directory this used to set with `git config --global --add`.
+  await run('docker', [
+    ...execArgs({ containerId, user: remoteUser, env: { HOME: home }, interactive: true }),
+    'sh', '-c', 'cat > "$1"', 'sh', `${home}/.gitconfig`
+  ], { input: overlay.gitconfig })
+  if (overlay.ssh) {
+    await run('docker', [
+      ...execArgs({ containerId, user: remoteUser, env: { HOME: home }, interactive: true }),
+      'sh', '-c', SSH_HOME_SCRIPT, 'sh', `${home}/.ssh`, `${home}/.ssh-host`, ...overlay.ssh.links
+    ], { input: overlay.ssh.config })
+  }
+  // Before any install: pnpm finds the shared store, and its virtual store
+  // on the same volume, through its global config (`caches.ts`).
+  if (caches.pnpm) {
+    await run('docker', [
+      ...execArgs({ containerId, user: remoteUser, env: { HOME: home } }),
+      ...pnpmSetupArgs({ environmentId: id, checkout: canonicalPath })
+    ])
+  }
+  // After the preflight, because it runs the CLI out of the runtime volume.
+  await seedClaudeHome({ containerId, user: remoteUser, home })
+  timer.mark('home')
+  // The worktree has no `node_modules` or `.venv`: dependencies are installed
+  // here, for this container's platform, never copied from the host. On by
+  // default unless the project installs its own way (`postCreateCommand`);
+  // `installDependencies` says either explicitly.
+  const install = (config.installDependencies ?? !config.postCreateCommand)
+    ? await installDependencies({ containerId, user: remoteUser, home, workspacePath, checkout: worktreePath, signal })
+    : null
+  timer.mark('install')
+  if (config.postCreateCommand) {
+    await run('docker', [
+      ...execArgs({ containerId, user: remoteUser, workdir: workspacePath, env: { HOME: home } }),
+      ...postCreateArgs(config.postCreateCommand)
+    ], { signal }).catch((error) => {
+      if (signal.aborted) throw error
+      throw new Error(`postCreateCommand failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+  timer.mark('postCreateCommand')
+  return install
 }
 
 /**
@@ -769,6 +836,332 @@ async function ensureRunning(id: string): Promise<DevEnvironment> {
     return environment
   }
   return start(id)
+}
+
+/** What a new container would change for an environment, and whether it can have one. */
+export interface EnvironmentUpgradeStatus {
+  /** Whether the container mounts an older shared runtime volume — older adapters — than a new one would. */
+  runtimeStale: boolean
+  /** The shared runtime volume the container mounts. Null when there is no container, or it mounts none Domo recognises. */
+  currentRuntime: string | null
+  wantedRuntime: string
+  /**
+   * Where the remote user's home, and with it every session's resumable
+   * state, comes from in the new container: the home volume it has (`kept`),
+   * a copy of the old container's writable layer, for an environment created
+   * before there was a volume (`migrated`), or nowhere, because the container
+   * and its home are both gone (`lost`).
+   */
+  home: 'kept' | 'migrated' | 'lost'
+  /** Why an upgrade is refused, when it is. */
+  blocked: string | null
+}
+
+export async function environmentUpgradeStatus(id: string): Promise<EnvironmentUpgradeStatus> {
+  const environment = await getDevEnvironment(id)
+  if (!environment) throw new Error('Development environment not found')
+  assertNotRetired(environment)
+  const project = await getProject(environment.projectId)
+  const [arch, inspection] = await Promise.all([dockerServerArch(), inspectContainer(containerReference(environment))])
+  const wantedRuntime = runtimeVolumeName(arch)
+  const currentRuntime = mountedRuntime(inspection)
+  return {
+    runtimeStale: !!currentRuntime && currentRuntime !== wantedRuntime,
+    currentRuntime,
+    wantedRuntime,
+    home: await homeSource(id, inspection),
+    blocked: project ? await upgradeRefusal(environment, project) : 'Project not found'
+  }
+}
+
+function mountedRuntime(inspection: ContainerInspection | null): string | null {
+  return inspection?.namedVolumes.find(name => name.startsWith(`${resourcePrefix()}runtime-`)) ?? null
+}
+
+async function homeSource(id: string, inspection: ContainerInspection | null): Promise<EnvironmentUpgradeStatus['home']> {
+  if (inspection) return inspection.namedVolumes.includes(homeVolumeName(id)) ? 'kept' : 'migrated'
+  const volume = await run('docker', ['volume', 'inspect', homeVolumeName(id)], { allowFailure: true })
+  return volume.stdout && volume.stdout !== '[]' ? 'kept' : 'lost'
+}
+
+/** The one thing a new container cannot do without: the worktree it mounts. */
+async function upgradeRefusal(environment: DevEnvironment, project: Project): Promise<string | null> {
+  if (await hostWorktreeExists(project.repoPath, environment.id)) return null
+  return `The environment's worktree is gone from ${hostWorktreePath(project.repoPath, environment.id)}, `
+    + 'so there is no checkout to give a new container. Retire the environment.'
+}
+
+export interface EnvironmentUpgradeReport {
+  environment: DevEnvironment
+  /** The shared runtime volume it mounted before, and the one it mounts now. */
+  runtime: { from: string | null, to: string }
+  home: EnvironmentUpgradeStatus['home']
+  /** Networks its own stacks made, that the new container was put back on. */
+  networks: string[]
+  /** How many of its own containers were stopped. Nothing starts them again. */
+  stopped: number
+  /**
+   * Its services that shared the old container's network, PID or IPC
+   * namespace. They name the old container, fixed at their create, so a start
+   * cannot mend them: bringing the stack up again recreates them.
+   */
+  stranded: string[]
+}
+
+/**
+ * Give an environment a new container: new adapters, a rebuilt image, and
+ * whatever else is fixed at `docker run` (`.domo.json`, `homeMounts`, the
+ * headless browser).
+ *
+ * Nothing an agent would miss is in the container. The checkout is the host's
+ * worktree, the remote user's home is a volume (`home-volume.ts`), and the
+ * dependencies are on the cache volume, so its sessions resume where they left
+ * off. What goes is the writable layer — whatever was installed outside those
+ * — and `postCreateCommand` and the install run again to restore the declared
+ * part.
+ *
+ * Everything that can fail on its own account happens while the old container
+ * is still there. Up to its removal, a failure puts the environment back as it
+ * was and writes no `error`: nothing is broken and nobody has to act. Past
+ * it, the environment is `error` with every volume still there, and another
+ * upgrade is the way out.
+ */
+export function upgradeEnvironment(id: string): Promise<EnvironmentUpgradeReport> {
+  return lifecycle(id, () => upgrade(id))
+}
+
+async function upgrade(id: string): Promise<EnvironmentUpgradeReport> {
+  const environment = await getDevEnvironment(id)
+  if (!environment) throw new Error('Development environment not found')
+  assertNotRetired(environment)
+  const project = await getProject(environment.projectId)
+  if (!project) throw new Error('Project not found')
+  const refusal = await upgradeRefusal(environment, project)
+  if (refusal) throw new Error(refusal)
+
+  const before = await inspectContainer(containerReference(environment))
+  const home = await homeSource(id, before)
+  const hadProxy = hasDockerProxy(before)
+  // The stored ones, never derived again from the name: Claude Code keys a
+  // transcript by its working directory, so another path would orphan every
+  // session here.
+  const { workspacePath, containerName } = environment
+  const timer = stepTimer()
+  /** Whatever is stopped has to be put back if the upgrade stops short of the removal. */
+  let stopping = false
+  let migratedVolume: string | null = null
+  let replacing = false
+
+  try {
+    const resolved = await resolveEnvironmentConfig(project.repoPath)
+    const declaredPorts = resolveForwardPorts(resolved.config)
+    for (const port of declaredPorts) {
+      await upsertDevEnvironmentPort({ environmentId: id, ...port, source: 'declared' })
+    }
+    const settings = await getSettings()
+    const caches = resolveCaches(resolved.config.caches)
+    const [runtimeVolume, browserVolume, imageName] = await allSettledOrThrow([
+      timer.measure('runtime volume', ensureRuntimeVolume()),
+      timer.measure('browser volume', settings.browserTools
+        ? ensureBrowserVolume().catch((error) => {
+          console.warn(`[dev-env] no headless browser for ${id}: ${error}`)
+          return null
+        })
+        : Promise.resolve(null)),
+      timer.measure('image', ensureCacheVolumes(caches).then(() => buildEnvironmentImage({
+        config: resolved.config,
+        environmentId: id,
+        name: environment.name,
+        repoPath: project.repoPath
+      })))
+    ])
+    const metadata = await readImageMetadata(imageName, id)
+    const remoteUser = resolveRemoteUser(resolved.config, metadata)
+    // The home belongs to the old user, and is mounted at the old user's home.
+    if (environment.remoteUser && remoteUser !== environment.remoteUser) {
+      throw new Error(
+        `The image now runs as "${remoteUser}", and this environment's home is "${environment.remoteUser}"'s. `
+        + 'An upgrade keeps the home, so it cannot change the user: create a new environment instead.'
+      )
+    }
+    const userHome = homeDirectory(remoteUser)
+    // Read again: `homeMounts` may have changed, and this is when it applies.
+    const overlay = await resolveHomeOverlay({
+      containerHome: userHome,
+      workspacePath,
+      safeDirectories: [canonicalWorkspacePath(id), canonicalBaseGitPath(project.id)],
+      paths: settings.homeMounts
+    })
+    const codexConfigDir = await toolConfigDir('NUXT_CODEX_CONFIG_DIR', '.codex')
+    const worktree = {
+      hostWorktreePath: hostWorktreePath(project.repoPath, id),
+      hostGitdirFilePath: containerGitdirFilePath(project.repoPath, id),
+      hostBaseGitPath: await hostCommonGitDir(project.repoPath),
+      projectId: project.id
+    }
+    const stranded = before && hadProxy ? await namespaceSharers(id, before.id) : []
+    timer.mark('prepared')
+
+    // From here the old container is going. Its stack first: `stop` stops it
+    // for the same reason, and its services are about to lose the namespace
+    // and the peer they were created against.
+    stopping = true
+    stopEnvironmentForwarders(id)
+    const stopped = hadProxy ? await stopEnvironmentContainers(id) : 0
+    if (before?.running) await run('docker', ['stop', before.id])
+    // The proxy caches the old container's id and mounts, and holds a relay in
+    // a namespace that is going away. Nothing may be made in the gap.
+    await stopDoodProxy(id)
+    // From the stopped container, so nothing is writing to it.
+    if (before && home === 'migrated') {
+      migratedVolume = await migrateHome({
+        environmentId: id,
+        containerId: before.id,
+        home: userHome,
+        mountDestinations: before.mountDestinations,
+        helperImage: HELPER_IMAGE
+      })
+    }
+    timer.mark('stopped')
+
+    replacing = true
+    // Not `removeContainer()`, which removes a Docker-in-Docker volume: a
+    // project that lists that Feature itself keeps its daemon's state in it.
+    if (before) await run('docker', ['rm', '--force', before.id])
+    const homeVolume = migratedVolume ?? await createHomeVolume(id)
+    const dockerSocket = usesHostDaemon(resolved.config)
+      ? (await ensureDockerProxy({ id, containerReference: containerName, workspacePath })).socketPath
+      : null
+    const { stdout: containerId } = await run('docker', containerRunArgs({
+      environmentId: id,
+      projectId: project.id,
+      containerName,
+      imageName,
+      config: resolved.config,
+      metadata,
+      remoteUser,
+      workspacePath,
+      workspace: worktree,
+      caches,
+      homeVolume,
+      runtimeVolume,
+      browserVolume,
+      ports: declaredPorts,
+      codexConfigDir,
+      seccompProfile: await ensureSeccompProfile(),
+      homeOverlay: overlay,
+      dockerSocket
+    }))
+    timer.mark('container')
+    const inspection = await inspectContainer(containerId)
+    if (!inspection) throw new Error('The new container was created but could not be inspected.')
+    // Before anything asks about the environment by its stored id.
+    await updateDevEnvironment(id, {
+      containerId: inspection.id,
+      containerName: inspection.name,
+      configSource: resolved.source,
+      configPath: resolved.displayPath,
+      remoteUser
+    })
+    // The proxy joins a network only when a container is created on it.
+    const networks = dockerSocket ? await rejoinEnvironmentNetworks(id, inspection.id) : []
+    await setUpContainer({
+      id,
+      containerId: inspection.id,
+      config: resolved.config,
+      remoteUser,
+      workspacePath,
+      worktreePath: worktree.hostWorktreePath,
+      caches,
+      overlay,
+      browserVolume,
+      dockerSocket,
+      timer,
+      signal: new AbortController().signal
+    })
+    const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
+    await refreshEnvironmentPorts(id)
+    // Only now does nothing mount the old ones.
+    await collectRuntimeVolumes().catch(() => {})
+    await collectCachedImages().catch(() => {})
+    await collectBrowserVolumes().catch(() => {})
+    console.info(`[dev-env] upgraded ${id} in ${timer.summary()}`)
+    return {
+      environment: (await getDevEnvironment(id)) ?? updated,
+      runtime: { from: mountedRuntime(before), to: runtimeVolume },
+      home,
+      networks,
+      stopped,
+      stranded
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    if (replacing) {
+      // Nothing is swept and no volume removed: the home and the checkout are
+      // as they were, and another upgrade is worth trying.
+      throw await breakEnvironment(id, `The environment could not be upgraded: ${reason}`)
+    }
+    if (stopping) await putBack(id, { before, hadProxy })
+    throw error
+  }
+}
+
+/**
+ * Undo the part of an upgrade that came before the removal: the old container
+ * is still there, so it is started again if it was running. Its stack is not —
+ * a stop does not restart it either.
+ */
+async function putBack(id: string, input: { before: ContainerInspection | null, hadProxy: boolean }): Promise<void> {
+  const environment = await getDevEnvironment(id)
+  if (!environment) return
+  if (input.before?.running) {
+    await start(id).catch(error => console.warn(`[dev-env] could not start ${id} again after a failed upgrade: ${error}`))
+  } else if (input.hadProxy) {
+    // A stopped environment keeps its proxy, so a start from outside Domo works.
+    await ensureDockerProxy(proxyTarget(environment, input.before)).catch(() => {})
+  }
+}
+
+/**
+ * The environment's own containers created into one of its namespaces, named
+ * for the report. `hostModes` in `dood/rewrite.ts` turns `network_mode: host`
+ * and the others into `container:<the environment's id>`, fixed at the
+ * service's create; after an upgrade that id is gone.
+ */
+async function namespaceSharers(environmentId: string, ownContainerId: string): Promise<string[]> {
+  const found = await run('docker', [
+    'ps', '--all', '--quiet', '--filter', `label=${ENVIRONMENT_LABEL}=${environmentId}`
+  ], { allowFailure: true }).catch(() => ({ stdout: '' }))
+  const ids = found.stdout.split('\n').map(line => line.trim()).filter(Boolean)
+  if (!ids.length) return []
+  const described = await run('docker', [
+    'inspect', '--format',
+    '{{.Name}}\t{{.HostConfig.NetworkMode}}\t{{.HostConfig.PidMode}}\t{{.HostConfig.IpcMode}}',
+    ...ids
+  ], { allowFailure: true }).catch(() => ({ stdout: '' }))
+  const shares = `container:${ownContainerId}`
+  return described.stdout.split('\n').map(line => line.trim()).filter(Boolean).flatMap((line) => {
+    const [name = '', ...modes] = line.split('\t')
+    return modes.includes(shares) ? [name.replace(/^\//, '')] : []
+  })
+}
+
+/**
+ * Put the new container on every network the environment's stacks made. The
+ * proxy joins one only when a container is created on it (`joinNetworks` in
+ * `dood/scope-layer.ts`), so a stack brought up again from containers that
+ * already exist would otherwise be out of the agent's reach, by name.
+ */
+async function rejoinEnvironmentNetworks(environmentId: string, containerId: string): Promise<string[]> {
+  const found = await run('docker', [
+    'network', 'ls', '--format', '{{.Name}}', '--filter', `label=${ENVIRONMENT_LABEL}=${environmentId}`
+  ], { allowFailure: true }).catch(() => ({ stdout: '' }))
+  const joined: string[] = []
+  for (const network of found.stdout.split('\n').map(line => line.trim()).filter(Boolean)) {
+    const connected = await run('docker', ['network', 'connect', network, containerId]).then(() => true, () => false)
+    if (connected) joined.push(network)
+  }
+  return joined
 }
 
 /**

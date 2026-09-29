@@ -7,7 +7,7 @@ import { resourcePrefix, run } from './docker'
  * is allowed to remove.
  *
  * An environment owns two sorts of thing on the daemon. What it *is* is named
- * from its id — its container, its image and, for a
+ * from its id — its container, its home volume, its image and, for a
  * Docker-in-Docker one, `dind-var-lib-docker-<id>` — so a cleanup that failed
  * is findable by name hours later: the row survives retirement and names them
  * again with certainty. What it *made* through its Docker proxy
@@ -38,6 +38,15 @@ export interface Leftover {
 const DIND_VOLUME = 'dind-var-lib-docker-'
 
 /**
+ * The remote user's home, a volume so that replacing the container keeps it:
+ * every adapter keeps what `session/load` reads there (`dev-environments.ts`,
+ * `upgradeEnvironment`).
+ */
+export function homeVolumeName(environmentId: string): string {
+  return `${resourcePrefix()}${environmentId}-home`.toLowerCase()
+}
+
+/**
  * Every Docker resource an environment *is*, named from its id alone.
  *
  * The Docker-in-Docker volume is in here because the Feature declares it as
@@ -60,6 +69,7 @@ export function environmentResources(
   const name = containerName.toLowerCase()
   return [
     { kind: 'container', name, environmentId },
+    { kind: 'volume', name: homeVolumeName(environmentId), environmentId },
     { kind: 'volume', name: `${DIND_VOLUME}${environmentId}`, environmentId },
     { kind: 'image', name, environmentId }
   ]

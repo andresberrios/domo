@@ -67,6 +67,7 @@ function runArgs(input: {
       projectId: 'prj_1'
     },
     caches: input.caches ?? resolveCaches(false),
+    homeVolume: 'domo-dev-env_1-home',
     runtimeVolume: 'domo-dev-runtime-abc123',
     browserVolume: input.browserVolume ?? null,
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
@@ -222,8 +223,13 @@ describe('containerRunArgs', () => {
       'type=bind,source=/Users/me/src/.domo-worktrees/env_1,target=/worktrees/env_1',
       'type=bind,source=/Users/me/src/.domo-worktrees/env_1.container-gitdir,target=/worktrees/env_1/.git,readonly',
       'type=bind,source=/Users/me/src/api/.git,target=/worktrees/.base/prj_1',
+      'type=volume,source=domo-dev-env_1-home,target=/home/vscode',
       'type=volume,source=domo-dev-runtime-abc123,target=/opt/domo,readonly'
     ])
+  })
+
+  it('mounts the home volume at the remote user\'s home, whoever that is', () => {
+    expect(values(runArgs({ remoteUser: 'root' }), '--mount')).toContain('type=volume,source=domo-dev-env_1-home,target=/root')
   })
 
   it('mounts the worktree at its canonical path, never at the display path, which is only a symlink', () => {
@@ -403,9 +409,9 @@ describe('containerRunArgs', () => {
     expect(values(args, '--mount')).not.toContain('type=bind,source=/Users/me/.gitconfig,target=/home/vscode/.gitconfig')
   })
 
-  it('mounts nothing of the home when the overlay is empty', () => {
-    // The worktree, its `.git` override, the base `.git` and the runtime.
-    expect(values(runArgs(), '--mount')).toHaveLength(4)
+  it('mounts nothing of the host\'s home when the overlay is empty', () => {
+    // The worktree, its `.git` override, the base `.git`, the home volume and the runtime.
+    expect(values(runArgs(), '--mount')).toHaveLength(5)
     expect(values(runArgs(), '--env')).toEqual(['DOMO_DEV_ENVIRONMENT_ID=env_1', 'UV_TORCH_BACKEND=cpu', 'ONNXRUNTIME_NODE_INSTALL_CUDA=skip'])
   })
 
