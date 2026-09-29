@@ -1817,6 +1817,7 @@ describe('upgradeEnvironment', () => {
       id: 'old-sha',
       name: 'domo-dev-env_1',
       running: true,
+      image: 'sha256:old-image',
       labels: { 'domo.dood': 'true' },
       namedVolumes: [HOME, 'domo-dev-runtime-old'],
       mountDestinations: ['/worktrees/env_1', '/home/vscode', '/home/vscode/.ssh-host', '/home/vscode/.codex', '/opt/domo'],
@@ -2017,6 +2018,17 @@ describe('upgradeEnvironment', () => {
     expect(report.home).toBe('kept')
     expect(dockerCalls().some(args => args[0] === 'rm' || args[0] === 'stop')).toBe(false)
     expect(dockerCalls()[stepAt('run', '--detach')]).toContain(`type=volume,source=${HOME},target=/home/vscode`)
+  })
+
+  it('removes the image a rebuild left untagged, once the new container runs, and never a tagged one', async () => {
+    withContainers(oldContainer(), args => (args[0] === 'image' && args[1] === 'inspect' ? '0' : undefined))
+    await upgradeEnvironment('env_1')
+    expect(dockerAt('image', 'rm', 'sha256:old-image')).toBeGreaterThan(dockerAt('make setup'))
+
+    vi.clearAllMocks()
+    withContainers(oldContainer(), args => (args[0] === 'image' && args[1] === 'inspect' ? '1' : undefined))
+    await upgradeEnvironment('env_1')
+    expect(dockerCalls().some(args => args[0] === 'image' && args[1] === 'rm')).toBe(false)
   })
 
   it('reports newer adapters and where the home would come from, without changing anything', async () => {

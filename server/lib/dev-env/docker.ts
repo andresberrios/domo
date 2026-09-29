@@ -10,6 +10,8 @@ export interface ContainerInspection {
   id: string
   name: string
   running: boolean
+  /** The id of the image it was created from. */
+  image: string
   ipAddress: string | null
   labels: Record<string, string>
   /** Names of the named (not anonymous) volumes mounted into the container. */
@@ -107,6 +109,7 @@ export async function inspectContainer(reference: string): Promise<ContainerInsp
       id: container.Id,
       name: String(container.Name ?? '').replace(/^\//, ''),
       running: container.State?.Running === true,
+      image: String(container.Image ?? ''),
       ipAddress: networks.find(network => network.IPAddress)?.IPAddress ?? null,
       labels: container.Config?.Labels ?? {},
       namedVolumes: ((container.Mounts ?? []) as Array<{ Type?: string, Name?: string }>)

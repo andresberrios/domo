@@ -384,6 +384,7 @@ async function upgradeEnvironment() {
         :title="`Upgrade ${environment.name}?`"
         :description="upgrade?.blocked ?? upgradeDescription"
         confirm-label="Upgrade environment"
+        confirm-color="primary"
         :loading="busy"
         @confirm="upgradeEnvironment"
       />

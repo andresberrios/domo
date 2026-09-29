@@ -109,7 +109,12 @@ const PREFIX = 'domo-live-test-'
 process.env.NUXT_DEV_ENV_RESOURCE_PREFIX = PREFIX
 
 const { run, inspectContainer } = await import('../../server/lib/dev-env/docker')
-const { createHostWorktree, hostWorktreePath, removeHostWorktree } = await import('../../server/lib/dev-env/host-worktree')
+const {
+  containerGitdirFilePath,
+  createHostWorktree,
+  hostWorktreePath,
+  removeHostWorktree
+} = await import('../../server/lib/dev-env/host-worktree')
 const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
 const { environmentImageName } = await import('../../server/lib/dev-env/image')
 const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
@@ -120,13 +125,14 @@ const {
   restoreDockerProxies,
   retireEnvironment,
   startEnvironment,
-  stopEnvironment
+  stopEnvironment,
+  upgradeEnvironment
 } = await import('../../server/lib/dev-environments')
 const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
 const { sharedCacheVolumeName } = await import('../../server/lib/dev-env/caches')
 const { doodSocketDir, doodSocketPath, stopDoodProxy } = await import('../../server/lib/dood/manager')
-const { removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
+const { homeVolumeName, removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
 const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
 
 const HOUR = 60 * 60 * 1000
@@ -754,6 +760,110 @@ describe('two environments of the same project', () => {
     }
     const built = await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${PREFIX}runtime-`])
     expect(built.stdout.split('\n').filter(Boolean)).toEqual([shared])
+  }, HOUR / 2)
+})
+
+/**
+ * The upgrade, against a real daemon: that a container really can be thrown
+ * away without losing what `session/load` reads under `$HOME`. `docker: false`,
+ * because the proxy has live files of its own.
+ */
+describe('upgrading an environment', () => {
+  const definition = (extra: Record<string, unknown> = {}) => ({
+    '.domo.json': JSON.stringify({
+      devEnvironment: {
+        image: DEFAULT_IMAGE,
+        docker: false,
+        remoteUser: 'vscode',
+        // Its only trace is in the writable layer, so finding it afterwards
+        // says the hook ran again on the new container.
+        postCreateCommand: 'touch /tmp/post-create-ran',
+        ...extra
+      }
+    })
+  })
+
+  it('replaces the container and keeps the home, the checkout and the stored path', async () => {
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: await checkout(definition()) }
+    const environment = await create('Live Upgrade')
+    const before = environment.containerId!
+
+    await inContainer(environment, 'sh', '-c', 'echo wip > uncommitted.txt')
+    await inContainer(
+      environment,
+      'sh', '-c',
+      'mkdir -p "$HOME/.claude/projects/-worktrees-x" '
+      + '&& echo transcript > "$HOME/.claude/projects/-worktrees-x/session.jsonl" '
+      + '&& echo onboarded > "$HOME/.claude.json"'
+    )
+    // Only in the writable layer, so it must not survive.
+    await inContainer(environment, 'sh', '-c', 'echo gone > /tmp/writable-layer-only')
+    // Renamed since: the path its sessions are keyed by must not follow.
+    state.rows.get(environment.id)!.name = 'Renamed Since'
+
+    const report = await upgradeEnvironment(environment.id)
+    const after = report.environment.containerId!
+
+    expect(after).not.toBe(before)
+    await expect(inspectContainer(before)).resolves.toBeNull()
+    expect(report.home).toBe('kept')
+    expect(await mounts(after)).toContainEqual(expect.objectContaining({
+      Type: 'volume', Name: homeVolumeName(environment.id), Destination: '/home/vscode'
+    }))
+    expect(report.runtime.to).toBe(await ensureRuntimeVolume())
+
+    const upgraded = { ...report.environment }
+    expect(upgraded.workspacePath).toBe(environment.workspacePath)
+    expect(await inContainer(upgraded, 'cat', 'uncommitted.txt')).toContain('wip')
+    expect(await inContainer(upgraded, 'cat', '/home/vscode/.claude/projects/-worktrees-x/session.jsonl')).toContain('transcript')
+    expect(await inContainer(upgraded, 'cat', '/home/vscode/.claude.json')).toContain('onboarded')
+    expect(await inContainer(upgraded, 'cat', '/tmp/writable-layer-only')).not.toContain('gone')
+    expect(await inContainer(upgraded, 'sh', '-c', 'test -f /tmp/post-create-ran && echo yes')).toContain('yes')
+    // The alias, the git config and the home's ownership are the new container's too.
+    expect(await inContainer(upgraded, 'git', 'status', '--porcelain')).toContain('uncommitted.txt')
+    expect(await inContainer(upgraded, 'sh', '-c', 'touch "$HOME/.writable" && echo ok')).toContain('ok')
+  }, HOUR / 2)
+
+  it('copies an older environment\'s home into a volume, without the host directories mounted in it', async () => {
+    const repo = await checkout(definition())
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    const environment = await create('Live Upgrade Legacy')
+    // An environment from before the home volume: the same container, with its
+    // home in the writable layer and a host directory bound inside it.
+    const secrets = await temp('secrets')
+    await writeFile(join(secrets, 'id_ed25519'), 'host key\n', 'utf8')
+    await run('docker', ['rm', '--force', environment.containerId!])
+    await run('docker', ['volume', 'rm', homeVolumeName(environment.id)])
+    const { stdout: legacy } = await run('docker', [
+      'run', '--detach', '--name', `${PREFIX}${environment.id}`,
+      '--label', `domo.envId=${environment.id}`,
+      '--mount', `type=bind,source=${hostWorktreePath(repo, environment.id)},target=/worktrees/${environment.id}`,
+      '--mount', `type=bind,source=${containerGitdirFilePath(repo, environment.id)},target=/worktrees/${environment.id}/.git,readonly`,
+      '--mount', `type=bind,source=${repo}/.git,target=/worktrees/.base/prj_live`,
+      '--mount', `type=volume,source=${await ensureRuntimeVolume()},target=/opt/domo,readonly`,
+      '--mount', `type=bind,source=${secrets},target=/home/vscode/.ssh-host`,
+      '--entrypoint', '/bin/sh', environmentImageName(environment.id), '-c', 'while sleep 1; do :; done'
+    ])
+    state.rows.get(environment.id)!.containerId = legacy
+    await run('docker', [
+      'exec', '--user', 'vscode', legacy, 'sh', '-c',
+      'mkdir -p -m 700 "$HOME/.claude/projects/-worktrees-x" '
+      + '&& echo transcript > "$HOME/.claude/projects/-worktrees-x/session.jsonl" && chmod 600 "$HOME/.claude/projects/-worktrees-x/session.jsonl"'
+    ])
+
+    const report = await upgradeEnvironment(environment.id)
+
+    expect(report.home).toBe('migrated')
+    const upgraded = { ...report.environment }
+    expect(await inContainer(upgraded, 'cat', '/home/vscode/.claude/projects/-worktrees-x/session.jsonl')).toContain('transcript')
+    expect(await inContainer(upgraded, 'stat', '-c', '%U %a', '/home/vscode/.claude/projects/-worktrees-x/session.jsonl'))
+      .toBe('vscode 600')
+    // Straight off the volume: nothing of the host directory was copied into it.
+    const onVolume = await run('docker', [
+      'run', '--rm', '--mount', `type=volume,source=${homeVolumeName(environment.id)},target=/h`, HELPER_IMAGE,
+      'sh', '-c', 'ls -A /h/.ssh-host 2>/dev/null; echo end'
+    ])
+    expect(onVolume.stdout).toBe('end')
   }, HOUR / 2)
 })
 

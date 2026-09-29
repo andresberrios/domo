@@ -1081,6 +1081,7 @@ async function upgrade(id: string): Promise<EnvironmentUpgradeReport> {
     })
     const updated = (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     await refreshEnvironmentPorts(id)
+    if (before) await removeUntaggedImage(before.image)
     // Only now does nothing mount the old ones.
     await collectRuntimeVolumes().catch(() => {})
     await collectCachedImages().catch(() => {})
@@ -1120,6 +1121,21 @@ async function putBack(id: string, input: { before: ContainerInspection | null, 
     // A stopped environment keeps its proxy, so a start from outside Domo works.
     await ensureDockerProxy(proxyTarget(environment, input.before)).catch(() => {})
   }
+}
+
+/**
+ * The old container's image, once a rebuild has moved the environment's tag
+ * off it and nothing else names it: a Dockerfile is always rebuilt, and the
+ * image it replaced would otherwise stay on the disk untagged for good. One
+ * with a tag is left alone, a definition's cached image included, and one a
+ * container still uses is refused by Docker.
+ */
+async function removeUntaggedImage(image: string): Promise<void> {
+  if (!image) return
+  const tags = await run('docker', ['image', 'inspect', '--format', '{{len .RepoTags}}', image], { allowFailure: true })
+    .catch(() => ({ stdout: '' }))
+  if (tags.stdout.trim() !== '0') return
+  await run('docker', ['image', 'rm', image], { allowFailure: true }).catch(() => {})
 }
 
 /**
