@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { removeCachedImages } from '../helpers/cached-images'
 
 import type { DevEnvironment } from '~~/shared/types'
 
@@ -276,6 +277,7 @@ afterAll(async () => {
   // takes it; this run's is named for the test prefix, image included.
   await run('docker', ['rm', '--force', portHelperName()], { allowFailure: true })
   await run('docker', ['image', 'rm', portHelperImage()], { allowFailure: true })
+  await removeCachedImages(PREFIX)
   // So is the cache volume, which unlike the runtime is cheap to make again.
   await run('docker', ['volume', 'rm', sharedCacheVolumeName()], { allowFailure: true })
   delete process.env.NUXT_DEV_ENV_RESOURCE_PREFIX

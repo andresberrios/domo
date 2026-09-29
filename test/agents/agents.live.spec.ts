@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import type { AgentAdapter, DevEnvironment } from '~~/shared/types'
+import { removeCachedImages } from '../helpers/cached-images'
 import {
   assistantText,
   eventsOfType,
@@ -95,6 +96,7 @@ afterAll(async () => {
     acpManager.stop(id)
   }
   if (environment) await retireEnvironment(environment.id).catch(() => {})
+  await removeCachedImages(PREFIX)
   await mesh?.close()
   for (const path of [repoPath, hostCwd]) {
     if (path) await rm(dirname(path), { recursive: true, force: true })

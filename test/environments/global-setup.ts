@@ -10,6 +10,7 @@ import { chromium } from 'playwright-core'
 
 import { APP_BUILD_DIR, ensureAppBuild } from '../helpers/app-build'
 import { chromiumPath } from '../helpers/browser'
+import { removeCachedImages } from '../helpers/cached-images'
 import {
   TEST_DATABASE_URL,
   TEST_ELECTRIC_URL,
@@ -144,6 +145,7 @@ async function removeResources(): Promise<void> {
   const quiet = (args: string[]) => run('docker', args).catch(() => null)
   await quiet(['rm', '--force', portHelperName()])
   await quiet(['image', 'rm', portHelperImage()])
+  await removeCachedImages(ENVIRONMENTS_PREFIX)
   await quiet(['volume', 'rm', sharedCacheVolumeName()])
   await rm(doodSocketDir(), { recursive: true, force: true })
 }
