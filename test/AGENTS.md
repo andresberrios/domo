@@ -14,6 +14,7 @@ before it acts. `vitest.config.ts` and `test/setup/` answer the rest.
 | `integration` | `test/server`, `test/e2e`, `test/helpers` | Postgres. |
 | `electric` | `test/electric` | Postgres and the `electric-e2e` service. |
 | `docker-live` | `test/docker/*.live.spec.ts` | a Docker daemon. Opt in: `pnpm test:docker`. The `dood-*.live.spec.ts` files drive the Docker proxy with the real CLI, compose and buildx. |
+| `environments-live` | `test/environments/*.live.spec.ts` | Postgres, the `electric-e2e` service, Docker and a Chromium. Opt in: `pnpm test:environments`. Creates and retires environments in the real app, in a real browser. Keeps its runtime volume (`domo-envlive-runtime-*`) between runs. |
 | `agents-live` | `test/agents/*.live.spec.ts` | Postgres, Docker, a Claude token, a Codex login and `NUXT_OPENCODE_API_KEY`. Opt in: `pnpm test:agents`. |
 | `voice-live` | `test/voice/*.live.spec.ts` | Postgres, the `electric-e2e` service, a Chromium and `NUXT_OPENAI_API_KEY`. Opt in: `pnpm test:voice`. A real browser with a WAV for a microphone, on a real GPT-Live session. It bills. |
 

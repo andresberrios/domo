@@ -20,6 +20,7 @@
     "test:docker": "vitest run --project unit --project docker-live test/docker",
     "test:agents": "vitest run --project agents-live",
     "test:voice": "vitest run --project voice-live",
+    "test:environments": "vitest run --project environments-live",
     "test:watch": "vitest --project unit --project nuxt"
   },
   "dependencies": {
