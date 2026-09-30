@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createReadStream, existsSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer } from 'node:net'
@@ -71,14 +71,47 @@ async function reachable(url: string): Promise<boolean> {
   }
 }
 
+/**
+ * Where the process group of Domo's own Pocket server is written down.
+ *
+ * Nothing kills a child when its parent is stopped, and `uvx` starts Python
+ * as a child of its own, so each Domo restart left a Pocket server running,
+ * a few hundred MB each. Pocket runs in a process group of its own, and the
+ * next start stops whatever group the last one left.
+ */
+function pidFile(): string {
+  return join(dataDir(), 'pocket-tts.pid')
+}
+
+function killGroup(pid: number) {
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    /* already gone */
+  }
+}
+
+function stopLeftover() {
+  try {
+    const pid = Number(readFileSync(pidFile(), 'utf8'))
+    if (Number.isInteger(pid) && pid > 1) killGroup(pid)
+  } catch {
+    /* none left */
+  }
+  rmSync(pidFile(), { force: true })
+}
+
 async function startServer(): Promise<string> {
+  stopLeftover()
   const port = await freePort()
   const url = `http://127.0.0.1:${port}`
   console.log(`[agent-voice] starting Pocket TTS ${POCKET_VERSION} on ${url} (the first start downloads it)`)
   const child = spawn('uvx', ['--from', `pocket-tts==${POCKET_VERSION}`, 'pocket-tts', 'serve', '--host', '127.0.0.1', '--port', String(port)], {
     env: { ...process.env, HF_HOME: process.env.HF_HOME ?? join(dataDir(), 'models', 'hf') },
-    stdio: ['ignore', 'ignore', 'pipe']
+    stdio: ['ignore', 'ignore', 'pipe'],
+    detached: true
   })
+  if (child.pid) writeFileSync(pidFile(), String(child.pid))
   let failure: string | null = null
   child.on('error', (error: any) => {
     failure = error?.code === 'ENOENT'
@@ -112,7 +145,7 @@ async function startServer(): Promise<string> {
     }
     await new Promise(resolve => setTimeout(resolve, 1000))
   }
-  child.kill()
+  if (child.pid) killGroup(child.pid)
   throw new Error('Pocket TTS did not start within ten minutes')
 }
 
@@ -271,6 +304,7 @@ export async function synthesizePocket(
 
 /** Stop the server Domo started, if it did. */
 export function stopPocket() {
-  server?.process?.kill()
+  if (server?.process?.pid) killGroup(server.process.pid)
+  rmSync(pidFile(), { force: true })
   server = null
 }
