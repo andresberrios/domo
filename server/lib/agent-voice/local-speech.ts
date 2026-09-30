@@ -19,6 +19,8 @@ import type { SpeechChunk } from './speech'
 const KOKORO_MODEL = 'onnx-community/Kokoro-82M-v1.0-ONNX'
 const WHISPER_PROMPT_CHARS = 700
 const WHISPER_PROMPT_TOKENS = 200
+/** Whisper's input is 30 seconds; a little under leaves room to cut between words. */
+const WHISPER_WINDOW_SECONDS = 28
 
 let transformers: Promise<typeof import('@huggingface/transformers')> | null = null
 const transcribers = new Map<string, Promise<any>>()
@@ -72,14 +74,57 @@ export async function transcribeLocal(
   const floats = new Float32Array(samples.length)
   for (let i = 0; i < samples.length; i++) floats[i] = samples[i]! / 32768
   const whisper = transcriber.model?.config?.model_type === 'whisper'
+  if (!whisper) {
+    const output = await transcriber(floats)
+    return String(output?.text ?? '').replace(/\s+/g, ' ').trim()
+  }
   // An English-only Whisper refuses a language; a multilingual one guesses without it.
-  const options = whisper && language && transcriber.model.generation_config?.is_multilingual
+  const options = language && transcriber.model.generation_config?.is_multilingual
     ? { language, task: 'transcribe' }
     : {}
-  const prompt = precedingTextPrompt(context, WHISPER_PROMPT_CHARS)
-  if (prompt && whisper) return transcribeWhisperWithPrompt(transcriber, floats, prompt, options)
-  const output = await transcriber(floats, options)
-  return String(output?.text ?? '').replace(/\s+/g, ' ').trim()
+  // Whisper hears 30 seconds at a time and drops the rest, so a long turn is
+  // heard window by window, each primed with the context and the words heard
+  // so far, the way Whisper carries text across its own windows.
+  let heard = ''
+  for (const window of whisperWindows(floats, sampleRate)) {
+    const prompt = precedingTextPrompt(
+      { ...context, conversation: [context.conversation, heard].filter(Boolean).join('\n') },
+      WHISPER_PROMPT_CHARS
+    )
+    const text = prompt
+      ? await transcribeWhisperWithPrompt(transcriber, window, prompt, options)
+      : String((await transcriber(window, options))?.text ?? '').replace(/\s+/g, ' ').trim()
+    heard = [heard, text].filter(Boolean).join(' ')
+  }
+  return heard
+}
+
+/**
+ * A turn cut into windows Whisper can hear whole: at most
+ * `WHISPER_WINDOW_SECONDS` each, cut at the quietest tenth of a second in the
+ * last third of the window, so the cut falls between words and not in one.
+ */
+export function whisperWindows(floats: Float32Array, sampleRate: number): Float32Array[] {
+  const most = Math.floor(WHISPER_WINDOW_SECONDS * sampleRate)
+  const frame = Math.floor(sampleRate / 10)
+  const windows: Float32Array[] = []
+  let start = 0
+  while (floats.length - start > most) {
+    let cut = start + most
+    let quietest = Infinity
+    for (let at = start + Math.floor(most * 2 / 3); at + frame <= start + most; at += frame) {
+      let energy = 0
+      for (let i = at; i < at + frame; i++) energy += floats[i]! * floats[i]!
+      if (energy < quietest) {
+        quietest = energy
+        cut = at + Math.floor(frame / 2)
+      }
+    }
+    windows.push(floats.subarray(start, cut))
+    start = cut
+  }
+  windows.push(floats.subarray(start))
+  return windows
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   termsFromText
 } from '../../server/lib/agent-voice/context'
 import { looksHallucinated, transcribeWith } from '../../server/lib/agent-voice/speech'
+import { whisperWindows } from '../../server/lib/agent-voice/local-speech'
 
 /**
  * What a recogniser is told before it hears a turn. The failure these pin is
@@ -149,5 +150,23 @@ describe('a primed transcription that fails', () => {
     )
     expect(text).toBe('I guess that is it')
     expect(((fetch.mock.calls[1] as any)[1].body as FormData).has('prompt')).toBe(false)
+  })
+})
+
+describe('whisperWindows', () => {
+  it('cuts a long turn into windows Whisper hears whole, in the pauses, losing nothing', () => {
+    const rate = 16000
+    const floats = new Float32Array(70 * rate)
+    for (let i = 0; i < floats.length; i++) floats[i] = Math.sin(i / 7) * 0.3
+    // Pauses at 22 s and 47 s, where a speaker breathes.
+    for (const pause of [22, 47]) floats.fill(0, pause * rate, (pause + 0.4) * rate)
+    const windows = whisperWindows(floats, rate)
+    expect(windows.map(window => Math.round(window.length / rate))).toEqual([22, 25, 23])
+    expect(windows.every(window => window.length <= 28 * rate)).toBe(true)
+    expect(windows.reduce((sum, window) => sum + window.length, 0)).toBe(floats.length)
+  })
+
+  it('leaves a turn under the limit alone', () => {
+    expect(whisperWindows(new Float32Array(10 * 16000), 16000)).toHaveLength(1)
   })
 })
