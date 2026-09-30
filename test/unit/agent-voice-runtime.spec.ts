@@ -118,4 +118,15 @@ describe('the agent voice runtime', () => {
     expect(synthesize).not.toHaveBeenCalled()
     runtime.close()
   })
+
+  it('tells an open bar at once when Settings switch to the device\'s recogniser', async () => {
+    const runtime = new AgentVoiceRuntime('ag_switch')
+    const messages: AgentVoiceServerMessage[] = []
+    runtime.addListener(message => messages.push(message))
+    await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({ type: 'dictation', enabled: false })))
+    settings.agentVoice.transcriber = 'browser'
+    bus.publish({ type: 'settings-changed' } as any)
+    await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({ type: 'dictation', enabled: true })))
+    runtime.close()
+  })
 })

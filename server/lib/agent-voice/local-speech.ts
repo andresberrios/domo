@@ -219,18 +219,33 @@ async function voiceTable(voice: string): Promise<Float32Array> {
   if (!table) {
     table = (async () => {
       const { readFile } = await import('node:fs/promises')
-      const { dirname } = await import('node:path')
-      const { fileURLToPath } = await import('node:url')
-      // Where kokoro-js reads them from itself: `voices/` beside its `dist/`.
-      // Resolved as an import, since a build ships only its ESM entry.
-      const entry = fileURLToPath(import.meta.resolve('kokoro-js'))
-      const bytes = await readFile(join(dirname(entry), '..', 'voices', `${voice}.bin`))
+      const bytes = await readFile(join(await kokoroVoicesDir(), `${voice}.bin`))
       return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
     })()
     voiceTables.set(voice, table)
     table.catch(() => voiceTables.delete(voice))
   }
   return table
+}
+
+/**
+ * Where kokoro-js keeps its voices: `node_modules/kokoro-js/voices`, found by
+ * walking up from the server. Neither resolver can say: require finds the
+ * CommonJS entry a build does not ship, and Nitro's bundle has no
+ * import.meta.resolve.
+ */
+async function kokoroVoicesDir(): Promise<string> {
+  const { existsSync } = await import('node:fs')
+  const { dirname } = await import('node:path')
+  const starts = [process.argv[1] ? dirname(process.argv[1]) : null, process.cwd()].filter(Boolean) as string[]
+  for (const start of starts) {
+    for (let dir = start; ; dir = dirname(dir)) {
+      const candidate = join(dir, 'node_modules', 'kokoro-js', 'voices')
+      if (existsSync(candidate)) return candidate
+      if (dirname(dir) === dir) break
+    }
+  }
+  throw new Error('kokoro-js voices not found beside the server')
 }
 
 /** Kokoro's own sentence splitter, for pieces that end where sentences do. */

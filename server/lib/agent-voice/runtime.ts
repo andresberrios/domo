@@ -341,6 +341,7 @@ export class AgentVoiceRuntime {
     try {
       text = await transcribe(samples, CLIENT_INPUT_SAMPLE_RATE, { context: await this.speechContext() })
     } catch (error) {
+      console.warn(`${tag} could not transcribe: ${describe(error)}`)
       this.emit({ type: 'error', message: `Could not transcribe: ${describe(error)}` })
     } finally {
       this.transcribing -= 1
@@ -505,6 +506,7 @@ export class AgentVoiceRuntime {
           }, controller.signal)
         } catch (error) {
           if (!controller.signal.aborted) {
+            console.warn(`[agent-voice:${this.agentSessionId}] could not speak: ${describe(error)}`)
             this.emit({ type: 'error', message: `Could not speak: ${describe(error)}` })
           }
         }
@@ -521,7 +523,14 @@ export class AgentVoiceRuntime {
   /* ------------------------------ following ---------------------------- */
 
   private onBusEvent(event: StreamEvent) {
-    if (this.closed || event.type !== 'agent-event' || event.agentSessionId !== this.agentSessionId) return
+    if (this.closed) return
+    // A change in Settings reaches an open bar at once: the browser starts or
+    // stops its own recogniser without a reconnect.
+    if (event.type === 'settings-changed') {
+      if (this.listeners.size) void this.dictationConfig().then(message => this.emit(message)).catch(() => {})
+      return
+    }
+    if (event.type !== 'agent-event' || event.agentSessionId !== this.agentSessionId) return
     const { event: row } = event
     switch (row.type) {
       case 'agent_message':

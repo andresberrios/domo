@@ -796,7 +796,7 @@ export type AgentVoiceClientMessage =
    * because the turn detector listens to it.
    */
   | { type: 'dictated', text: string }
-  /** What the device's recogniser did, for the server log: it is only debuggable from there. */
+  /** What the device's recogniser or voice did, for the server log: they are only debuggable from there. */
   | { type: 'dictation-log', message: string }
 
 /** Server -> browser messages on the agent voice WebSocket. */

@@ -323,7 +323,18 @@ export function useAgentVoice(
     }
     utterance.onstart = () => { speaking.value = true }
     utterance.onend = done
-    utterance.onerror = done
+    utterance.onerror = (event: any) => {
+      done()
+      if (event?.error === 'interrupted' || event?.error === 'canceled') return
+      logDevice(`speech error ${event?.error} (voice ${voice?.name ?? 'default'})`)
+      errorMessage.value = event?.error === 'not-allowed'
+        ? 'The browser will not speak until the microphone has been tapped.'
+        : `The device could not speak: ${event?.error}`
+    }
+    // Chrome can leave its queue paused after a tab was in the background,
+    // and then says nothing at all until told to go on.
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume()
+    if (!deviceUtterances) logDevice(`speaking with ${voice ? `${voice.name} (${voice.lang})` : 'the default voice'}`)
     deviceUtterances += 1
     window.speechSynthesis.speak(utterance)
   }
@@ -332,7 +343,9 @@ export function useAgentVoice(
   function unlockDeviceSpeech() {
     if (deviceSpeechUnlocked || !('speechSynthesis' in window)) return
     deviceSpeechUnlocked = true
-    const silent = new SpeechSynthesisUtterance('')
+    // A space, not nothing: some browsers skip an empty utterance, and it does
+    // not count as the page having spoken.
+    const silent = new SpeechSynthesisUtterance(' ')
     silent.volume = 0
     window.speechSynthesis.speak(silent)
   }
@@ -570,8 +583,8 @@ export function useAgentVoice(
       ?? navigator.language ?? 'en-US'
   }
 
-  /** What the recogniser did, into the server log: device dictation can only be debugged from there. */
-  function logDictation(message: string) {
+  /** What the device's recogniser and voice did, into the server log: they can only be debugged from there. */
+  function logDevice(message: string) {
     send({ type: 'dictation-log', message })
   }
 
@@ -581,7 +594,7 @@ export function useAgentVoice(
     if (!Recognition) {
       dictation.value = false
       errorMessage.value = 'This browser has no speech recognition of its own. Pick another transcriber in Settings.'
-      logDictation('no SpeechRecognition in this browser')
+      logDevice('no SpeechRecognition in this browser')
       return
     }
     const instance = new Recognition()
@@ -625,7 +638,7 @@ export function useAgentVoice(
       interimPending = !!interim
     }
     instance.onerror = (event: any) => {
-      logDictation(`error ${event.error}${event.message ? `: ${event.message}` : ''}`)
+      logDevice(`error ${event.error}${event.message ? `: ${event.message}` : ''}`)
       if (event.error === 'no-speech' || event.error === 'aborted') return
       errorMessage.value = event.error === 'network'
         ? 'This browser\'s dictation could not reach its speech service. Pick another transcriber in Settings.'
@@ -654,11 +667,11 @@ export function useAgentVoice(
         instance.start()
       } catch (error) {
         recognizer = null
-        logDictation(`could not start: ${error instanceof Error ? error.message : error}`)
+        logDevice(`could not start: ${error instanceof Error ? error.message : error}`)
         return
       }
     }
-    logDictation(`started (${instance.lang}, ${local ? `on the device, ${dictationPhrases.length} phrases` : 'the browser\'s speech service'}, on ${how})`)
+    logDevice(`started (${instance.lang}, ${local ? `on the device, ${dictationPhrases.length} phrases` : 'the browser\'s speech service'}, on ${how})`)
   }
 
   /** `graceful` lets the recogniser deliver the words it is still finalising. */
@@ -707,7 +720,7 @@ export function useAgentVoice(
         stopDictation()
         void startDictation()
       }
-      logDictation(`segment end: ${text ? `${text.split(/\s+/).length} words${tookInterim ? ' (some still interim)' : ''}` : 'no words'}`)
+      logDevice(`segment end: ${text ? `${text.split(/\s+/).length} words${tookInterim ? ' (some still interim)' : ''}` : 'no words'}`)
       if (text) send({ type: 'dictated', text })
       send({ type: 'segment-end', final })
     })

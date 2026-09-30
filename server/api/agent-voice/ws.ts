@@ -82,7 +82,7 @@ export default defineWebSocketHandler({
           if (typeof parsed.text === 'string') runtime.addDictation(parsed.text)
           break
         case 'dictation-log':
-          console.log(`[agent-voice:${state.agentSessionId}] device dictation: ${String(parsed.message).slice(0, 300)}`)
+          console.log(`[agent-voice:${state.agentSessionId}] device: ${String(parsed.message).slice(0, 300)}`)
           break
       }
     } catch (error) {
