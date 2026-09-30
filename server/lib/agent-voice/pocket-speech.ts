@@ -76,8 +76,10 @@ async function reachable(url: string): Promise<boolean> {
  *
  * Nothing kills a child when its parent is stopped, and `uvx` starts Python
  * as a child of its own, so each Domo restart left a Pocket server running,
- * a few hundred MB each. Pocket runs in a process group of its own, and the
- * next start stops whatever group the last one left.
+ * a few hundred MB each. Pocket runs in a process group of its own, which a
+ * watchdog stops when Domo goes (see `startServer`), the `close` hook in
+ * `server/plugins/boot.ts` stops on a clean shutdown, and the next start stops
+ * if both somehow missed it.
  */
 function pidFile(): string {
   return join(dataDir(), 'pocket-tts.pid')
@@ -106,17 +108,22 @@ async function startServer(): Promise<string> {
   const port = await freePort()
   const url = `http://127.0.0.1:${port}`
   console.log(`[agent-voice] starting Pocket TTS ${POCKET_VERSION} on ${url} (the first start downloads it)`)
-  const child = spawn('uvx', ['--from', `pocket-tts==${POCKET_VERSION}`, 'pocket-tts', 'serve', '--host', '127.0.0.1', '--port', String(port)], {
+  // A watchdog in front of the server: it reads a pipe from Domo, which the
+  // system closes however Domo stops (a close, Ctrl+C, a crash, kill -9), and
+  // then stops the whole process group. The server itself reads nothing, so
+  // it could not tell. fd 3 carries the pipe past the backgrounded reader,
+  // whose own stdin a non-interactive shell points at /dev/null.
+  const watchdog = 'exec 3<&0; (cat <&3 >/dev/null; kill -TERM 0) & exec "$@" </dev/null 3<&-'
+  const child = spawn('sh', ['-c', watchdog, 'pocket', 'uvx', '--from', `pocket-tts==${POCKET_VERSION}`, 'pocket-tts', 'serve', '--host', '127.0.0.1', '--port', String(port)], {
     env: { ...process.env, HF_HOME: process.env.HF_HOME ?? join(dataDir(), 'models', 'hf') },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['pipe', 'ignore', 'pipe'],
     detached: true
   })
   if (child.pid) writeFileSync(pidFile(), String(child.pid))
+  const needsUv = 'Pocket TTS needs uv (brew install uv, or see docs.astral.sh/uv), or a Pocket TTS server URL in Settings.'
   let failure: string | null = null
   child.on('error', (error: any) => {
-    failure = error?.code === 'ENOENT'
-      ? 'Pocket TTS needs uv (brew install uv, or see docs.astral.sh/uv), or a Pocket TTS server URL in Settings.'
-      : String(error?.message ?? error)
+    failure = String(error?.message ?? error)
   })
   // Kept after the start too: Pocket answers a failed request with a bare
   // 500, and the reason is only in its log.
@@ -133,7 +140,8 @@ async function startServer(): Promise<string> {
   }
   child.on('exit', (code) => {
     if (server?.process === child) server = null
-    if (!failure) failure = `Pocket TTS stopped (${code}): ${tail.trim().split('\n').pop() ?? ''}`
+    // 127 is the shell's "command not found": no uvx on the PATH.
+    if (!failure) failure = code === 127 ? needsUv : `Pocket TTS stopped (${code}): ${tail.trim().split('\n').pop() ?? ''}`
   })
   const deadline = Date.now() + START_TIMEOUT_MS
   while (Date.now() < deadline) {

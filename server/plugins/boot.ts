@@ -11,6 +11,7 @@ import {
 import { restoreDockerProxies } from '../lib/dev-environments'
 import { sweepEnvironmentResources } from '../lib/dev-env/reconcile'
 import { stopAllDoodProxies } from '../lib/dood/manager'
+import { stopPocket } from '../lib/agent-voice/pocket-speech'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
@@ -59,5 +60,7 @@ export default defineNitroPlugin(async (nitro) => {
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()
     await stopAllDoodProxies().catch(() => {})
+    // Pocket TTS is a Python server of Domo's own, and nothing else stops it.
+    stopPocket()
   })
 })
