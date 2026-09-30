@@ -81,6 +81,9 @@ export default defineWebSocketHandler({
         case 'dictated':
           if (typeof parsed.text === 'string') runtime.addDictation(parsed.text)
           break
+        case 'dictation-log':
+          console.log(`[agent-voice:${state.agentSessionId}] device dictation: ${String(parsed.message).slice(0, 300)}`)
+          break
       }
     } catch (error) {
       send(peer, { type: 'error', message: error instanceof Error ? error.message : String(error) })

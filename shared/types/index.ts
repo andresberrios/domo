@@ -782,11 +782,13 @@ export type AgentVoiceClientMessage =
   /** Whether the agent's text is read out loud at all. */
   | { type: 'speak', enabled: boolean }
   /**
-   * Words the device's own recogniser finalised, when it is the transcriber.
-   * Sent before the `segment-end` they belong to; the audio still comes too,
+   * Words the device's own recogniser heard in a segment, when it is the
+   * transcriber. Sent just before the `segment-end` they belong to; the audio still comes too,
    * because the turn detector listens to it.
    */
   | { type: 'dictated', text: string }
+  /** What the device's recogniser did, for the server log: it is only debuggable from there. */
+  | { type: 'dictation-log', message: string }
 
 /** Server -> browser messages on the agent voice WebSocket. */
 export type AgentVoiceServerMessage =
