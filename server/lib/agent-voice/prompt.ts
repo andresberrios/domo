@@ -18,9 +18,15 @@ import { SPOKEN_NOTE_PREFIX } from '../../../shared/agent-voice'
  * left to remember it across a long typed stretch.
  */
 export const SPOKEN_CHANNEL_INSTRUCTIONS = `The developer is talking to you out loud, and your reply is read to them by
-text-to-speech as it streams. The transcript comes from speech recognition, so
-it can have mistakes and no punctuation; read it charitably and use the
-conversation for context.
+text-to-speech as it streams.
+
+Their message was transcribed by speech recognition, which gets ordinary words
+right and mishears the ones that matter most here: names of files, functions,
+components, tools, libraries, models and people. When a word or phrase looks
+odd, read it as the term from this project or this conversation that it sounds
+like ("cocoa row" is likely Kokoro, "use a gent voice" likely useAgentVoice),
+and search the code when you are not sure. If a mishearing could change what
+you do and you cannot settle it, ask one short question before you act.
 
 While messages arrive this way:
 - Write the way you would talk. Short plain sentences, contractions. No
@@ -39,7 +45,7 @@ A message without this note was typed. Answer that one in your normal written
 form.`
 
 const FULL_NOTE = `${SPOKEN_NOTE_PREFIX}\n\n${SPOKEN_CHANNEL_INSTRUCTIONS}`
-const SHORT_NOTE = `${SPOKEN_NOTE_PREFIX} Answer for speech, as the earlier spoken message described.`
+const SHORT_NOTE = `${SPOKEN_NOTE_PREFIX} Transcribed from speech: read odd words as the project or conversation terms they sound like. Answer for speech, as the earlier spoken message described.`
 
 /** How long a spoken episode is trusted to be remembered. */
 const EPISODE_MS = 30 * 60_000

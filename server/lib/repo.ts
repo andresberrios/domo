@@ -1058,6 +1058,31 @@ export async function listRecentUserMessages(
   return rows.map(row => ({ content: row.payload?.content ?? [], createdAt: row.created_at }))
 }
 
+/**
+ * The last few things said and done in a session, newest first: messages both
+ * ways and the titles of tool calls. What speech recognition is primed with.
+ */
+export async function listRecentConversation(
+  agentSessionId: string,
+  limit = 16
+): Promise<Array<{ type: 'user_message' | 'agent_message' | 'tool_call', text: string }>> {
+  const rows = await query<{ type: 'user_message' | 'agent_message' | 'tool_call', payload: any }>(
+    `select type, payload from agent_events
+      where agent_session_id = $1 and type in ('user_message', 'agent_message', 'tool_call')
+      order by seq desc limit $2`,
+    [agentSessionId, limit]
+  )
+  return rows.map(row => ({
+    type: row.type,
+    text: row.type === 'user_message'
+      ? (row.payload?.content ?? [])
+          .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+          .map((block: any) => block.text as string)
+          .join('\n')
+      : String((row.type === 'tool_call' ? row.payload?.title : row.payload?.text) ?? '')
+  }))
+}
+
 export async function latestAgentMessage(agentSessionId: string): Promise<string> {
   const row = await queryOne<{ text: string | null }>(
     `select payload->>'text' as text from agent_events

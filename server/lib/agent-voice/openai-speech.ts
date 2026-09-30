@@ -1,4 +1,5 @@
 import { openAiApiBase, openAiApiKey } from '../openai'
+import { instructionPrompt, precedingTextPrompt, type SpeechContext } from './context'
 import { wavFromPcm16, type SpeechChunk } from './speech'
 
 /**
@@ -17,11 +18,18 @@ export async function transcribeOpenAi(
   samples: Int16Array,
   sampleRate: number,
   model: string,
+  language: string,
+  context: SpeechContext,
   signal?: AbortSignal
 ): Promise<string> {
   const form = new FormData()
   form.append('model', model)
   form.append('response_format', 'json')
+  if (language) form.append('language', language)
+  // whisper-1 continues its prompt as if it were the preceding transcript;
+  // the transcribe models read it as context.
+  const prompt = model.startsWith('whisper') ? precedingTextPrompt(context) : instructionPrompt(context)
+  if (prompt) form.append('prompt', prompt)
   form.append('file', new Blob([new Uint8Array(wavFromPcm16(samples, sampleRate))], { type: 'audio/wav' }), 'turn.wav')
   const response = await fetch(`${openAiApiBase()}/audio/transcriptions`, {
     method: 'POST',

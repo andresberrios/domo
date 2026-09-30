@@ -1,6 +1,9 @@
 import { GoogleGenAI } from '@google/genai'
 import { geminiApiKey } from '../gemini'
 import { getSettings } from '../settings'
+import type { AgentVoiceSettings } from '../../../shared/types'
+import { languageName } from '../../../shared/agent-voice'
+import { EMPTY_SPEECH_CONTEXT, instructionPrompt, type SpeechContext } from './context'
 import { synthesizeKyutai, transcribeKyutai } from './kyutai-speech'
 import { synthesizeLocal, transcribeLocal } from './local-speech'
 import { synthesizeOpenAi, transcribeOpenAi } from './openai-speech'
@@ -20,10 +23,14 @@ import { synthesizeOpenAi, transcribeOpenAi } from './openai-speech'
 
 /**
  * A general model would answer the audio instead of writing it down, so the
- * Gemini request always says what is wanted. The transcription model ignores it.
+ * Gemini request always says what is wanted, and the context comes after it.
  */
 const TRANSCRIBE_PROMPT = 'Transcribe the speech verbatim. Output only the transcript, nothing else. '
   + 'If there is no speech, output nothing.'
+
+const CONTEXT_PROMPT = 'The speaker is a software developer talking to their coding agent. '
+  + 'Use the context below only to spell names and identifiers the way this project writes them, '
+  + 'when they are what was said. Never add words that were not spoken.'
 
 export interface SpeechChunk {
   /** PCM16 base64. */
@@ -90,30 +97,97 @@ export function transcriptFrom(response: any): string {
     .trim()
 }
 
+export interface TranscribeOptions {
+  /** What was said lately and which words exist. Engines that take a prompt are told. */
+  context?: SpeechContext
+  signal?: AbortSignal
+}
+
+/** Hear a turn with the engine chosen in Settings. */
 export async function transcribe(
   samples: Int16Array,
   sampleRate: number,
-  signal?: AbortSignal
+  options: TranscribeOptions = {}
 ): Promise<string> {
   const { agentVoice } = await getSettings()
-  switch (agentVoice.transcriber) {
-    case 'local':
-      return transcribeLocal(samples, sampleRate, agentVoice.localTranscribeModel)
-    case 'openai':
-      return transcribeOpenAi(samples, sampleRate, agentVoice.openaiTranscribeModel, signal)
-    case 'kyutai':
-      return transcribeKyutai(samples, sampleRate, agentVoice.kyutaiUrl, signal)
+  return transcribeWith(agentVoice, samples, sampleRate, options)
+}
+
+/**
+ * Whether a transcript is the model talking to itself: far more words than
+ * anyone says in the time, or one word or phrase over and over. Whisper-style
+ * models fall into both when a prompt pulls them off the audio. People
+ * stutter too ("the, the, the, the PPAs"), which is why a single word has to
+ * repeat far more often than a phrase before it counts.
+ */
+export function looksHallucinated(text: string, seconds: number): boolean {
+  const words = text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []
+  if (words.length > Math.max(12, seconds * 6)) return true
+  for (let size = 1; size <= 4; size++) {
+    const limit = size === 1 ? 7 : 3
+    for (let start = 0; start < size; start++) {
+      let repeats = 0
+      for (let i = start + size; i + size <= words.length; i += size) {
+        const same = words.slice(i, i + size).join(' ') === words.slice(i - size, i).join(' ')
+        repeats = same ? repeats + 1 : 0
+        if (repeats >= limit) return true
+      }
+    }
   }
+  return false
+}
+
+/**
+ * Hear a turn with the given settings. Context makes a recogniser better on
+ * average and occasionally much worse: it comes back empty, or loops. Either
+ * is heard again without the context, which costs a second request only
+ * when it happens.
+ */
+export async function transcribeWith(
+  settings: AgentVoiceSettings,
+  samples: Int16Array,
+  sampleRate: number,
+  { context = EMPTY_SPEECH_CONTEXT, signal }: TranscribeOptions = {}
+): Promise<string> {
+  const text = await transcribeOnce(settings, samples, sampleRate, context, signal)
+  const primed = context.conversation || context.vocabulary.length
+  if (!primed || signal?.aborted) return text
+  if (text.trim() && !looksHallucinated(text, samples.length / sampleRate)) return text
+  // Heard cold, whatever comes back is the best there is.
+  return transcribeOnce(settings, samples, sampleRate, EMPTY_SPEECH_CONTEXT, signal)
+}
+
+async function transcribeOnce(
+  settings: AgentVoiceSettings,
+  samples: Int16Array,
+  sampleRate: number,
+  context: SpeechContext,
+  signal?: AbortSignal
+): Promise<string> {
+  switch (settings.transcriber) {
+    case 'local':
+      return transcribeLocal(samples, sampleRate, settings.localTranscribeModel, settings.language, context)
+    case 'openai':
+      return transcribeOpenAi(samples, sampleRate, settings.openaiTranscribeModel, settings.language, context, signal)
+    case 'kyutai':
+      return transcribeKyutai(samples, sampleRate, settings.kyutaiUrl, signal)
+    case 'browser':
+      throw new Error('the browser transcribes its own speech')
+  }
+  const language = languageName(settings.language)
+  const ask = language ? `${TRANSCRIBE_PROMPT} The speech is in ${language}.` : TRANSCRIBE_PROMPT
+  const prompt = instructionPrompt(context)
   const response = await gemini().models.generateContent({
-    model: agentVoice.geminiTranscribeModel,
+    model: settings.geminiTranscribeModel,
     contents: [{
       role: 'user',
       parts: [
         { inlineData: { mimeType: 'audio/wav', data: wavFromPcm16(samples, sampleRate).toString('base64') } },
-        { text: TRANSCRIBE_PROMPT }
+        { text: prompt ? `${ask}\n\n${CONTEXT_PROMPT}\n\n${prompt}` : ask }
       ]
     }],
-    config: { abortSignal: signal }
+    // A transcript has one right answer; sampling only adds ways to miss it.
+    config: { abortSignal: signal, temperature: 0 }
   })
   return transcriptFrom(response)
 }
