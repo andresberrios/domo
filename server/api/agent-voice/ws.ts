@@ -81,6 +81,9 @@ export default defineWebSocketHandler({
         case 'dictated':
           if (typeof parsed.text === 'string') runtime.addDictation(parsed.text)
           break
+        case 'replay':
+          if (typeof parsed.text === 'string') runtime.replay(parsed.text)
+          break
         case 'dictation-log':
           console.log(`[agent-voice:${state.agentSessionId}] device: ${String(parsed.message).slice(0, 300)}`)
           break

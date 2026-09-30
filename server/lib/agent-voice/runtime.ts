@@ -272,6 +272,7 @@ export class AgentVoiceRuntime {
     const delay = Math.max(0, seconds * 1000 - 500)
     this.holdTimer = setTimeout(() => {
       this.holdTimer = null
+      this.emit({ type: 'turn', complete: true, probability: null, seconds: Math.round((this.turnSamples / CLIENT_INPUT_SAMPLE_RATE) * 10) / 10 })
       this.hearing = this.hearing.then(() => this.finishTurn()).catch(() => {})
     }, delay)
   }
@@ -437,6 +438,16 @@ export class AgentVoiceRuntime {
     this.speak = enabled
     if (!enabled) this.dropSpeech()
     this.emit(this.status())
+  }
+
+  /** Read a message out again, from the start, instead of whatever is being said. */
+  replay(text: string) {
+    this.dropSpeech()
+    this.hushed = false
+    const { sentences, rest } = takeSentences(`${text}\n`)
+    for (const sentence of [...sentences, rest]) {
+      if (sentence.trim()) this.say(sentence)
+    }
   }
 
   /** Be quiet for the rest of this answer. The agent keeps working. */

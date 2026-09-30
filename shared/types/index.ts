@@ -800,6 +800,8 @@ export type AgentVoiceClientMessage =
    * because the turn detector listens to it.
    */
   | { type: 'dictated', text: string }
+  /** Read this agent message out again, from the start, whatever was playing. */
+  | { type: 'replay', text: string }
   /** What the device's recogniser or voice did, for the server log: they are only debuggable from there. */
   | { type: 'dictation-log', message: string }
 

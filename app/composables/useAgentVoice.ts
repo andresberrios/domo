@@ -126,6 +126,10 @@ export function useAgentVoice(
   let playbackOut: MediaStreamAudioDestinationNode | null = null
   let playbackElement: HTMLAudioElement | null = null
   let loopbackConnections: RTCPeerConnection[] = []
+  /** Android: the microphone closed mid-sentence; the speaker moves back to media once it is quiet. */
+  let reopenWhenQuiet = false
+  /** A message to read again, waiting for the socket. */
+  let pendingReplay: string | null = null
   let lastPlaybackEndedAt = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let intentionalClose = false
@@ -290,6 +294,8 @@ export function useAgentVoice(
         speaking.value = false
         outputLevel.value = 0
         lastPlaybackEndedAt = Date.now()
+        if (reopenWhenQuiet && !micEnabled.value) closePlayback()
+        reopenWhenQuiet = false
       }
     }
   }
@@ -300,11 +306,15 @@ export function useAgentVoice(
    * tick for "recording". Made here, in the playback context a tap already
    * unlocked, so it costs no request and no model.
    */
-  function chime(kind: 'sent' | 'nothing' | 'record' | 'working') {
+  function chime(kind: 'sent' | 'nothing' | 'record' | 'working' | 'turn') {
     if (!playbackContext || playbackContext.state !== 'running') return
     const context = playbackContext
     const tones = kind === 'sent'
       ? [[660, 0, 0.09], [990, 0.1, 0.12]]
+      : kind === 'turn'
+        // Hands-free heard the end of the turn: a falling pair, the opposite
+        // of the rising "sent" that follows once it is delivered.
+        ? [[880, 0, 0.07], [660, 0.08, 0.09]]
       : kind === 'nothing'
         ? [[220, 0, 0.22]]
         : kind === 'working'
@@ -537,8 +547,12 @@ export function useAgentVoice(
     micEnabled.value = false
     captureSuspended.value = false
     // Android: the phone leaves call mode with the microphone, so the speaker
-    // is reopened on the media channel by the next sound (closePlayback).
-    if (/Android/i.test(navigator.userAgent) && playbackContext) closePlayback()
+    // is reopened on the media channel by the next sound (closePlayback), but
+    // only once the agent has finished what it is saying.
+    if (/Android/i.test(navigator.userAgent) && playbackContext) {
+      if (scheduled.length) reopenWhenQuiet = true
+      else closePlayback()
+    }
     recording.value = false
     inputLevel.value = 0
     silentMs = 0
@@ -845,6 +859,7 @@ export function useAgentVoice(
         break
       case 'turn':
         holding.value = !message.complete
+        if (message.complete) chime('turn')
         break
       case 'nothing-heard':
         holding.value = false
@@ -896,6 +911,10 @@ export function useAgentVoice(
       if (socket !== ws) return
       state.value = 'live'
       send({ type: 'speak', enabled: speakEnabled.value })
+      if (pendingReplay) {
+        send({ type: 'replay', text: pendingReplay })
+        pendingReplay = null
+      }
     }
     ws.onmessage = (event) => {
       if (socket !== ws) return
@@ -990,6 +1009,14 @@ export function useAgentVoice(
     send({ type: 'cancel' })
   }
 
+  /** Read an agent message out again. From a tap, so the audio graphs can start. */
+  async function replay(text: string) {
+    connect()
+    await resumeAudio()
+    if (socket?.readyState === WebSocket.OPEN) send({ type: 'replay', text })
+    else pendingReplay = text
+  }
+
   function sendHeld() {
     send({ type: 'send' })
   }
@@ -1040,7 +1067,8 @@ export function useAgentVoice(
     hush,
     cancel,
     sendHeld,
-    discardHeld
+    discardHeld,
+    replay
   }
 }
 

@@ -74,6 +74,14 @@ const ring = computed(() => {
   return { boxShadow: `0 0 0 ${Math.round(level * 8)}px color-mix(in oklab, var(--ui-primary) 28%, transparent)` }
 })
 
+/** A message asked to be heard again; the bar may have just been opened for it. */
+const { request: replayRequest } = useAgentVoiceReplay()
+watch(replayRequest, (request) => {
+  if (!request) return
+  replayRequest.value = null
+  void voice.replay(request.text)
+}, { immediate: true })
+
 onMounted(() => {
   // The socket, not the microphone: a microphone opened here is one opened
   // outside a tap, which iOS leaves suspended. The first tap on the button
