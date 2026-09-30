@@ -11,6 +11,7 @@ import type { AgentVoiceServerMessage } from '../../shared/types'
 const settings = { agentVoice: { ...DEFAULT_AGENT_VOICE } }
 const deliver = vi.fn(async () => {})
 const transcribe = vi.fn(async () => 'from the engine')
+const synthesize = vi.fn(async () => {})
 
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => settings }))
 vi.mock('../../server/lib/acp/manager', () => ({ acpManager: { deliver, cancel: vi.fn() } }))
@@ -27,10 +28,20 @@ vi.mock('../../server/lib/repo', () => ({
 vi.mock('../../server/lib/agent-voice/speech', async (original) => ({
   ...(await original<typeof import('../../server/lib/agent-voice/speech')>()),
   transcribe,
-  synthesize: vi.fn(async () => {})
+  synthesize
 }))
 
 const { AgentVoiceRuntime } = await import('../../server/lib/agent-voice/runtime')
+const { bus } = await import('../../server/lib/bus')
+
+/** The agent's reply streaming in, as the manager publishes it. */
+function streams(agentSessionId: string, text: string, streaming = true) {
+  bus.publish({
+    type: 'agent-event',
+    agentSessionId,
+    event: { id: 'ev_reply', agentSessionId, seq: 1, type: 'agent_message', payload: { text, streaming }, createdAt: '' }
+  } as any)
+}
 
 /** A second of loud noise, enough to be a segment and not silence. */
 function speech(): string {
@@ -88,6 +99,23 @@ describe('the agent voice runtime', () => {
     runtime.addDictation('the real turn')
     await runtime.segmentEnd(true)
     expect(delivered()).toBe('the real turn')
+    runtime.close()
+  })
+
+  it('has the device say the reply, piece by piece, when the device speaks', async () => {
+    settings.agentVoice.speaker = 'browser'
+    const runtime = new AgentVoiceRuntime('ag_device_speaker')
+    const messages: AgentVoiceServerMessage[] = []
+    runtime.addListener(message => messages.push(message))
+    streams('ag_device_speaker', 'It records your voice, sends it up')
+    streams('ag_device_speaker', 'It records your voice, sends it up, and plays the answer. Then it waits.', false)
+    await vi.waitFor(() => expect(messages.filter(m => m.type === 'say')).toHaveLength(3))
+    expect(messages.filter(m => m.type === 'say').map((m: any) => m.text)).toEqual([
+      'It records your voice,',
+      'sends it up, and plays the answer.',
+      'Then it waits.'
+    ])
+    expect(synthesize).not.toHaveBeenCalled()
     runtime.close()
   })
 })

@@ -12,6 +12,7 @@ import {
   joinUtterance,
   parseSpokenTurn,
   plainForSpeech,
+  takeClause,
   takeSentences
 } from '../../server/lib/agent-voice/utterance'
 import {
@@ -231,5 +232,13 @@ describe('speech helpers', () => {
     expect(sampleRateOf('audio/l16; rate=24000; channels=1')).toBe(24000)
     expect(sampleRateOf('audio/l16;rate=16000')).toBe(16000)
     expect(sampleRateOf(undefined)).toBe(24000)
+  })
+})
+
+describe('takeClause', () => {
+  it('takes the first clause long enough to say alone', () => {
+    expect(takeClause('It records your voice, sends it up')).toEqual({ clause: 'It records your voice,', rest: 'sends it up' })
+    expect(takeClause('Yes, it does, and then')).toBe(null)
+    expect(takeClause('Look at this: ```code, more')).toBe(null)
   })
 })

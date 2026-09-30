@@ -666,6 +666,13 @@ export type SpeechEngine = 'gemini' | 'openai' | 'local' | 'kyutai'
 export type Transcriber = SpeechEngine | 'browser'
 
 /**
+ * Who reads the agent's replies out: one of the engines, or the device's own
+ * voices (the browser's speech synthesis), which start at once and cost
+ * nothing, and sound as good as the device's voices do.
+ */
+export type Speaker = SpeechEngine | 'browser'
+
+/**
  * What decides, at a pause, whether a hands-free turn is over: Smart Turn
  * on the audio, the Kyutai transcriber's own pause prediction, or nothing
  * but the length of the silence.
@@ -681,7 +688,7 @@ export type TurnDetector = 'smart-turn' | 'kyutai' | 'silence'
  */
 export interface AgentVoiceSettings {
   transcriber: Transcriber
-  speaker: SpeechEngine
+  speaker: Speaker
   turnDetector: TurnDetector
   /**
    * What the developer speaks, as an ISO 639-1 code, or '' to let each engine
@@ -816,6 +823,8 @@ export type AgentVoiceServerMessage =
   | { type: 'sent', text: string }
   /** A spoken command was recognised and acted on. */
   | { type: 'command', name: 'hush' | 'cancel' | 'send' }
+  /** Text for the device to say itself, when it is the speaker. */
+  | { type: 'say', text: string }
   /** Speech to play, PCM16 base64 at `sampleRate`. */
   | { type: 'audio', data: string, sampleRate: number }
   /** The sentence now being spoken; null when nothing is. */

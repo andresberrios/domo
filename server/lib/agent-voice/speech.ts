@@ -234,6 +234,8 @@ export async function synthesizeWith(
       return synthesizeOpenAi(text, settings.openaiSpeechModel, settings.openaiVoice, onChunk, signal)
     case 'kyutai':
       return synthesizeKyutai(text, settings.kyutaiUrl, settings.kyutaiVoice, onChunk, signal)
+    case 'browser':
+      throw new Error('the browser speaks for itself')
   }
   const stream = await gemini().models.generateContentStream({
     model: settings.geminiSpeechModel,

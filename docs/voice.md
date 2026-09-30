@@ -91,6 +91,18 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   `segment-end` they belong to, which waits for the recogniser to finalise;
   the audio still goes up, because the turn detector listens to it. Words
   heard outside a segment are dropped, so the agent's own voice is not a turn.
+- **"This device" can also speak** (`speechSynthesis`, voice chosen per
+  device in Settings and kept in the browser). It starts at once, but it does
+  not play through the media element, so the echo canceller may not know about
+  it; the barge-in guard is all that stands between it and a false turn.
+- **Kokoro speaks every piece with one style row** (`KOKORO_OPTIONS`).
+  kokoro-js picks a voice's style by the length of what it is asked to say, so
+  sentence-by-sentence synthesis changed the voice at every sentence.
+- **Gemini's voice wanders within a long answer** by about as much as a
+  change of model, on a speaker verification model, whatever the request
+  size, the model or a seed. Nothing here fixes it.
+- **Speech starts at the first clause**: an answer's first words go at its
+  first comma or dash (`takeClause`), not at the end of the first sentence.
 - **`scripts/stt-bench` measures transcribers on real people**: Earnings-22
   calls (accents, names) and AMI meetings on a distant microphone (noise,
   crosstalk), each clip with the utterances before it as context. Run it

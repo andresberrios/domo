@@ -482,6 +482,14 @@ export class AgentVoiceRuntime {
     this.pumping = true
     try {
       while (this.queue.length && !this.closed) {
+        const { agentVoice } = await getSettings()
+        if (agentVoice.speaker === 'browser') {
+          // The device says it, as each piece arrives; there is nothing to make here.
+          const text = this.queue.shift()!
+          this.emit({ type: 'speaking', text })
+          this.emit({ type: 'say', text })
+          continue
+        }
         let text = this.queue.shift()!
         while (this.queue.length && text.length + this.queue[0]!.length < MAX_SPEECH_REQUEST_CHARS) {
           text += ` ${this.queue.shift()!}`

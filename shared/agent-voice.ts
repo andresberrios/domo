@@ -1,4 +1,4 @@
-import type { AgentVoiceSettings, SpeechEngine, Transcriber, TurnDetector } from './types'
+import type { AgentVoiceSettings, Speaker, SpeechEngine, Transcriber, TurnDetector } from './types'
 
 /**
  * Talking to a coding agent: what the browser and the server both need to know.
@@ -45,6 +45,16 @@ export const TRANSCRIBERS: Array<{ id: Transcriber, label: string, description: 
 
 export function isTranscriber(value: unknown): value is Transcriber {
   return TRANSCRIBERS.some(transcriber => transcriber.id === value)
+}
+
+/** Who can speak: the engines, and the device's own voices. */
+export const SPEAKERS: Array<{ id: Speaker, label: string, description: string }> = [
+  ...SPEECH_ENGINES,
+  { id: 'browser', label: 'This device', description: 'The device\'s own voices: instant and free. Siri voices on Apple, natural voices in Edge.' }
+]
+
+export function isSpeaker(value: unknown): value is Speaker {
+  return SPEAKERS.some(speaker => speaker.id === value)
 }
 
 export const TURN_DETECTORS: Array<{ id: TurnDetector, label: string, description: string }> = [

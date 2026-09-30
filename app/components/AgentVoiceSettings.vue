@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEECH_ENGINES, SPEECH_LANGUAGES, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 import { GEMINI_VOICES } from '~~/shared/voice-providers'
 
 /**
@@ -19,7 +19,36 @@ const props = defineProps<{
   hasOpenAiKey?: boolean
 }>()
 
-const engineItems = SPEECH_ENGINES.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
+const speakerItems = SPEAKERS.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
+
+/** This device's voices, best first; the choice is kept in this browser, not in Settings. */
+const deviceVoices = ref<Array<{ label: string, value: string, description: string }>>([])
+const deviceVoiceName = ref('')
+function loadDeviceVoices() {
+  if (!('speechSynthesis' in window)) return
+  const ranked = rankDeviceVoices(window.speechSynthesis.getVoices(), form.value.language)
+  deviceVoices.value = ranked.map(voice => ({ label: voice.name, value: voice.name, description: `${voice.lang}${voice.localService ? '' : ', online'}` }))
+  deviceVoiceName.value = storedDeviceVoice() || ranked[0]?.name || ''
+}
+onMounted(() => {
+  loadDeviceVoices()
+  if ('speechSynthesis' in window) window.speechSynthesis.addEventListener('voiceschanged', loadDeviceVoices)
+})
+onBeforeUnmount(() => {
+  if ('speechSynthesis' in window) window.speechSynthesis.removeEventListener('voiceschanged', loadDeviceVoices)
+})
+watch(() => form.value.language, loadDeviceVoices)
+function chooseDeviceVoice(name: string) {
+  deviceVoiceName.value = name
+  storeDeviceVoice(name)
+  const voice = window.speechSynthesis.getVoices().find(v => v.name === name)
+  if (!voice) return
+  window.speechSynthesis.cancel()
+  const sample = new SpeechSynthesisUtterance('This is how replies will sound.')
+  sample.voice = voice
+  sample.lang = voice.lang
+  window.speechSynthesis.speak(sample)
+}
 const transcriberItems = TRANSCRIBERS.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
 // The select refuses an empty value, and '' is how "let the engine guess" is stored.
 const languageItems = SPEECH_LANGUAGES.map(language => ({ label: language.label, value: language.id || 'auto' }))
@@ -73,7 +102,7 @@ const uses = computed(() => new Set([
       <UFormField label="Speaker" description="Reads the agent's replies out loud.">
         <USelectMenu
           v-model="form.speaker"
-          :items="engineItems"
+          :items="speakerItems"
           value-key="value"
           class="w-full"
         />
@@ -103,6 +132,19 @@ const uses = computed(() => new Set([
       </UFormField>
       <UFormField v-if="form.turnDetector === 'silence'" label="Silence" hint="seconds">
         <UInputNumber v-model="form.silenceSeconds" :min="0.3" :max="30" :step="0.1" class="w-full" />
+      </UFormField>
+    </div>
+
+    <div v-if="form.speaker === 'browser'" class="grid gap-4 sm:grid-cols-2">
+      <UFormField label="Voice on this device" description="Kept in this browser. Each device has its own voices; pick one and hear it.">
+        <USelectMenu
+          :model-value="deviceVoiceName"
+          :items="deviceVoices"
+          value-key="value"
+          placeholder="No voices for this language"
+          class="w-full"
+          @update:model-value="(name: string) => chooseDeviceVoice(name)"
+        />
       </UFormField>
     </div>
 
