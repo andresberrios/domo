@@ -102,6 +102,11 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   asks for a permission; SFSpeechRecognizer would, through a GUI a server
   cannot show, which is why it is not used. Apple's recogniser ignores the
   vocabulary, and its DictationTranscriber was far worse on real speech.
+- **Pocket TTS is Kyutai's CPU voice model, run by Domo** (`pocket-speech.ts`):
+  `uvx pocket-tts serve` on a free port, started on first use (a few minutes
+  the first time) and kept running, or a server at `pocketUrl`. Voice
+  cloning needs Kyutai's gated weights, so only the built-in voices work
+  until a Hugging Face token that accepted their terms is in `HF_TOKEN`.
 - **Kokoro speaks every piece with one style row** (`KOKORO_OPTIONS`).
   kokoro-js picks a voice's style by the length of what it is asked to say, so
   sentence-by-sentence synthesis changed the voice at every sentence.

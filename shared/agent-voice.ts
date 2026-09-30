@@ -51,7 +51,18 @@ export function isTranscriber(value: unknown): value is Transcriber {
 /** Who can speak: the engines, and the device's own voices. */
 export const SPEAKERS: Array<{ id: Speaker, label: string, description: string }> = [
   ...SPEECH_ENGINES,
+  { id: 'pocket', label: 'Pocket TTS', description: 'Kyutai\'s open model on the server\'s CPU: natural, and starts in 0.2 s. Domo runs it with uv.' },
   { id: 'browser', label: 'This device', description: 'The device\'s own voices: instant and free. Siri voices on Apple, natural voices in Edge.' }
+]
+
+/**
+ * Pocket TTS's English voices, the most natural first, as UTMOS scored them
+ * on the same passage (4.49 down to 4.14). The four it copies from a poor
+ * recording, which scored 2.8-3.9, are left out.
+ */
+export const POCKET_VOICES = [
+  'mary', 'jane', 'eponine', 'anna', 'bill_boerst', 'eve', 'vera', 'michael', 'alba', 'peter_yearsley',
+  'fantine', 'caro_davy', 'cosette', 'charles', 'george', 'stuart_bell', 'paul', 'azelma'
 ]
 
 export function isSpeaker(value: unknown): value is Speaker {
@@ -151,5 +162,7 @@ export const DEFAULT_AGENT_VOICE: AgentVoiceSettings = {
   kyutaiUrl: 'ws://127.0.0.1:8080',
   kyutaiVoice: 'expresso/ex03-ex01_happy_001_channel1_334s.wav',
   macVoice: '',
-  toolSound: 'typing'
+  toolSound: 'typing',
+  pocketVoice: 'alba',
+  pocketUrl: ''
 }

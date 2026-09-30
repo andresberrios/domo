@@ -2,6 +2,7 @@
 import type { AgentVoiceSettings, AppSettingsView } from '~~/shared/types'
 import {
   KOKORO_VOICES,
+  POCKET_VOICES,
   OPENAI_SPEECH_VOICES,
   SPEAKERS,
   SPEECH_LANGUAGES,
@@ -105,6 +106,8 @@ const voiceColumn = computed<Column | null>(() => {
     case 'gemini':
       // Gemini's voice is the live agent's too: one voice for both.
       return { key: 'voice', label: 'Voice', items: list(GEMINI_VOICES), selected: settings.value?.voiceName ?? '', apply: value => patch({ voiceName: value }) }
+    case 'pocket':
+      return { key: 'voice', label: 'Voice', items: list(POCKET_VOICES), selected: current.pocketVoice, apply: value => setVoice({ pocketVoice: value }) }
     case 'mac':
       return { key: 'voice', label: 'Voice', items: macVoices.value, selected: current.macVoice, apply: value => setVoice({ macVoice: value }) }
     case 'browser':

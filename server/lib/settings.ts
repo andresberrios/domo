@@ -171,11 +171,13 @@ function storedAgentVoice(stored: Record<string, any>): AgentVoiceSettings {
   if (isTurnDetector(current.turnDetector)) voice.turnDetector = current.turnDetector
   if (typeof current.macVoice === 'string') voice.macVoice = current.macVoice.trim()
   if (isToolSound(current.toolSound)) voice.toolSound = current.toolSound
+  // Empty is meaningful: Domo runs the server itself.
+  if (typeof current.pocketUrl === 'string') voice.pocketUrl = current.pocketUrl.trim()
   if (typeof current.language === 'string' && /^(?:[a-z]{2,3})?$/.test(current.language)) voice.language = current.language
   const seconds = Number(current.silenceSeconds)
   if (Number.isFinite(seconds) && seconds >= 0.3 && seconds <= 30) voice.silenceSeconds = seconds
   for (const key of Object.keys(voice) as Array<keyof AgentVoiceSettings>) {
-    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds' || key === 'language' || key === 'macVoice' || key === 'toolSound') continue
+    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds' || key === 'language' || key === 'macVoice' || key === 'toolSound' || key === 'pocketUrl') continue
     if (typeof current[key] === 'string' && current[key].trim()) voice[key] = current[key].trim()
   }
   return voice

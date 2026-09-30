@@ -7,6 +7,7 @@ import { EMPTY_SPEECH_CONTEXT, instructionPrompt, type SpeechContext } from './c
 import { synthesizeKyutai, transcribeKyutai } from './kyutai-speech'
 import { synthesizeLocal, transcribeLocal } from './local-speech'
 import { synthesizeMac, transcribeMac } from './mac-speech'
+import { synthesizePocket } from './pocket-speech'
 import { synthesizeOpenAi, transcribeOpenAi } from './openai-speech'
 
 /**
@@ -239,6 +240,8 @@ export async function synthesizeWith(
       return synthesizeKyutai(text, settings.kyutaiUrl, settings.kyutaiVoice, onChunk, signal)
     case 'mac':
       return synthesizeMac(text, settings.macVoice, settings.language, onChunk, signal)
+    case 'pocket':
+      return synthesizePocket(text, settings.pocketVoice, settings.pocketUrl, onChunk, signal)
     case 'browser':
       throw new Error('the browser speaks for itself')
   }

@@ -670,7 +670,7 @@ export type Transcriber = SpeechEngine | 'browser'
  * voices (the browser's speech synthesis), which start at once and cost
  * nothing, and sound as good as the device's voices do.
  */
-export type Speaker = SpeechEngine | 'browser'
+export type Speaker = SpeechEngine | 'browser' | 'pocket'
 
 /** What a tool call sounds like in the voice bar. */
 export type ToolSound = 'typing' | 'laptop' | 'tick' | 'off'
@@ -713,6 +713,10 @@ export interface AgentVoiceSettings {
   kyutaiUrl: string
   kyutaiVoice: string
   toolSound: ToolSound
+  /** A Pocket TTS voice name. */
+  pocketVoice: string
+  /** A Pocket TTS server to use; '' is the one Domo runs itself through uvx. */
+  pocketUrl: string
   /** An AVSpeechSynthesisVoice identifier; '' is the best one installed for the language. */
   macVoice: string
 }

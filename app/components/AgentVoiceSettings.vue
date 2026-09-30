@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, POCKET_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 import { GEMINI_VOICES } from '~~/shared/voice-providers'
 
 /**
@@ -92,7 +92,7 @@ onMounted(() => {
   hasDictation.value = !!((window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition)
 })
 
-function keyWarning(engine: AgentVoiceSettings['transcriber']): string | null {
+function keyWarning(engine: AgentVoiceSettings['transcriber'] | AgentVoiceSettings['speaker']): string | null {
   if (engine === 'gemini' && props.hasGeminiKey === false) return 'No Gemini key is set, so this engine will fail.'
   if (engine === 'openai' && props.hasOpenAiKey === false) return 'No OpenAI key is set, so this engine will fail.'
   return null
@@ -179,6 +179,15 @@ const uses = computed(() => new Set([
           class="w-full"
           @update:model-value="(name: string) => chooseDeviceVoice(name)"
         />
+      </UFormField>
+    </div>
+
+    <div v-if="form.speaker === 'pocket'" class="grid gap-4 sm:grid-cols-2">
+      <UFormField label="Pocket TTS voice" description="The most natural first.">
+        <ChoiceMenu v-model="form.pocketVoice" :items="POCKET_VOICES" class="w-full" />
+      </UFormField>
+      <UFormField label="Pocket TTS server" description="Empty: Domo runs it itself with uv (brew install uv). Or the URL of one you run.">
+        <UInput v-model="form.pocketUrl" class="w-full font-mono text-xs" placeholder="http://127.0.0.1:8000" />
       </UFormField>
     </div>
 
