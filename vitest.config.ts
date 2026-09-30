@@ -47,7 +47,10 @@ export default defineConfig(async () => ({
           name: 'nuxt',
           environment: 'nuxt',
           include: ['test/nuxt/**/*.spec.ts'],
-          environmentOptions: { nuxt: { domEnvironment: 'happy-dom' } }
+          environmentOptions: { nuxt: { domEnvironment: 'happy-dom' } },
+          // Booting Nuxt for a file takes 7-11 s here, and the default 10 s
+          // hook limit failed whichever file happened to boot first.
+          hookTimeout: 30_000
         }
       }),
 
