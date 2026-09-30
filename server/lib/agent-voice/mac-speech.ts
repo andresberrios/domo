@@ -162,7 +162,7 @@ const CONTEXT_TERMS = 100
 const USE_DICTATION = false
 
 export function macSpeechUnavailable(): string | null {
-  return process.platform === 'darwin' ? null : 'This Mac\'s speech needs Domo running on macOS.'
+  return process.platform === 'darwin' ? null : 'The macOS engine needs Domo running on a Mac.'
 }
 
 interface Waiter { onLine: (message: any) => void }
@@ -189,7 +189,7 @@ class Helper {
     try {
       await run('swiftc', ['-O', ...this.library ? ['-parse-as-library'] : [], file, '-o', path], { timeout: 300_000 })
     } catch (error: any) {
-      if (error?.code === 'ENOENT') throw new Error('This Mac\'s speech needs the Xcode command line tools: run xcode-select --install', { cause: error })
+      if (error?.code === 'ENOENT') throw new Error('The macOS engine needs the Xcode command line tools: run xcode-select --install', { cause: error })
       throw new Error(`Could not build the Mac's ${this.name} helper: ${String(error?.stderr || error?.message || error).slice(0, 400)}`, { cause: error })
     }
     return path

@@ -1,4 +1,4 @@
-import type { AgentVoiceSettings, Speaker, SpeechEngine, Transcriber, TurnDetector } from './types'
+import type { AgentVoiceSettings, Speaker, SpeechEngine, ToolSound, Transcriber, TurnDetector } from './types'
 
 /**
  * Talking to a coding agent: what the browser and the server both need to know.
@@ -21,11 +21,11 @@ export type AgentVoiceMode = 'click' | 'handsfree'
  * the transcriber picker and the speaker picker, and the two can be mixed.
  */
 export const SPEECH_ENGINES: Array<{ id: SpeechEngine, label: string, description: string }> = [
-  { id: 'local', label: 'On this machine', description: 'Whisper or Moonshine, and Kokoro, on the CPU. Free, offline, no key.' },
+  { id: 'local', label: 'Open models', description: 'Whisper or Moonshine, and Kokoro, on the server\'s CPU. Free, offline, no key.' },
   { id: 'gemini', label: 'Gemini', description: 'Google\'s transcription and speech models. Needs the Gemini key.' },
   { id: 'openai', label: 'OpenAI', description: 'The transcribe and speech endpoints. Needs the OpenAI key.' },
   { id: 'kyutai', label: 'Kyutai server (untested)', description: 'A moshi-server you run, as Unmute does. Needs a GPU. Never yet run against a real server.' },
-  { id: 'mac', label: 'This Mac', description: 'Apple\'s own voices and recogniser, when Domo runs on a Mac with macOS 26. Free, local, the fastest: 16.9% errors in 0.2 s, but weaker on names.' }
+  { id: 'mac', label: 'macOS', description: 'Apple\'s own voices and recogniser, when Domo runs on a Mac with macOS 26. Free, local, the fastest: 16.9% errors in 0.2 s, but weaker on names.' }
 ]
 
 export const SPEECH_ENGINE_IDS = SPEECH_ENGINES.map(engine => engine.id)
@@ -56,6 +56,18 @@ export const SPEAKERS: Array<{ id: Speaker, label: string, description: string }
 
 export function isSpeaker(value: unknown): value is Speaker {
   return SPEAKERS.some(speaker => speaker.id === value)
+}
+
+/** What a tool call sounds like, so a phone in a pocket knows the agent is at work. */
+export const TOOL_SOUNDS: Array<{ id: ToolSound, label: string, description: string }> = [
+  { id: 'typing', label: 'Mechanical keyboard', description: 'A few keys typed, clicky.' },
+  { id: 'laptop', label: 'Laptop keys', description: 'Softer, flatter typing.' },
+  { id: 'tick', label: 'Tick', description: 'One short tick.' },
+  { id: 'off', label: 'Off', description: 'Tool calls are silent.' }
+]
+
+export function isToolSound(value: unknown): value is ToolSound {
+  return TOOL_SOUNDS.some(sound => sound.id === value)
 }
 
 export const TURN_DETECTORS: Array<{ id: TurnDetector, label: string, description: string }> = [
@@ -138,5 +150,6 @@ export const DEFAULT_AGENT_VOICE: AgentVoiceSettings = {
   localVoice: 'am_michael',
   kyutaiUrl: 'ws://127.0.0.1:8080',
   kyutaiVoice: 'expresso/ex03-ex01_happy_001_channel1_334s.wav',
-  macVoice: ''
+  macVoice: '',
+  toolSound: 'typing'
 }

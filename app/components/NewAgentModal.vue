@@ -239,7 +239,7 @@ async function create() {
     <template #body>
       <div class="space-y-4">
         <UFormField label="Agent">
-          <USelectMenu
+          <ChoiceMenu
             v-model="adapter"
             :items="adapterItems"
             value-key="value"
@@ -252,7 +252,7 @@ async function create() {
         </UFormField>
 
         <UFormField label="Model">
-          <USelectMenu
+          <ChoiceMenu
             v-model="model"
             :items="modelItems"
             value-key="value"
@@ -273,7 +273,7 @@ async function create() {
         </UFormField>
 
         <UFormField :label="selectedAdapter.modeLabel">
-          <USelectMenu
+          <ChoiceMenu
             v-model="mode"
             :items="modeItems"
             value-key="value"
@@ -292,7 +292,7 @@ async function create() {
         </UFormField>
 
         <UFormField label="Project">
-          <USelectMenu
+          <ChoiceMenu
             v-model="selectedProjectId"
             :items="projectItems"
             value-key="value"
@@ -307,7 +307,7 @@ async function create() {
         </UFormField>
 
         <UFormField v-if="selectedProject" label="Where">
-          <USelectMenu
+          <ChoiceMenu
             v-model="devEnvironmentId"
             :items="environmentItems"
             value-key="value"

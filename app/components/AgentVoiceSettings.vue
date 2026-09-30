@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 import { GEMINI_VOICES } from '~~/shared/voice-providers'
 
 /**
@@ -104,6 +104,8 @@ function modelItems(engine: keyof typeof TRANSCRIBE_MODELS, current: string) {
   return items.some(item => item.value === current) ? items : [...items, { label: current, value: current, description: 'Not measured.' }]
 }
 
+const toolSoundItems = TOOL_SOUNDS.map(sound => ({ label: sound.label, value: sound.id, description: sound.description }))
+
 const detectorItems = TURN_DETECTORS.map(detector => ({ label: detector.label, value: detector.id, description: detector.description }))
 
 const uses = computed(() => new Set([
@@ -117,7 +119,7 @@ const uses = computed(() => new Set([
   <div class="space-y-4">
     <div class="grid gap-4 sm:grid-cols-2">
       <UFormField label="Transcriber" description="Turns what you say into text.">
-        <USelectMenu
+        <ChoiceMenu
           v-model="form.transcriber"
           :items="transcriberItems"
           value-key="value"
@@ -129,7 +131,7 @@ const uses = computed(() => new Set([
         </p>
       </UFormField>
       <UFormField label="Speaker" description="Reads the agent's replies out loud.">
-        <USelectMenu
+        <ChoiceMenu
           v-model="form.speaker"
           :items="speakerItems"
           value-key="value"
@@ -141,18 +143,21 @@ const uses = computed(() => new Set([
 
     <div class="grid gap-4 sm:grid-cols-2">
       <UFormField label="Language" description="What you speak. Left to guess, noisy speech can come back in another language.">
-        <USelectMenu
+        <ChoiceMenu
           v-model="language"
           :items="languageItems"
           value-key="value"
           class="w-full"
         />
       </UFormField>
+      <UFormField label="Tool call sound" description="What you hear when the agent uses a tool, so you know it is working.">
+        <ChoiceMenu v-model="form.toolSound" :items="toolSoundItems" value-key="value" class="w-full" />
+      </UFormField>
     </div>
 
     <div class="grid gap-4 sm:grid-cols-2">
       <UFormField label="End of turn" description="Hands-free: what decides, at a pause, that you have finished.">
-        <USelectMenu
+        <ChoiceMenu
           v-model="form.turnDetector"
           :items="detectorItems"
           value-key="value"
@@ -166,7 +171,7 @@ const uses = computed(() => new Set([
 
     <div v-if="form.speaker === 'browser'" class="grid gap-4 sm:grid-cols-2">
       <UFormField label="Voice on this device" description="Kept in this browser. Each device has its own voices; pick one and hear it.">
-        <USelectMenu
+        <ChoiceMenu
           :model-value="deviceVoiceName"
           :items="deviceVoices"
           value-key="value"
@@ -179,14 +184,14 @@ const uses = computed(() => new Set([
 
     <div v-if="form.speaker === 'mac'" class="grid gap-4 sm:grid-cols-2">
       <UFormField label="Mac voice" description="Premium and Enhanced voices are installed in System Settings, Accessibility, Spoken Content.">
-        <USelectMenu v-model="macVoice" :items="macVoiceItems" value-key="value" class="w-full" />
+        <ChoiceMenu v-model="macVoice" :items="macVoiceItems" value-key="value" class="w-full" />
         <p v-if="macUnavailable" class="mt-1 text-xs text-warning">{{ macUnavailable }}</p>
       </UFormField>
     </div>
 
     <div v-if="uses.has('local')" class="grid gap-4 sm:grid-cols-2">
       <UFormField v-if="form.transcriber === 'local'" label="Local transcription model" hint="transformers.js id">
-        <USelectMenu
+        <ChoiceMenu
           v-model="form.localTranscribeModel"
           :items="modelItems('local', form.localTranscribeModel)"
           value-key="value"
@@ -196,13 +201,13 @@ const uses = computed(() => new Set([
         />
       </UFormField>
       <UFormField v-if="form.speaker === 'local'" label="Kokoro voice" hint="a = American, b = British; f/m">
-        <USelectMenu v-model="form.localVoice" :items="KOKORO_VOICES" class="w-full" />
+        <ChoiceMenu v-model="form.localVoice" :items="KOKORO_VOICES" class="w-full" />
       </UFormField>
     </div>
 
     <div v-if="uses.has('gemini')" class="grid gap-4 sm:grid-cols-2">
       <UFormField v-if="form.transcriber === 'gemini'" label="Gemini transcription model">
-        <USelectMenu
+        <ChoiceMenu
           v-model="form.geminiTranscribeModel"
           :items="modelItems('gemini', form.geminiTranscribeModel)"
           value-key="value"
@@ -211,7 +216,7 @@ const uses = computed(() => new Set([
           @create="(id: string) => { form.geminiTranscribeModel = id }"
         />
       </UFormField>
-      <UFormField v-if="form.speaker === 'gemini'" label="Gemini speech model" :hint="`Voice: ${geminiVoice}, from the voice agent above`">
+      <UFormField v-if="form.speaker === 'gemini'" label="Gemini speech model" :hint="`Voice: ${geminiVoice}, the voice agent's, set on General`">
         <UInput v-model="form.geminiSpeechModel" class="w-full font-mono text-xs" />
         <p class="mt-1 text-xs text-muted">Voices: {{ GEMINI_VOICES.join(', ') }}.</p>
       </UFormField>
@@ -219,7 +224,7 @@ const uses = computed(() => new Set([
 
     <div v-if="uses.has('openai')" class="grid gap-4 sm:grid-cols-3">
       <UFormField v-if="form.transcriber === 'openai'" label="OpenAI transcription model">
-        <USelectMenu
+        <ChoiceMenu
           v-model="form.openaiTranscribeModel"
           :items="modelItems('openai', form.openaiTranscribeModel)"
           value-key="value"
@@ -232,7 +237,7 @@ const uses = computed(() => new Set([
         <UInput v-model="form.openaiSpeechModel" class="w-full font-mono text-xs" />
       </UFormField>
       <UFormField v-if="form.speaker === 'openai'" label="OpenAI voice">
-        <USelectMenu v-model="form.openaiVoice" :items="OPENAI_SPEECH_VOICES" class="w-full" />
+        <ChoiceMenu v-model="form.openaiVoice" :items="OPENAI_SPEECH_VOICES" class="w-full" />
       </UFormField>
     </div>
 

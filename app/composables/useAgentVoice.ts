@@ -1,6 +1,7 @@
-import type { AgentVoiceClientMessage, AgentVoiceServerMessage } from '~~/shared/types'
+import type { AgentVoiceClientMessage, AgentVoiceServerMessage, ToolSound } from '~~/shared/types'
 import type { AgentVoiceMode } from '~~/shared/agent-voice'
 import { RECORDER_WORKLET, base64ToFloat32, floatToPcm16Base64 } from '~/utils/pcm'
+import { playToolSound } from '~/utils/toolSounds'
 
 const INPUT_SAMPLE_RATE = 16000
 const OUTPUT_SAMPLE_RATE = 24000
@@ -61,6 +62,8 @@ export interface AudioInputDevice {
  */
 /** How often the "still working" blip repeats while a spoken turn is being worked on. */
 const WORKING_TICK_MS = 2500
+/** And the first one this soon after the turn was sent, so the wait is heard from the start. */
+const WORKING_FIRST_MS = 700
 /** Tool sounds closer together than this are one sound. */
 const TOOL_SOUND_GAP_MS = 1200
 
@@ -69,6 +72,8 @@ export function useAgentVoice(
   options: {
     /** Whether the agent is working. From the session row; the socket does not say. */
     busy?: MaybeRefOrGetter<boolean>
+    /** What a tool call sounds like, from Settings. */
+    toolSound?: MaybeRefOrGetter<ToolSound | undefined>
   } = {}
 ) {
   const state = ref<AgentVoiceState>('offline')
@@ -126,7 +131,7 @@ export function useAgentVoice(
   let intentionalClose = false
   let commandTimer: ReturnType<typeof setTimeout> | null = null
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
-  let workingTimer: ReturnType<typeof setInterval> | null = null
+  let workingTimer: ReturnType<typeof setTimeout> | null = null
   let lastToolSoundAt = 0
 
   // device dictation
@@ -295,34 +300,13 @@ export function useAgentVoice(
     }
   }
 
-  /**
-   * Keys being pressed: three short bursts of filtered noise, quiet, a little
-   * apart. Different from every tone above, so a tool call is recognisable
-   * without being a note, and dull enough to hear ten times in a row.
-   */
+  /** The tool call sound chosen in Settings (`playToolSound`), at most one burst at a time. */
   function toolSound() {
     if (!playbackContext || playbackContext.state !== 'running') return
     const now = Date.now()
     if (now - lastToolSoundAt < TOOL_SOUND_GAP_MS) return
     lastToolSoundAt = now
-    const context = playbackContext
-    const rate = context.sampleRate
-    for (const [at, length] of [[0, 0.03], [0.07, 0.025], [0.15, 0.035]] as Array<[number, number]>) {
-      const frames = Math.floor(rate * length)
-      const buffer = context.createBuffer(1, frames, rate)
-      const data = buffer.getChannelData(0)
-      for (let i = 0; i < frames; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / frames) ** 2
-      const source = context.createBufferSource()
-      source.buffer = buffer
-      const filter = context.createBiquadFilter()
-      filter.type = 'bandpass'
-      filter.frequency.value = 2400
-      filter.Q.value = 1.2
-      const gain = context.createGain()
-      gain.gain.value = 0.18
-      source.connect(filter).connect(gain).connect(output(context))
-      source.start(context.currentTime + at)
-    }
+    playToolSound(playbackContext, output(playbackContext), toValue(options.toolSound) ?? 'typing')
   }
 
   /**
@@ -334,9 +318,13 @@ export function useAgentVoice(
   function syncWorking() {
     const working = awaitingReply.value && toValue(options.busy) !== false && !speaking.value && !synthesizing.value
     if (working && !workingTimer) {
-      workingTimer = setInterval(() => chime('working'), WORKING_TICK_MS)
+      // The first blip soon after the turn went, then every couple of seconds.
+      workingTimer = setTimeout(function tick() {
+        chime('working')
+        workingTimer = setTimeout(tick, WORKING_TICK_MS)
+      }, WORKING_FIRST_MS)
     } else if (!working && workingTimer) {
-      clearInterval(workingTimer)
+      clearTimeout(workingTimer)
       workingTimer = null
     }
   }
@@ -979,7 +967,7 @@ export function useAgentVoice(
     loopbackConnections = []
     if (commandTimer) clearTimeout(commandTimer)
     if (noticeTimer) clearTimeout(noticeTimer)
-    if (workingTimer) clearInterval(workingTimer)
+    if (workingTimer) clearTimeout(workingTimer)
     disconnect()
   })
 

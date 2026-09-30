@@ -11,7 +11,8 @@ const props = defineProps<{ session: AgentSession }>()
 
 const busy = computed(() => props.session.status === 'thinking' || props.session.status === 'awaiting-permission')
 
-const voice = useAgentVoice(() => props.session.id, { busy })
+const { data: appSettings } = useSettings()
+const voice = useAgentVoice(() => props.session.id, { busy, toolSound: () => appSettings.value?.agentVoice?.toolSound })
 
 const modeItems = [
   { value: 'click', label: 'Click to talk', icon: 'i-lucide-mouse-pointer-click' },
@@ -55,13 +56,6 @@ const micLabel = computed(() => {
   if (voice.mode.value === 'click') return voice.recording.value ? 'Tap to send' : 'Tap to talk'
   return voice.micEnabled.value ? 'Listening · tap to stop' : 'Tap for hands-free'
 })
-
-/** The picker only appears when there is a choice to make. */
-const deviceItems = computed(() => [voice.inputDevices.value.map(device => ({
-  label: device.label,
-  icon: device.deviceId === (voice.inputDeviceId.value || voice.inputDevices.value[0]?.deviceId) ? 'i-lucide-check' : 'i-lucide-dot',
-  onSelect: () => voice.setInputDevice(device.deviceId)
-}))])
 
 /**
  * The one line that says what is happening, most specific first: words held
@@ -126,9 +120,11 @@ onMounted(() => {
               </UButton>
             </UTooltip>
           </UFieldGroup>
-          <UDropdownMenu v-if="voice.inputDevices.value.length > 1" :items="deviceItems" :content="{ align: 'start' }">
-            <UButton icon="i-lucide-settings-2" color="neutral" variant="ghost" size="sm" aria-label="Microphone" />
-          </UDropdownMenu>
+          <AgentVoiceQuickSettings
+            :input-devices="voice.inputDevices.value"
+            :input-device-id="voice.inputDeviceId.value"
+            @update:input-device-id="(id: string) => voice.setInputDevice(id)"
+          />
         </div>
 
         <div class="flex flex-col items-center gap-2">

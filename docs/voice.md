@@ -95,7 +95,7 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   device in Settings and kept in the browser). It starts at once, but it does
   not play through the media element, so the echo canceller may not know about
   it; the barge-in guard is all that stands between it and a false turn.
-- **"This Mac" is two Swift helpers** (`agent-voice/mac-speech.ts`),
+- **The "macOS" engine is two Swift helpers** (`agent-voice/mac-speech.ts`),
   compiled with `swiftc` into the data directory on first use and kept
   running: AVSpeechSynthesizer for speech, SpeechAnalyzer's SpeechTranscriber
   for hearing. Only on macOS 26 with the Xcode command line tools. Neither

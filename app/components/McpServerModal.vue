@@ -128,7 +128,7 @@ async function save() {
         </UFormField>
 
         <UFormField label="Available to">
-          <USelectMenu
+          <ChoiceMenu
             v-model="form.scope"
             :items="[
               { label: 'Voice agent and coding agents', value: 'both' },

@@ -181,7 +181,7 @@ const environmentChoice = computed({
       </UFormField>
       <div class="grid gap-4 sm:grid-cols-2">
         <UFormField label="Voice">
-          <USelectMenu v-model="form.voiceName" :items="GEMINI_VOICES" class="w-full" />
+          <ChoiceMenu v-model="form.voiceName" :items="GEMINI_VOICES" class="w-full" />
         </UFormField>
         <UFormField label="Spoken language">
           <UInput v-model="form.language" class="w-full" placeholder="en-US" />
@@ -205,7 +205,7 @@ const environmentChoice = computed({
         </template>
       </UFormField>
       <UFormField label="Voice" help="Fixed for the life of a connection; a change applies next time.">
-        <USelectMenu v-model="form.openaiVoiceName" :items="OPENAI_VOICES" class="w-full" />
+        <ChoiceMenu v-model="form.openaiVoiceName" :items="OPENAI_VOICES" class="w-full" />
       </UFormField>
 
       <USeparator />
@@ -244,7 +244,7 @@ const environmentChoice = computed({
             />
           </UFormField>
           <UFormField label="Reasoning effort">
-            <USelectMenu
+            <ChoiceMenu
               v-model="form.openaiDelegation.reasoningEffort"
               :items="effortItems"
               value-key="value"
@@ -259,11 +259,11 @@ const environmentChoice = computed({
           label="Thinking agent"
           help="Everything the agent can reach through Domo's own MCP tools, it can do for you out loud."
         >
-          <USelectMenu v-model="agentChoice" :items="agentItems" value-key="value" class="w-full" />
+          <ChoiceMenu v-model="agentChoice" :items="agentItems" value-key="value" class="w-full" />
         </UFormField>
         <div v-if="!form.openaiDelegation.agentSessionId" class="grid gap-4 sm:grid-cols-2">
           <UFormField label="Adapter" help="Which coding agent the created session runs.">
-            <USelectMenu
+            <ChoiceMenu
               v-model="form.openaiDelegation.agentAdapter"
               :items="adapterItems"
               value-key="value"
@@ -271,7 +271,7 @@ const environmentChoice = computed({
             />
           </UFormField>
           <UFormField label="Development environment">
-            <USelectMenu
+            <ChoiceMenu
               v-model="environmentChoice"
               :items="environmentItems"
               value-key="value"

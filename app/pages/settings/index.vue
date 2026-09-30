@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { AppSettings } from '~~/shared/types'
 import { DEFAULT_VOICE_DELEGATION, DEFAULT_OPENAI_LIVE_MODEL, DEFAULT_OPENAI_VOICE } from '~~/shared/voice-providers'
-import { DEFAULT_AGENT_VOICE } from '~~/shared/agent-voice'
 
 const toast = useToast()
 const { data: settings, refresh } = await useSettingsForm()
@@ -27,7 +26,6 @@ const form = reactive({
   openaiLiveModel: DEFAULT_OPENAI_LIVE_MODEL,
   openaiVoiceName: DEFAULT_OPENAI_VOICE,
   openaiDelegation: { ...DEFAULT_VOICE_DELEGATION },
-  agentVoice: { ...DEFAULT_AGENT_VOICE },
   systemInstruction: '',
   proactiveNotifications: true,
   language: 'en-US',
@@ -46,7 +44,6 @@ watchEffect(() => {
     // card, and mutating the fetched settings object would make a cancelled
     // edit look saved.
     openaiDelegation: { ...settings.value.openaiDelegation },
-    agentVoice: { ...settings.value.agentVoice },
     systemInstruction: settings.value.systemInstruction,
     proactiveNotifications: settings.value.proactiveNotifications,
     language: settings.value.language,
@@ -130,19 +127,5 @@ async function save() {
       <USwitch v-model="form.autoTitle" label="Name conversations automatically" description="The voice agent titles each conversation as it goes. A title you set yourself is never replaced." />
     </section>
 
-    <USeparator />
-
-    <section class="space-y-4">
-      <div>
-        <h2 class="text-sm font-semibold">Talking to coding agents</h2>
-        <p class="text-xs text-muted">The voice bar on an agent's page. One engine hears you, one speaks the agent's replies; the agent itself does the thinking.</p>
-      </div>
-      <AgentVoiceSettings
-        v-model="form.agentVoice"
-        :gemini-voice="form.voiceName"
-        :has-gemini-key="settings?.hasGeminiKey"
-        :has-open-ai-key="settings?.hasOpenAiKey"
-      />
-    </section>
   </SettingsShell>
 </template>

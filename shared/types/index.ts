@@ -672,6 +672,9 @@ export type Transcriber = SpeechEngine | 'browser'
  */
 export type Speaker = SpeechEngine | 'browser'
 
+/** What a tool call sounds like in the voice bar. */
+export type ToolSound = 'typing' | 'laptop' | 'tick' | 'off'
+
 /**
  * What decides, at a pause, whether a hands-free turn is over: Smart Turn
  * on the audio, the Kyutai transcriber's own pause prediction, or nothing
@@ -709,6 +712,7 @@ export interface AgentVoiceSettings {
   /** The moshi-server base, `ws://host:port`. STT is at `/api/asr-streaming`, TTS at `/api/tts_streaming`. */
   kyutaiUrl: string
   kyutaiVoice: string
+  toolSound: ToolSound
   /** An AVSpeechSynthesisVoice identifier; '' is the best one installed for the language. */
   macVoice: string
 }

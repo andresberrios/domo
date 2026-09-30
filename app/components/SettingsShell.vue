@@ -10,6 +10,7 @@ defineProps<{
 
 const sections = [
   { label: 'General', to: '/settings', icon: 'i-lucide-settings' },
+  { label: 'Talking to agents', to: '/settings/voice', icon: 'i-lucide-audio-lines' },
   { label: 'Coding agents', to: '/settings/agents', icon: 'i-lucide-bot' }
 ]
 
@@ -17,6 +18,23 @@ const afterAdapters = [
   { label: 'Development environments', to: '/settings/environments', icon: 'i-lucide-container' },
   { label: 'MCP servers', to: '/settings/mcp', icon: 'i-lucide-blocks' }
 ]
+
+/**
+ * On a phone the sections are one menu naming the page you are on, not a
+ * strip of tabs to scroll sideways through: eight sections do not fit a
+ * phone's width, and a strip hides most of them without saying so.
+ */
+const route = useRoute()
+const adapterItems = AGENT_ADAPTERS.map(adapter => ({ label: adapter.label, to: `/settings/adapters/${adapter.id}`, icon: adapter.icon }))
+const allItems = [...sections, ...adapterItems, ...afterAdapters]
+const current = computed(() =>
+  allItems.find(item => item.to === route.path) ?? allItems.find(item => item.to !== '/settings' && route.path.startsWith(item.to)) ?? sections[0]!
+)
+const menuItems = computed(() => [
+  sections,
+  [{ label: 'Adapters', type: 'label' as const }, ...adapterItems],
+  afterAdapters
+])
 </script>
 
 <template>
@@ -31,7 +49,21 @@ const afterAdapters = [
 
     <template #body>
       <div class="mx-auto flex w-full max-w-6xl flex-col gap-6 py-4 lg:flex-row lg:gap-10">
-        <nav class="flex shrink-0 gap-1 overflow-x-auto lg:w-56 lg:flex-col" aria-label="Settings">
+        <UDropdownMenu :items="menuItems" :content="{ align: 'start' }" :ui="{ content: 'w-(--reka-dropdown-menu-trigger-width)' }" class="lg:hidden">
+          <UButton
+            :label="current.label"
+            :icon="current.icon"
+            color="neutral"
+            variant="subtle"
+            trailing-icon="i-lucide-chevron-down"
+            block
+            class="justify-start"
+            :ui="{ trailingIcon: 'ms-auto' }"
+            aria-label="Settings section"
+          />
+        </UDropdownMenu>
+
+        <nav class="hidden shrink-0 gap-1 lg:flex lg:w-56 lg:flex-col" aria-label="Settings">
           <UButton
             v-for="item in sections"
             :key="item.to"
