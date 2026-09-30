@@ -81,14 +81,19 @@ async function headExists(repoPath: string): Promise<boolean> {
   return !!head.stdout.trim()
 }
 
-/** `name` as a branch git accepts, or a readable refusal. */
+/**
+ * `name`, once git has agreed it is a branch name, or git's refusal. Verbatim:
+ * `--branch` also expands shorthands such as `@{-1}` into another branch,
+ * which is never what an environment's name meant.
+ */
 async function checkBranchName(repoPath: string, name: string): Promise<string> {
   const checked = await run('git', ['-C', repoPath, 'check-ref-format', '--branch', name], { allowFailure: true })
-    .catch(() => ({ stdout: '' }))
-  if (!checked.stdout.trim()) {
-    throw new Error(`"${name}" cannot be a git branch name. Name the environment differently.`)
+    .catch(() => ({ stdout: '', stderr: '' }))
+  if (checked.stdout.trim() !== name) {
+    const reason = checked.stderr.replace(/^fatal: /, '') || `"${name}" is not a valid branch name`
+    throw new Error(`${reason}. Name the environment differently.`)
   }
-  return checked.stdout.trim()
+  return name
 }
 
 /**

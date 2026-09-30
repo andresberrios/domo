@@ -93,9 +93,10 @@ A development environment is a long-lived container with its own git worktree
 of a project, created beside your checkout in `.domo-worktrees/` and mounted
 into the container. Several agents can share one environment.
 
-- The worktree is on a branch named after the environment, made at your last
+- The environment's name is its branch, exactly as typed, made at your last
   commit. If you already have a branch of that name, the dialog warns you and
-  the environment checks it out instead. Uncommitted changes stay on your
+  the environment checks it out instead. Slashes group environments into
+  folders in the sidebar (`handoff/speech` sits under `handoff`). Uncommitted changes stay on your
   machine. A project with no commits yet is offered its first one when you
   create an environment. Gitignored `.env` files are copied in.
   `node_modules`, `.venv` and other dependency folders never are: Domo

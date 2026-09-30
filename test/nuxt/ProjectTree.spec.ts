@@ -44,6 +44,9 @@ const environment: DevEnvironment = {
   cleanedAt: null,
 }
 
+/** Environments a test adds beside `environment`, to see them grouped. */
+const grouped: DevEnvironment[] = []
+
 const agent: AgentSession = {
   id: 'ag_1',
   voiceSessionId: null,
@@ -87,7 +90,7 @@ const conversation: VoiceSession = {
 }
 
 mockNuxtImport('useProjects', () => () => ({ projects: computed(() => [project]), isReady: ref(true) }))
-mockNuxtImport('useDevEnvironments', () => () => ({ environments: computed(() => [environment]), isReady: ref(true) }))
+mockNuxtImport('useDevEnvironments', () => () => ({ environments: computed(() => [environment, ...grouped]), isReady: ref(true) }))
 mockNuxtImport('useAgentSessions', () => () => ({ sessions: computed(() => [agent]), isReady: ref(true) }))
 mockNuxtImport('useVoiceSessions', () => () => ({ sessions: computed(() => [conversation]), isReady: ref(true) }))
 mockNuxtImport('usePermissions', () => () => ({
@@ -216,6 +219,37 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     expect(chevron!.closest('a')).toBeNull()
 
     wrapper.unmount()
+  })
+
+  it('groups environments by the slashes in their names, as folders that collapse', async () => {
+    grouped.push(
+      { ...environment, id: 'env_s', name: 'handoff/speech-system' },
+      { ...environment, id: 'env_v', name: 'handoff/voice/x' }
+    )
+    try {
+      const wrapper = await mountTree()
+      const link = (id: string) => document.body.querySelector<HTMLAnchorElement>(`a[href="/environments/${id}"]`)
+
+      // Inside its folder, a row reads as its last segment; the full name is its tooltip.
+      // (The status icon says "Running" to a screen reader first.)
+      expect(link('env_s')?.textContent?.trim()).toBe('Runningspeech-system')
+      expect(link('env_s')?.getAttribute('title')).toBe('handoff/speech-system')
+      expect(link('env_v')?.textContent?.trim()).toBe('Runningx')
+      expect(buttonLabelled('Collapse handoff/voice')).toBeTruthy()
+
+      buttonLabelled('Collapse handoff')!.click()
+      await vi.waitFor(() => expect(link('env_s')).toBeNull())
+      expect(link('env_v')).toBeNull()
+      // What is outside the folder stays.
+      expect(link('env_1')?.textContent?.trim()).toBe('Runningfeature-auth')
+      expect(JSON.parse(localStorage.getItem('domo.sidebar.collapsed')!)).toContain('folder:p1:handoff')
+
+      buttonLabelled('Expand handoff')!.click()
+      await vi.waitFor(() => expect(link('env_s')).toBeTruthy())
+      wrapper.unmount()
+    } finally {
+      grouped.length = 0
+    }
   })
 
   it('remembers what was collapsed across a reload', async () => {

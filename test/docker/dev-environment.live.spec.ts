@@ -198,7 +198,7 @@ async function exists(path: string): Promise<boolean> {
   return stat(path).then(() => true, () => false)
 }
 
-async function create(name = 'Live Test'): Promise<DevEnvironment> {
+async function create(name = 'live-test'): Promise<DevEnvironment> {
   const environment = await createEnvironment({ projectId: 'prj_live', name })
   created.push(environment.id)
   return environment
@@ -641,7 +641,7 @@ describe('an environment with the headless browser', () => {
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
     state.browserTools = true
 
-    const environment = await create('Live Test Browser')
+    const environment = await create('live-test-browser')
 
     expect(environment.status).toBe('running')
     // Read-only, beside the runtime volume and not inside it.
@@ -679,7 +679,7 @@ describe('an environment with the headless browser', () => {
 
     let id = ''
     await expect(
-      createEnvironment({ projectId: 'prj_live', name: 'Live Test Old glibc' })
+      createEnvironment({ projectId: 'prj_live', name: 'live-test-old-glibc' })
         .catch((error) => {
           id = [...state.rows.keys()].at(-1)!
           throw error
@@ -707,7 +707,7 @@ describe('an environment whose image cannot run Domo\'s runtime', () => {
 
     let id = ''
     await expect(
-      createEnvironment({ projectId: 'prj_live', name: 'Live Test Alpine' })
+      createEnvironment({ projectId: 'prj_live', name: 'live-test-alpine' })
         .catch((error) => {
           // The newest row, not the first: rows of earlier tests are still in
           // the map whenever one of them failed before its teardown ran.
@@ -740,8 +740,8 @@ describe('two environments of the same project', () => {
     })
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
 
-    const first = await create('Live Test One')
-    const second = await create('Live Test Two')
+    const first = await create('live-test-one')
+    const second = await create('live-test-two')
     const shared = await ensureRuntimeVolume()
 
     expect(shared).toBe(runtimeVolumeName((await run('docker', ['version', '--format', '{{.Server.Arch}}'])).stdout))

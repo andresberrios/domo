@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { safeEnvironmentName } from '~~/shared/dev-environments'
+import { branchNameProblem } from '~~/shared/dev-environments'
 import type { DevEnvironment, Project, RepositoryState, WorkspaceSeedReport } from '~~/shared/types'
 
 /**
@@ -32,8 +32,9 @@ watch([open, () => props.project?.id], ([isOpen]) => {
 
 const needsFirstCommit = computed(() => !!repository.value && !repository.value.hasCommits)
 
-/** The branch the name becomes, and the branch of that name if there already is one. */
-const branchName = computed(() => safeEnvironmentName(name.value.trim()))
+/** The name is the branch, verbatim; why git would refuse it, and the branch of that name if there already is one. */
+const branchName = computed(() => name.value.trim())
+const nameProblem = computed(() => branchName.value ? branchNameProblem(branchName.value) : null)
 const existingBranch = computed(() =>
   repository.value?.branches.find(branch => branch.name === branchName.value) ?? null)
 
@@ -70,7 +71,7 @@ function seedDescription(seed: WorkspaceSeedReport | undefined): string {
 
 async function submit() {
   const value = name.value.trim()
-  if (!value || !props.project || needsFirstCommit.value || existingBranch.value?.checkedOut) return
+  if (!value || nameProblem.value || !props.project || needsFirstCommit.value || existingBranch.value?.checkedOut) return
   submitting.value = true
   try {
     const environment = await $fetch<DevEnvironment & { workspaceSeed?: WorkspaceSeedReport }>(
@@ -121,10 +122,11 @@ async function submit() {
       />
       <UFormField
         label="Name"
-        hint="Also names its branch"
-        :help="branchName && !existingBranch
+        hint="Also its branch, as typed"
+        :error="nameProblem ?? false"
+        :help="branchName && !nameProblem && !existingBranch
           ? `Creates the branch ${branchName} from your last commit. Retiring the environment deletes it once every commit on it is also on another branch.`
-          : undefined"
+          : 'Slashes group environments, like folders: handoff/speech sits in a handoff group.'"
       >
         <UInput
           v-model="name"
@@ -161,7 +163,7 @@ async function submit() {
           label="Create environment"
           icon="i-lucide-monitor"
           :loading="submitting"
-          :disabled="!name.trim() || !project || needsFirstCommit || !!existingBranch?.checkedOut"
+          :disabled="!name.trim() || !!nameProblem || !project || needsFirstCommit || !!existingBranch?.checkedOut"
           @click="submit"
         />
       </div>

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { environmentListRows } from '~~/shared/dev-environments'
+
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
@@ -12,6 +14,16 @@ const { pending } = usePermissions()
 
 const project = computed(() => projects.value.find(item => item.id === projectId.value) ?? null)
 const projectEnvironments = computed(() => environments.value.filter(item => item.projectId === projectId.value))
+
+/** Folders by the slashes in the names, as in the sidebar. Closed ones for this visit only. */
+const closedFolders = ref(new Set<string>())
+const environmentRows = computed(() => environmentListRows(projectEnvironments.value, path => closedFolders.value.has(path)))
+
+function toggleFolder(path: string) {
+  const next = new Set(closedFolders.value)
+  if (!next.delete(path)) next.add(path)
+  closedFolders.value = next
+}
 
 // A local-directory agent has no dev environment, but its cwd may still sit
 // inside this project's own checkout — the same attribution the tree makes.
@@ -164,15 +176,43 @@ const cascade = computed(() => {
           </div>
 
           <ul v-if="projectEnvironments.length" class="divide-y divide-default overflow-hidden rounded-lg border border-default">
-            <li v-for="environment in projectEnvironments" :key="environment.id">
-              <NuxtLink :to="`/environments/${environment.id}`" class="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-elevated">
-                <EnvironmentIcon :status="environment.status" />
-                <span class="min-w-0 flex-1 truncate">{{ environment.name }}</span>
+            <li v-for="row in environmentRows" :key="row.kind === 'folder' ? `folder:${row.path}` : row.environment.id">
+              <button
+                v-if="row.kind === 'folder'"
+                type="button"
+                class="flex w-full items-center gap-3 py-2.5 pe-4 text-start text-sm text-muted hover:bg-elevated"
+                :style="{ paddingInlineStart: `${1 + row.depth * 1.25}rem` }"
+                :title="row.path"
+                :aria-expanded="!closedFolders.has(row.path)"
+                @click="toggleFolder(row.path)"
+              >
+                <UIcon :name="closedFolders.has(row.path) ? 'i-lucide-folder' : 'i-lucide-folder-open'" class="size-4 shrink-0" />
+                <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
                 <UBadge
                   size="sm"
                   color="neutral"
                   variant="subtle"
-                  :label="agentsIn(environment.id) === 1 ? '1 agent' : `${agentsIn(environment.id)} agents`"
+                  :label="row.count === 1 ? '1 environment' : `${row.count} environments`"
+                />
+                <UIcon
+                  name="i-lucide-chevron-right"
+                  :class="['size-4 shrink-0 text-dimmed transition-transform', closedFolders.has(row.path) ? '' : 'rotate-90']"
+                />
+              </button>
+              <NuxtLink
+                v-else
+                :to="`/environments/${row.environment.id}`"
+                class="flex items-center gap-3 py-2.5 pe-4 text-sm hover:bg-elevated"
+                :style="{ paddingInlineStart: `${1 + row.depth * 1.25}rem` }"
+                :title="row.environment.name"
+              >
+                <EnvironmentIcon :status="row.environment.status" />
+                <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
+                <UBadge
+                  size="sm"
+                  color="neutral"
+                  variant="subtle"
+                  :label="agentsIn(row.environment.id) === 1 ? '1 agent' : `${agentsIn(row.environment.id)} agents`"
                 />
                 <UIcon name="i-lucide-chevron-right" class="size-4 shrink-0 text-dimmed" />
               </NuxtLink>

@@ -139,13 +139,13 @@ describe('an npm project with no commits yet', () => {
     // .gitignore is respected: the .env is not in the commit.
     expect((await git(repo, 'ls-files')).split('\n').sort()).toEqual(['.gitignore', 'README.md', 'package-lock.json', 'package.json'])
 
-    await dialog().getByPlaceholder('feature-auth').fill('Checkout Probe')
+    await dialog().getByPlaceholder('feature-auth').fill('checkout-probe')
     await dialog().getByText('Creates the branch checkout-probe from your last commit.').waitFor()
-    const toast = await createFromDialog('Checkout Probe')
+    const toast = await createFromDialog('checkout-probe')
     expect(toast).toContain('It is on a new branch, checkout-probe, made from your last commit.')
     expect(toast).toContain('Copied .env.')
 
-    const environment = await environmentNamed('Checkout Probe')
+    const environment = await environmentNamed('checkout-probe')
     expect(environment).toMatchObject({ status: 'running', branch: 'checkout-probe', branchCreated: true })
     // The ignored .env came along; the dependency was installed in the container, by lockfile.
     await expect(inside(environment, 'cat .env')).resolves.toBe('SECRET=from-the-host')
@@ -163,7 +163,7 @@ describe('an npm project with no commits yet', () => {
   }, CREATE_MS)
 
   it('retires it, removing the worktree and keeping a branch with commits of its own', async () => {
-    const environment = await environmentNamed('Checkout Probe')
+    const environment = await environmentNamed('checkout-probe')
     const worktree = join(dirname(repo), '.domo-worktrees', environment.id)
     expect(await exists(worktree)).toBe(true)
 
@@ -183,12 +183,12 @@ describe('an npm project with no commits yet', () => {
     await dialog().getByText('The branch main is checked out elsewhere').waitFor()
     await expect(dialog().getByRole('button', { name: 'Create environment' }).isDisabled()).resolves.toBe(true)
 
-    await dialog().getByPlaceholder('feature-auth').fill('Taken')
+    await dialog().getByPlaceholder('feature-auth').fill('taken')
     await dialog().getByText('The branch taken already exists').waitFor()
-    const toast = await createFromDialog('Taken')
+    const toast = await createFromDialog('taken')
     expect(toast).toContain('It is on your existing branch taken, checked out with its commits.')
 
-    const environment = await environmentNamed('Taken')
+    const environment = await environmentNamed('taken')
     expect(environment).toMatchObject({ branch: 'taken', branchCreated: false })
     const { confirmation } = await retireFromPage(environment)
     expect(confirmation).toContain('so does your branch taken, which it reused')

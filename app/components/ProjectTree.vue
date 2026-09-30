@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { environmentListRows } from '~~/shared/dev-environments'
 import type { Project } from '~~/shared/types'
 
 /**
@@ -59,6 +60,16 @@ const pendingByAgent = computed(() => {
 
 function environmentsFor(projectId: string) {
   return environments.value.filter(environment => environment.projectId === projectId)
+}
+
+/** A project's environments as folders by the slashes in their names; a collapsed folder hides what it holds. */
+function environmentRowsFor(projectId: string) {
+  return environmentListRows(environmentsFor(projectId), path => !isExpanded(folderKey(projectId, path)))
+}
+
+/** Where a folder's open state is remembered: the same name in two projects is two folders. */
+function folderKey(projectId: string, path: string) {
+  return `folder:${projectId}:${path}`
 }
 
 function agentsFor(environmentId: string) {
@@ -204,23 +215,60 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
               </ul>
             </li>
 
-            <li v-for="environment in environmentsFor(project.id)" :key="environment.id">
-              <SidebarEnvironmentRow
-                :environment="environment"
-                :expanded="isExpanded(environment.id)"
-                :agent-count="agentsFor(environment.id).length"
-                @toggle="toggle(environment.id)"
-                @new-agent="openNewAgent({ environmentId: environment.id })"
-              />
+            <li
+              v-for="row in environmentRowsFor(project.id)"
+              :key="row.kind === 'folder' ? folderKey(project.id, row.path) : row.environment.id"
+              :style="{ paddingInlineStart: `${row.depth * 0.75}rem` }"
+            >
+              <div
+                v-if="row.kind === 'folder'"
+                class="flex items-center gap-0.5 rounded-md pe-1 hover:bg-elevated"
+                :title="row.path"
+              >
+                <UButton
+                  icon="i-lucide-chevron-right"
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  class="shrink-0"
+                  :ui="{ leadingIcon: ['transition-transform', isExpanded(folderKey(project.id, row.path)) ? 'rotate-90' : ''] }"
+                  :aria-expanded="isExpanded(folderKey(project.id, row.path))"
+                  :aria-label="isExpanded(folderKey(project.id, row.path)) ? `Collapse ${row.path}` : `Expand ${row.path}`"
+                  @click="toggle(folderKey(project.id, row.path))"
+                />
+                <button
+                  type="button"
+                  class="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-start text-sm text-muted"
+                  @click="toggle(folderKey(project.id, row.path))"
+                >
+                  <UIcon
+                    :name="isExpanded(folderKey(project.id, row.path)) ? 'i-lucide-folder-open' : 'i-lucide-folder'"
+                    class="size-4 shrink-0"
+                  />
+                  <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
+                </button>
+                <UBadge size="sm" color="neutral" variant="subtle" :label="row.count" />
+              </div>
 
-              <ul v-show="isExpanded(environment.id)" class="mt-0.5 space-y-0.5 border-l border-default ps-3">
-                <li v-for="agent in agentsFor(environment.id)" :key="agent.id">
-                  <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
-                </li>
-                <li v-if="!agentsFor(environment.id).length" class="px-2 py-1 text-xs text-dimmed">
-                  No agents yet
-                </li>
-              </ul>
+              <template v-else>
+                <SidebarEnvironmentRow
+                  :environment="row.environment"
+                  :label="row.label"
+                  :expanded="isExpanded(row.environment.id)"
+                  :agent-count="agentsFor(row.environment.id).length"
+                  @toggle="toggle(row.environment.id)"
+                  @new-agent="openNewAgent({ environmentId: row.environment.id })"
+                />
+
+                <ul v-show="isExpanded(row.environment.id)" class="mt-0.5 space-y-0.5 border-l border-default ps-3">
+                  <li v-for="agent in agentsFor(row.environment.id)" :key="agent.id">
+                    <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
+                  </li>
+                  <li v-if="!agentsFor(row.environment.id).length" class="px-2 py-1 text-xs text-dimmed">
+                    No agents yet
+                  </li>
+                </ul>
+              </template>
             </li>
 
             <li v-if="!environmentsFor(project.id).length" class="px-2 py-1 text-xs text-dimmed">

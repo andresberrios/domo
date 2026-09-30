@@ -155,8 +155,10 @@ Every environment gets a locked git worktree in
   left (`cleaned_at`). A path or name reusing its id after that belongs to
   somebody else. It is never marked while Docker cannot be asked, anything is
   owed, or its project is missing.
-- **Each environment's worktree is on a branch named after it**
-  (`dev_environments.branch`). The sweep deletes that branch once the
+- **An environment's name is its branch, verbatim** (`dev_environments.branch`),
+  slashes included; the UI groups names by their slashes. Only the
+  `/workspaces/<slug>` directory is a slug, with a hash when the name is not
+  one path segment already, so `a/b` and `a-b` cannot collide. The sweep deletes that branch once the
   worktree is gone, only if Domo made it (`branch_created`) and every commit
   on it is on another branch; otherwise it is kept and the retirement says
   why. Never any other branch the worktree was switched to.

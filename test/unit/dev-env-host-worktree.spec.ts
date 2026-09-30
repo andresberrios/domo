@@ -110,7 +110,24 @@ describe('createHostWorktree', () => {
 
     await expect(create(undefined, 'env_2', 'existing')).rejects.toThrow(/Could not check out the branch existing/)
     await expect(create(undefined, 'env_3', 'main')).rejects.toThrow(/Could not check out the branch main/)
-    await expect(create(undefined, 'env_4', 'bad..name')).rejects.toThrow(/cannot be a git branch name/)
+    await expect(create(undefined, 'env_4', 'bad..name')).rejects.toThrow(/not a valid branch name/)
+  })
+
+  // `handoff/speech-system` once became a new, empty `handoff-speech-system`
+  // beside the branch the caller meant.
+  it('takes the name as the branch verbatim, slashes and case included', async () => {
+    await git(repo, 'branch', 'handoff/Speech-System')
+    const reused = await create(undefined, 'env_1', 'handoff/Speech-System')
+    expect(reused.branch).toEqual({ name: 'handoff/Speech-System', created: false })
+
+    const made = await create(undefined, 'env_2', 'feature/deep/auth')
+    expect(made.branch).toEqual({ name: 'feature/deep/auth', created: true })
+    expect(await git(made.worktreePath, 'symbolic-ref', '--short', 'HEAD')).toBe('feature/deep/auth')
+  })
+
+  it('never lets git turn a name into another branch', async () => {
+    // `--branch` expands `@{-1}` to the branch checked out before; the name meant no such thing.
+    await expect(create(undefined, 'env_1', '@{-1}')).rejects.toThrow(/Name the environment differently/)
     expect(await exists(join(root, '.domo-worktrees', 'env_4'))).toBe(false)
   })
 

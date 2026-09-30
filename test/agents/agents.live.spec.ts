@@ -74,7 +74,7 @@ beforeAll(async () => {
   repoPath = await fixtureRepo()
   hostCwd = await fixtureRepo()
   const project = await createProject({ name: 'agents-live', repoPath })
-  environment = await createEnvironment({ projectId: project.id, name: 'Agents Live' })
+  environment = await createEnvironment({ projectId: project.id, name: 'agents-live' })
   expect(environment.status).toBe('running')
 
   // OpenCode's prompts are governed by a Domo setting whose default is

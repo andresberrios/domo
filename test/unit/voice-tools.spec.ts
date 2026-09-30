@@ -50,7 +50,6 @@ const acpManager = {
   stop: vi.fn()
 }
 const devEnvironments = {
-  safeEnvironmentName: (name: string) => name,
   beginEnvironment: vi.fn(),
   startEnvironment: vi.fn(),
   stopEnvironment: vi.fn(),

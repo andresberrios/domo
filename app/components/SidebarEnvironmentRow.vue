@@ -14,6 +14,8 @@ const props = defineProps<{
   environment: DevEnvironment
   expanded: boolean
   agentCount: number
+  /** What the row shows: the last segment of the name inside its folder. The full name is its tooltip. */
+  label?: string
 }>()
 
 const emit = defineEmits<{ toggle: [], newAgent: [] }>()
@@ -109,9 +111,10 @@ const items = computed(() => retired.value
       :to="`/environments/${environment.id}`"
       class="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 text-sm"
       active-class="row-active"
+      :title="environment.name"
     >
       <EnvironmentIcon :status="environment.status" />
-      <span class="min-w-0 flex-1 truncate">{{ environment.name }}</span>
+      <span class="min-w-0 flex-1 truncate">{{ label ?? environment.name }}</span>
     </NuxtLink>
 
     <UBadge
@@ -148,7 +151,7 @@ const items = computed(() => retired.value
     <RenameModal
       v-model:open="renaming"
       title="Rename environment"
-      description="Changes the name shown in Domo. The container and its worktree keep the names they were created with."
+      description="Changes the name shown in Domo, and the folder it is grouped in. The container, its worktree and its branch keep the names they were created with."
       :initial="environment.name"
       @submit="rename"
     />

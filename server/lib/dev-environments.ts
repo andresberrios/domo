@@ -1,7 +1,7 @@
 import { access, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { safeEnvironmentName } from '../../shared/dev-environments'
+import { branchNameProblem, environmentSlug } from '../../shared/dev-environments'
 import type { AgentAdapter, DevEnvironment, Project, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
@@ -89,8 +89,6 @@ const lifecycle = keyedSerial()
  * shared volumes another build may be waiting for are left to finish.
  */
 const builds = new Map<string, AbortController>()
-
-export { safeEnvironmentName }
 
 function containerReference(environment: DevEnvironment): string {
   return environment.containerId || environment.containerName
@@ -311,9 +309,11 @@ export async function beginEnvironment(
   await access(join(project.repoPath, '.git'))
 
   const id = newId('env')
+  // The name is the environment's branch, verbatim, so it has to be one.
   const name = input.name.trim()
-  const safeName = safeEnvironmentName(name) || id
-  const workspacePath = `/workspaces/${safeName}`
+  const problem = branchNameProblem(name)
+  if (problem) throw new Error(`"${name}" cannot name an environment, because it is also its branch: ${problem}`)
+  const workspacePath = `/workspaces/${environmentSlug(name)}`
   const containerName = `${resourcePrefix()}${id}`
   const environment = await createDevEnvironmentRow({ id, projectId: project.id, name, containerName, workspacePath })
   // Inside the environment's lifecycle queue, like every other operation on
@@ -323,7 +323,7 @@ export async function beginEnvironment(
   const controller = new AbortController()
   builds.set(id, controller)
   const built = lifecycle(id, () => buildEnvironment({
-    id, name, safeName, workspacePath, containerName, project, signal: controller.signal
+    id, name, workspacePath, containerName, project, signal: controller.signal
   })).finally(() => builds.delete(id))
   // Whoever holds `built` sees the rejection; this only keeps a caller that
   // does not from crashing the process. The row already records the failure.
@@ -334,14 +334,12 @@ export async function beginEnvironment(
 async function buildEnvironment(input: {
   id: string
   name: string
-  /** The name made safe for a path and a branch. */
-  safeName: string
   workspacePath: string
   containerName: string
   project: Project
   signal: AbortSignal
 }): Promise<CreatedEnvironment> {
-  const { id, name, safeName, workspacePath, containerName, project, signal } = input
+  const { id, name, workspacePath, containerName, project, signal } = input
   const timer = stepTimer(signal)
   try {
     // The definition, build contexts and Dockerfiles are read from the project's own
@@ -378,7 +376,7 @@ async function buildEnvironment(input: {
         repoPath: project.repoPath,
         projectId: project.id,
         environmentId: id,
-        branch: safeName,
+        branch: name,
         copyIgnored: resolved.config.copyIgnored
       }).then(async (made) => {
         // At once, so a creation that fails after this still knows which branch it made.

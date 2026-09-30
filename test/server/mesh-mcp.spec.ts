@@ -66,7 +66,6 @@ vi.mock('../../server/lib/acp/manager', async (importOriginal) => {
 const building = vi.hoisted(() => ({ built: null as Promise<any> | null }))
 
 const devEnvironments = vi.hoisted(() => ({
-  safeEnvironmentName: (name: string) => name,
   beginEnvironment: vi.fn(async (input: any) => {
     const environment = {
       id: 'env_new',

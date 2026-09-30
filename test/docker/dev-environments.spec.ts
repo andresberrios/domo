@@ -1021,11 +1021,11 @@ describe('createEnvironment', () => {
   })
 
   it('cuts the worktree, runs, preflights, links the workspace path and only then runs postCreateCommand', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     expect(buildEnvironmentImage).toHaveBeenCalledWith(expect.objectContaining({
       repoPath,
-      name: 'API work',
+      name: 'api-work',
       config: expect.objectContaining({ image: 'ghcr.io/acme/dev:latest' })
     }))
     // The worktree exists, and already agrees with its HEAD, before the
@@ -1052,7 +1052,7 @@ describe('createEnvironment', () => {
   })
 
   it('never chowns the checkout or reconciles it inside the container: it is the host\'s own worktree', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const calls = dockerCalls()
     expect(calls.some(args => args.includes('chown') && args.includes('--recursive'))).toBe(false)
@@ -1060,7 +1060,7 @@ describe('createEnvironment', () => {
   })
 
   it('links the workspace path to the canonical mount as root, with both paths as argv', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
     const link = dockerCalls().find(args => args.some(arg => arg.includes('ln -sfn')))!
@@ -1075,7 +1075,7 @@ describe('createEnvironment', () => {
       'utf8'
     )
 
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const runArgs = dockerCalls().find(args => args[0] === 'run')!
     expect(runArgs).toContainEqual(expect.stringMatching(/^\/sockets\/env_\w+\.sock:\/var\/run\/docker\.sock$/))
@@ -1090,7 +1090,7 @@ describe('createEnvironment', () => {
       return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
     })
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(/postCreateCommand/)
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow(/postCreateCommand/)
 
     expect(dood.ensureDoodProxy).not.toHaveBeenCalled()
     expect(dockerCalls().find(args => args[0] === 'run')!.join(' ')).not.toContain('docker.sock')
@@ -1100,7 +1100,7 @@ describe('createEnvironment', () => {
   })
 
   it('mounts the host\'s login state, skipping what this host does not have', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const mounts = dockerCalls().find(args => args[0] === 'run')!
       .flatMap((arg, index, all) => arg === '--mount' ? [all[index + 1]!] : [])
@@ -1116,7 +1116,7 @@ describe('createEnvironment', () => {
   it('skips an entry this host does not have, without an error', async () => {
     state.homeMounts = ['.ssh', '.kube']
 
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const mounts = dockerCalls().find(args => args[0] === 'run')!
       .flatMap((arg, index, all) => arg === '--mount' ? [all[index + 1]!] : [])
@@ -1125,7 +1125,7 @@ describe('createEnvironment', () => {
   })
 
   it('builds the container\'s own ~/.ssh, wrapping the host config it cannot use', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     // Every name arrives as argv; the script itself is fixed.
     const setup = run.mock.calls.find(([, args]) => args.includes('/home/vscode/.ssh-host'))!
@@ -1151,13 +1151,13 @@ describe('createEnvironment', () => {
   it('builds no ~/.ssh when the host mounts do not include one', async () => {
     state.homeMounts = ['.gitconfig']
 
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     expect(dockerCalls().flat().join('\n')).not.toContain('.ssh-host')
   })
 
   it('writes the container\'s own git config, and hands the created parents to the user', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const write = run.mock.calls.find(([, args]) => args.at(-1) === '/home/vscode/.gitconfig')!
     expect(write[1]).toEqual([
@@ -1180,7 +1180,7 @@ describe('createEnvironment', () => {
     await writeFile(socket, '', 'utf8')
     process.env.SSH_AUTH_SOCK = socket
 
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const runArgs = dockerCalls().find(args => args[0] === 'run')!
     expect(runArgs).toContain(`type=bind,source=${socket},target=/run/host-services/ssh-auth.sock`)
@@ -1194,7 +1194,7 @@ describe('createEnvironment', () => {
     await writeFile(socket, '', 'utf8')
     process.env.SSH_AUTH_SOCK = socket
 
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const runArgs = dockerCalls().find(args => args[0] === 'run')!
     expect(runArgs).toContain('type=bind,source=/run/host-services/ssh-auth.sock,target=/run/host-services/ssh-auth.sock')
@@ -1203,7 +1203,7 @@ describe('createEnvironment', () => {
   })
 
   it('seeds the Claude home as the remote user, and never mounts the host\'s', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     expect(dockerCalls()).toContainEqual([
       'exec', '--user', 'vscode', 'container-sha', 'mkdir', '-p', '/home/vscode/.claude'
@@ -1222,7 +1222,7 @@ describe('createEnvironment', () => {
     await writeFile(join(source, 'CLAUDE.md'), '# global\n')
     await writeFile(join(source, '.credentials.json'), '{"claudeAiOauth":{}}')
 
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     expect(copyIntoContainer).toHaveBeenCalledWith({
       source,
@@ -1235,13 +1235,13 @@ describe('createEnvironment', () => {
   })
 
   it('copies nothing when the host has no Claude config at all', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     expect(copyIntoContainer).not.toHaveBeenCalled()
   })
 
   it('cuts a host worktree for the checkout, mounts it at its canonical path, and declares its ports', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
     expect(hostWorktree.createHostWorktree).toHaveBeenCalledWith({
@@ -1281,7 +1281,7 @@ describe('createEnvironment', () => {
         return { branch: { name: input.branch, created: true }, worktreePath, gitdirFilePath: `${worktreePath}.container-gitdir`, commonGitDir: `${input.repoPath}/.git`, seed: { paths: ['a.ts'], copied: ['dev.pem'] } }
       })
 
-      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
       expect(hostWorktree.createHostWorktree).toHaveBeenCalledWith(expect.objectContaining({ copyIgnored: ['*.pem'] }))
       expect(created.workspaceSeed).toEqual({ paths: ['a.ts'], total: 1, copied: ['dev.pem'], install: null, branch: { name: 'api-work', created: true } })
@@ -1301,7 +1301,7 @@ describe('createEnvironment', () => {
         return null
       })
 
-      await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(/no commits yet/)
+      await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow(/no commits yet/)
 
       // Otherwise the image it tags would appear after the sweep, claimed by nothing.
       expect(builtWhenClaimed).toBe(true)
@@ -1312,7 +1312,7 @@ describe('createEnvironment', () => {
         await new Promise((_resolve, reject) => input.signal.addEventListener('abort', () => reject(input.signal.reason)))
         return 'never'
       })
-      const creation = createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      const creation = createEnvironment({ projectId: 'prj_1', name: 'api-work' })
       creation.catch(() => {})
       await vi.waitFor(() => expect(buildEnvironmentImage).toHaveBeenCalled())
       const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
@@ -1326,7 +1326,7 @@ describe('createEnvironment', () => {
     it('fails creation with nothing run when the worktree cannot be cut, and claims the worktree anyway', async () => {
       hostWorktree.createHostWorktree.mockRejectedValueOnce(new Error('/repo has no commits yet'))
 
-      await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(/no commits yet/)
+      await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow(/no commits yet/)
 
       expect(dockerCalls().some(args => args[0] === 'run')).toBe(false)
       const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
@@ -1354,7 +1354,7 @@ describe('createEnvironment', () => {
       await noPostCreate()
       await lockfile('pnpm-lock.yaml')
 
-      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
       expect(dockerCalls()).toContainEqual([
         'exec', '--user', 'vscode', '--workdir', '/workspaces/api-work', '--env', 'HOME=/home/vscode', 'container-sha',
@@ -1371,7 +1371,7 @@ describe('createEnvironment', () => {
         return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
       })
 
-      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
       expect(created.status).toBe('running')
       expect(created.workspaceSeed.install).toEqual({ command: 'npm ci', error: 'npm ci failed: lockfile out of date' })
@@ -1380,7 +1380,7 @@ describe('createEnvironment', () => {
     it('leaves the install to a project that has a postCreateCommand', async () => {
       await lockfile('pnpm-lock.yaml')
 
-      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
       expect(dockerCalls().some(args => args.includes('--frozen-lockfile'))).toBe(false)
       expect(created.workspaceSeed.install).toBeNull()
@@ -1392,7 +1392,7 @@ describe('createEnvironment', () => {
       }), 'utf8')
       await lockfile('pnpm-lock.yaml')
 
-      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
       const install = dockerCalls().findIndex(args => args.includes('--frozen-lockfile'))
       const postCreate = dockerCalls().findIndex(args => args.includes('make seed'))
@@ -1404,14 +1404,14 @@ describe('createEnvironment', () => {
         devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', installDependencies: false }
       }), 'utf8')
       await lockfile('pnpm-lock.yaml')
-      const created = await createEnvironment({ projectId: 'prj_1', name: 'API work 2' })
+      const created = await createEnvironment({ projectId: 'prj_1', name: 'api-work-2' })
       expect(dockerCalls().some(args => args.includes('--frozen-lockfile'))).toBe(false)
       expect(created.workspaceSeed.install).toBeNull()
     })
   })
 
   it('mounts the shared caches, points tools at them, and opens them to every environment\'s user', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const runCall = dockerCalls().find(args => args[0] === 'run')!
     expect(runCall).toContain('type=volume,source=domo-dev-caches,target=/opt/domo-caches')
@@ -1440,7 +1440,7 @@ describe('createEnvironment', () => {
     it('renumbers the user to the owner on a Linux daemon, before anything runs as it', async () => {
       idAnswers(String((process.getuid?.() ?? 1000) + 1))
 
-      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
       const call = renumbered()!
       expect(call.slice(0, 4)).toEqual(['exec', '--user', 'root', 'container-sha'])
@@ -1451,20 +1451,20 @@ describe('createEnvironment', () => {
 
     it('leaves Docker Desktop, which maps ownership itself, and matching ids alone', async () => {
       idAnswers(String(process.getuid?.()))
-      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
       expect(renumbered()).toBeUndefined()
 
       run.mockClear()
       dockerServerOs.mockResolvedValue('Docker Desktop')
       idAnswers(String((process.getuid?.() ?? 1000) + 1))
-      await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+      await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
       expect(renumbered()).toBeUndefined()
       dockerServerOs.mockResolvedValue('Ubuntu 24.04.3 LTS')
     })
   })
 
   it('mounts the runtime read-only, and the worktree, its .git override and the base .git as binds', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
     const runCall = dockerCalls().find(args => args[0] === 'run')!
@@ -1478,7 +1478,7 @@ describe('createEnvironment', () => {
   })
 
   it('marks the canonical mount and the base .git safe in the container\'s git config', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
     const write = run.mock.calls.find(([, args]) => args.at(-1) === '/home/vscode/.gitconfig')!
@@ -1488,7 +1488,7 @@ describe('createEnvironment', () => {
   })
 
   it('makes no pnpm store and runs no install for a project without a pnpm lockfile', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     expect(dockerCalls().flat().join('\n')).not.toContain('pnpm-store')
     expect(dockerCalls().some(args => args.includes('--store-dir'))).toBe(false)
@@ -1508,7 +1508,7 @@ describe('createEnvironment', () => {
   ])('records the failure and leaves nothing behind when %s fails', async (_label, arrange, message) => {
     arrange()
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(message)
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow(message)
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
     expect(repo.updateDevEnvironment).toHaveBeenCalledWith(id, {
@@ -1552,7 +1552,7 @@ describe('createEnvironment', () => {
       throw new Error('feature build failed')
     })
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow('feature build failed')
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow('feature build failed')
 
     expect(fake).toMatchObject({ containers: [], volumes: [], images: [] })
     // The worktree it had already cut goes too, claimed like the rest.
@@ -1577,7 +1577,7 @@ describe('createEnvironment', () => {
       publishedPorts: []
     })
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow('feature build failed')
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow('feature build failed')
 
     expect(dockerCalls()).toContainEqual(['rm', '--force', '--volumes', 'half-made-container'])
     expect(dockerCalls()).toContainEqual(['volume', 'rm', 'dind-var-lib-docker-xyz'])
@@ -1592,7 +1592,7 @@ describe('createEnvironment', () => {
       return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
     })
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow(message)
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow(message)
   })
 
   it('waits for Docker to answer, and gives up with a readable message', async () => {
@@ -1611,7 +1611,7 @@ describe('createEnvironment', () => {
       return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
     })
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' }))
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' }))
       .rejects.toThrow(/Docker did not answer inside the environment/)
 
     expect(attempts).toBeGreaterThan(1)
@@ -1630,14 +1630,14 @@ describe('createEnvironment', () => {
       return { stdout: args[0] === 'run' ? 'container-sha' : '', stderr: '' }
     })
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).resolves.toBeTruthy()
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).resolves.toBeTruthy()
     expect(attempts).toBe(3)
   })
 
   it('refuses a project that is not a Git checkout', async () => {
     await rm(join(repoPath, '.git'), { recursive: true, force: true })
 
-    await expect(createEnvironment({ projectId: 'prj_1', name: 'API work' })).rejects.toThrow()
+    await expect(createEnvironment({ projectId: 'prj_1', name: 'api-work' })).rejects.toThrow()
     expect(buildEnvironmentImage).not.toHaveBeenCalled()
   })
 })

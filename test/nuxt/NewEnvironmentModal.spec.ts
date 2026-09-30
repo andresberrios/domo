@@ -76,7 +76,7 @@ describe('NewEnvironmentModal', () => {
       repository: true,
       hasCommits: true,
       filesToCommit: null,
-      branches: [{ name: 'main', checkedOut: true }, { name: 'old-work', checkedOut: false }]
+      branches: [{ name: 'main', checkedOut: true }, { name: 'old-work', checkedOut: false }, { name: 'handoff/Speech', checkedOut: false }]
     }
     await mountSuspended(Harness, { attachTo: document.body })
     await settle()
@@ -87,11 +87,22 @@ describe('NewEnvironmentModal', () => {
       await settle()
     }
 
-    await type('Fresh Idea')
+    await type('fresh-idea')
     expect(document.body.textContent).toContain('Creates the branch fresh-idea from your last commit.')
     expect(buttonWithText('Create environment')?.disabled).toBe(false)
 
-    await type('Old Work')
+    // The name is the branch as typed: slashes and case stay.
+    await type('feature/Auth')
+    expect(document.body.textContent).toContain('Creates the branch feature/Auth from your last commit.')
+    await type('handoff/Speech')
+    expect(document.body.textContent).toContain('The branch handoff/Speech already exists')
+
+    // Git's rules, said as it is typed, and nothing to create until it is fixed.
+    await type('Fresh Idea')
+    expect(document.body.textContent).toContain('A branch name cannot contain spaces or control characters.')
+    expect(buttonWithText('Create environment')?.disabled).toBe(true)
+
+    await type('old-work')
     expect(document.body.textContent).toContain('The branch old-work already exists')
     expect(document.body.textContent).not.toContain('Creates the branch')
     expect(buttonWithText('Create environment')?.disabled).toBe(false)
