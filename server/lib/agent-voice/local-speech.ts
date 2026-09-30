@@ -7,17 +7,14 @@ import type { SpeechChunk } from './speech'
 /**
  * Speech in and out without a vendor: open models on this machine's CPU.
  *
- * Moonshine (MIT) transcribes and Kokoro (Apache-2.0) speaks, both as ONNX
- * through transformers.js. Measured here on an arm64 container: a
- * five-second clip transcribed in about a quarter of a second, and the first
- * sentence of speech ready in about a second and a half, then faster than it
- * plays. The weights are fetched from Hugging Face into the data directory
- * the first time they are needed (roughly 300 MB), and never again.
- *
- * Moonshine over Whisper because it is four times faster here at the same
- * accuracy on these clips; the setting can name any transformers.js
- * speech-recognition model, such as `onnx-community/whisper-base` for
- * languages other than English.
+ * Whisper or Moonshine (both MIT) transcribe and Kokoro (Apache-2.0) speaks,
+ * all as ONNX through transformers.js. The weights are fetched from Hugging
+ * Face into the data directory the first time they are needed, and never
+ * again. Whisper is the default because it takes the conversation as a
+ * prompt and makes over a quarter fewer errors on real speech; Moonshine is
+ * about eight times faster and hears cold (`TRANSCRIBE_MODELS` has the
+ * numbers). Any transformers.js speech-recognition model id works, such as
+ * `onnx-community/whisper-base` for languages other than English.
  */
 const KOKORO_MODEL = 'onnx-community/Kokoro-82M-v1.0-ONNX'
 const WHISPER_PROMPT_CHARS = 700

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEECH_ENGINES, SPEECH_LANGUAGES, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEECH_ENGINES, SPEECH_LANGUAGES, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 import { GEMINI_VOICES } from '~~/shared/voice-providers'
 
 /**
@@ -38,6 +38,12 @@ function keyWarning(engine: AgentVoiceSettings['transcriber']): string | null {
   if (engine === 'gemini' && props.hasGeminiKey === false) return 'No Gemini key is set, so this engine will fail.'
   if (engine === 'openai' && props.hasOpenAiKey === false) return 'No OpenAI key is set, so this engine will fail.'
   return null
+}
+
+/** The measured models as a menu, plus whatever id is stored, so a custom one is kept. */
+function modelItems(engine: keyof typeof TRANSCRIBE_MODELS, current: string) {
+  const items = TRANSCRIBE_MODELS[engine].map(model => ({ label: model.id, value: model.id, description: model.note }))
+  return items.some(item => item.value === current) ? items : [...items, { label: current, value: current, description: 'Not measured.' }]
 }
 
 const detectorItems = TURN_DETECTORS.map(detector => ({ label: detector.label, value: detector.id, description: detector.description }))
@@ -102,7 +108,14 @@ const uses = computed(() => new Set([
 
     <div v-if="uses.has('local')" class="grid gap-4 sm:grid-cols-2">
       <UFormField v-if="form.transcriber === 'local'" label="Local transcription model" hint="transformers.js id">
-        <UInput v-model="form.localTranscribeModel" class="w-full font-mono text-xs" placeholder="onnx-community/moonshine-base-ONNX" />
+        <USelectMenu
+          v-model="form.localTranscribeModel"
+          :items="modelItems('local', form.localTranscribeModel)"
+          value-key="value"
+          create-item
+          class="w-full font-mono text-xs"
+          @create="(id: string) => { form.localTranscribeModel = id }"
+        />
       </UFormField>
       <UFormField v-if="form.speaker === 'local'" label="Kokoro voice" hint="a = American, b = British; f/m">
         <USelectMenu v-model="form.localVoice" :items="KOKORO_VOICES" class="w-full" />
@@ -111,7 +124,14 @@ const uses = computed(() => new Set([
 
     <div v-if="uses.has('gemini')" class="grid gap-4 sm:grid-cols-2">
       <UFormField v-if="form.transcriber === 'gemini'" label="Gemini transcription model">
-        <UInput v-model="form.geminiTranscribeModel" class="w-full font-mono text-xs" />
+        <USelectMenu
+          v-model="form.geminiTranscribeModel"
+          :items="modelItems('gemini', form.geminiTranscribeModel)"
+          value-key="value"
+          create-item
+          class="w-full font-mono text-xs"
+          @create="(id: string) => { form.geminiTranscribeModel = id }"
+        />
       </UFormField>
       <UFormField v-if="form.speaker === 'gemini'" label="Gemini speech model" :hint="`Voice: ${geminiVoice}, from the voice agent above`">
         <UInput v-model="form.geminiSpeechModel" class="w-full font-mono text-xs" />
@@ -121,7 +141,14 @@ const uses = computed(() => new Set([
 
     <div v-if="uses.has('openai')" class="grid gap-4 sm:grid-cols-3">
       <UFormField v-if="form.transcriber === 'openai'" label="OpenAI transcription model">
-        <UInput v-model="form.openaiTranscribeModel" class="w-full font-mono text-xs" />
+        <USelectMenu
+          v-model="form.openaiTranscribeModel"
+          :items="modelItems('openai', form.openaiTranscribeModel)"
+          value-key="value"
+          create-item
+          class="w-full font-mono text-xs"
+          @create="(id: string) => { form.openaiTranscribeModel = id }"
+        />
       </UFormField>
       <UFormField v-if="form.speaker === 'openai'" label="OpenAI speech model">
         <UInput v-model="form.openaiSpeechModel" class="w-full font-mono text-xs" />
