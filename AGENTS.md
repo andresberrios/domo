@@ -23,8 +23,9 @@ not in the UI.
 
 ## Before you act
 
-- **Editing `server/` under `pnpm dev` kills every running coding agent,
-  including you.** Nitro reloads and shuts every adapter down. Make `server/`
+- **Editing `server/`, `shared/`, `.env` or `nuxt.config.ts` under `pnpm dev`
+  kills every running coding agent, including you.** Nitro reloads, or the
+  whole dev server restarts, and every adapter is shut down. Make those
   changes in a worktree, and apply them only when no turn is running (see
   `docs/working-on-domo.md`). Changes that touch only `app/` are safe in the
   main checkout, because Vite hot reload does not kill agents.
@@ -90,8 +91,8 @@ not in the UI.
 ## Topic docs
 
 - `docs/working-on-domo.md`: read before you change Domo from inside Domo
-  (parallel tasks, applying `server/` changes, a second dev server), or before
-  you point anything at a database: which one is for what.
+  (parallel tasks, applying changes that restart the server, a second dev
+  server), or before you point anything at a database: which one is for what.
 - `docs/acp-adapters.md`: read before you change adapter versions, models,
   steering or permissions, or when an adapter acts in an unexpected way.
 - `docs/dev-environments.md`: read before you change the environment
