@@ -474,12 +474,12 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_dev_environment',
       description:
-        'Create a new isolated development environment for a project: a container with its own git worktree of the repository, on a new branch named after the environment, made from the last commit. If a branch of that name already exists it is checked out instead, and the note saying it is running says so: tell the user. It returns at once while the build takes minutes; tell the user it has started, and you will be told when it is running or has failed.',
+        'Create a new isolated development environment for a project: a container with its own git worktree of the repository, on a branch named exactly as the environment (slashes group environments into folders), made from the last commit. If a branch of that name already exists it is checked out instead, and the note saying it is running says so: tell the user. It returns at once while the build takes minutes; tell the user it has started, and you will be told when it is running or has failed.',
       parameters: {
         type: Type.OBJECT,
         properties: {
           project: { type: Type.STRING, description: 'Project id or name, from list_dev_environments.' },
-          name: { type: Type.STRING, description: 'Short name for the environment, e.g. "feature-auth".' }
+          name: { type: Type.STRING, description: 'The environment name, which is also its branch exactly as given, e.g. "feature-auth" or "handoff/speech". No spaces.' }
         },
         required: ['project', 'name']
       }

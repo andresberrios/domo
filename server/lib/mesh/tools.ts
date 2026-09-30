@@ -567,7 +567,7 @@ export const MESH_TOOLS = [
     name: 'create_dev_environment',
     description:
       'Create a new isolated development environment for a project: a container with its own git worktree of the '
-      + 'repository, on a new branch named after the environment and made from the project\'s last commit. If a '
+      + 'repository, on a branch whose name is the environment\'s, verbatim, made from the project\'s last commit. If a '
       + 'branch of that name already exists it is checked out instead, with its commits, and the message saying it '
       + 'is running says so: tell the user, since it may not be what they meant. Uncommitted work on the host stays there; gitignored '
       + '`.env` files are copied. Returns at once with status "creating"; building takes minutes. You are messaged '
@@ -576,7 +576,11 @@ export const MESH_TOOLS = [
       type: 'object',
       properties: {
         projectId: { type: 'string', description: 'Project id, from list_projects.' },
-        name: { type: 'string', description: 'Short name, e.g. "feature-auth". The new branch is named after it.' },
+        name: {
+          type: 'string',
+          description: 'The environment\'s name and its branch, exactly as given, e.g. "feature-auth" or "handoff/speech". '
+            + 'Any name git allows for a branch; slashes group environments in the UI.'
+        },
         notifyWhenReady: { type: 'boolean', description: 'Message you when it is running or has failed. Default true.' }
       },
       required: ['projectId', 'name'],
