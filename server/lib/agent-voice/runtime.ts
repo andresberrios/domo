@@ -8,6 +8,7 @@ import { joinUtterance, parseSpokenTurn, plainForSpeech, takeSentences } from '.
 import { concatPcm16, isSilent, synthesize, transcribe } from './speech'
 import { COMPLETE_THRESHOLD, endOfTurn } from './turn'
 import { endOfTurnKyutai } from './kyutai-speech'
+import { EMPTY_SPEECH_CONTEXT, speechContext, type SpeechContext } from './context'
 import { getSettings } from '../settings'
 import type { AgentEvent, AgentVoiceServerMessage, StreamEvent } from '../../../shared/types'
 
@@ -62,6 +63,8 @@ const PROMPTS = ['Yes?', 'Mm-hm.', 'Go on.', 'You were saying?', 'I\'m listening
 const SIGN_OFF_CHECK_SECONDS = 0.6
 /** Hands-free: a turn this long is sent whatever the model thinks. */
 const MAX_TURN_SECONDS = 60
+/** The speech context is made again after this long even if nothing was said. */
+const CONTEXT_TTL_MS = 60_000
 
 interface Block {
   /** How much of the row's text has been seen. */
@@ -89,6 +92,10 @@ export class AgentVoiceRuntime {
   private transcribing = 0
   /** Segments are heard in the order they were spoken, however long each takes to transcribe. */
   private hearing: Promise<void> = Promise.resolve()
+  /** Words the device's own recogniser heard, not yet taken into a turn. */
+  private dictated = ''
+  /** What the recogniser is told; made again once the conversation has moved on. */
+  private context: { at: number, value: Promise<SpeechContext> } | null = null
 
   // speaking
   private speak = true
@@ -113,7 +120,25 @@ export class AgentVoiceRuntime {
   addListener(listener: Listener): () => void {
     this.listeners.add(listener)
     listener(this.status())
+    void this.dictationConfig().then((message) => {
+      if (this.listeners.has(listener)) listener(message)
+    })
     return () => this.listeners.delete(listener)
+  }
+
+  /** Tells the browser whether to transcribe on the device, and with which words. */
+  private async dictationConfig(): Promise<AgentVoiceServerMessage> {
+    const { agentVoice } = await getSettings()
+    const enabled = agentVoice.transcriber === 'browser'
+    const phrases = enabled ? (await this.speechContext()).vocabulary : []
+    return { type: 'dictation', enabled, language: agentVoice.language, phrases }
+  }
+
+  /** The conversation moved on: a new context, and the browser's recogniser told. */
+  private refreshContext() {
+    this.context = null
+    if (!this.listeners.size) return
+    void this.dictationConfig().then(message => this.emit(message)).catch(() => {})
   }
 
   private emit(message: AgentVoiceServerMessage) {
@@ -130,6 +155,14 @@ export class AgentVoiceRuntime {
   }
 
   /* ------------------------------ hearing ------------------------------ */
+
+  addDictation(text: string) {
+    if (this.closed || !text.trim()) return
+    this.clearHold()
+    this.prompted = 0
+    this.dictated = joinUtterance(this.dictated, text.trim())
+    this.emit({ type: 'utterance', text: joinUtterance(this.held, this.dictated) })
+  }
 
   addAudio(base64: string) {
     if (this.closed) return
@@ -176,8 +209,10 @@ export class AgentVoiceRuntime {
     // The model hears intonation, not conventions. A sign-off said after a
     // pause it judged incomplete is still a sign-off, so the last segment
     // gets a quick look of its own.
-    if (!complete && total >= SIGN_OFF_CHECK_SECONDS * CLIENT_INPUT_SAMPLE_RATE) {
-      const tail = await transcribe(concatPcm16(chunks), CLIENT_INPUT_SAMPLE_RATE).catch(() => '')
+    if (!complete && agentVoice.transcriber === 'browser') {
+      if (parseSpokenTurn(this.dictated, { lenient: true }).kind === 'send') complete = true
+    } else if (!complete && total >= SIGN_OFF_CHECK_SECONDS * CLIENT_INPUT_SAMPLE_RATE) {
+      const tail = await transcribe(concatPcm16(chunks), CLIENT_INPUT_SAMPLE_RATE, { context: await this.speechContext() }).catch(() => '')
       if (parseSpokenTurn(tail, { lenient: true }).kind === 'send') complete = true
     }
     console.log(`[agent-voice:${this.agentSessionId}] pause at ${seconds}s: p(complete)=${probability?.toFixed(3) ?? 'n/a'}${complete ? ', sending' : ', holding'}`)
@@ -208,6 +243,24 @@ export class AgentVoiceRuntime {
       default:
         return endOfTurn(concatPcm16(this.turnAudio))
     }
+  }
+
+  /**
+   * The conversation and vocabulary a turn is heard with. Kept for a while,
+   * since a turn is heard in pieces, and dropped when either side has said
+   * something new.
+   */
+  private speechContext(): Promise<SpeechContext> {
+    if (!this.context || Date.now() - this.context.at > CONTEXT_TTL_MS) {
+      this.context = {
+        at: Date.now(),
+        value: speechContext(this.agentSessionId).catch((error) => {
+          console.warn(`[agent-voice:${this.agentSessionId}] no speech context: ${describe(error)}`)
+          return EMPTY_SPEECH_CONTEXT
+        })
+      }
+    }
+    return this.context.value
   }
 
   /** The silence detector: the turn is over once nothing more has been said for this long. */
@@ -255,6 +308,16 @@ export class AgentVoiceRuntime {
   private async hear(chunks: Int16Array[], total: number, final: boolean, lenient = true): Promise<void> {
     const seconds = Math.round((total / CLIENT_INPUT_SAMPLE_RATE) * 10) / 10
     const tag = `[agent-voice:${this.agentSessionId}]`
+    const { agentVoice } = await getSettings()
+    if (agentVoice.transcriber === 'browser') {
+      // The device already heard it; the words came ahead of this segment's end.
+      const text = this.dictated
+      this.dictated = ''
+      console.log(`${tag} segment of ${seconds}s dictated on the device: ${JSON.stringify(text)}`)
+      if (!text.trim()) this.emit({ type: 'nothing-heard', reason: 'no-speech', seconds })
+      await this.heard(text, final, lenient)
+      return
+    }
     if (total < MIN_SEGMENT_SECONDS * CLIENT_INPUT_SAMPLE_RATE) {
       console.log(`${tag} segment of ${seconds}s: too short`)
       this.emit({ type: 'nothing-heard', reason: 'too-short', seconds })
@@ -274,7 +337,7 @@ export class AgentVoiceRuntime {
     this.emit(this.status())
     const started = Date.now()
     try {
-      text = await transcribe(samples, CLIENT_INPUT_SAMPLE_RATE)
+      text = await transcribe(samples, CLIENT_INPUT_SAMPLE_RATE, { context: await this.speechContext() })
     } catch (error) {
       this.emit({ type: 'error', message: `Could not transcribe: ${describe(error)}` })
     } finally {
@@ -324,6 +387,7 @@ export class AgentVoiceRuntime {
   discard() {
     this.clearHold()
     this.held = ''
+    this.dictated = ''
     this.audio = []
     this.audioSamples = 0
     this.turnAudio = []
@@ -349,6 +413,7 @@ export class AgentVoiceRuntime {
     // said "stop" before.
     this.dropSpeech()
     this.hushed = false
+    this.refreshContext()
     this.emit({ type: 'sent', text })
     try {
       const full = needsFullInstructions(await listRecentUserMessages(session.id))
@@ -454,6 +519,7 @@ export class AgentVoiceRuntime {
       case 'turn_end':
         this.flushBlocks()
         this.hushed = false
+        this.refreshContext()
         return
       case 'tool_call':
         this.emit({ type: 'tool', title: String(row.payload?.title ?? 'a tool') })

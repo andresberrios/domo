@@ -659,6 +659,13 @@ export interface AppSettings {
 export type SpeechEngine = 'gemini' | 'openai' | 'local' | 'kyutai'
 
 /**
+ * Who hears a spoken turn: one of the engines, or the device itself (the
+ * browser's own speech recognition, which on a Mac or an iPhone is Apple's
+ * dictation), in which case the browser sends words instead of audio.
+ */
+export type Transcriber = SpeechEngine | 'browser'
+
+/**
  * What decides, at a pause, whether a hands-free turn is over: Smart Turn
  * on the audio, the Kyutai transcriber's own pause prediction, or nothing
  * but the length of the silence.
@@ -673,9 +680,14 @@ export type TurnDetector = 'smart-turn' | 'kyutai' | 'silence'
  * this table is streamed to the browser and holds no secrets.
  */
 export interface AgentVoiceSettings {
-  transcriber: SpeechEngine
+  transcriber: Transcriber
   speaker: SpeechEngine
   turnDetector: TurnDetector
+  /**
+   * What the developer speaks, as an ISO 639-1 code, or '' to let each engine
+   * guess. Guessing is how noisy English comes back as Danish or Korean.
+   */
+  language: string
   /** For the `silence` detector: a pause this long ends the turn. */
   silenceSeconds: number
   geminiTranscribeModel: string
@@ -769,10 +781,21 @@ export type AgentVoiceClientMessage =
   | { type: 'cancel' }
   /** Whether the agent's text is read out loud at all. */
   | { type: 'speak', enabled: boolean }
+  /**
+   * Words the device's own recogniser finalised, when it is the transcriber.
+   * Sent before the `segment-end` they belong to; the audio still comes too,
+   * because the turn detector listens to it.
+   */
+  | { type: 'dictated', text: string }
 
 /** Server -> browser messages on the agent voice WebSocket. */
 export type AgentVoiceServerMessage =
   | { type: 'status', transcribing: boolean, speaking: boolean, speak: boolean }
+  /**
+   * Whether the browser should run its own recogniser, and what to tell it:
+   * the language and the project's vocabulary, for engines that take phrases.
+   */
+  | { type: 'dictation', enabled: boolean, language: string, phrases: string[] }
   /** What has been heard and is still being held (hands-free). */
   | { type: 'utterance', text: string }
   /**

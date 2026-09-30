@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEECH_ENGINES, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEECH_ENGINES, SPEECH_LANGUAGES, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 import { GEMINI_VOICES } from '~~/shared/voice-providers'
 
 /**
@@ -20,6 +20,19 @@ const props = defineProps<{
 }>()
 
 const engineItems = SPEECH_ENGINES.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
+const transcriberItems = TRANSCRIBERS.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
+// The select refuses an empty value, and '' is how "let the engine guess" is stored.
+const languageItems = SPEECH_LANGUAGES.map(language => ({ label: language.label, value: language.id || 'auto' }))
+const language = computed({
+  get: () => form.value.language || 'auto',
+  set: (value: string) => { form.value.language = value === 'auto' ? '' : value }
+})
+
+/** Whether the browser this page is open in has a recogniser of its own. The phone may differ. */
+const hasDictation = ref(true)
+onMounted(() => {
+  hasDictation.value = !!((window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition)
+})
 
 function keyWarning(engine: AgentVoiceSettings['transcriber']): string | null {
   if (engine === 'gemini' && props.hasGeminiKey === false) return 'No Gemini key is set, so this engine will fail.'
@@ -42,11 +55,14 @@ const uses = computed(() => new Set([
       <UFormField label="Transcriber" description="Turns what you say into text.">
         <USelectMenu
           v-model="form.transcriber"
-          :items="engineItems"
+          :items="transcriberItems"
           value-key="value"
           class="w-full"
         />
         <p v-if="keyWarning(form.transcriber)" class="mt-1 text-xs text-warning">{{ keyWarning(form.transcriber) }}</p>
+        <p v-if="form.transcriber === 'browser' && !hasDictation" class="mt-1 text-xs text-warning">
+          This browser has no dictation of its own. Chrome, Edge and Safari do.
+        </p>
       </UFormField>
       <UFormField label="Speaker" description="Reads the agent's replies out loud.">
         <USelectMenu
@@ -56,6 +72,17 @@ const uses = computed(() => new Set([
           class="w-full"
         />
         <p v-if="keyWarning(form.speaker)" class="mt-1 text-xs text-warning">{{ keyWarning(form.speaker) }}</p>
+      </UFormField>
+    </div>
+
+    <div class="grid gap-4 sm:grid-cols-2">
+      <UFormField label="Language" description="What you speak. Left to guess, noisy speech can come back in another language.">
+        <USelectMenu
+          v-model="language"
+          :items="languageItems"
+          value-key="value"
+          class="w-full"
+        />
       </UFormField>
     </div>
 

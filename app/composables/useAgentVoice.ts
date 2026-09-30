@@ -19,6 +19,14 @@ const BARGE_IN_MS = 400
 const ECHO_TAIL_MS = 500
 /** How many frames before speech was noticed are sent with it, so the first syllable is not clipped. */
 const PRE_ROLL_FRAMES = 2
+/** Device dictation: how long a segment's end waits for the recogniser to finalise its last words. */
+const DICTATION_SETTLE_MAX_MS = 2000
+/** And how long the recogniser must have been quiet for its words to count as final. */
+const DICTATION_QUIET_MS = 350
+/** Words the recogniser finalises this long after a segment ended still belong to it. */
+const DICTATION_GRACE_MS = 2500
+/** Web Speech phrase biasing takes a short list; the most likely terms come first. */
+const DICTATION_PHRASES = 100
 const MODE_KEY = 'domo:agent-voice:mode'
 const SPEAK_KEY = 'domo:agent-voice:speak'
 const DEVICE_KEY = 'domo:agent-voice:input-device'
@@ -90,6 +98,8 @@ export function useAgentVoice(
   /** A spoken turn was sent and nothing has been said back yet. */
   const awaitingReply = ref(false)
   const errorMessage = ref<string | null>(null)
+  /** The device's own recogniser is the transcriber (Settings), and this browser has one. */
+  const dictation = ref(false)
   const inputDevices = ref<AudioInputDevice[]>([])
   const inputDeviceId = ref<string>(readStored(DEVICE_KEY) ?? '')
 
@@ -117,6 +127,15 @@ export function useAgentVoice(
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
   let workingTimer: ReturnType<typeof setInterval> | null = null
   let lastToolSoundAt = 0
+
+  // device dictation
+  let dictationWanted = false
+  let dictationLanguage = ''
+  let dictationPhrases: string[] = []
+  let recognizer: any = null
+  let interimPending = false
+  let lastResultAt = 0
+  let lastSegmentEndAt = 0
 
   // hands-free segmentation
   let silentMs = 0
@@ -361,11 +380,13 @@ export function useAgentVoice(
     workletNode.connect(sink).connect(context.destination)
     micEnabled.value = true
     noiseFloor = 0
+    startDictation()
     void refreshDevices()
   }
 
   function stopMic({ endTurn = true } = {}) {
-    if (endTurn && recording.value && mode.value === 'click') send({ type: 'segment-end', final: true })
+    if (endTurn && recording.value && mode.value === 'click') endSegment(true)
+    stopDictation({ graceful: endTurn })
     workletNode?.port.close()
     workletNode?.disconnect()
     sourceNode?.disconnect()
@@ -458,8 +479,141 @@ export function useAgentVoice(
       recording.value = false
       silentMs = 0
       segmentMs = 0
-      send({ type: 'segment-end', final: false })
+      endSegment(false)
     }
+  }
+
+  /* --------------------------- device dictation ------------------------ */
+
+  /**
+   * When Settings picks "This device", the browser's own recogniser hears the
+   * words (Web Speech: Google's service in Chrome, Apple's dictation in
+   * Safari) and the server gets text. Audio still goes up, because the turn
+   * detector listens to it, and it still decides where a segment ends.
+   *
+   * The recogniser runs on the microphone track already open where the
+   * browser allows it (Chrome), so echo cancellation applies and there is one
+   * capture, not two. Words are only kept while a segment is being recorded or
+   * just after, so the agent's own voice in the room is not taken for a turn.
+   * A segment's end waits for the recogniser to finalise its last words, so
+   * the text always arrives before the `segment-end` it belongs to.
+   */
+  function recognitionClass(): any {
+    return (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null
+  }
+
+  function inDictationWindow(): boolean {
+    return recording.value || Date.now() - lastSegmentEndAt < DICTATION_GRACE_MS
+  }
+
+  function startDictation() {
+    if (recognizer || !dictationWanted || !micEnabled.value) return
+    const Recognition = recognitionClass()
+    if (!Recognition) {
+      dictation.value = false
+      errorMessage.value = 'This browser has no speech recognition of its own. Pick another transcriber in Settings.'
+      return
+    }
+    const instance = new Recognition()
+    instance.continuous = true
+    instance.interimResults = true
+    instance.lang = dictationLanguage || navigator.language || 'en-US'
+    const Phrase = (window as any).SpeechRecognitionPhrase
+    if (Phrase && dictationPhrases.length) {
+      try {
+        instance.phrases = dictationPhrases.slice(0, DICTATION_PHRASES).map(text => new Phrase(text, 5))
+      } catch {
+        /* this recogniser takes no phrases */
+      }
+    }
+    instance.onresult = (event: any) => {
+      lastResultAt = Date.now()
+      let finals = ''
+      let interim = false
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        if (result.isFinal) finals += ` ${result[0]?.transcript ?? ''}`
+        else interim = true
+      }
+      interimPending = interim
+      if (finals.trim() && inDictationWindow()) send({ type: 'dictated', text: finals.trim() })
+    }
+    instance.onerror = (event: any) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') return
+      if (event.error === 'phrases-not-supported') {
+        // A recogniser that refuses phrases still hears; try again without them.
+        dictationPhrases = []
+        return
+      }
+      errorMessage.value = event.error === 'network'
+        ? 'This browser\'s dictation could not reach its speech service. Pick another transcriber in Settings.'
+        : `Dictation stopped: ${event.error}`
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') dictationWanted = false
+    }
+    // The recogniser ends itself after a while of silence; it is started again
+    // for as long as the microphone is open.
+    instance.onend = () => {
+      if (recognizer !== instance) return
+      recognizer = null
+      interimPending = false
+      if (dictationWanted && micEnabled.value) setTimeout(startDictation, 250)
+    }
+    recognizer = instance
+    const track = micStream?.getAudioTracks()[0]
+    try {
+      if (track) instance.start(track)
+      else instance.start()
+    } catch {
+      try {
+        instance.start()
+      } catch {
+        recognizer = null
+      }
+    }
+  }
+
+  /** `graceful` lets the recogniser deliver the words it is still finalising. */
+  function stopDictation({ graceful = false } = {}) {
+    const instance = recognizer
+    recognizer = null
+    if (!graceful) interimPending = false
+    try {
+      if (graceful) instance?.stop()
+      else instance?.abort()
+    } catch {
+      /* already stopped */
+    }
+  }
+
+  /** Until the recogniser has finalised what it heard, or it has had long enough. */
+  async function dictationSettled() {
+    const started = Date.now()
+    while (Date.now() - started < DICTATION_SETTLE_MAX_MS) {
+      if (!interimPending && Date.now() - lastResultAt > DICTATION_QUIET_MS) return
+      await new Promise(resolve => setTimeout(resolve, 80))
+    }
+  }
+
+  function endSegment(final: boolean) {
+    lastSegmentEndAt = Date.now()
+    if (!dictation.value) {
+      send({ type: 'segment-end', final })
+      return
+    }
+    void dictationSettled().then(() => send({ type: 'segment-end', final }))
+  }
+
+  function configureDictation(enabled: boolean, language: string, phrases: string[]) {
+    const changed = enabled !== dictationWanted || language !== dictationLanguage || phrases.join('\n') !== dictationPhrases.join('\n')
+    dictationWanted = enabled
+    dictationLanguage = language
+    dictationPhrases = phrases
+    dictation.value = enabled && !!recognitionClass()
+    if (!changed) return
+    // Phrases and language are read at start, so a change restarts it, between turns.
+    if (recognizer && !recording.value) stopDictation()
+    if (enabled) startDictation()
+    else stopDictation()
   }
 
   /* ---------------------------- connection ---------------------------- */
@@ -476,6 +630,9 @@ export function useAgentVoice(
         transcribing.value = message.transcribing
         synthesizing.value = message.speaking
         speakEnabled.value = message.speak
+        break
+      case 'dictation':
+        configureDictation(message.enabled, message.language, message.phrases)
         break
       case 'utterance':
         utterance.value = message.text
@@ -593,7 +750,7 @@ export function useAgentVoice(
     if (!micEnabled.value) return
     if (recording.value) {
       recording.value = false
-      send({ type: 'segment-end', final: true })
+      endSegment(true)
     } else {
       // Talking over the agent means its answer is not wanted any more.
       if (speaking.value || synthesizing.value) hush()
@@ -604,8 +761,7 @@ export function useAgentVoice(
 
   function setMode(value: AgentVoiceMode) {
     if (mode.value === value) return
-    if (recording.value && mode.value === 'click') send({ type: 'segment-end', final: true })
-    if (recording.value && mode.value === 'handsfree') send({ type: 'segment-end', final: false })
+    if (recording.value) endSegment(mode.value === 'click')
     recording.value = false
     silentMs = 0
     segmentMs = 0
@@ -666,6 +822,7 @@ export function useAgentVoice(
     lastCommand,
     notice,
     holding,
+    dictation,
     errorMessage,
     inputDevices,
     inputDeviceId,

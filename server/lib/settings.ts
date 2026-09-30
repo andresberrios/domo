@@ -8,7 +8,7 @@ import {
   isReasoningEffort,
   isVoiceProvider
 } from '../../shared/voice-providers'
-import { DEFAULT_AGENT_VOICE, isSpeechEngine, isTurnDetector } from '../../shared/agent-voice'
+import { DEFAULT_AGENT_VOICE, isSpeechEngine, isTranscriber, isTurnDetector } from '../../shared/agent-voice'
 import type { AgentVoiceSettings, AppSettings, VoiceDelegationSettings } from '../../shared/types'
 
 export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code, Codex and OpenCode — for a developer,
@@ -166,13 +166,14 @@ function storedAgentVoice(stored: Record<string, any>): AgentVoiceSettings {
   const voice = { ...DEFAULT_AGENT_VOICE }
   const current = stored.agentVoice
   if (!current || typeof current !== 'object') return voice
-  if (isSpeechEngine(current.transcriber)) voice.transcriber = current.transcriber
+  if (isTranscriber(current.transcriber)) voice.transcriber = current.transcriber
   if (isSpeechEngine(current.speaker)) voice.speaker = current.speaker
   if (isTurnDetector(current.turnDetector)) voice.turnDetector = current.turnDetector
+  if (typeof current.language === 'string' && /^(?:[a-z]{2,3})?$/.test(current.language)) voice.language = current.language
   const seconds = Number(current.silenceSeconds)
   if (Number.isFinite(seconds) && seconds >= 0.3 && seconds <= 30) voice.silenceSeconds = seconds
   for (const key of Object.keys(voice) as Array<keyof AgentVoiceSettings>) {
-    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds') continue
+    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds' || key === 'language') continue
     if (typeof current[key] === 'string' && current[key].trim()) voice[key] = current[key].trim()
   }
   return voice

@@ -68,9 +68,33 @@ delivered to the agent as an ordinary spoken turn, and the agent's streamed
 text is read out sentence by sentence by an engine. The agent is the only
 thing that thinks. Engines are chosen in Settings (`AgentVoiceSettings`),
 separately for hearing and speaking: Gemini, OpenAI, open models on the CPU
-(Moonshine and Kokoro through transformers.js, about 300 MB fetched on first
-use), or a Kyutai moshi-server.
+(Moonshine or Whisper, and Kokoro, through transformers.js, fetched on first
+use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
 
+- **Each turn is heard with context** (`agent-voice/context.ts`): the last
+  few messages, and a vocabulary from the conversation, the tool calls' file
+  names and the project's docs and file names. Engines take it as a prompt;
+  the device takes it as phrases. `gemini-3.5-transcribe` ignores any prompt
+  (identical output with or without), so context only helps the other
+  engines.
+- **A primed transcript that comes back empty or looping is heard again
+  cold** (`looksHallucinated`). Whisper copies its prompt's style and loops on
+  it. People stutter too, so a single word has to repeat eight times to count.
+- **The language is pinned in Settings** (English by default). Left to guess,
+  OpenAI's models turned noisy English into Danish, Russian and Korean.
+- **Misheard terms are fixed by the agent, not by a pass in between.** The
+  spoken note tells it the message was transcribed and to read odd words as
+  the project terms they sound like. A fuzzy spelling pass and an LLM
+  correction pass were both measured on real speech; neither helped.
+- **"This device" transcribes in the browser** (Web Speech: Google's service
+  in Chrome, Apple's dictation in Safari). The words are sent ahead of the
+  `segment-end` they belong to, which waits for the recogniser to finalise;
+  the audio still goes up, because the turn detector listens to it. Words
+  heard outside a segment are dropped, so the agent's own voice is not a turn.
+- **`scripts/stt-bench` measures transcribers on real people**: Earnings-22
+  calls (accents, names) and AMI meetings on a distant microphone (noise,
+  crosstalk), each clip with the utterances before it as context. Run it
+  before changing an engine, a default or the context.
 - **The spoken-channel instructions ride on the message, never on the
   session.** ACP has no portable system prompt (only the Claude Code adapter
   reads one from session metadata), and a system prompt would change typed

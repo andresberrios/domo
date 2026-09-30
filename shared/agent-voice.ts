@@ -1,4 +1,4 @@
-import type { AgentVoiceSettings, SpeechEngine, TurnDetector } from './types'
+import type { AgentVoiceSettings, SpeechEngine, Transcriber, TurnDetector } from './types'
 
 /**
  * Talking to a coding agent: what the browser and the server both need to know.
@@ -24,13 +24,27 @@ export const SPEECH_ENGINES: Array<{ id: SpeechEngine, label: string, descriptio
   { id: 'local', label: 'On this machine', description: 'Moonshine and Kokoro on the CPU. Free, offline, no key.' },
   { id: 'gemini', label: 'Gemini', description: 'Google\'s transcription and speech models. Needs the Gemini key.' },
   { id: 'openai', label: 'OpenAI', description: 'The transcribe and speech endpoints. Needs the OpenAI key.' },
-  { id: 'kyutai', label: 'Kyutai server', description: 'A moshi-server you run, as Unmute does. Needs a GPU.' }
+  { id: 'kyutai', label: 'Kyutai server (untested)', description: 'A moshi-server you run, as Unmute does. Needs a GPU. Never yet run against a real server.' }
 ]
 
 export const SPEECH_ENGINE_IDS = SPEECH_ENGINES.map(engine => engine.id)
 
 export function isSpeechEngine(value: unknown): value is SpeechEngine {
   return SPEECH_ENGINE_IDS.includes(value as SpeechEngine)
+}
+
+/**
+ * Who can hear: the engines, and the device. The device's own recogniser is
+ * Web Speech in the browser, which is Google's in Chrome and Apple's
+ * dictation in Safari.
+ */
+export const TRANSCRIBERS: Array<{ id: Transcriber, label: string, description: string }> = [
+  ...SPEECH_ENGINES,
+  { id: 'browser', label: 'This device', description: 'The browser\'s own dictation: Google\'s in Chrome, Apple\'s in Safari. Free, no key.' }
+]
+
+export function isTranscriber(value: unknown): value is Transcriber {
+  return TRANSCRIBERS.some(transcriber => transcriber.id === value)
 }
 
 export const TURN_DETECTORS: Array<{ id: TurnDetector, label: string, description: string }> = [
@@ -41,6 +55,24 @@ export const TURN_DETECTORS: Array<{ id: TurnDetector, label: string, descriptio
 
 export function isTurnDetector(value: unknown): value is TurnDetector {
   return TURN_DETECTORS.some(detector => detector.id === value)
+}
+
+/** The languages offered in Settings. Every engine here knows these; '' leaves it to the engine. */
+export const SPEECH_LANGUAGES: Array<{ id: string, label: string }> = [
+  { id: 'en', label: 'English' },
+  { id: 'es', label: 'Spanish' },
+  { id: 'fr', label: 'French' },
+  { id: 'de', label: 'German' },
+  { id: 'it', label: 'Italian' },
+  { id: 'pt', label: 'Portuguese' },
+  { id: 'nl', label: 'Dutch' },
+  { id: 'ja', label: 'Japanese' },
+  { id: 'zh', label: 'Chinese' },
+  { id: '', label: 'Detect each turn' }
+]
+
+export function languageName(code: string): string | null {
+  return SPEECH_LANGUAGES.find(language => language.id === code && code)?.label ?? null
 }
 
 /** Kokoro v1.0's voices: American and British, female and male. */
@@ -60,6 +92,7 @@ export const DEFAULT_AGENT_VOICE: AgentVoiceSettings = {
   transcriber: 'gemini',
   speaker: 'gemini',
   turnDetector: 'smart-turn',
+  language: 'en',
   silenceSeconds: 1.5,
   geminiTranscribeModel: 'gemini-3.5-transcribe',
   geminiSpeechModel: 'gemini-3.8-flash-lite-tts',

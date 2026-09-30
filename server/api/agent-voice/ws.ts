@@ -78,6 +78,9 @@ export default defineWebSocketHandler({
         case 'speak':
           runtime.setSpeak(parsed.enabled !== false)
           break
+        case 'dictated':
+          if (typeof parsed.text === 'string') runtime.addDictation(parsed.text)
+          break
       }
     } catch (error) {
       send(peer, { type: 'error', message: error instanceof Error ? error.message : String(error) })
