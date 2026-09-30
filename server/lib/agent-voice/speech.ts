@@ -216,16 +216,27 @@ export async function synthesize(
   signal?: AbortSignal
 ): Promise<void> {
   const { agentVoice, voiceName } = await getSettings()
-  switch (agentVoice.speaker) {
+  return synthesizeWith(agentVoice, voiceName, text, onChunk, signal)
+}
+
+/** Speak with the given settings; `voiceName` is the Gemini voice, shared with the live agent. */
+export async function synthesizeWith(
+  settings: AgentVoiceSettings,
+  voiceName: string,
+  text: string,
+  onChunk: (chunk: SpeechChunk) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  switch (settings.speaker) {
     case 'local':
-      return synthesizeLocal(text, agentVoice.localVoice, onChunk, signal)
+      return synthesizeLocal(text, settings.localVoice, onChunk, signal)
     case 'openai':
-      return synthesizeOpenAi(text, agentVoice.openaiSpeechModel, agentVoice.openaiVoice, onChunk, signal)
+      return synthesizeOpenAi(text, settings.openaiSpeechModel, settings.openaiVoice, onChunk, signal)
     case 'kyutai':
-      return synthesizeKyutai(text, agentVoice.kyutaiUrl, agentVoice.kyutaiVoice, onChunk, signal)
+      return synthesizeKyutai(text, settings.kyutaiUrl, settings.kyutaiVoice, onChunk, signal)
   }
   const stream = await gemini().models.generateContentStream({
-    model: agentVoice.geminiSpeechModel,
+    model: settings.geminiSpeechModel,
     contents: [{ role: 'user', parts: [{ text }] }],
     config: {
       responseModalities: ['AUDIO' as any],

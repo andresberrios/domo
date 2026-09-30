@@ -3,6 +3,7 @@ import { dataDir } from '../paths'
 import { base64FromPcm16 } from '../voice/audio'
 import { EMPTY_SPEECH_CONTEXT, precedingTextPrompt, type SpeechContext } from './context'
 import type { SpeechChunk } from './speech'
+import { takeClause } from './utterance'
 
 /**
  * Speech in and out without a vendor: open models on this machine's CPU.
@@ -55,7 +56,23 @@ async function ensureSpeaker(): Promise<any> {
       await lib()
       const { KokoroTTS } = await import('kokoro-js')
       console.log(`[agent-voice] loading the local speech model ${KOKORO_MODEL}`)
-      return KokoroTTS.from_pretrained(KOKORO_MODEL, { dtype: 'q8', device: 'cpu' } as any)
+      // fp32, not q8: on an arm64 CPU the quantised model is slower (1.4x real time against 1.8x).
+      const tts: any = await KokoroTTS.from_pretrained(KOKORO_MODEL, { dtype: 'fp32', device: 'cpu' } as any)
+      const { Tensor, RawAudio } = await lib()
+      const perLength = tts.generate_from_ids.bind(tts)
+      // kokoro-js's own, but with the style row held still (see KokoroOptions).
+      tts.generate_from_ids = async (ids: any, { voice, speed = 1 }: { voice: string, speed?: number }) => {
+        if (styleTokens === null) return perLength(ids, { voice, speed })
+        const table = await voiceTable(voice)
+        const row = Math.min(509, styleTokens) * STYLE_DIM
+        const { waveform } = await tts.model({
+          input_ids: ids,
+          style: new Tensor('float32', table.slice(row, row + STYLE_DIM), [1, STYLE_DIM]),
+          speed: new Tensor('float32', [speed], [1])
+        })
+        return new RawAudio(waveform.data, KOKORO_RATE)
+      }
+      return tts
     })()
     speaker.catch(() => { speaker = null })
   }
@@ -169,25 +186,122 @@ export function pcm16Base64FromFloats(floats: Float32Array): string {
 }
 
 /**
- * Speak `text`, one sentence at a time as Kokoro finishes each, so the first
- * words play while the rest is still being made.
+ * How Kokoro is driven, which is most of how it sounds.
+ *
+ * Kokoro's voices are not one voice: each is a table of 510 style vectors,
+ * and kokoro-js picks the row by how many phonemes it is asked to say. Each
+ * sentence was said with a different row, so the pitch and timbre jumped at
+ * every sentence and the answer sounded stitched from different takes. The
+ * row is fixed here, for the whole answer (`styleTokens`).
+ *
+ * The text still goes in pieces, since Kokoro reads at most 510 phonemes and
+ * a long piece delays the first word, but as few as fit (`pieceChars`), each
+ * trimmed of the silence Kokoro leaves at its edges, faded in and out so a
+ * join never clicks, and set apart by one even pause.
+ */
+export interface KokoroOptions {
+  /** The style row every piece is said with; `null` is kokoro-js's own per-length choice. */
+  styleTokens: number | null
+  /** Sentences are joined into pieces up to this long. The first piece is one sentence, to start soon. */
+  pieceChars: number
+  /** The pause between pieces, in seconds. */
+  pauseSeconds: number
+}
+
+export const KOKORO_OPTIONS: KokoroOptions = { styleTokens: 60, pieceChars: 240, pauseSeconds: 0.18 }
+
+const KOKORO_RATE = 24000
+const STYLE_DIM = 256
+const voiceTables = new Map<string, Promise<Float32Array>>()
+
+async function voiceTable(voice: string): Promise<Float32Array> {
+  let table = voiceTables.get(voice)
+  if (!table) {
+    table = (async () => {
+      const { createRequire } = await import('node:module')
+      const { readFile } = await import('node:fs/promises')
+      const { dirname } = await import('node:path')
+      // Where kokoro-js reads them from itself: `voices/` beside its `dist/`.
+      const entry = createRequire(import.meta.url).resolve('kokoro-js')
+      const bytes = await readFile(join(dirname(entry), '..', 'voices', `${voice}.bin`))
+      return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+    })()
+    voiceTables.set(voice, table)
+    table.catch(() => voiceTables.delete(voice))
+  }
+  return table
+}
+
+/** Kokoro's own sentence splitter, for pieces that end where sentences do. */
+async function sentencesOf(text: string): Promise<string[]> {
+  const { TextSplitterStream } = await import('kokoro-js')
+  const splitter = new TextSplitterStream()
+  splitter.push(text)
+  return [...splitter]
+}
+
+/**
+ * Sentences joined into pieces up to `pieceChars`. The first piece is short,
+ * one sentence or the first clause of a long one, because Kokoro makes a
+ * piece in about half its spoken length and the first word waits for it.
+ */
+export function piecesOf(sentences: string[], pieceChars: number): string[] {
+  const pieces: string[] = []
+  const [head, ...tail] = sentences
+  const clause = head && head.length > 60 ? takeClause(head) : null
+  const ordered = clause ? [clause.clause, clause.rest, ...tail] : sentences
+  for (const sentence of ordered) {
+    const last = pieces.at(-1)
+    if (pieces.length > 1 && last && last.length + sentence.length + 1 <= pieceChars) pieces[pieces.length - 1] = `${last} ${sentence}`
+    else pieces.push(sentence)
+  }
+  return pieces
+}
+
+/** The style row the next piece is said with. Read by the override in `ensureSpeaker`. */
+let styleTokens: number | null = KOKORO_OPTIONS.styleTokens
+
+/** Audio with its leading and trailing near-silence cut, and short fades so the edges never click. */
+export function trimmed(audio: Float32Array, rate: number): Float32Array {
+  const threshold = 0.01
+  let start = 0
+  let end = audio.length
+  while (start < end && Math.abs(audio[start]!) < threshold) start++
+  while (end > start && Math.abs(audio[end - 1]!) < threshold) end--
+  // Keep a breath either side, so a word's soft onset or tail is not shaved.
+  start = Math.max(0, start - Math.floor(rate * 0.03))
+  end = Math.min(audio.length, end + Math.floor(rate * 0.05))
+  const out = audio.slice(start, end)
+  const fade = Math.min(Math.floor(rate * 0.008), Math.floor(out.length / 2))
+  for (let i = 0; i < fade; i++) {
+    out[i]! *= i / fade
+    out[out.length - 1 - i]! *= i / fade
+  }
+  return out
+}
+
+/**
+ * Speak `text` piece by piece as Kokoro finishes each, so the first words
+ * play while the rest is still being made.
  */
 export async function synthesizeLocal(
   text: string,
   voice: string,
   onChunk: (chunk: SpeechChunk) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: KokoroOptions = KOKORO_OPTIONS
 ): Promise<void> {
   const model = await ensureSpeaker()
-  const { TextSplitterStream } = await import('kokoro-js')
-  const splitter = new TextSplitterStream()
-  const stream = model.stream(splitter, { voice })
-  splitter.push(text)
-  splitter.close()
-  for await (const piece of stream) {
+  const pieces = piecesOf(await sentencesOf(text), options.pieceChars)
+  for (const [index, piece] of pieces.entries()) {
     if (signal?.aborted) return
-    const audio = piece?.audio
-    if (!audio?.audio?.length) continue
-    onChunk({ data: pcm16Base64FromFloats(audio.audio), sampleRate: audio.sampling_rate ?? 24000 })
+    styleTokens = options.styleTokens
+    const audio: Float32Array = (await model.generate(piece, { voice })).audio
+    if (signal?.aborted) return
+    const clip = trimmed(audio, KOKORO_RATE)
+    const pause = index < pieces.length - 1 ? Math.floor(options.pauseSeconds * KOKORO_RATE) : 0
+    const out = new Float32Array(clip.length + pause)
+    out.set(clip)
+    onChunk({ data: pcm16Base64FromFloats(out), sampleRate: KOKORO_RATE })
   }
 }

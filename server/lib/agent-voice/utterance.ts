@@ -83,6 +83,23 @@ export function takeSentences(buffer: string): { sentences: string[], rest: stri
 }
 
 /**
+ * The first clause of a sentence still being written, when it is long enough
+ * to say on its own: the words up to a comma, semicolon, colon or dash, at
+ * least four of them. Speaking it before the sentence is finished is what
+ * makes an answer start almost as soon as the agent does.
+ */
+export function takeClause(buffer: string): { clause: string, rest: string } | null {
+  if (buffer.includes('```')) return null
+  const boundary = /[,;:\u2013\u2014]\s+/g
+  for (let match = boundary.exec(buffer); match; match = boundary.exec(buffer)) {
+    const clause = buffer.slice(0, match.index + 1).trim()
+    if (clause.length < 20 || clause.split(/\s+/).length < 4) continue
+    return { clause, rest: buffer.slice(match.index + match[0].length) }
+  }
+  return null
+}
+
+/**
  * What is left of a Markdown sentence once it is to be said rather than shown.
  * The agent is asked not to write Markdown for speech; this is for when it
  * forgets, and for typed turns that are read out anyway.

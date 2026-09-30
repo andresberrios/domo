@@ -4,7 +4,7 @@ import { getAgentSession, listRecentUserMessages } from '../repo'
 import { pcm16FromBase64 } from '../voice/audio'
 import { CLIENT_INPUT_SAMPLE_RATE } from '../voice/backend'
 import { needsFullInstructions, spokenContent } from './prompt'
-import { joinUtterance, parseSpokenTurn, plainForSpeech, takeSentences } from './utterance'
+import { joinUtterance, parseSpokenTurn, plainForSpeech, takeClause, takeSentences } from './utterance'
 import { concatPcm16, isSilent, synthesize, transcribe } from './speech'
 import { COMPLETE_THRESHOLD, endOfTurn } from './turn'
 import { endOfTurnKyutai } from './kyutai-speech'
@@ -106,6 +106,8 @@ export class AgentVoiceRuntime {
   /** Set by `hush`; the rest of this answer is not read. Cleared by a new turn. */
   private hushed = false
   private blocks = new Map<string, Block>()
+  /** Something of the current answer has been said, so the rest waits for whole sentences. */
+  private replyStarted = false
 
   constructor(readonly agentSessionId: string) {
     this.unsubscribe = bus.subscribe((event) => {
@@ -413,6 +415,7 @@ export class AgentVoiceRuntime {
     // said "stop" before.
     this.dropSpeech()
     this.hushed = false
+    this.replyStarted = false
     this.refreshContext()
     this.emit({ type: 'sent', text })
     try {
@@ -519,6 +522,7 @@ export class AgentVoiceRuntime {
       case 'turn_end':
         this.flushBlocks()
         this.hushed = false
+        this.replyStarted = false
         this.refreshContext()
         return
       case 'tool_call':
@@ -549,6 +553,17 @@ export class AgentVoiceRuntime {
     const { sentences, rest } = takeSentences(block.pending)
     block.pending = rest
     for (const sentence of sentences) this.say(sentence)
+    // Nothing said yet in this answer: the first clause goes without waiting
+    // for its sentence to end.
+    if (!this.replyStarted && !sentences.length && streaming) {
+      const first = takeClause(block.pending)
+      if (first) {
+        block.pending = first.rest
+        this.say(first.clause)
+        this.replyStarted = true
+      }
+    }
+    if (sentences.length) this.replyStarted = true
     if (!streaming) {
       if (block.pending.trim()) this.say(block.pending)
       this.blocks.delete(row.id)
