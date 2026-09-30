@@ -120,6 +120,7 @@ export function useAgentVoice(
    */
   let playbackOut: MediaStreamAudioDestinationNode | null = null
   let playbackElement: HTMLAudioElement | null = null
+  let loopbackConnections: RTCPeerConnection[] = []
   let lastPlaybackEndedAt = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let intentionalClose = false
@@ -176,11 +177,55 @@ export function useAgentVoice(
     if (!playbackOut) {
       playbackOut = playbackContext.createMediaStreamDestination()
       playbackElement = new Audio()
-      playbackElement.srcObject = playbackOut.stream
       playbackElement.autoplay = true
+      playbackElement.srcObject = playbackOut.stream
+      // Then, once it is up, the same speech by way of WebRTC, which is the
+      // one path Chrome's echo canceller always subtracts.
+      const element = playbackElement
+      void loopback(playbackOut.stream).then((remote) => {
+        if (!remote || playbackElement !== element) return
+        element.srcObject = remote
+        void element.play().catch(() => {})
+        logDevice('speech plays through a WebRTC loopback, for the echo canceller')
+      })
     }
     if (playbackElement?.paused) await playbackElement.play().catch(() => {})
     return playbackContext
+  }
+
+  /**
+   * The agent's voice sent to this page itself over WebRTC and played from
+   * the receiving end. Chrome's echo canceller removes from the microphone
+   * only what it knows is playing, and what it reliably knows about is audio
+   * received over a peer connection; a media element playing a stream made
+   * in the page is not always enough, and on a phone's loudspeaker the agent
+   * then heard itself and stopped. Opus at a high bitrate, so the voice does
+   * not suffer for it. Null when the browser will not connect to itself, and
+   * the element keeps playing the stream directly.
+   */
+  async function loopback(stream: MediaStream): Promise<MediaStream | null> {
+    try {
+      const sender = new RTCPeerConnection()
+      const receiver = new RTCPeerConnection()
+      sender.onicecandidate = (event) => { if (event.candidate) void receiver.addIceCandidate(event.candidate).catch(() => {}) }
+      receiver.onicecandidate = (event) => { if (event.candidate) void sender.addIceCandidate(event.candidate).catch(() => {}) }
+      const remote = new Promise<MediaStream>((resolve) => {
+        receiver.ontrack = event => resolve(event.streams[0] ?? new MediaStream([event.track]))
+      })
+      for (const track of stream.getAudioTracks()) sender.addTrack(track, stream)
+      const offer = await sender.createOffer()
+      await sender.setLocalDescription(offer)
+      await receiver.setRemoteDescription(offer)
+      const answer = await receiver.createAnswer()
+      answer.sdp = answer.sdp?.replace(/(a=fmtp:\d+ [^\r\n]*useinbandfec=1)/, '$1;maxaveragebitrate=128000;stereo=0')
+      await receiver.setLocalDescription(answer)
+      await sender.setRemoteDescription(answer)
+      loopbackConnections = [sender, receiver]
+      return await Promise.race([remote, new Promise<null>(resolve => setTimeout(() => resolve(null), 4000))])
+    } catch (error) {
+      logDevice(`no WebRTC loopback: ${error instanceof Error ? error.message : error}`)
+      return null
+    }
   }
 
   /** Where speech and sounds go: the media element, or the context if it could not be made. */
@@ -410,7 +455,10 @@ export function useAgentVoice(
         audio: {
           ...inputDeviceId.value ? { deviceId: { exact: inputDeviceId.value } } : {},
           channelCount: 1,
-          echoCancellation: true,
+          // "all": cancel everything the device plays, the agent's voice and
+          // the device's own speech included, not only WebRTC audio (Chrome
+          // 141+). Older browsers read it as true.
+          echoCancellation: 'all' as unknown as boolean,
           noiseSuppression: true,
           autoGainControl: true
         }
@@ -446,6 +494,8 @@ export function useAgentVoice(
     workletNode.connect(sink).connect(context.destination)
     micEnabled.value = true
     noiseFloor = 0
+    const granted = micStream.getAudioTracks()[0]?.getSettings() as any
+    logDevice(`microphone: echo cancellation ${JSON.stringify(granted?.echoCancellation)}, noise suppression ${granted?.noiseSuppression}`)
     void startDictation()
     void refreshDevices()
   }
@@ -925,6 +975,8 @@ export function useAgentVoice(
   }
 
   onScopeDispose(() => {
+    for (const connection of loopbackConnections) connection.close()
+    loopbackConnections = []
     if (commandTimer) clearTimeout(commandTimer)
     if (noticeTimer) clearTimeout(noticeTimer)
     if (workingTimer) clearInterval(workingTimer)

@@ -133,11 +133,14 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   directory on first use, or read from `NUXT_SMART_TURN_MODEL`; without it a
   pause ends the turn. The `kyutai` detector reads the Kyutai transcriber's
   two-second pause head instead, and `silence` waits `silenceSeconds`.
-- **Speech leaves the browser through a media element, not
-  `AudioContext.destination`.** Chrome's echo canceller only subtracts what
-  it knows is playing, and on Android that is media elements and WebRTC. On
-  a Galaxy phone's loudspeaker the agent's voice came straight back in as
-  the developer's, until this.
+- **The echo canceller is the browser's, and it is told everything.** The
+  microphone asks for `echoCancellation: "all"` (Chrome 141+; older browsers
+  read it as `true`), which cancels everything the device plays. And the
+  agent's voice reaches the speaker through a WebRTC loopback inside the page,
+  because audio received over a peer connection is what Chrome's canceller
+  reliably subtracts; a media element was not enough, and a phone's
+  loudspeaker made the agent interrupt itself. The bar logs what the
+  microphone was granted (`device: microphone: …`).
 - **Every audio graph is resumed inside a tap.** iOS creates them suspended
   outside a gesture and refuses to resume them from anywhere else, which is
   why the microphone is opened by the button and never on mount.
