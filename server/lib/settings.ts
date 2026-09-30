@@ -169,11 +169,12 @@ function storedAgentVoice(stored: Record<string, any>): AgentVoiceSettings {
   if (isTranscriber(current.transcriber)) voice.transcriber = current.transcriber
   if (isSpeaker(current.speaker)) voice.speaker = current.speaker
   if (isTurnDetector(current.turnDetector)) voice.turnDetector = current.turnDetector
+  if (typeof current.macVoice === 'string') voice.macVoice = current.macVoice.trim()
   if (typeof current.language === 'string' && /^(?:[a-z]{2,3})?$/.test(current.language)) voice.language = current.language
   const seconds = Number(current.silenceSeconds)
   if (Number.isFinite(seconds) && seconds >= 0.3 && seconds <= 30) voice.silenceSeconds = seconds
   for (const key of Object.keys(voice) as Array<keyof AgentVoiceSettings>) {
-    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds' || key === 'language') continue
+    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds' || key === 'language' || key === 'macVoice') continue
     if (typeof current[key] === 'string' && current[key].trim()) voice[key] = current[key].trim()
   }
   return voice

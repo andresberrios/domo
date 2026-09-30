@@ -95,6 +95,13 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   device in Settings and kept in the browser). It starts at once, but it does
   not play through the media element, so the echo canceller may not know about
   it; the barge-in guard is all that stands between it and a false turn.
+- **"This Mac" is two Swift helpers** (`agent-voice/mac-speech.ts`),
+  compiled with `swiftc` into the data directory on first use and kept
+  running: AVSpeechSynthesizer for speech, SpeechAnalyzer's SpeechTranscriber
+  for hearing. Only on macOS 26 with the Xcode command line tools. Neither
+  asks for a permission; SFSpeechRecognizer would, through a GUI a server
+  cannot show, which is why it is not used. Apple's recogniser ignores the
+  vocabulary, and its DictationTranscriber was far worse on real speech.
 - **Kokoro speaks every piece with one style row** (`KOKORO_OPTIONS`).
   kokoro-js picks a voice's style by the length of what it is asked to say, so
   sentence-by-sentence synthesis changed the voice at every sentence.

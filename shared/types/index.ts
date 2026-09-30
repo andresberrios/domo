@@ -656,7 +656,7 @@ export interface AppSettings {
 }
 
 /** An engine that can transcribe speech and synthesise it. */
-export type SpeechEngine = 'gemini' | 'openai' | 'local' | 'kyutai'
+export type SpeechEngine = 'gemini' | 'openai' | 'local' | 'kyutai' | 'mac'
 
 /**
  * Who hears a spoken turn: one of the engines, or the device itself (the
@@ -709,6 +709,8 @@ export interface AgentVoiceSettings {
   /** The moshi-server base, `ws://host:port`. STT is at `/api/asr-streaming`, TTS at `/api/tts_streaming`. */
   kyutaiUrl: string
   kyutaiVoice: string
+  /** An AVSpeechSynthesisVoice identifier; '' is the best one installed for the language. */
+  macVoice: string
 }
 
 /**

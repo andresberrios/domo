@@ -6,6 +6,7 @@ import { languageName } from '../../../shared/agent-voice'
 import { EMPTY_SPEECH_CONTEXT, instructionPrompt, type SpeechContext } from './context'
 import { synthesizeKyutai, transcribeKyutai } from './kyutai-speech'
 import { synthesizeLocal, transcribeLocal } from './local-speech'
+import { synthesizeMac, transcribeMac } from './mac-speech'
 import { synthesizeOpenAi, transcribeOpenAi } from './openai-speech'
 
 /**
@@ -171,6 +172,8 @@ async function transcribeOnce(
       return transcribeOpenAi(samples, sampleRate, settings.openaiTranscribeModel, settings.language, context, signal)
     case 'kyutai':
       return transcribeKyutai(samples, sampleRate, settings.kyutaiUrl, signal)
+    case 'mac':
+      return transcribeMac(samples, sampleRate, settings.language, context)
     case 'browser':
       throw new Error('the browser transcribes its own speech')
   }
@@ -234,6 +237,8 @@ export async function synthesizeWith(
       return synthesizeOpenAi(text, settings.openaiSpeechModel, settings.openaiVoice, onChunk, signal)
     case 'kyutai':
       return synthesizeKyutai(text, settings.kyutaiUrl, settings.kyutaiVoice, onChunk, signal)
+    case 'mac':
+      return synthesizeMac(text, settings.macVoice, settings.language, onChunk, signal)
     case 'browser':
       throw new Error('the browser speaks for itself')
   }

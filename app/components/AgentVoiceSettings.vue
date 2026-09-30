@@ -38,6 +38,35 @@ onBeforeUnmount(() => {
   if ('speechSynthesis' in window) window.speechSynthesis.removeEventListener('voiceschanged', loadDeviceVoices)
 })
 watch(() => form.value.language, loadDeviceVoices)
+/** The voices on the Mac Domo runs on, asked for only when "This Mac" speaks. */
+const macVoices = ref<Array<{ label: string, value: string, description: string }>>([])
+const macUnavailable = ref<string | null>(null)
+const QUALITY = ['', 'default', 'enhanced', 'premium']
+watch(() => form.value.speaker === 'mac', async (mac) => {
+  if (!mac || macVoices.value.length) return
+  try {
+    const answer = await $fetch<{ available: boolean, reason?: string, voices: Array<{ id: string, name: string, language: string, quality: number }> }>('/api/agent-voice/mac-voices')
+    macUnavailable.value = answer.available ? null : answer.reason ?? 'Not available'
+    const code = form.value.language || 'en'
+    macVoices.value = [
+      { label: 'Best installed', value: '', description: 'The highest-quality voice for the language' },
+      ...answer.voices
+        .filter(voice => voice.language.toLowerCase().startsWith(code))
+        .sort((a, b) => b.quality - a.quality || a.name.localeCompare(b.name))
+        .map(voice => ({ label: voice.name, value: voice.id, description: `${voice.language}, ${QUALITY[voice.quality] ?? ''}` }))
+    ]
+  } catch (error) {
+    macUnavailable.value = error instanceof Error ? error.message : String(error)
+  }
+}, { immediate: true })
+
+// The select refuses an empty value, and '' is how "the best one" is stored.
+const macVoice = computed({
+  get: () => form.value.macVoice || 'best',
+  set: (value: string) => { form.value.macVoice = value === 'best' ? '' : value }
+})
+const macVoiceItems = computed(() => macVoices.value.map(item => ({ ...item, value: item.value || 'best' })))
+
 function chooseDeviceVoice(name: string) {
   deviceVoiceName.value = name
   storeDeviceVoice(name)
@@ -145,6 +174,13 @@ const uses = computed(() => new Set([
           class="w-full"
           @update:model-value="(name: string) => chooseDeviceVoice(name)"
         />
+      </UFormField>
+    </div>
+
+    <div v-if="form.speaker === 'mac'" class="grid gap-4 sm:grid-cols-2">
+      <UFormField label="Mac voice" description="Premium and Enhanced voices are installed in System Settings, Accessibility, Spoken Content.">
+        <USelectMenu v-model="macVoice" :items="macVoiceItems" value-key="value" class="w-full" />
+        <p v-if="macUnavailable" class="mt-1 text-xs text-warning">{{ macUnavailable }}</p>
       </UFormField>
     </div>
 

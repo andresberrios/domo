@@ -40,12 +40,22 @@ const ENGINES: Array<{ id: string, settings: Partial<AgentVoiceSettings>, parall
   { id: 'local-whisper-large-v3-turbo', settings: { transcriber: 'local', localTranscribeModel: 'onnx-community/whisper-large-v3-turbo' }, parallel: 1 }
 ]
 
-const CONFIGS: Config[] = ENGINES.flatMap(engine => [
+/**
+ * Apple's SpeechTranscriber, through the "This Mac" engine: only runnable on
+ * a Mac with macOS 26. Its DictationTranscriber was measured too, from a
+ * Swift probe: 39.3% against 16.9%, and neither used the vocabulary.
+ */
+const MAC: Config[] = [
+  { id: 'apple-speech', settings: { transcriber: 'mac', language: 'en' }, context: false, parallel: 1 },
+  { id: 'apple-speech+ctx', settings: { transcriber: 'mac', language: 'en' }, context: true, parallel: 1 }
+]
+
+const CONFIGS: Config[] = [...MAC, ...ENGINES.flatMap(engine => [
   { id: engine.id, settings: { ...engine.settings, language: '' }, context: false, parallel: engine.parallel },
   { id: `${engine.id}+ctx`, settings: { ...engine.settings, language: '' }, context: true, parallel: engine.parallel },
   { id: `${engine.id}+en`, settings: { ...engine.settings, language: 'en' }, context: false, parallel: engine.parallel },
   { id: `${engine.id}+en+ctx`, settings: { ...engine.settings, language: 'en' }, context: true, parallel: engine.parallel }
-])
+])]
 
 interface Result { text: string, ms: number, error?: string }
 
