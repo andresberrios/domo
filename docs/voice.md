@@ -141,6 +141,12 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   reliably subtracts; a media element was not enough, and a phone's
   loudspeaker made the agent interrupt itself. The bar logs what the
   microphone was granted (`device: microphone: …`).
+- **On Android the speaker opens after the microphone.** Opening the
+  microphone puts the phone in call mode, and Chrome fixes an output's
+  channel when it opens: one opened first stays on the media channel, where
+  the phone's echo canceller cannot see it and the volume keys (now on call
+  volume) cannot reach it. The bar reopens its output once the microphone is
+  up, and again when it closes.
 - **Every audio graph is resumed inside a tap.** iOS creates them suspended
   outside a gesture and refuses to resume them from anywhere else, which is
   why the microphone is opened by the button and never on mount.

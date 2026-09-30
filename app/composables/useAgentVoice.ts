@@ -233,6 +233,31 @@ export function useAgentVoice(
     }
   }
 
+  /**
+   * Close the speaker side, so the next sound opens it afresh.
+   *
+   * On Android, Chrome fixes an output's channel when the output is opened:
+   * media if it opened before the microphone, the call channel if after,
+   * since opening a microphone with echo cancellation puts the phone in call
+   * mode. The phone's echo canceller works on the call channel, and the
+   * volume keys switch to it, so speech left on the media channel was both
+   * heard back by the microphone and deaf to the volume keys. Reopening it
+   * once the microphone is open puts it where the canceller can see it.
+   */
+  function closePlayback() {
+    stopPlayback()
+    for (const connection of loopbackConnections) connection.close()
+    loopbackConnections = []
+    if (playbackElement) {
+      playbackElement.pause()
+      playbackElement.srcObject = null
+    }
+    playbackElement = null
+    playbackOut = null
+    void playbackContext?.close().catch(() => {})
+    playbackContext = null
+  }
+
   /** Where speech and sounds go: the media element, or the context if it could not be made. */
   function output(context: AudioContext): AudioNode {
     return playbackOut ?? context.destination
@@ -482,6 +507,14 @@ export function useAgentVoice(
     workletNode.connect(sink).connect(context.destination)
     micEnabled.value = true
     noiseFloor = 0
+    // Android: the speaker opened before the microphone is on the media
+    // channel, out of the echo canceller's sight (closePlayback). Reopen it now,
+    // inside the same tap, so it opens on the call channel.
+    if (/Android/i.test(navigator.userAgent) && playbackContext) {
+      closePlayback()
+      await ensurePlayback()
+      logDevice('speaker reopened after the microphone, on the call channel')
+    }
     const granted = micStream.getAudioTracks()[0]?.getSettings() as any
     logDevice(`microphone: echo cancellation ${JSON.stringify(granted?.echoCancellation)}, noise suppression ${granted?.noiseSuppression}`)
     void startDictation()
@@ -503,6 +536,9 @@ export function useAgentVoice(
     captureContext = null
     micEnabled.value = false
     captureSuspended.value = false
+    // Android: the phone leaves call mode with the microphone, so the speaker
+    // is reopened on the media channel by the next sound (closePlayback).
+    if (/Android/i.test(navigator.userAgent) && playbackContext) closePlayback()
     recording.value = false
     inputLevel.value = 0
     silentMs = 0
