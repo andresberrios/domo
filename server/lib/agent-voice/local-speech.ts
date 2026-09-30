@@ -218,11 +218,12 @@ async function voiceTable(voice: string): Promise<Float32Array> {
   let table = voiceTables.get(voice)
   if (!table) {
     table = (async () => {
-      const { createRequire } = await import('node:module')
       const { readFile } = await import('node:fs/promises')
       const { dirname } = await import('node:path')
+      const { fileURLToPath } = await import('node:url')
       // Where kokoro-js reads them from itself: `voices/` beside its `dist/`.
-      const entry = createRequire(import.meta.url).resolve('kokoro-js')
+      // Resolved as an import, since a build ships only its ESM entry.
+      const entry = fileURLToPath(import.meta.resolve('kokoro-js'))
       const bytes = await readFile(join(dirname(entry), '..', 'voices', `${voice}.bin`))
       return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
     })()
