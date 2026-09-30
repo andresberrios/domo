@@ -2,7 +2,6 @@
 import type { AgentVoiceSettings, AppSettingsView } from '~~/shared/types'
 import {
   KOKORO_VOICES,
-  POCKET_VOICES,
   OPENAI_SPEECH_VOICES,
   SPEAKERS,
   SPEECH_LANGUAGES,
@@ -33,7 +32,7 @@ const open = ref(false)
 const { data: settings, refresh } = useSettings()
 const voice = computed(() => settings.value?.agentVoice)
 
-interface Item { value: string, label: string, description?: string }
+interface Item { value: string, label: string, description?: string, icon?: string }
 interface Column {
   key: string
   label: string
@@ -74,6 +73,7 @@ function loadDeviceVoices() {
   deviceVoices.value = ranked.map(entry => ({ value: entry.name, label: entry.name, description: entry.lang }))
   deviceVoiceName.value = storedDeviceVoice() || ranked[0]?.name || ''
 }
+const { data: clones } = useClonedVoices()
 const macVoices = ref<Item[]>([])
 const QUALITY = ['', 'default', 'enhanced', 'premium']
 async function loadMacVoices() {
@@ -107,7 +107,7 @@ const voiceColumn = computed<Column | null>(() => {
       // Gemini's voice is the live agent's too: one voice for both.
       return { key: 'voice', label: 'Voice', items: list(GEMINI_VOICES), selected: settings.value?.voiceName ?? '', apply: value => patch({ voiceName: value }) }
     case 'pocket':
-      return { key: 'voice', label: 'Voice', items: list(POCKET_VOICES), selected: current.pocketVoice, apply: value => setVoice({ pocketVoice: value }) }
+      return { key: 'voice', label: 'Voice', items: pocketVoiceItems(clones.value ?? [], current.pocketVoice), selected: current.pocketVoice, apply: value => setVoice({ pocketVoice: value }) }
     case 'mac':
       return { key: 'voice', label: 'Voice', items: macVoices.value, selected: current.macVoice, apply: value => setVoice({ macVoice: value }) }
     case 'browser':
@@ -222,7 +222,10 @@ const summary = computed(() => voice.value
                 @click="choose(column, item.value)"
               >
                 <span class="min-w-0">
-                  <span class="block truncate text-sm" :class="item.value === column.selected ? 'font-medium' : ''">{{ item.label }}</span>
+                  <span class="flex items-center gap-1.5 text-sm" :class="item.value === column.selected ? 'font-medium' : ''">
+                    <UIcon v-if="item.icon" :name="item.icon" class="size-3.5 shrink-0 text-muted" />
+                    <span class="truncate">{{ item.label }}</span>
+                  </span>
                   <span v-if="item.description" class="hidden text-[11px] leading-snug text-muted sm:line-clamp-2">{{ item.description }}</span>
                 </span>
                 <UIcon

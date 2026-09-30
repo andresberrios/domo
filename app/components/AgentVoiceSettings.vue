@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, POCKET_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 import { GEMINI_VOICES } from '~~/shared/voice-providers'
 
 /**
@@ -18,6 +18,9 @@ const props = defineProps<{
   hasGeminiKey?: boolean
   hasOpenAiKey?: boolean
 }>()
+
+const { data: clones } = useClonedVoices()
+const pocketItems = computed(() => pocketVoiceItems(clones.value ?? [], form.value.pocketVoice))
 
 const speakerItems = SPEAKERS.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
 
@@ -182,13 +185,16 @@ const uses = computed(() => new Set([
       </UFormField>
     </div>
 
-    <div v-if="form.speaker === 'pocket'" class="grid gap-4 sm:grid-cols-2">
-      <UFormField label="Pocket TTS voice" description="The most natural first.">
-        <ChoiceMenu v-model="form.pocketVoice" :items="POCKET_VOICES" class="w-full" />
-      </UFormField>
-      <UFormField label="Pocket TTS server" description="Empty: Domo runs it itself with uv (brew install uv). Or the URL of one you run.">
-        <UInput v-model="form.pocketUrl" class="w-full font-mono text-xs" placeholder="http://127.0.0.1:8000" />
-      </UFormField>
+    <div v-if="form.speaker === 'pocket'" class="space-y-4">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <UFormField label="Pocket TTS voice" description="Yours first, then the built-in ones, the most natural first.">
+          <ChoiceMenu v-model="form.pocketVoice" :items="pocketItems" value-key="value" class="w-full" />
+        </UFormField>
+        <UFormField label="Pocket TTS server" description="Empty: Domo runs it itself with uv (brew install uv). Or the URL of one you run.">
+          <UInput v-model="form.pocketUrl" class="w-full font-mono text-xs" placeholder="http://127.0.0.1:8000" />
+        </UFormField>
+      </div>
+      <PocketVoiceClones v-model:voice="form.pocketVoice" />
     </div>
 
     <div v-if="form.speaker === 'mac'" class="grid gap-4 sm:grid-cols-2">

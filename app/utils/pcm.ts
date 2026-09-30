@@ -65,3 +65,43 @@ export function base64ToFloat32(base64: string): Float32Array {
   for (let i = 0; i < pcm.length; i++) floats[i] = pcm[i]! / 0x8000
   return floats
 }
+
+/** Mono PCM16 WAV, the one format Domo keeps voice samples in. */
+export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const view = new DataView(new ArrayBuffer(44 + samples.length * 2))
+  const text = (offset: number, value: string) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)) }
+  text(0, 'RIFF')
+  view.setUint32(4, 36 + samples.length * 2, true)
+  text(8, 'WAVE')
+  text(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  text(36, 'data')
+  view.setUint32(40, samples.length * 2, true)
+  for (let i = 0; i < samples.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]!))
+    view.setInt16(44 + i * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true)
+  }
+  return new Blob([view.buffer], { type: 'audio/wav' })
+}
+
+/**
+ * Any audio file the browser can decode (a recording, a WAV, an MP3) as a
+ * voice sample: mono, at `sampleRate`, and no longer than `maxSeconds`.
+ * Decoding into an offline context of that rate is what resamples it.
+ */
+export async function toVoiceSample(file: ArrayBuffer, sampleRate: number, maxSeconds: number): Promise<{ wav: Blob, seconds: number, trimmed: boolean }> {
+  const decoded = await new OfflineAudioContext(1, 1, sampleRate).decodeAudioData(file)
+  const length = Math.min(decoded.length, Math.floor(maxSeconds * sampleRate))
+  const mono = new Float32Array(length)
+  for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+    const data = decoded.getChannelData(channel)
+    for (let i = 0; i < length; i++) mono[i] = mono[i]! + data[i]! / decoded.numberOfChannels
+  }
+  return { wav: encodeWav(mono, sampleRate), seconds: length / sampleRate, trimmed: decoded.length > length }
+}

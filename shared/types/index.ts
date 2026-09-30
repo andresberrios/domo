@@ -683,6 +683,18 @@ export type ToolSound = 'typing' | 'laptop' | 'tick' | 'off'
 export type TurnDetector = 'smart-turn' | 'kyutai' | 'silence'
 
 /**
+ * A voice cloned from a sample the user recorded or uploaded, which Pocket
+ * TTS speaks with. The sample lives on disk in the data directory, never in
+ * a synced table: it is the user's own voice.
+ */
+export interface ClonedVoice {
+  id: string
+  name: string
+  seconds: number
+  createdAt: string
+}
+
+/**
  * The cascade behind the voice bar on an agent's page: one engine hears, one
  * speaks, and they need not be the same. Each engine's own knobs sit beside
  * it so switching back finds the old setup intact. The Gemini voice is the
@@ -713,7 +725,7 @@ export interface AgentVoiceSettings {
   kyutaiUrl: string
   kyutaiVoice: string
   toolSound: ToolSound
-  /** A Pocket TTS voice name. */
+  /** A Pocket TTS voice name, or `clone:<id>` for one of `ClonedVoice`. */
   pocketVoice: string
   /** A Pocket TTS server to use; '' is the one Domo runs itself through uvx. */
   pocketUrl: string

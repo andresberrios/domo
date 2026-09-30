@@ -116,7 +116,7 @@ registerEndpoint('/api/settings', () => ({ defaultCwd: '/work', defaultAgentMode
 registerEndpoint('/api/projects/p1', { method: 'PATCH', handler: record('/api/projects/p1', 'PATCH') })
 registerEndpoint('/api/projects/p1', { method: 'DELETE', handler: record('/api/projects/p1', 'DELETE') })
 registerEndpoint('/api/dev-environments', { method: 'POST', handler: record('/api/dev-environments', 'POST') })
-registerEndpoint('/api/projects/p1/repository', () => ({ repository: true, hasCommits: true, filesToCommit: null }))
+registerEndpoint('/api/projects/p1/repository', () => ({ repository: true, hasCommits: true, filesToCommit: null, branches: [] }))
 
 const Harness = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(ProjectPage) })

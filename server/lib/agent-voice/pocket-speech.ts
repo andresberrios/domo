@@ -1,8 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createReadStream, existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { createServer as createHttpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
+import { clonedVoiceId } from '../../../shared/agent-voice'
 import { dataDir } from '../paths'
 import type { SpeechChunk } from './speech'
+import { clonedVoiceSamplePath, isClonedVoiceId } from './voice-store'
 
 /**
  * Kyutai's Pocket TTS (MIT): a 100M-parameter voice model made for the CPU.
@@ -17,13 +22,33 @@ import type { SpeechChunk } from './speech'
  * with WAV streamed as it is made. Cloning a voice from a sample needs
  * Kyutai's gated weights (a Hugging Face token that has accepted their
  * terms, `HF_TOKEN`); without them only the built-in voices work.
+ *
+ * A cloned voice goes to Pocket as a URL rather than an upload, because
+ * Pocket keeps the state it computes from a sample per URL: an upload is
+ * encoded again on every request (first audio 2.2 s here, every time), a
+ * URL once (2.2 s, then 0.18 s, as fast as a built-in voice). The URL is a
+ * server of Domo's own on the loopback, so the samples are never on the
+ * app's public port. A Pocket server elsewhere cannot reach it, and gets
+ * the upload.
  */
 
 const POCKET_VERSION = '3.3.0'
 /** The first start fetches Python packages and the model; later ones take seconds. */
 const START_TIMEOUT_MS = 10 * 60_000
 
-let server: { url: string, process: ChildProcess | null } | null = null
+/** How Pocket fails a request for a clone when it has only the weights without cloning. */
+export const CLONING_UNAVAILABLE = 'Pocket TTS has no voice-cloning weights, so it cannot speak with a cloned voice. '
+  + 'Accept Kyutai\'s terms on huggingface.co/kyutai/pocket-tts, set HF_TOKEN to a token of that account '
+  + 'in Domo\'s environment, and restart Domo.'
+
+interface PocketLog {
+  /** Characters written so far, to find what a request added. */
+  written: () => number
+  /** What was written after `mark`, as far as the tail still holds it. */
+  since: (mark: number) => string
+}
+
+let server: { url: string, process: ChildProcess | null, log: PocketLog } | null = null
 let starting: Promise<string> | null = null
 
 function freePort(): Promise<number> {
@@ -60,8 +85,19 @@ async function startServer(): Promise<string> {
       ? 'Pocket TTS needs uv (brew install uv, or see docs.astral.sh/uv), or a Pocket TTS server URL in Settings.'
       : String(error?.message ?? error)
   })
+  // Kept after the start too: Pocket answers a failed request with a bare
+  // 500, and the reason is only in its log.
   let tail = ''
-  child.stderr?.on('data', (chunk) => { tail = `${tail}${chunk}`.slice(-2000) })
+  let written = 0
+  child.stderr?.on('data', (chunk) => {
+    const text = String(chunk)
+    written += text.length
+    tail = `${tail}${text}`.slice(-4000)
+  })
+  const log: PocketLog = {
+    written: () => written,
+    since: mark => tail.slice(Math.max(0, tail.length - (written - mark)))
+  }
   child.on('exit', (code) => {
     if (server?.process === child) server = null
     if (!failure) failure = `Pocket TTS stopped (${code}): ${tail.trim().split('\n').pop() ?? ''}`
@@ -70,7 +106,7 @@ async function startServer(): Promise<string> {
   while (Date.now() < deadline) {
     if (failure) throw new Error(failure)
     if (await reachable(url)) {
-      server = { url, process: child }
+      server = { url, process: child, log }
       console.log('[agent-voice] Pocket TTS is up')
       return url
     }
@@ -90,6 +126,90 @@ async function pocketServer(configured: string): Promise<string> {
   return starting
 }
 
+let samples: Promise<string> | null = null
+
+/** The loopback server Pocket fetches cloned voices' samples from, started once. */
+function sampleServer(): Promise<string> {
+  if (!samples) {
+    samples = new Promise<string>((resolve, reject) => {
+      const http = createHttpServer((request, response) => {
+        const id = /^\/([a-z0-9]+)\.wav$/.exec(request.url ?? '')?.[1]
+        const path = id && isClonedVoiceId(id) ? clonedVoiceSamplePath(id) : null
+        if (request.method !== 'GET' || !path || !existsSync(path)) {
+          response.writeHead(404).end()
+          return
+        }
+        response.writeHead(200, { 'content-type': 'audio/wav' })
+        createReadStream(path).pipe(response)
+      })
+      http.once('error', reject)
+      http.listen(0, '127.0.0.1', () => {
+        const address = http.address()
+        if (typeof address === 'object' && address) resolve(`http://127.0.0.1:${address.port}`)
+        else reject(new Error('no port for the voice samples'))
+      })
+      // Never the reason the process stays up.
+      http.unref()
+    }).catch((error) => {
+      samples = null
+      throw error
+    })
+  }
+  return samples
+}
+
+function onLoopback(url: string): boolean {
+  try {
+    return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The request's voice: a built-in name as it is, a clone as a URL of its
+ * sample on this machine's loopback, or as the sample itself for a Pocket
+ * server that cannot reach the loopback.
+ */
+export async function appendPocketVoice(form: FormData, voice: string, url: string): Promise<void> {
+  const id = clonedVoiceId(voice)
+  if (id === null) {
+    form.append('voice_url', voice || 'alba')
+    return
+  }
+  const path = clonedVoiceSamplePath(id)
+  if (!path || !existsSync(path)) throw new Error('The cloned voice chosen in Settings no longer exists. Choose another voice.')
+  if (onLoopback(url)) {
+    form.append('voice_url', `${await sampleServer()}/${id}.wav`)
+  } else {
+    form.append('voice_wav', new Blob([await readFile(path)], { type: 'audio/wav' }), `${id}.wav`)
+  }
+}
+
+const NO_CLONING = /weights for the model with voice cloning/
+
+/**
+ * Why a request failed, in words that say what to do when it was the
+ * cloning weights. `mark` is where Pocket's log stood when the request went
+ * out, or null for a server Domo does not run, which cannot be asked why.
+ */
+async function failure(response: Response, cloned: boolean, mark: number | null): Promise<Error> {
+  const body = (await response.text().catch(() => '')).slice(0, 200)
+  if (cloned && response.status >= 500) {
+    if (mark === null) {
+      return new Error(`Pocket TTS could not use the cloned voice (${response.status}). If that server has no voice-cloning weights, `
+        + 'accept Kyutai\'s terms on huggingface.co/kyutai/pocket-tts and give it HF_TOKEN.')
+    }
+    // The traceback reaches the log just after the 500 goes out.
+    const log = server?.log
+    for (let wait = 0; log && wait < 20 && !NO_CLONING.test(log.since(mark)); wait++) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    if (log && NO_CLONING.test(log.since(mark))) return new Error(CLONING_UNAVAILABLE)
+  }
+  return new Error(`Pocket TTS: ${response.status} ${body}`)
+}
+
 /** Speak `text`, handing on the PCM as the server streams it. */
 export async function synthesizePocket(
   text: string,
@@ -101,9 +221,10 @@ export async function synthesizePocket(
   const url = await pocketServer(configuredUrl)
   const form = new FormData()
   form.append('text', text)
-  form.append('voice_url', voice || 'alba')
+  await appendPocketVoice(form, voice, url)
+  const mark = configuredUrl.trim() ? null : server?.log.written() ?? null
   const response = await fetch(`${url}/tts`, { method: 'POST', body: form, signal })
-  if (!response.ok || !response.body) throw new Error(`Pocket TTS: ${response.status} ${(await response.text()).slice(0, 200)}`)
+  if (!response.ok || !response.body) throw await failure(response, clonedVoiceId(voice) !== null, mark)
   const reader = response.body.getReader()
   // A WAV header first, then PCM16: the rate is read from the header, and
   // a chunk may split a sample, whose odd byte waits for the next one.

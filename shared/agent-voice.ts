@@ -65,6 +65,27 @@ export const POCKET_VOICES = [
   'fantine', 'caro_davy', 'cosette', 'charles', 'george', 'stuart_bell', 'paul', 'azelma'
 ]
 
+/** How a cloned voice is named in `pocketVoice`, so it cannot collide with a built-in one. */
+export const CLONED_VOICE_PREFIX = 'clone:'
+
+export function clonedVoiceId(pocketVoice: string): string | null {
+  return pocketVoice.startsWith(CLONED_VOICE_PREFIX) ? pocketVoice.slice(CLONED_VOICE_PREFIX.length) : null
+}
+
+/**
+ * A voice sample's bounds. Pocket learns a voice from a few seconds and
+ * reads at most 30; 10-15 s of ordinary speech is what Kyutai suggests.
+ */
+export const VOICE_SAMPLE_MIN_SECONDS = 5
+export const VOICE_SAMPLE_MAX_SECONDS = 30
+/** Samples are sent as mono PCM16 at Pocket's own rate: more would be thrown away. */
+export const VOICE_SAMPLE_RATE = 24000
+
+/** Something to read aloud while recording: about 15 s at an ordinary pace. */
+export const VOICE_SAMPLE_SCRIPT = 'Hi, this is how I sound when I talk to my agents. '
+  + 'I am reading this at my normal pace, the way I would explain a change to a colleague. '
+  + 'Could you look at the failing test, fix it, and tell me what went wrong? Thanks, that would help a lot.'
+
 export function isSpeaker(value: unknown): value is Speaker {
   return SPEAKERS.some(speaker => speaker.id === value)
 }

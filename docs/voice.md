@@ -106,7 +106,18 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   `uvx pocket-tts serve` on a free port, started on first use (a few minutes
   the first time) and kept running, or a server at `pocketUrl`. Voice
   cloning needs Kyutai's gated weights, so only the built-in voices work
-  until a Hugging Face token that accepted their terms is in `HF_TOKEN`.
+  until a Hugging Face token that accepted their terms is in `HF_TOKEN`
+  (read when Domo starts). Pocket fails a clone with a bare 500; the reason
+  is only in its log, which Domo reads for its own server.
+- **Cloned voices are files, never rows** (`agent-voice/voice-store.ts`,
+  `<data>/voices`): a synced table would stream the user's voice to every
+  tab. Pocket gets a clone as a `voice_url` on a loopback server of Domo's
+  own, because it caches a voice's state per URL (an LRU of two): 2.2 s to
+  first audio once, then 0.18 s, level with a built-in voice. An upload
+  (`voice_wav`) is encoded again on every request (2.2 s each), so only a
+  Pocket that cannot reach the loopback gets one. A `pocket-tts
+  export-voice` file by URL also skips the encoding, but costs a second
+  model load (7 s) per voice.
 - **Kokoro speaks every piece with one style row** (`KOKORO_OPTIONS`).
   kokoro-js picks a voice's style by the length of what it is asked to say, so
   sentence-by-sentence synthesis changed the voice at every sentence.
