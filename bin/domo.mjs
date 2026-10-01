@@ -9,7 +9,7 @@
 // and never this file.
 import { spawn, spawnSync } from 'node:child_process'
 import {
-  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync,
+  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync,
   renameSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs'
 import { homedir, platform, userInfo } from 'node:os'
@@ -31,7 +31,6 @@ const P = {
   env: join(HOME, '.env'),
   logs: join(HOME, 'logs'),
   log: join(HOME, 'logs', 'domo.log'),
-  updateLog: join(HOME, 'logs', 'update.log'),
   supervisorPid: join(HOME, 'supervisor.pid'),
   updateLock: join(HOME, 'update.lock'),
   updateFailed: join(HOME, 'update-failed.json'),
@@ -42,7 +41,6 @@ const P = {
 export const RESTART_EXIT_CODE = 75
 const SERVICE_LABEL = 'com.domo.app'
 const HEALTH_TIMEOUT_MS = 60_000
-const REPO_URL = 'https://github.com/andresberrios/domo.git'
 
 // --------------------------------------------------------------------------
 // Small helpers
@@ -174,15 +172,22 @@ function runStreaming(command, args, options) {
   })
 }
 
+/**
+ * Is the server up? The app shell, not `/api/health`: that route waits on
+ * Postgres for fifteen seconds, and a database that is down is the UI's
+ * banner to show, not a reason to roll a release back.
+ */
 async function healthy(env, timeoutMs, abort = () => false) {
-  const url = `http://127.0.0.1:${env.PORT}/api/health`
+  const url = `http://127.0.0.1:${env.PORT}/`
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (abort()) return false
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(2000) })
-      if (response.status < 500) return true
-    } catch {}
+      if (response.ok) return true
+    } catch {
+      // Not listening yet.
+    }
     await sleep(500)
   }
   return false
@@ -264,7 +269,7 @@ async function run() {
     if (ok) {
       crashes = 0
       rolledBack = false
-      log(`healthy at http://127.0.0.1:${env.PORT}`)
+      log(`up at http://127.0.0.1:${env.PORT}`)
       rmSync(P.updateFailed, { force: true })
     } else if (!stopping && candidate && !rolledBack && existsSync(P.previous)) {
       const previous = realpathSync(P.previous)
@@ -543,7 +548,7 @@ async function smokeTest(dir, env) {
   await Promise.race([new Promise(r => child.on('exit', r)), sleep(10_000)])
   if (!exited) child.kill('SIGKILL')
   rmSync(testEnv.NUXT_DATA_DIR, { recursive: true, force: true })
-  if (!ok) throw new Error(`the new release did not answer /api/health:\n${output.trim().split('\n').slice(-20).join('\n')}`)
+  if (!ok) throw new Error(`the new release did not come up:\n${output.trim().split('\n').slice(-20).join('\n')}`)
 }
 
 function pruneReleases(keep) {
@@ -639,7 +644,7 @@ async function install(args) {
   const env = serverEnv()
   const ok = await healthy(env, HEALTH_TIMEOUT_MS)
   const url = `https://${env.DOMO_HTTPS_ADDRESS}`
-  if (!ok) fail(`Domo did not answer within a minute; see ${P.log}`)
+  if (!ok) fail(`Domo did not come up within a minute; see ${P.log}`)
   console.log(`\n  Domo is running at ${url}\n`)
   if (!args.includes('--no-open')) sh(platform() === 'darwin' ? 'open' : 'xdg-open', [url])
 }
