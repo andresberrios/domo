@@ -11,6 +11,7 @@ import type {
   AgentSubscription,
   AgentUsage,
   Assistant,
+  AssistantVoice,
   CronJob,
   CronRun,
   DevEnvironment,
@@ -81,6 +82,7 @@ function mapAssistant(r: any): Assistant {
     handoff: r.handoff ?? null,
     archived: !!r.archived,
     createdBy: r.created_by ?? 'user',
+    voice: r.voice ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -848,6 +850,7 @@ export async function getAssistantOfSession(agentSessionId: string): Promise<Ass
 }
 
 export interface AssistantFields {
+  voice?: AssistantVoice | null
   name: string
   avatar: string | null
   persona: string
@@ -891,15 +894,16 @@ export async function updateAssistant(
     devEnvironmentId: 'dev_environment_id',
     handoffThreshold: 'handoff_threshold',
     currentSessionId: 'current_session_id',
-    archived: 'archived'
+    archived: 'archived',
+    voice: 'voice'
   }
   const sets = ['updated_at = $2']
   const params: any[] = [id, nowIso()]
   for (const [key, column] of Object.entries(columns)) {
     const value = (patch as any)[key]
     if (value === undefined) continue
-    params.push(value)
-    sets.push(`${column} = $${params.length}`)
+    params.push(key === 'voice' ? (value ? JSON.stringify(value) : null) : value)
+    sets.push(`${column} = $${params.length}${key === 'voice' ? '::jsonb' : ''}`)
   }
   const row = await queryOne(`update assistants set ${sets.join(', ')} where id = $1 returning *`, params)
   if (!row) return null
@@ -930,6 +934,16 @@ export async function setAssistantHandoff(
   if (!row) return null
   bus.publish({ type: 'assistant-changed', assistantId: id })
   return mapAssistant(row)
+}
+
+/** Forget a voice that no longer exists: the assistants that spoke with it go back to the bar's own. */
+export async function clearAssistantVoice(voice: string): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `update assistants set voice = null, updated_at = $2 where voice->>'voice' = $1 returning id`,
+    [voice, nowIso()]
+  )
+  for (const row of rows) bus.publish({ type: 'assistant-changed', assistantId: row.id })
+  return rows.length
 }
 
 /** Every session of an assistant, oldest first: its journal. */

@@ -14,9 +14,11 @@ import {
   getAssistant,
   listAgentEvents,
   listAssistantSessions,
+  clearAssistantVoice,
   listInboxMessages,
   setAgentUsage
 } from '../../server/lib/repo'
+import { deleteClonedVoice } from '../../server/lib/agent-voice/voice-store'
 import {
   assistantSystemPrompt,
   currentSessionFor,
@@ -31,6 +33,8 @@ import {
   updateAssistantFields
 } from '../../server/lib/assistants'
 import { deliverCronJob } from '../../server/lib/cron/scheduler'
+import { speechSettingsFor } from '../../server/lib/agent-voice/assistant-voice'
+import { DEFAULT_AGENT_VOICE } from '../../shared/agent-voice'
 import { applyAgentSessionPatch } from '../../server/lib/acp/session-settings'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
 import { mintMeshToken } from '../../server/lib/mesh/token'
@@ -107,6 +111,20 @@ async function said(sessionId: string, human: string, reply: string) {
   await appendAgentEvent(sessionId, 'agent_message', { text: reply, streaming: false })
 }
 
+let nextId = 1
+async function call(token: string, name: string, args: unknown = {}) {
+  const response = await handleMeshMcpRequest(new Request('http://mesh.internal/api/internal/mcp', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'accept': 'application/json, text/event-stream',
+      'authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method: 'tools/call', params: { name, arguments: args } })
+  }))
+  return JSON.parse(await response.text()).result.content[0].text as string
+}
+
 describe('an assistant', () => {
   it('starts with a session of its own, named after it, on what it was set to', async () => {
     const assistant = await pirate({ model: 'opencode-go/glm-5.3-flash' })
@@ -147,6 +165,60 @@ describe('an assistant', () => {
     const result = await deliverToAssistant(assistant.id, { content: [{ type: 'text', text: 'hi' }] })
     expect(result.agentSessionId).toBe(assistant.currentSessionId)
     await expect(currentSessionFor(assistant.currentSessionId!)).resolves.toBe(assistant.currentSessionId)
+  })
+})
+
+describe('an assistant\'s voice', () => {
+  it('takes one of an engine\'s voices, and refuses the device\'s, an unknown one, or a missing clone', async () => {
+    const assistant = await pirate({ voice: { speaker: 'pocket', voice: 'mary' } })
+    expect(assistant.voice).toEqual({ speaker: 'pocket', voice: 'mary' })
+    await expect(updateAssistantFields(assistant.id, { voice: { speaker: 'browser', voice: 'Samantha' } })).rejects.toThrow('device')
+    await expect(updateAssistantFields(assistant.id, { voice: { speaker: 'gemini', voice: 'Nobody' } })).rejects.toThrow('has no voice')
+    await expect(updateAssistantFields(assistant.id, { voice: { speaker: 'pocket', voice: 'clone:000000000000' } })).rejects.toThrow('No cloned voice')
+    expect((await updateAssistantFields(assistant.id, { voice: null })).voice).toBeNull()
+  })
+
+  it('speaks its replies with that voice when the engine can speak here, and with the bar\'s otherwise', async () => {
+    const base = { ...DEFAULT_AGENT_VOICE, speaker: 'local' as const }
+    const local = await pirate({ voice: { speaker: 'local', voice: 'bf_emma' } })
+    expect((await speechSettingsFor(local.currentSessionId!, base)).settings).toMatchObject({ speaker: 'local', localVoice: 'bf_emma' })
+    // Kyutai is a server the human runs; not chosen in Settings, it is not there.
+    const kyutai = await pirate({ voice: { speaker: 'kyutai', voice: 'some.wav' } })
+    const resolved = await speechSettingsFor(kyutai.currentSessionId!, base)
+    expect(resolved).toEqual({ settings: base, fallback: null })
+  })
+
+  it('clones a voice from a sample through the mesh, gives it to the assistant, and forgets it when it is deleted', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'domo-voice-'))
+    const frames = 44100 * 15
+    const data = Buffer.alloc(frames * 4)
+    for (let i = 0; i < frames; i++) {
+      const value = Math.round(Math.sin(i / 20) * 9000)
+      data.writeInt16LE(value, i * 4)
+      data.writeInt16LE(value, i * 4 + 2)
+    }
+    const header = Buffer.alloc(44)
+    header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4); header.write('WAVE', 8); header.write('fmt ', 12)
+    header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(2, 22); header.writeUInt32LE(44100, 24)
+    header.writeUInt32LE(44100 * 4, 28); header.writeUInt16LE(4, 32); header.writeUInt16LE(16, 34); header.write('data', 36); header.writeUInt32LE(data.length, 40)
+    await writeFile(join(dir, 'narrator.wav'), Buffer.concat([header, data]))
+
+    const assistant = await pirate()
+    const made = JSON.parse(await call(mintMeshToken(assistant.currentSessionId!), 'create_voice', {
+      name: 'Narrator', sample: join(dir, 'narrator.wav'), seconds: 12
+    }))
+    expect(made).toMatchObject({ name: 'Narrator', seconds: 12, assistantId: assistant.id, voice: { speaker: 'pocket' } })
+    expect(made.voice.voice).toMatch(/^clone:[a-z0-9]{12}$/)
+    expect((await getAssistant(assistant.id))!.voice).toEqual(made.voice)
+
+    const listed = JSON.parse(await call(mintMeshToken(assistant.currentSessionId!), 'list_voices'))
+    expect(listed.engines.find((engine: any) => engine.engine === 'pocket').cloned).toEqual([{ voice: made.voice.voice, name: 'Narrator', seconds: 12 }])
+
+    const id = made.voice.voice.slice('clone:'.length)
+    // What deleting it in Settings does.
+    await deleteClonedVoice(id)
+    await clearAssistantVoice(made.voice.voice)
+    expect((await getAssistant(assistant.id))!.voice).toBeNull()
   })
 })
 
@@ -337,20 +409,7 @@ describe('an assistant\'s schedule', () => {
 })
 
 describe('the mesh, for an assistant', () => {
-  let nextId = 1
   const withToken = (id: string) => mintMeshToken(id)
-  async function call(token: string, name: string, args: unknown = {}) {
-    const response = await handleMeshMcpRequest(new Request('http://mesh.internal/api/internal/mcp', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'accept': 'application/json, text/event-stream',
-        'authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method: 'tools/call', params: { name, arguments: args } })
-    }))
-    return JSON.parse(await response.text()).result.content[0].text as string
-  }
 
   it('schedules for the assistant by default, not for the session it is in', async () => {
     const assistant = await pirate()

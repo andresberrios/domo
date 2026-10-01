@@ -4,7 +4,8 @@ import { getAgentSession, listRecentUserMessages } from '../repo'
 import { CLIENT_INPUT_SAMPLE_RATE, pcm16FromBase64 } from './pcm'
 import { needsFullInstructions, spokenContent } from './prompt'
 import { joinUtterance, parsePermissionAnswer, parseSpokenTurn, plainForSpeech, speakableTitle, takeClause, takeSentences, type PermissionAnswer } from './utterance'
-import { concatPcm16, isSilent, synthesize, transcribe } from './speech'
+import { concatPcm16, isSilent, synthesizeWith, transcribe, type SpeechChunk } from './speech'
+import { speechSettingsFor } from './assistant-voice'
 import { COMPLETE_THRESHOLD, endOfTurn } from './local-speech'
 import { endOfTurnKyutai } from './kyutai-speech'
 import { EMPTY_SPEECH_CONTEXT, speechContext, type SpeechContext } from './context'
@@ -108,7 +109,12 @@ export class AgentVoiceRuntime {
 
   // speaking
   private speak = true
-  private queue: string[] = []
+  /**
+   * What is still to be said, and whose voice it is in: this bar's agent, or
+   * the agent whose note is being read out. An assistant has a voice of its
+   * own (`assistant-voice.ts`).
+   */
+  private queue: Array<{ text: string, voiceOf: string }> = []
   private pumping = false
   private current: AbortController | null = null
   private speakingText: string | null = null
@@ -492,11 +498,11 @@ export class AgentVoiceRuntime {
   }
 
   /** An `aside` is this side's own word ("yes?"), and is said even after a hush. */
-  private say(text: string, options: { aside?: boolean } = {}) {
+  private say(text: string, options: { aside?: boolean, voiceOf?: string } = {}) {
     if (this.closed || !this.speak || (this.hushed && !options.aside)) return
     const clean = plainForSpeech(text)
     if (!clean) return
-    this.queue.push(clean)
+    this.queue.push({ text: clean, voiceOf: options.voiceOf ?? this.agentSessionId })
     void this.pump()
   }
 
@@ -512,30 +518,52 @@ export class AgentVoiceRuntime {
     try {
       while (this.queue.length && !this.closed) {
         const { agentVoice } = await getSettings()
-        if (agentVoice.speaker === 'browser') {
+        const voiceOf = this.queue[0]!.voiceOf
+        const { settings, fallback } = await speechSettingsFor(voiceOf, agentVoice)
+        if (settings.speaker === 'browser') {
           // The device says it, as each piece arrives; there is nothing to make here.
-          const text = this.queue.shift()!
+          const text = this.queue.shift()!.text
           this.emit({ type: 'speaking', text })
           this.emit({ type: 'say', text })
           continue
         }
-        let text = this.queue.shift()!
-        while (this.queue.length && text.length + this.queue[0]!.length < MAX_SPEECH_REQUEST_CHARS) {
-          text += ` ${this.queue.shift()!}`
+        // Pieces in the same voice go out together; a change of voice is a new request.
+        let text = this.queue.shift()!.text
+        while (this.queue.length && this.queue[0]!.voiceOf === voiceOf && text.length + this.queue[0]!.text.length < MAX_SPEECH_REQUEST_CHARS) {
+          text += ` ${this.queue.shift()!.text}`
         }
         const controller = new AbortController()
         this.current = controller
         this.speakingText = text
         this.emit({ type: 'speaking', text })
         this.emit(this.status())
+        const play = (chunk: SpeechChunk) => {
+          if (!controller.signal.aborted) this.emit({ type: 'audio', ...chunk })
+        }
+        let spoke = false
         try {
-          await synthesize(text, (chunk) => {
-            if (!controller.signal.aborted) this.emit({ type: 'audio', ...chunk })
+          await synthesizeWith(settings, text, (chunk) => {
+            spoke = true
+            play(chunk)
           }, controller.signal)
         } catch (error) {
-          if (!controller.signal.aborted) {
-            console.warn(`[agent-voice:${this.agentSessionId}] could not speak: ${describe(error)}`)
-            this.emit({ type: 'error', message: `Could not speak: ${describe(error)}` })
+          let failure: unknown = error
+          // An assistant's own voice that will not speak (a clone Pocket cannot
+          // load, an engine that is down) gives way to the bar's voice for this
+          // piece, rather than silence.
+          if (fallback && !spoke && !controller.signal.aborted) {
+            console.warn(`[agent-voice:${this.agentSessionId}] the assistant's voice failed, using the bar's: ${describe(error)}`)
+            try {
+              if (fallback.speaker === 'browser') this.emit({ type: 'say', text })
+              else await synthesizeWith(fallback, text, play, controller.signal)
+              failure = null
+            } catch (second) {
+              failure = second
+            }
+          }
+          if (failure && !controller.signal.aborted) {
+            console.warn(`[agent-voice:${this.agentSessionId}] could not speak: ${describe(failure)}`)
+            this.emit({ type: 'error', message: `Could not speak: ${describe(failure)}` })
           }
         }
         if (this.current === controller) this.current = null
@@ -635,7 +663,8 @@ export class AgentVoiceRuntime {
       spoken = `${end > 40 ? cut.slice(0, end + 1) : `${cut}…`} The rest is in your notifications.`
     }
     const from = notification.agentSessionId === this.agentSessionId ? 'A note from this agent' : `A note from ${notification.agentTitle}`
-    this.say(`${from}: ${spoken}`, { aside: true })
+    // In the voice of whoever wrote it, so an assistant's note sounds like it.
+    this.say(`${from}: ${spoken}`, { aside: true, voiceOf: notification.agentSessionId ?? this.agentSessionId })
   }
 
   /** A streaming row grew, or closed. Speak the sentences that are now complete. */

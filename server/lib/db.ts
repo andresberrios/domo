@@ -224,6 +224,10 @@ create table if not exists assistants (
 -- Who made it: 'user', or 'agent:<id>' for one made over the mesh. That agent
 -- may change it later; so may the assistant itself, and the human always.
 alter table assistants add column if not exists created_by text not null default 'user';
+-- The voice the voice bar speaks as it with: an engine and one of its voices,
+-- or 'clone:<id>' for a Pocket voice cloned from a sample. The sample itself
+-- is a file under <data>/voices, never a row. Null is the bar's own voice.
+alter table assistants add column if not exists voice jsonb;
 
 -- The assistant a session belongs to; null for an ordinary session.
 alter table agent_sessions add column if not exists assistant_id text references assistants(id) on delete set null;

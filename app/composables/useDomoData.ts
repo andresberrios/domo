@@ -119,6 +119,7 @@ function toAssistant(row: any): Assistant {
     handoff: row.handoff ?? null,
     archived: !!row.archived,
     createdBy: row.created_by ?? 'user',
+    voice: row.voice ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }

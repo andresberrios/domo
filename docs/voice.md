@@ -59,6 +59,15 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   Pocket that cannot reach the loopback gets one. A `pocket-tts
   export-voice` file by URL also skips the encoding, but costs a second
   model load (7 s) per voice.
+- **An assistant can have its own voice** (`agent-voice/assistant-voice.ts`):
+  an engine and one of its voices, used for its replies and for its notes on
+  any bar. It wins over Settings when that engine can speak here (a key, a
+  Mac, Kyutai only when Settings use it, Pocket clones only with `HF_TOKEN`
+  or a `pocketUrl`); otherwise, or when a piece fails in it, the bar's own
+  voice speaks. The device's voices are never an assistant's: each device
+  has different ones. `create_voice` turns any WAV into a Pocket sample
+  itself (`agent-voice/sample.ts`) and other formats only through `ffmpeg`.
+  Cloned voices are only ever spoken by the voice bar; nothing exports audio.
 - **Kokoro speaks every piece with one style row** (`KOKORO_OPTIONS`).
   kokoro-js picks a voice's style by the length of what it is asked to say, so
   sentence-by-sentence synthesis changed the voice at every sentence.

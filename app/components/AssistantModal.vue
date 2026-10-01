@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentAdapter, Assistant, SessionModeInfo } from '~~/shared/types'
 import { AGENT_ADAPTERS, agentAdapterInfo } from '~~/shared/agent-adapters'
+import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS } from '~~/shared/agent-voice'
 import {
   DEFAULT_HANDOFF_THRESHOLD,
   HANDOFF_THRESHOLD_MAX,
@@ -29,6 +30,28 @@ const editing = computed(() => !!props.assistant)
 const ADAPTER_DEFAULT = 'adapter-default'
 const NO_PROJECT = 'no-project'
 const LOCAL = 'local'
+const BAR_VOICE = 'bar-voice'
+
+/**
+ * Its voice in the voice bar: an engine and one of its voices, or the bar's
+ * own from Settings. The device's voices are left out: each device has its own.
+ */
+const { data: clones } = useClonedVoices()
+const voiceSpeakerItems = computed(() => [
+  { label: 'The voice bar\'s own (Settings)', value: BAR_VOICE },
+  ...SPEAKERS.filter(speaker => speaker.id !== 'browser').map(speaker => ({ label: speaker.label, value: speaker.id }))
+])
+const voiceItems = computed(() => {
+  const named = (list: readonly string[]) => list.map(voice => ({ label: voice, value: voice }))
+  switch (form.voiceSpeaker) {
+    case 'gemini': return named(GEMINI_VOICES)
+    case 'openai': return named(OPENAI_SPEECH_VOICES)
+    case 'local': return named(KOKORO_VOICES)
+    case 'pocket': return pocketVoiceItems(clones.value ?? [], form.voice)
+      .map(item => ({ ...item, description: item.description === 'Your voice' ? 'Cloned' : item.description }))
+    default: return form.voice ? [{ label: form.voice, value: form.voice }] : []
+  }
+})
 
 const form = reactive({
   name: '',
@@ -41,7 +64,9 @@ const form = reactive({
   devEnvironmentId: LOCAL,
   cwd: '',
   autoHandoff: true,
-  threshold: DEFAULT_HANDOFF_THRESHOLD
+  threshold: DEFAULT_HANDOFF_THRESHOLD,
+  voiceSpeaker: BAR_VOICE as string,
+  voice: ''
 })
 const submitting = ref(false)
 const typedModels = ref<string[]>([])
@@ -110,7 +135,9 @@ function reset() {
       devEnvironmentId: environment?.id ?? LOCAL,
       cwd: assistant.cwd,
       autoHandoff: assistant.handoffThreshold !== null,
-      threshold: assistant.handoffThreshold ?? DEFAULT_HANDOFF_THRESHOLD
+      threshold: assistant.handoffThreshold ?? DEFAULT_HANDOFF_THRESHOLD,
+      voiceSpeaker: assistant.voice?.speaker ?? BAR_VOICE,
+      voice: assistant.voice?.voice ?? ''
     })
   } else {
     Object.assign(form, {
@@ -124,7 +151,9 @@ function reset() {
       devEnvironmentId: LOCAL,
       cwd: settings.value?.defaultCwd ?? '',
       autoHandoff: true,
-      threshold: DEFAULT_HANDOFF_THRESHOLD
+      threshold: DEFAULT_HANDOFF_THRESHOLD,
+      voiceSpeaker: BAR_VOICE,
+      voice: ''
     })
   }
 }
@@ -146,6 +175,12 @@ watch(() => form.adapter, (adapter) => {
   form.model = ADAPTER_DEFAULT
   form.mode = settings.value?.defaultAgentModes?.[adapter] ?? ''
   refreshModels()
+})
+
+// A new engine starts on its first voice; the old engine's voice means nothing to it.
+watch(() => form.voiceSpeaker, () => {
+  if (resetting) return
+  form.voice = voiceItems.value.find(item => !item.value.startsWith('clone:'))?.value ?? ''
 })
 
 watch(() => form.projectId, (id) => {
@@ -200,7 +235,8 @@ async function save() {
     modeId: form.mode || null,
     devEnvironmentId: form.devEnvironmentId === LOCAL ? null : form.devEnvironmentId,
     cwd: form.devEnvironmentId === LOCAL ? form.cwd.trim() : undefined,
-    handoffThreshold: form.autoHandoff ? form.threshold : null
+    handoffThreshold: form.autoHandoff ? form.threshold : null,
+    voice: form.voiceSpeaker === BAR_VOICE || !form.voice ? null : { speaker: form.voiceSpeaker, voice: form.voice }
   }
   try {
     if (props.assistant) {
@@ -228,7 +264,7 @@ async function save() {
     v-model:open="open"
     :title="editing ? `Edit ${assistant?.name}` : 'New assistant'"
     :description="editing
-      ? 'Name, picture and persona change now. Harness, model and workspace apply from its next session.'
+      ? 'Name, picture, persona and voice change now. Harness, model and workspace apply from its next session.'
       : 'An assistant keeps one conversation with you for as long as you like. When its context fills up it writes itself a note and carries on in a fresh session.'"
     :ui="{ content: 'sm:max-w-xl' }"
   >
@@ -332,6 +368,26 @@ async function save() {
         <UFormField v-if="form.devEnvironmentId === LOCAL" label="Working directory">
           <DirectoryPicker v-model="form.cwd" />
         </UFormField>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <UFormField label="Voice">
+            <ChoiceMenu v-model="form.voiceSpeaker" :items="voiceSpeakerItems" value-key="value" class="w-full" />
+          </UFormField>
+          <UFormField v-if="form.voiceSpeaker !== BAR_VOICE" label="Which voice">
+            <ChoiceMenu
+              v-model="form.voice"
+              :items="voiceItems"
+              value-key="value"
+              create-item
+              class="w-full"
+              @create="(id: string) => { form.voice = id }"
+            />
+          </UFormField>
+        </div>
+        <p class="-mt-2 text-xs text-muted">
+          How the voice bar sounds when it is this assistant talking, and when its notes are read out. If that engine
+          cannot speak here, the bar's own voice is used. Clone a voice in Settings › Voice, under Pocket TTS.
+        </p>
 
         <UFormField label="Fresh start">
           <div class="flex flex-wrap items-center gap-3">

@@ -23,6 +23,7 @@ import {
 } from '../repo'
 import { recentExchange, type HandoffPayload } from './context'
 import { avatarDataUrl, dataUrlBytes } from '../images/resize'
+import { normalizeAssistantVoice } from '../agent-voice/assistant-voice'
 import { avatarPrompt, generateImage } from '../images/generate'
 import { sessionStartability } from '../../../shared/retention'
 import { isAgentAdapter } from '../../../shared/agent-adapters'
@@ -95,6 +96,13 @@ export async function normalizeAssistantFields(
       fail(error instanceof Error ? error.message : String(error))
     }
   }
+  if (input.voice !== undefined) {
+    try {
+      out.voice = await normalizeAssistantVoice(input.voice)
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error))
+    }
+  }
   if (input.adapter !== undefined || !existing) {
     const adapter = input.adapter ?? 'claude-code'
     if (!isAgentAdapter(adapter)) fail(`Unknown harness ${String(adapter)}.`)
@@ -151,6 +159,7 @@ export async function createAssistant(
     devEnvironmentId: fields.devEnvironmentId ?? null,
     handoffThreshold: fields.handoffThreshold ?? null
   })
+  if (fields.voice) await updateAssistant(assistant.id, { voice: fields.voice })
   await serial(assistant.id, () => startSession(assistant))
   return (await getAssistant(assistant.id))!
 }

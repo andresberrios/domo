@@ -18,7 +18,12 @@ import {
 import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPort } from '../dev-environment-ports'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
-import { notifyHuman, writeAgentFile } from '../notifications'
+import { notifyHuman, readAgentFile, writeAgentFile } from '../notifications'
+import { getSettings } from '../settings'
+import { voiceCatalog } from '../agent-voice/assistant-voice'
+import { pocketSample } from '../agent-voice/sample'
+import { createClonedVoice } from '../agent-voice/voice-store'
+import { CLONED_VOICE_PREFIX } from '../../../shared/agent-voice'
 import { createAssistant, deliverToAssistant, generateAssistantPicture, recordHandoffNote, updateAssistantFields } from '../assistants'
 import { generateImage, hasChatGptLogin, ImageGenerationError } from '../images/generate'
 import { avatarFromSource } from '../assistants/avatar'
@@ -286,6 +291,7 @@ function describeAssistant(assistant: Assistant) {
     mode: assistant.modeId,
     ...assistant.devEnvironmentId ? { environmentId: assistant.devEnvironmentId } : { cwd: assistant.cwd },
     handoffThreshold: assistant.handoffThreshold ?? 'off',
+    voice: assistant.voice ?? 'the voice bar\'s own',
     currentSession: assistant.currentSessionId,
     ...assistant.archived ? { archived: true } : {},
     createdBy: assistant.createdBy
@@ -306,6 +312,18 @@ async function assertOwnsAssistant(caller: AgentSession, assistant: Assistant): 
     `Refusing to change assistant "${assistant.name}" (${assistant.id}): only the assistant itself and the agent `
     + 'that created it can, over the mesh. Ask the human to change it in Domo.'
   )
+}
+
+/** Audio from a file the caller can see or a URL, for a voice sample. */
+async function audioFromSource(caller: AgentSession, source: string): Promise<Buffer> {
+  if (!/^https?:\/\//i.test(source)) return readAgentFile(caller, source)
+  const response = await fetch(source, { signal: AbortSignal.timeout(30_000) }).catch((error) => {
+    throw new Error(`Could not fetch the sample at ${source}: ${error instanceof Error ? error.message : error}`)
+  })
+  if (!response.ok) throw new Error(`Could not fetch the sample at ${source}: HTTP ${response.status}.`)
+  const bytes = Buffer.from(await response.arrayBuffer())
+  if (bytes.length > 50 * 1024 * 1024) throw new Error('The sample is larger than 50 MB; point at a shorter clip.')
+  return bytes
 }
 
 /** Refuse at once, rather than a minute later, when there is no login to generate on. */
@@ -603,6 +621,13 @@ export const MESH_TOOLS = [
           type: ['number', 'null'],
           description: 'Context-window percent (30-95) at which it starts a fresh session by itself. null turns that off; it can still be asked.'
         },
+        voice: {
+          type: ['object', 'null'],
+          description: 'The voice the voice bar speaks as it with: an engine and one of its voices, from list_voices '
+            + '(e.g. {"speaker": "pocket", "voice": "mary"}, or a cloned "clone:<id>"). null for the bar\'s own voice.',
+          properties: { speaker: { type: 'string' }, voice: { type: 'string' } },
+          required: ['speaker', 'voice']
+        },
         picture: {
           type: 'string',
           description: 'Its picture: a path to an image you can see, or an http(s) URL. Any common format and size; Domo crops and shrinks it.'
@@ -639,6 +664,13 @@ export const MESH_TOOLS = [
           type: ['number', 'null'],
           description: 'Context-window percent (30-95) at which it starts a fresh session by itself. null turns that off; it can still be asked.'
         },
+        voice: {
+          type: ['object', 'null'],
+          description: 'The voice the voice bar speaks as it with: an engine and one of its voices, from list_voices '
+            + '(e.g. {"speaker": "pocket", "voice": "mary"}, or a cloned "clone:<id>"). null for the bar\'s own voice.',
+          properties: { speaker: { type: 'string' }, voice: { type: 'string' } },
+          required: ['speaker', 'voice']
+        },
         picture: {
           type: 'string',
           description: 'Its picture: a path to an image you can see, or an http(s) URL. Any common format and size; Domo crops and shrinks it.'
@@ -651,6 +683,35 @@ export const MESH_TOOLS = [
         removePicture: { type: 'boolean', description: 'Drop the picture, back to initials.' },
         archived: { type: 'boolean', description: 'true retires it; false brings it back. Refused on yourself.' }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'list_voices',
+    description:
+      'The voices an assistant can speak with in the voice bar: each speech engine, whether it can speak on this '
+      + 'machine, its voices, and the voices cloned from samples (Pocket TTS). Pass one to create_assistant or '
+      + 'update_assistant as voice.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
+    name: 'create_voice',
+    description:
+      'Make a custom voice from an audio sample (a file you can see or an http(s) URL; WAV always works, other formats '
+      + 'need ffmpeg on the human\'s machine), cloned with Pocket TTS, and give it to an assistant. 10-20 s of one person '
+      + 'speaking clearly, without music, works best. The voice is only ever spoken by Domo\'s voice bar for that '
+      + 'assistant, to the human; nothing exports audio in it. Use the sample the human gives or asks for. When you '
+      + 'pick one yourself, prefer a generic voice (a voice dataset, a stock narrator) over a recognisable real person.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'What the voice is called, e.g. "Warm narrator".' },
+        sample: { type: 'string', description: 'Path to an audio file you can see, or an http(s) URL of one.' },
+        startSeconds: { type: 'number', description: 'Where in the audio the speech to use starts. Default 0.' },
+        seconds: { type: 'number', description: 'How much of it to use, at most 30. Default 20.' },
+        assistantId: { type: 'string', description: 'The assistant to give it to (as_…). Defaults to yours, if you are one; omit both to only create it.' }
+      },
+      required: ['name', 'sample'],
       additionalProperties: false
     }
   },
@@ -1318,6 +1379,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         modeId: args.modeId,
         avatar: picture,
         handoffThreshold: args.handoffThreshold,
+        voice: args.voice,
         devEnvironmentId: args.devEnvironmentId || null,
         // Like spawn_agent: the caller's own directory, or its environment's checkout.
         cwd: args.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : await hostCwdFor(caller))
@@ -1339,7 +1401,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       }
       if (args.generatePicture === true) await assertCanGenerate()
       const patch: Record<string, unknown> = {}
-      for (const key of ['name', 'persona', 'adapter', 'model', 'modeId', 'handoffThreshold', 'archived'] as const) {
+      for (const key of ['name', 'persona', 'adapter', 'model', 'modeId', 'handoffThreshold', 'archived', 'voice'] as const) {
         if (args[key] !== undefined) patch[key] = args[key]
       }
       if (args.devEnvironmentId !== undefined) patch.devEnvironmentId = args.devEnvironmentId || null
@@ -1351,6 +1413,32 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       else if (typeof args.picture === 'string' && args.picture.trim()) patch.avatar = await avatarFromSource(caller, args.picture.trim())
       const updated = await updateAssistantFields(target.id, patch)
       return { ...describeAssistant(updated), ...await drawPictureLater(caller, updated.id, args) }
+    }
+
+    case 'list_voices': {
+      const { agentVoice } = await getSettings()
+      return { barSpeaker: agentVoice.speaker, engines: await voiceCatalog(agentVoice) }
+    }
+
+    case 'create_voice': {
+      const assistantId: string | null = args.assistantId ?? caller.assistantId ?? null
+      const target = assistantId ? await getAssistant(assistantId) : null
+      if (assistantId && !target) throw new Error(`No assistant ${assistantId}. Use list_assistants to find ids.`)
+      if (target) await assertOwnsAssistant(caller, target)
+      const source = String(args.sample ?? '').trim()
+      if (!source) throw new Error('Pass sample: a path or an http(s) URL of the audio.')
+      const audio = await audioFromSource(caller, source)
+      const sample = await pocketSample(audio, { startSeconds: args.startSeconds, seconds: args.seconds })
+      const cloned = await createClonedVoice(args.name, sample)
+      const voice = { speaker: 'pocket' as const, voice: `${CLONED_VOICE_PREFIX}${cloned.id}` }
+      if (target) await updateAssistantFields(target.id, { voice })
+      return {
+        voice,
+        name: cloned.name,
+        seconds: cloned.seconds,
+        ...target ? { assistantId: target.id, assistant: target.name } : {},
+        ...process.env.HF_TOKEN ? {} : { note: 'Pocket TTS needs Kyutai\'s gated weights (HF_TOKEN) to speak a cloned voice; until then the bar\'s own voice is used.' }
+      }
     }
 
     case 'generate_image': {

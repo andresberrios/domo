@@ -12,7 +12,9 @@ const settings = { agentVoice: { ...DEFAULT_AGENT_VOICE } }
 const deliver = vi.fn(async () => {})
 const answerPermission = vi.fn(async () => true)
 const transcribe = vi.fn(async () => 'from the engine')
-const synthesize = vi.fn(async () => {})
+const synthesizeWith = vi.fn(async (_settings: any, _text: string, _onChunk: any, _signal?: AbortSignal) => {})
+/** Each session's assistant voice, when it is one; `getAssistantOfSession` reads this. */
+const assistantVoices = new Map<string, { speaker: string, voice: string }>()
 
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => settings }))
 vi.mock('../../server/lib/acp/manager', () => ({ acpManager: { deliver, answerPermission, cancel: vi.fn() } }))
@@ -25,6 +27,7 @@ vi.mock('../../server/lib/repo', () => ({
     spawnedBy: id === 'ag_child' ? 'ag_parent' : null
   }),
   getDevEnvironment: async () => null,
+  getAssistantOfSession: async (id: string) => assistantVoices.has(id) ? { id: `as_${id}`, voice: assistantVoices.get(id) } : null,
   getProject: async () => null,
   listRecentUserMessages: async () => [],
   listRecentConversation: async () => [
@@ -35,7 +38,7 @@ vi.mock('../../server/lib/repo', () => ({
 vi.mock('../../server/lib/agent-voice/speech', async (original) => ({
   ...(await original<typeof import('../../server/lib/agent-voice/speech')>()),
   transcribe,
-  synthesize
+  synthesizeWith
 }))
 
 const { AgentVoiceRuntime, agentVoiceManager } = await import('../../server/lib/agent-voice/runtime')
@@ -106,6 +109,8 @@ describe('the agent voice runtime', () => {
     deliver.mockClear()
     answerPermission.mockClear()
     transcribe.mockClear()
+    synthesizeWith.mockReset().mockImplementation(async () => {})
+    assistantVoices.clear()
   })
 
   it('hears a click turn with the conversation and the vocabulary as context', async () => {
@@ -161,7 +166,7 @@ describe('the agent voice runtime', () => {
       'sends it up, and plays the answer.',
       'Then it waits.'
     ])
-    expect(synthesize).not.toHaveBeenCalled()
+    expect(synthesizeWith).not.toHaveBeenCalled()
     runtime.close()
   })
 
@@ -237,5 +242,49 @@ describe('the agent voice runtime', () => {
     expect(said()[0]!.length).toBeLessThan(400)
     agentVoiceManager.close('ag_listener')
     expect(agentVoiceManager.announce({ id: 'nt_2', agentSessionId: null, agentTitle: 'x', message: 'y' } as any)).toBe(false)
+  })
+
+  it('speaks an assistant\'s replies in its own voice, even when the bar speaks with another engine', async () => {
+    settings.agentVoice.speaker = 'browser'
+    assistantVoices.set('ag_fox', { speaker: 'pocket', voice: 'mary' })
+    const runtime = new AgentVoiceRuntime('ag_fox')
+    const said = openBar(runtime)
+    streams('ag_fox', 'All released. Tagged v2.', false)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalled())
+    const [used, text] = synthesizeWith.mock.calls[0]!
+    expect(used).toMatchObject({ speaker: 'pocket', pocketVoice: 'mary' })
+    expect(text).toBe('All released. Tagged v2.')
+    expect(said()).toEqual([])
+    runtime.close()
+  })
+
+  it('falls back to the bar\'s own voice when the assistant\'s will not speak', async () => {
+    settings.agentVoice.speaker = 'local'
+    assistantVoices.set('ag_clone', { speaker: 'pocket', voice: 'clone:abcdefabcdef' })
+    const token = process.env.HF_TOKEN
+    process.env.HF_TOKEN = 'test'
+    synthesizeWith.mockImplementationOnce(async () => { throw new Error('Pocket could not load the clone') })
+    const runtime = new AgentVoiceRuntime('ag_clone')
+    const messages: AgentVoiceServerMessage[] = []
+    runtime.addListener(message => messages.push(message))
+    streams('ag_clone', 'Here it is.', false)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalledTimes(2))
+    expect(synthesizeWith.mock.calls[0]![0]).toMatchObject({ speaker: 'pocket', pocketVoice: 'clone:abcdefabcdef' })
+    expect(synthesizeWith.mock.calls[1]![0]).toMatchObject({ speaker: 'local', pocketVoice: DEFAULT_AGENT_VOICE.pocketVoice })
+    expect(messages.some(message => message.type === 'error')).toBe(false)
+    runtime.close()
+    if (token === undefined) delete process.env.HF_TOKEN
+    else process.env.HF_TOKEN = token
+  })
+
+  it('reads an assistant\'s note in its voice on another agent\'s bar', async () => {
+    settings.agentVoice.speaker = 'local'
+    assistantVoices.set('ag_wren', { speaker: 'local', voice: 'bf_emma' })
+    const bar = agentVoiceManager.get('ag_listening')
+    openBar(bar)
+    agentVoiceManager.announce({ id: 'nt_3', agentSessionId: 'ag_wren', agentTitle: 'Weather Wren', message: 'Rain at noon.' } as any)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalled())
+    expect(synthesizeWith.mock.calls[0]![0]).toMatchObject({ speaker: 'local', localVoice: 'bf_emma' })
+    agentVoiceManager.close('ag_listening')
   })
 })

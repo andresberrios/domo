@@ -1,6 +1,7 @@
 import { CLONED_VOICE_PREFIX, DEFAULT_AGENT_VOICE } from '../../../../shared/agent-voice'
 import { deleteClonedVoice } from '../../../lib/agent-voice/voice-store'
 import { getSettings, patchSettings } from '../../../lib/settings'
+import { clearAssistantVoice } from '../../../lib/repo'
 
 /**
  * Forget a cloned voice. If it was the voice in use, Pocket goes back to the
@@ -13,5 +14,6 @@ export default defineEventHandler(async (event) => {
   if (agentVoice.pocketVoice === `${CLONED_VOICE_PREFIX}${id}`) {
     await patchSettings({ agentVoice: { ...agentVoice, pocketVoice: DEFAULT_AGENT_VOICE.pocketVoice } })
   }
+  await clearAssistantVoice(`${CLONED_VOICE_PREFIX}${id}`)
   return { ok: true }
 })

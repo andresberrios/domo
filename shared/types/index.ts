@@ -99,6 +99,16 @@ export interface PendingHandoff {
 }
 
 /**
+ * An assistant's own voice: one of a speech engine's voices, or for Pocket
+ * TTS a voice cloned from a sample (`clone:<id>`). The device's own voices
+ * are not offered: each device has different ones.
+ */
+export interface AssistantVoice {
+  speaker: Exclude<Speaker, 'browser'>
+  voice: string
+}
+
+/**
  * A named identity that outlives its coding sessions.
  *
  * Its sessions are ordinary `agent_sessions` rows (`assistantId` names it),
@@ -126,6 +136,8 @@ export interface Assistant {
   archived: boolean
   /** The human, or the agent that made it over the mesh. */
   createdBy: 'user' | `agent:${string}`
+  /** The voice the voice bar speaks as it with. Null is the bar's own voice from Settings. */
+  voice: AssistantVoice | null
   createdAt: string
   updatedAt: string
 }

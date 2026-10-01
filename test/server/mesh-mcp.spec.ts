@@ -237,6 +237,8 @@ describe('the agent-mesh MCP endpoint', () => {
       'list_assistants',
       'create_assistant',
       'update_assistant',
+      'list_voices',
+      'create_voice',
       'generate_image',
       'hand_off',
       'subscribe_to_agent',
