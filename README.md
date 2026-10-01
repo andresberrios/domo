@@ -28,15 +28,39 @@ With Domo you can:
 
 ## Requirements
 
-- Node 22+ and pnpm 10+
-- Docker
-- [Caddy](https://caddyserver.com) on your `PATH` (`brew install caddy`).
-  Browsers allow the microphone only on HTTPS.
+- Docker and git
 - A Gemini API key ([AI Studio](https://aistudio.google.com/apikey)) for
   Gemini Live, or an OpenAI API key for GPT-Live
 - At least one coding agent account. See [Authentication](#authentication).
 
-## Quick start
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andresberrios/domo/release/scripts/install.sh | sh
+```
+
+This puts Domo under `~/.domo` with its own Node, pnpm and Caddy, builds it,
+starts it as a login service (launchd on macOS, systemd on Linux) and opens
+`https://localhost:3666`. Keys go in `~/.domo/.env` or in Settings. Then:
+
+```bash
+~/.domo/bin/domo status    # what is installed, and is it answering
+~/.domo/bin/domo update    # build and switch to the newest commit; --check only looks
+~/.domo/bin/domo restart   # after editing .env
+~/.domo/bin/domo logs
+~/.domo/bin/domo uninstall # stop starting at login; keeps ~/.domo
+```
+
+`DOMO_HOME` moves the directory. `DOMO_CHANNEL` picks the branch to follow
+(default `release`). `DOMO_PORT` and `DOMO_HTTPS_ADDRESS` in `.env` change the
+addresses. An update builds the new version beside the running one and
+switches only once it starts, and a version that does not come up is rolled
+back.
+
+## Quick start (development)
+
+Needs Node 22+, pnpm 10+ and [Caddy](https://caddyserver.com) on your `PATH`
+(`brew install caddy`); browsers allow the microphone only on HTTPS.
 
 ```bash
 cp .env.example .env     # add your Gemini or OpenAI key
