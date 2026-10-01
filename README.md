@@ -19,7 +19,11 @@ With Domo you can:
   seen them.
 - Send a message to a busy agent. You choose how it arrives: *steer* it into
   the running turn, *queue* it until the turn ends, or *interrupt* the turn.
-- Schedule prompts to agents, once or on a cron schedule.
+- Keep assistants: named agents with a picture and a persona that you talk to
+  for as long as you like. When one's context fills up, or you ask it to start
+  fresh, it writes itself a note and carries on in a new session; its page
+  reads as one conversation, and its journal lists the sessions underneath.
+- Schedule prompts to agents or assistants, once or on a cron schedule.
 - See context usage for each session, and your Claude, Codex and OpenCode Go
   plan limits.
 - Talk to any agent from its page. One engine hears you and one speaks the

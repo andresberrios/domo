@@ -16,7 +16,9 @@
 Domo is a self-hosted Nuxt 4 SPA. It runs coding agents (Claude Code, Codex,
 OpenCode) over ACP, and you talk to them out loud through a voice bar on each
 agent's page. Read `README.md` for the
-product and setup. Domo has one user today and will have more. Build features
+product and setup. In the code and the mesh tools an "agent" is one coding
+session (`agent_sessions`, `ag_…`); an "assistant" (`assistants`, `as_…`) is a
+named identity whose sessions are chained by handoffs. Domo has one user today and will have more. Build features
 for the people who run Domo, not for the people who develop it. Maintainer
 needs, such as tracking adapter releases, belong in agents, cron jobs or docs,
 not in the UI.
