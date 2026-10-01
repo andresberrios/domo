@@ -242,6 +242,8 @@ describe('a handoff', () => {
     const assistant = await pirate({ handoffThreshold: 60 })
     const first = assistant.currentSessionId!
     await said(first, 'hi', 'ahoy')
+    await said(first, 'and?', 'aye')
+    await said(first, 'more', 'arr')
     await setAgentUsage(first, { context: { used: 50_000, size: 100_000 }, updatedAt: new Date().toISOString() })
     await endTurn({ agentSessionId: first })
     expect(acp.deliver).not.toHaveBeenCalled()
@@ -257,6 +259,18 @@ describe('a handoff', () => {
     expect(isDomoHandOff({ title: 'mcp__other__hand_off' })).toBe(false)
     expect(isDomoHandOff({ title: 'mcp__domo__notify_supervisor' })).toBe(false)
     expect(isDomoHandOff({ title: 'Bash', rawInput: { command: 'echo mcp__domo__hand_off' } })).toBe(false)
+  })
+
+  it('is not asked for by the context of a session that has barely started', async () => {
+    // Its system prompt alone can pass the threshold on a small window; a
+    // handoff then would only start another session that does the same.
+    const assistant = await pirate({ handoffThreshold: 30 })
+    const first = assistant.currentSessionId!
+    await said(first, 'hi', 'ahoy')
+    await setAgentUsage(first, { context: { used: 40_000, size: 100_000 }, updatedAt: new Date().toISOString() })
+    await endTurn({ agentSessionId: first })
+    expect((await getAssistant(assistant.id))!.handoff).toBeNull()
+    expect(acp.deliver).not.toHaveBeenCalled()
   })
 
   it('is refused to an ordinary session', async () => {

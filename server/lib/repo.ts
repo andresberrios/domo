@@ -978,6 +978,15 @@ export async function hasUserMessage(agentSessionId: string): Promise<boolean> {
   )
 }
 
+/** How many prompts a session has taken. */
+export async function countUserMessages(agentSessionId: string): Promise<number> {
+  const row = await queryOne<{ count: number }>(
+    `select count(*)::int as count from agent_events where agent_session_id = $1 and type = 'user_message'`,
+    [agentSessionId]
+  )
+  return row?.count ?? 0
+}
+
 /** The newest event of one type in a session. */
 export async function latestAgentEvent(agentSessionId: string, type: string): Promise<AgentEvent | null> {
   const row = await queryOne(

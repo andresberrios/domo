@@ -7,6 +7,7 @@ import { getSettings } from '../settings'
 import {
   appendAgentEvent,
   carryOverToSession,
+  countUserMessages,
   createAssistantRow,
   disableCronJobsForAssistant,
   getAgentSession,
@@ -54,6 +55,9 @@ import type {
  * and at that turn's end the next session starts from the note; what was
  * waiting for the old session moves with it.
  */
+
+/** Prompts a session takes before its context can trigger a handoff by itself. */
+const MIN_TURNS_BEFORE_AUTO_HANDOFF = 3
 
 /** One at a time per assistant, for anything that makes or replaces its session. */
 const serial = keyedSerial()
@@ -407,7 +411,13 @@ async function onTurnEnd(turn: TurnEnd): Promise<void> {
   const context = session?.usage?.context
   if (!context?.size) return
   const percent = (context.used / context.size) * 100
-  if (percent >= assistant.handoffThreshold) await requestHandoff(assistant.id, 'context')
+  if (percent < assistant.handoffThreshold) return
+  // A fresh session already holds the harness's system prompt and tools, and
+  // on a small window that alone can pass the threshold: every new session
+  // would hand off after its first turn, for ever. A few turns of its own
+  // first means a handoff only ever sheds conversation.
+  if (await countUserMessages(turn.agentSessionId) < MIN_TURNS_BEFORE_AUTO_HANDOFF) return
+  await requestHandoff(assistant.id, 'context')
 }
 
 /**
