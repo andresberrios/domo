@@ -44,6 +44,32 @@ export function parseSpokenTurn(text: string, options: { lenient?: boolean } = {
   return { kind: 'partial', text: clean }
 }
 
+/**
+ * A spoken answer to a permission request that was read out, or null when the
+ * words are something else and should reach the agent as a turn. Only a reply
+ * that is nothing but the answer counts. A bare "yes" or "no" counts only when
+ * the request is the bar's own agent's: that agent is blocked on it, so there
+ * is no other question it could answer. For another agent's request the words
+ * have to say "allow" or "deny".
+ */
+export type PermissionAnswer = 'allow' | 'always' | 'deny'
+
+const ALWAYS = /^(?:ok(?:ay)?[,.]?\s*)?(?:always(?: allow)?|allow always|always allow it|allow it always)[\s.!?]*$/i
+const ALLOW = /^(?:ok(?:ay)?[,.]?\s*)?(?:allow(?: it)?|approve(?: it)?|accept(?: it)?|grant(?: it)?)[\s.!?]*$/i
+const DENY = /^(?:ok(?:ay)?[,.]?\s*)?(?:deny(?: it)?|reject(?: it)?|refuse(?: it)?|decline(?: it)?|don'?t allow(?: it)?)[\s.!?]*$/i
+const YES = /^(?:yes|yeah|yep|yup|sure|ok(?:ay)?|do it|go for it|fine)(?:[,.]?\s*(?:please|do it|go ahead))?[\s.!?]*$/i
+const NO = /^(?:no|nope|nah|don'?t|do not)(?:[,.]?\s*(?:thanks|thank you|don'?t))?[\s.!?]*$/i
+
+export function parsePermissionAnswer(text: string, options: { bare?: boolean } = {}): PermissionAnswer | null {
+  const clean = text.replace(/\s+/g, ' ').trim()
+  if (ALWAYS.test(clean)) return 'always'
+  if (ALLOW.test(clean)) return 'allow'
+  if (DENY.test(clean)) return 'deny'
+  if (options.bare && YES.test(clean)) return 'allow'
+  if (options.bare && NO.test(clean)) return 'deny'
+  return null
+}
+
 /** Two pieces of one utterance, heard across a pause. */
 export function joinUtterance(held: string, more: string): string {
   return [held.trim(), more.trim()].filter(Boolean).join(' ')

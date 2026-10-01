@@ -4,13 +4,13 @@ import { getAgentSession, listRecentUserMessages } from '../repo'
 import { pcm16FromBase64 } from '../voice/audio'
 import { CLIENT_INPUT_SAMPLE_RATE } from '../voice/backend'
 import { needsFullInstructions, spokenContent } from './prompt'
-import { joinUtterance, parseSpokenTurn, plainForSpeech, takeClause, takeSentences } from './utterance'
+import { joinUtterance, parsePermissionAnswer, parseSpokenTurn, plainForSpeech, takeClause, takeSentences, type PermissionAnswer } from './utterance'
 import { concatPcm16, isSilent, synthesize, transcribe } from './speech'
 import { COMPLETE_THRESHOLD, endOfTurn } from './local-speech'
 import { endOfTurnKyutai } from './kyutai-speech'
 import { EMPTY_SPEECH_CONTEXT, speechContext, type SpeechContext } from './context'
 import { getSettings } from '../settings'
-import type { AgentEvent, AgentVoiceServerMessage, StreamEvent } from '../../../shared/types'
+import type { AgentEvent, AgentVoiceServerMessage, DomoNotification, PendingPermission, StreamEvent } from '../../../shared/types'
 
 /**
  * Talking to a coding agent.
@@ -45,6 +45,11 @@ import type { AgentEvent, AgentVoiceServerMessage, StreamEvent } from '../../../
  * it"), a `send`, or a spoken command. What a long silence gets instead is a
  * word from this side, "yes?", the way a listener shows they are still there.
  * Click-to-record has no such ambiguity: the click ends the turn.
+ *
+ * **An open bar is the human's ear for all of Domo.** A permission request,
+ * from this agent or another, is read out and can be answered by voice
+ * ("allow", "deny"), and a `notify_supervisor` note is read out. When several
+ * bars are open, only the one used last speaks for the other agents.
  */
 
 type Listener = (message: AgentVoiceServerMessage) => void
@@ -65,6 +70,11 @@ const SIGN_OFF_CHECK_SECONDS = 0.6
 const MAX_TURN_SECONDS = 60
 /** The speech context is made again after this long even if nothing was said. */
 const CONTEXT_TTL_MS = 60_000
+/** How much of a notification is read out; the rest waits in the panel. */
+const NOTICE_CHARS = 300
+
+/** Counts uses of every bar, so the one used last is known without a clock's ties. */
+let uses = 0
 
 interface Block {
   /** How much of the row's text has been seen. */
@@ -109,6 +119,11 @@ export class AgentVoiceRuntime {
   /** Something of the current answer has been said, so the rest waits for whole sentences. */
   private replyStarted = false
 
+  /** The permission request last read out, which a spoken "allow" or "deny" answers. */
+  private asked: PendingPermission | null = null
+  /** When the developer last opened or spoke into this bar, as a count. The latest speaks for the others. */
+  lastUse = 0
+
   constructor(readonly agentSessionId: string) {
     this.unsubscribe = bus.subscribe((event) => {
       this.onBusEvent(event)
@@ -121,6 +136,7 @@ export class AgentVoiceRuntime {
 
   addListener(listener: Listener): () => void {
     this.listeners.add(listener)
+    this.lastUse = ++uses
     listener(this.status())
     void this.dictationConfig().then((message) => {
       if (this.listeners.has(listener)) listener(message)
@@ -405,6 +421,8 @@ export class AgentVoiceRuntime {
     this.held = ''
     this.emit({ type: 'utterance', text: '' })
     if (!text || this.closed) return
+    this.lastUse = ++uses
+    if (await this.answerAsked(text)) return
 
     const session = await getAgentSession(this.agentSessionId)
     if (!session) {
@@ -541,6 +559,10 @@ export class AgentVoiceRuntime {
       if (this.listeners.size) void this.dictationConfig().then(message => this.emit(message)).catch(() => {})
       return
     }
+    if (event.type === 'permission-changed') {
+      void this.onPermission(event.permission).catch(() => {})
+      return
+    }
     if (event.type !== 'agent-event' || event.agentSessionId !== this.agentSessionId) return
     const { event: row } = event
     switch (row.type) {
@@ -556,13 +578,65 @@ export class AgentVoiceRuntime {
       case 'tool_call':
         this.emit({ type: 'tool', title: String(row.payload?.title ?? 'a tool') })
         return
-      case 'permission_request':
-        this.say(`It needs permission: ${String(row.payload?.toolCall?.title ?? row.payload?.title ?? 'a tool call')}. Answer on screen.`)
-        return
       case 'error':
         this.flushBlocks()
         this.say('The turn failed. The error is on screen.')
     }
+  }
+
+  /**
+   * Read out a request this bar's agent is blocked on, or another agent's when
+   * this is the bar that speaks for the others. Not one from an agent this one
+   * spawned: it is told about those itself, and may answer them.
+   */
+  private async onPermission(permission: PendingPermission) {
+    if (permission.resolvedAt) {
+      if (this.asked?.id === permission.id) this.asked = null
+      return
+    }
+    if (!this.listeners.size) return
+    const own = permission.agentSessionId === this.agentSessionId
+    let who = 'It'
+    if (!own) {
+      if (agentVoiceManager.speaker() !== this) return
+      const agent = await getAgentSession(permission.agentSessionId)
+      if (!agent || agent.spawnedBy === this.agentSessionId) return
+      who = agent.title
+    }
+    this.asked = permission
+    this.say(`${who} needs permission: ${permission.title}. ${own ? 'Allow it?' : 'Say allow or deny.'}`, { aside: true })
+  }
+
+  /** A spoken reply to the request last read out. True if that is what it was. */
+  private async answerAsked(text: string): Promise<boolean> {
+    const permission = this.asked
+    if (!permission) return false
+    const own = permission.agentSessionId === this.agentSessionId
+    const answer = parsePermissionAnswer(text, { bare: own })
+    if (!answer) return false
+    this.asked = null
+    this.emit({ type: 'sent', text })
+    const optionId = permissionOption(permission, answer)
+    try {
+      await acpManager.answerPermission(permission.agentSessionId, permission.id, optionId, 'user')
+      this.say(answer === 'deny' ? 'Denied.' : 'Allowed.', { aside: true })
+    } catch (error) {
+      this.emit({ type: 'error', message: `Could not answer the permission request: ${describe(error)}` })
+    }
+    return true
+  }
+
+  /** Read out what an agent sent the human with `notify_supervisor`. */
+  sayNotification(notification: DomoNotification) {
+    const message = notification.message.replace(/\s+/g, ' ').trim()
+    let spoken = message
+    if (message.length > NOTICE_CHARS) {
+      const cut = message.slice(0, NOTICE_CHARS)
+      const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '))
+      spoken = `${end > 40 ? cut.slice(0, end + 1) : `${cut}…`} The rest is in your notifications.`
+    }
+    const from = notification.agentSessionId === this.agentSessionId ? 'A note from this agent' : `A note from ${notification.agentTitle}`
+    this.say(`${from}: ${spoken}`, { aside: true })
   }
 
   /** A streaming row grew, or closed. Speak the sentences that are now complete. */
@@ -616,6 +690,18 @@ export class AgentVoiceRuntime {
   }
 }
 
+/** The option a spoken answer picks; null cancels the request when it has no reject option. */
+function permissionOption(permission: PendingPermission, answer: PermissionAnswer): string | null {
+  const kinds = answer === 'always'
+    ? ['allow_always', 'allow_once']
+    : answer === 'allow' ? ['allow_once', 'allow_always'] : ['reject_once', 'reject_always']
+  for (const kind of kinds) {
+    const option = permission.options.find(entry => entry.kind === kind)
+    if (option) return option.optionId
+  }
+  return null
+}
+
 function rms(samples: Int16Array): number {
   let sum = 0
   for (let i = 0; i < samples.length; i += 4) sum += samples[i]! * samples[i]!
@@ -640,6 +726,23 @@ class AgentVoiceManager {
 
   peek(agentSessionId: string): AgentVoiceRuntime | undefined {
     return this.runtimes.get(agentSessionId)
+  }
+
+  /** The open bar that speaks for every agent: the one the developer used last. */
+  speaker(): AgentVoiceRuntime | undefined {
+    let latest: AgentVoiceRuntime | undefined
+    for (const runtime of this.runtimes.values()) {
+      if (runtime.listenerCount && (!latest || runtime.lastUse > latest.lastUse)) latest = runtime
+    }
+    return latest
+  }
+
+  /** Read a notification out on the open bar, if there is one. True if it was. */
+  announce(notification: DomoNotification): boolean {
+    const runtime = this.speaker()
+    if (!runtime) return false
+    runtime.sayNotification(notification)
+    return true
   }
 
   close(agentSessionId: string) {

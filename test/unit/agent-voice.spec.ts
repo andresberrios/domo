@@ -10,6 +10,7 @@ import {
 import { logMelFeatures, windowOf } from '../../server/lib/agent-voice/turn'
 import {
   joinUtterance,
+  parsePermissionAnswer,
   parseSpokenTurn,
   plainForSpeech,
   takeClause,
@@ -240,5 +241,21 @@ describe('takeClause', () => {
     expect(takeClause('It records your voice, sends it up')).toEqual({ clause: 'It records your voice,', rest: 'sends it up' })
     expect(takeClause('Yes, it does, and then')).toBe(null)
     expect(takeClause('Look at this: ```code, more')).toBe(null)
+  })
+})
+
+describe('parsePermissionAnswer', () => {
+  it('takes allow, always and deny from any request, and a bare yes or no only from its own agent\'s', () => {
+    expect(parsePermissionAnswer('Allow it.')).toBe('allow')
+    expect(parsePermissionAnswer('okay, always allow')).toBe('always')
+    expect(parsePermissionAnswer('Deny.')).toBe('deny')
+    expect(parsePermissionAnswer('yes')).toBeNull()
+    expect(parsePermissionAnswer('yes', { bare: true })).toBe('allow')
+    expect(parsePermissionAnswer('No thanks.', { bare: true })).toBe('deny')
+  })
+
+  it('leaves a sentence alone, so it reaches the agent as a turn', () => {
+    expect(parsePermissionAnswer('yes but run only the unit tests', { bare: true })).toBeNull()
+    expect(parsePermissionAnswer('allow it to read the env file and nothing else')).toBeNull()
   })
 })

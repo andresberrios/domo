@@ -991,6 +991,21 @@ export async function updateAgentSession(
   return mapAgentSession(row)
 }
 
+/** What a session started without a title or a first prompt is called until its first message names it. */
+export const UNTITLED_AGENT_TITLE = 'Coding session'
+
+/** Name a session that still has the placeholder title. False when it already had a name. */
+export async function titleUntitledAgentSession(id: string, title: string): Promise<boolean> {
+  const row = await queryOne(
+    'update agent_sessions set title = $2, updated_at = $4 where id = $1 and title = $3 returning id',
+    [id, title, UNTITLED_AGENT_TITLE, nowIso()]
+  )
+  if (!row) return false
+  bus.publish({ type: 'agent-changed', agentSessionId: id })
+  bus.publish({ type: 'agent-list-changed' })
+  return true
+}
+
 /**
  * Whether `ancestorId` spawned `agentId`, directly or through agents it
  * spawned in turn. The ownership edge the mesh ties cross-agent powers to.

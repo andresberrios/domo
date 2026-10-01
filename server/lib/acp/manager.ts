@@ -50,6 +50,8 @@ import {
   openAgentStream,
   resolvePermissionRow,
   setAgentUsage,
+  titleUntitledAgentSession,
+  UNTITLED_AGENT_TITLE,
   updateAgentSession,
   writeAgentStream,
   writeUsageLimits
@@ -201,6 +203,11 @@ const PLAN_LIMIT_WRITE_MS = 5_000
  * UI reads and what a person reads in the database, and every event that is
  * not marked is one that took.
  */
+/** A session title out of the words that started it: the first line, clipped. */
+function titleFrom(text: string): string {
+  return text.trim().split('\n')[0]!.slice(0, 80)
+}
+
 function pendingMark(live: boolean): { pending?: true } {
   return live ? {} : { pending: true }
 }
@@ -1806,7 +1813,7 @@ class AcpManager {
     // here rather than in `boot()` is what lets the start path treat a missing
     // directory as a reason to refuse instead of silently making an empty one.
     if (!environment) await mkdir(cwd, { recursive: true }).catch(() => {})
-    const title = (input.title || input.initialPrompt || 'Coding session').trim().split('\n')[0]!.slice(0, 80)
+    const title = titleFrom(input.title || input.initialPrompt || UNTITLED_AGENT_TITLE)
     const session = await createAgentSession({
       adapter: input.adapter ?? 'claude-code',
       title,
@@ -1863,6 +1870,13 @@ class AcpManager {
     agentSessionId: string,
     input: { content: any[], delivery?: MessageDelivery, origin?: MessageOrigin }
   ): Promise<DeliveryResult> {
+    // A session started with no title and no prompt (Talk, or a bare New
+    // agent) is named by the first thing said to it, as a person would.
+    const origin = input.origin ?? 'user'
+    const words = input.content.find(block => block?.type === 'text' && typeof block.text === 'string')?.text
+    if ((origin === 'user' || origin === 'voice') && words?.trim()) {
+      await titleUntitledAgentSession(agentSessionId, titleFrom(words)).catch(() => {})
+    }
     return this.runtime(agentSessionId).deliver({
       content: input.content,
       delivery: input.delivery ?? 'steer',

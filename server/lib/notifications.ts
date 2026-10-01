@@ -6,7 +6,7 @@ import { run } from './dev-env/docker'
 import { RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { dataDir } from './paths'
 import { appendAgentEvent, createNotification, getDevEnvironment } from './repo'
-import { voiceManager } from './voice/runtime'
+import { agentVoiceManager } from './agent-voice/runtime'
 import type { AgentSession, DomoNotification, NotificationAttachment } from '../../shared/types'
 
 /** Big enough for a full-page screenshot or a log; small enough to keep the data directory sane. */
@@ -87,7 +87,7 @@ async function readAgentFile(caller: AgentSession, path: string): Promise<Buffer
  *
  * A row in `notifications` is what makes it durable: the browser shows it
  * until it is marked seen, whether or not anyone was looking when it arrived.
- * A live voice conversation also hears it at once. The `mesh_message` event
+ * An open voice bar also reads it out at once. The `mesh_message` event
  * keeps the line in the agent's own transcript.
  */
 export async function notifyHuman(input: {
@@ -130,11 +130,5 @@ export async function notifyHuman(input: {
     attachments: attachments.map(attachment => attachment.name)
   })
 
-  const runtime = voiceManager.active()
-  if (!runtime) return { notification, spoken: false }
-  const attached = attachments.length
-    ? ` (attached: ${attachments.map(attachment => attachment.name).join(', ')}, shown in the notifications panel)`
-    : ''
-  await runtime.injectNote(`Agent "${input.caller.title}" (${input.caller.id}) reports: ${message}${attached}`, true)
-  return { notification, spoken: true }
+  return { notification, spoken: agentVoiceManager.announce(notification) }
 }

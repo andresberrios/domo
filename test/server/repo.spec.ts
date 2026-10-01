@@ -36,6 +36,8 @@ import {
   removeAgentSubscription,
   resolvePermissionRow,
   setAutoTitle,
+  titleUntitledAgentSession,
+  UNTITLED_AGENT_TITLE,
   updateAgentSession,
   updateDevEnvironment,
   updateDevEnvironmentPort,
@@ -413,6 +415,14 @@ describe('voice messages', () => {
 })
 
 describe('agent sessions', () => {
+  it('takes a title from its first message only while it has none', async () => {
+    const untitled = await agent({ adapter: 'claude-code', title: UNTITLED_AGENT_TITLE, cwd: '/srv/api' })
+    expect(await titleUntitledAgentSession(untitled.id, 'Fix the login test')).toBe(true)
+    expect(await titleUntitledAgentSession(untitled.id, 'Something later')).toBe(false)
+    expect((await getAgentSession(untitled.id))!.title).toBe('Fix the login test')
+    expect(seen.types()).toContain('agent-list-changed')
+  })
+
   it('starts in "starting", because a row exists before the adapter does', async () => {
     const session = await agent()
 
