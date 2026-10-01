@@ -86,6 +86,13 @@ export interface HomeOverlayInput {
   present: string[]
   /** What the host's `.ssh` holds, listed by the caller so this stays pure. */
   sshEntries?: string[]
+  /**
+   * Entries read from another name under `sourceHome`: a Domo inside a Domo
+   * environment reads `.ssh` from `.ssh-host`, the host's own copy, because
+   * its `~/.ssh` is the one the environment built, which the shared daemon
+   * cannot mount.
+   */
+  sourceNames?: Record<string, string>
   sshAgent: SshAgentSource | null
 }
 
@@ -226,6 +233,7 @@ function ancestorsOf(target: string, containerHome: string): string[] {
 export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
   const mounts: HomeBindMount[] = []
   const seen = new Set<string>()
+  const sourceOf = (entry: string) => join(input.sourceHome, input.sourceNames?.[entry] ?? entry)
   let includeHostConfig = false
   let ssh: SshHome | null = null
 
@@ -248,7 +256,7 @@ export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
       }
       mounts.push({
         type: 'bind',
-        source: join(input.sourceHome, entry),
+        source: sourceOf(entry),
         target: `${input.containerHome}/.ssh-host`
       })
       continue
@@ -258,7 +266,7 @@ export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
       includeHostConfig = true
       mounts.push({
         type: 'bind',
-        source: join(input.sourceHome, entry),
+        source: sourceOf(entry),
         target: `${input.containerHome}/.gitconfig-host`,
         readonly: true
       })
@@ -268,7 +276,7 @@ export function homeOverlay(input: HomeOverlayInput): HomeOverlay {
     // read-only mount turns that into an error the CLI reports as a bad login.
     mounts.push({
       type: 'bind',
-      source: join(input.sourceHome, entry),
+      source: sourceOf(entry),
       target: `${input.containerHome}/${entry}`
     })
   }
@@ -350,14 +358,19 @@ export async function resolveHomeOverlay(input: {
   }
   const paths = input.paths.map(normalizeHomeMount)
   const present: string[] = []
+  const sourceNames: Record<string, string> = {}
   for (const entry of paths) {
     if (validateHomeMount(entry)) continue
-    if (await exists(join(sourceHome, entry))) present.push(entry)
+    // Inside a Domo environment, the host's own copy of an entry Domo rebuilt.
+    if (process.env.DOMO_DEV_ENVIRONMENT_ID && await exists(join(sourceHome, `${entry}-host`))) {
+      sourceNames[entry] = `${entry}-host`
+    }
+    if (await exists(join(sourceHome, sourceNames[entry] ?? entry))) present.push(entry)
   }
   // The one listing the overlay cannot do for itself: what to symlink into the
   // container's own `~/.ssh`.
   const sshEntries = present.includes('.ssh')
-    ? await readdir(join(sourceHome, '.ssh')).catch(() => [] as string[])
+    ? await readdir(join(sourceHome, sourceNames['.ssh'] ?? '.ssh')).catch(() => [] as string[])
     : []
-  return homeOverlay({ ...input, sourceHome, paths, present, sshEntries, sshAgent })
+  return homeOverlay({ ...input, sourceHome, paths, present, sshEntries, sourceNames, sshAgent })
 }

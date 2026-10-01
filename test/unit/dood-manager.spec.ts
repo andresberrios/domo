@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
 /**
  * `manager.ts` without a daemon: where an environment's socket lives, and that
@@ -40,6 +40,14 @@ vi.mock('../../server/lib/dood/network', () => ({
   watchContainerEvents: () => ({ stop() {} })
 }))
 vi.mock('../../server/lib/dev-env/docker', () => ({ run: vi.fn() }))
+// Whether this "machine" has the shared cache volume mounted, as an environment does.
+const fsState = vi.hoisted(() => ({ caches: false }))
+vi.mock('node:fs', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs')>()
+  const existsSync = (path: Parameters<typeof real.existsSync>[0]) =>
+    path === '/opt/domo-caches' ? fsState.caches : real.existsSync(path)
+  return { ...real, default: { ...real, existsSync }, existsSync }
+})
 
 const { doodSocketDir, doodSocketPath, ensureDoodProxy, stopDoodProxy, subpathCommand }
   = await import('../../server/lib/dood/manager')
@@ -57,13 +65,25 @@ async function openNext() {
   gates.shift()!()
 }
 
-const saved = { HOME: process.env.HOME, NUXT_DATA_DIR: process.env.NUXT_DATA_DIR, dir: process.env.NUXT_DOOD_SOCKET_DIR }
+const saved = {
+  HOME: process.env.HOME,
+  NUXT_DATA_DIR: process.env.NUXT_DATA_DIR,
+  dir: process.env.NUXT_DOOD_SOCKET_DIR,
+  environment: process.env.DOMO_DEV_ENVIRONMENT_ID
+}
+// These tests may themselves run inside a Domo environment; each says where it is.
+delete process.env.DOMO_DEV_ENVIRONMENT_ID
 afterEach(() => {
+  fsState.caches = false
+  delete process.env.DOMO_DEV_ENVIRONMENT_ID
   process.env.HOME = saved.HOME
   if (saved.NUXT_DATA_DIR === undefined) delete process.env.NUXT_DATA_DIR
   else process.env.NUXT_DATA_DIR = saved.NUXT_DATA_DIR
   if (saved.dir === undefined) delete process.env.NUXT_DOOD_SOCKET_DIR
   else process.env.NUXT_DOOD_SOCKET_DIR = saved.dir
+})
+afterAll(() => {
+  if (saved.environment !== undefined) process.env.DOMO_DEV_ENVIRONMENT_ID = saved.environment
 })
 
 describe('the socket path', () => {
@@ -87,6 +107,20 @@ describe('the socket path', () => {
     expect(doodSocketPath('env_x')).toHaveLength(88)
     process.env.HOME += 'a'
     expect(() => doodSocketPath('env_x')).toThrow(/Set NUXT_DOOD_SOCKET_DIR to a shorter directory/)
+  })
+
+  // A Domo developing Domo: its own home is the environment's image layer,
+  // which the shared daemon cannot mount into anything.
+  it('is on the shared cache volume for a Domo running inside a Domo environment', () => {
+    delete process.env.NUXT_DOOD_SOCKET_DIR
+    process.env.HOME = '/home/vscode'
+    process.env.DOMO_DEV_ENVIRONMENT_ID = 'env_outer'
+    fsState.caches = true
+    expect(doodSocketPath('env_x')).toMatch(/^\/opt\/domo-caches\/\.domo-sockets\/[0-9a-f]{8}\/[0-9a-f]{12}\.sock$/)
+
+    // An environment with its caches turned off has no such volume; the home it is.
+    fsState.caches = false
+    expect(doodSocketPath('env_x')).toMatch(/^\/home\/vscode\/\.domo\/s\//)
   })
 
   it('honours NUXT_DOOD_SOCKET_DIR', () => {

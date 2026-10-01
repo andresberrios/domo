@@ -74,6 +74,11 @@ describe('containerInspectForAgent', () => {
     expect(out.Config.Labels).toEqual({ 'com.docker.compose.project': 'stack' })
   })
 
+  it('hands a nested Domo its own domo labels back as it wrote them', () => {
+    const nested = containerInspectForAgent({ ...inspected, Config: { ...inspected.Config, Labels: { ...labels, 'domo.nested.env': 'env_inner' } } }, scope) as any
+    expect(nested.Config.Labels).toEqual({ 'com.docker.compose.project': 'stack', 'domo.env': 'env_inner' })
+  })
+
   it('restores the binds and mounts the client asked for', () => {
     expect(out.HostConfig.Binds).toEqual(['data:/data', '/workspaces/domo/site:/site:ro'])
     expect(out.HostConfig.Mounts).toBeNull()
@@ -236,6 +241,8 @@ describe('eventForAgent', () => {
   it('keeps the environment\'s container events, renamed, with Domo\'s labels hidden', () => {
     const out = eventForAgent(container('c2', 'create', { 'name': 'env_abc-db', 'domo.env': 'env_abc', 'image': 'pg' }), eventScope()) as any
     expect(out.Actor.Attributes).toEqual({ name: 'db', image: 'pg' })
+    const nested = eventForAgent(container('c3', 'create', { 'name': 'env_abc-x', 'domo.env': 'env_abc', 'domo.nested.env': 'env_inner' }), eventScope()) as any
+    expect(nested.Actor.Attributes).toEqual({ 'name': 'x', 'domo.env': 'env_inner' })
   })
 
   it('drops everyone else\'s container events', () => {

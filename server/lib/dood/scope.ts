@@ -1,4 +1,5 @@
 import { agentName, nameFilter, type Namespace } from './names'
+import { escapeLabelFilter } from './labels'
 
 /**
  * The pure half of scoping an environment to its own objects on the shared
@@ -157,7 +158,8 @@ export function scopeFilters(
   options: { label: string | null, kind: ObjectKind }
 ): Filters {
   const scoped: Filters = { ...filters }
-  if (options.label) scoped.label = [...(filters.label ?? []), options.label]
+  const asked = (filters.label ?? []).map(escapeLabelFilter)
+  if (asked.length || options.label) scoped.label = [...asked, ...(options.label ? [options.label] : [])]
   if (filters.name) scoped.name = filters.name.map(value => nameFilter(ns, value, options.kind === 'container'))
   return scoped
 }

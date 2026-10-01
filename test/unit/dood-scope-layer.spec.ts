@@ -191,6 +191,22 @@ describe('scope layer — lists and prunes', () => {
     expect(JSON.parse(prune.query.get('filters')!)).toEqual({ label: { [`domo.env=${ENV}`]: true } })
   })
 
+  // The client is itself a Domo (developing Domo): its own `domo.env` must
+  // survive the proxy's, and find what it labelled.
+  it('keeps a nested Domo\'s labels beside its own, and finds them by its filter', async () => {
+    const { send } = setup()
+    const spec = bodyOf(forwarded(await send('POST /containers/create?name=inner', {
+      Image: 'alpine',
+      Labels: { 'domo.env': 'env_inner', 'app': 'x' }
+    })))
+    expect(spec.Labels).toMatchObject({ 'domo.env': ENV, 'domo.nested.env': 'env_inner', 'app': 'x' })
+
+    const list = forwarded(await send(`GET /containers/json?filters=${encodeURIComponent('{"label":{"domo.env=env_inner":true}}')}`))
+    expect(JSON.parse(list.query.get('filters')!)).toEqual({
+      label: { 'domo.nested.env=env_inner': true, [`domo.env=${ENV}`]: true }
+    })
+  })
+
   it('lists networks unnarrowed, so the builtins survive, and filters the answer', async () => {
     const { send } = setup()
     const outcome = await send('GET /networks')

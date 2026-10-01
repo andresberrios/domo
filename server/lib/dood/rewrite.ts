@@ -22,6 +22,7 @@
 
 import type { WorkspaceAlias } from '../dev-env/canonical-mounts'
 import { resolveBindSource, type EnvironmentMount } from './binds'
+import { escapeLabels } from './labels'
 
 /** What an environment's containers are translated *into*. */
 export interface DoodScope {
@@ -504,7 +505,7 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?:
   }
 
   spec.Labels = {
-    ...(spec.Labels as Record<string, string> | undefined),
+    ...escapeLabels(spec.Labels),
     ...scope.labels,
     ...(droppedPorts.length && { [REQUESTED_PORTS_LABEL]: JSON.stringify(droppedPorts) }),
     ...(Object.keys(originalBinds).length && { [REQUESTED_BINDS_LABEL]: JSON.stringify(originalBinds) }),
@@ -529,7 +530,7 @@ export function labelCreate(
   prefix = ''
 ): Record<string, unknown> {
   const spec = (input && typeof input === 'object' ? { ...input } : {}) as Record<string, unknown>
-  spec.Labels = { ...(spec.Labels as Record<string, string> | undefined), ...scope.labels }
+  spec.Labels = { ...escapeLabels(spec.Labels), ...scope.labels }
   if (prefix && typeof spec.Name === 'string' && spec.Name) spec.Name = `${prefix}${spec.Name}`
   return spec
 }

@@ -8,6 +8,7 @@ import {
 } from './rewrite'
 import { portListFromBindings, portsFromBindings, REQUESTED_HOSTS_LABEL, type Binding } from './publish'
 import { BUILTIN_NETWORKS } from './scope'
+import { clientLabelKey, clientLabels } from './labels'
 
 /**
  * What the agent is shown: the daemon's answers with the environment's
@@ -36,10 +37,9 @@ type Json = Record<string, any>
 
 const isObject = (value: unknown): value is Json => !!value && typeof value === 'object' && !Array.isArray(value)
 
-/** `domo.*` labels are Domo's bookkeeping, not the agent's. */
+/** `domo.*` labels are Domo's bookkeeping, not the agent's; a nested Domo's own come back as it wrote them (`labels.ts`). */
 export function hideDomoLabels(labels: unknown): unknown {
-  if (!isObject(labels)) return labels
-  return Object.fromEntries(Object.entries(labels).filter(([key]) => !key.startsWith('domo.')))
+  return clientLabels(labels)
 }
 
 function parseLabel<T>(labels: unknown, key: string): T | null {
@@ -339,8 +339,10 @@ export function eventForAgent(event: unknown, scope: EventScope): unknown | null
 
   const out: Json = { ...event }
   const strippedAttributes = Object.fromEntries(Object.entries(attributes)
-    .filter(([key]) => !key.startsWith('domo.'))
-    .map(([key, value]) => [key, key === 'name' || key === 'container' ? agentName(scope.ns, String(value)) : value]))
+    .flatMap(([key, value]) => {
+      const visible = clientLabelKey(key)
+      return visible === null ? [] : [[visible, key === 'name' || key === 'container' ? agentName(scope.ns, String(value)) : value]]
+    }))
   out.Actor = { ...actor, ID: type === 'volume' ? agentName(scope.ns, id) : actor.ID, Attributes: strippedAttributes }
   if (type === 'volume' && typeof out.id === 'string') out.id = agentName(scope.ns, out.id)
   return out

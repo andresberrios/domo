@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { CACHES_ROOT } from '../dev-env/caches'
 import type { WorkspaceAlias } from '../dev-env/canonical-mounts'
 import { run } from '../dev-env/docker'
 import { keyedSerial } from '../keyed-serial'
@@ -68,11 +70,24 @@ export const doodLabels = (environmentId: string): Record<string, string> =>
  */
 const SUN_PATH_MAX = 88
 
+/**
+ * A Domo that itself runs inside a Domo environment (developing Domo) shares
+ * the outer Domo's daemon, which resolves a bind source through the outer
+ * environment's mounts (`binds.ts`). A home directory there is the image's
+ * own layer, which no other container can mount, and a bind from the host
+ * cannot carry a socket (virtiofs). The shared cache volume can: it is a real
+ * volume on the daemon's own disk. Every environment already writes to it, so
+ * a socket there crosses no line that was not crossed already.
+ */
+function nestedSocketRoot(): string | null {
+  return process.env.DOMO_DEV_ENVIRONMENT_ID && existsSync(CACHES_ROOT) ? join(CACHES_ROOT, '.domo-sockets') : null
+}
+
 export function doodSocketDir(): string {
   const configured = process.env.NUXT_DOOD_SOCKET_DIR
   if (configured) return configured
   const install = createHash('sha256').update(dataDir()).digest('hex').slice(0, 8)
-  return join(homedir(), '.domo', 's', install)
+  return join(nestedSocketRoot() ?? join(homedir(), '.domo', 's'), install)
 }
 
 export function doodSocketPath(environmentId: string): string {

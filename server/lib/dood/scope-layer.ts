@@ -39,6 +39,7 @@ import {
   type ObjectKind,
   type Resolution
 } from './scope'
+import { escapeLabels } from './labels'
 
 /**
  * The layer that makes the shared daemon look like the environment's own:
@@ -297,7 +298,7 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
               Name: replacement,
               ...(volume.driver && { Driver: volume.driver }),
               ...(volume.driverOptions && { DriverOpts: volume.driverOptions }),
-              Labels: { ...volume.labels, ...options.scope.labels }
+              Labels: { ...escapeLabels(volume.labels), ...options.scope.labels }
             })
           }
         })

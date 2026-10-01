@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   CONTAINER_SSH_AUTH_SOCK,
@@ -9,6 +13,7 @@ import {
   homeOverlay,
   normalizeHomeMount,
   overlaySourceHome,
+  resolveHomeOverlay,
   validateHomeMount,
   validateHomeMounts,
   type HomeOverlayInput,
@@ -356,5 +361,51 @@ describe('overlaySourceHome', () => {
     expect(overlaySourceHome({ HOME: '/Users/me' })).toBe('/Users/me')
     expect(overlaySourceHome({ HOME: '/Users/me', NUXT_HOME_OVERLAY_DIR: '/tmp/fake' })).toBe('/tmp/fake')
     expect(overlaySourceHome({})).toBeNull()
+  })
+})
+
+// A Domo developing Domo runs in an environment whose `~/.ssh` and
+// `~/.gitconfig` it built itself; the host's own are beside them, and only
+// those can be mounted by the shared daemon.
+describe('resolveHomeOverlay inside a Domo environment', () => {
+  const saved = { home: process.env.NUXT_HOME_OVERLAY_DIR, environment: process.env.DOMO_DEV_ENVIRONMENT_ID }
+  let home = ''
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true })
+    if (saved.home === undefined) delete process.env.NUXT_HOME_OVERLAY_DIR
+    else process.env.NUXT_HOME_OVERLAY_DIR = saved.home
+    if (saved.environment === undefined) delete process.env.DOMO_DEV_ENVIRONMENT_ID
+    else process.env.DOMO_DEV_ENVIRONMENT_ID = saved.environment
+  })
+
+  function homeWith() {
+    home = mkdtempSync(join(tmpdir(), 'domo-overlay-'))
+    mkdirSync(join(home, '.ssh'))
+    mkdirSync(join(home, '.ssh-host'))
+    writeFileSync(join(home, '.ssh-host', 'id_ed25519'), 'key')
+    writeFileSync(join(home, '.gitconfig'), '[include]')
+    writeFileSync(join(home, '.gitconfig-host'), '[user]')
+    mkdirSync(join(home, '.aws'))
+    process.env.NUXT_HOME_OVERLAY_DIR = home
+  }
+  const resolve = () => resolveHomeOverlay({ containerHome: '/home/vscode', workspacePath: '/workspaces/a', paths: ['.ssh', '.gitconfig', '.aws'] })
+
+  it('mounts the host\'s copies, and lists the keys from there', async () => {
+    homeWith()
+    process.env.DOMO_DEV_ENVIRONMENT_ID = 'env_outer'
+    const result = await resolve()
+    expect(Object.fromEntries(result.mounts.map(mount => [mount.target, mount.source]))).toMatchObject({
+      '/home/vscode/.ssh-host': join(home, '.ssh-host'),
+      '/home/vscode/.gitconfig-host': join(home, '.gitconfig-host'),
+      '/home/vscode/.aws': join(home, '.aws')
+    })
+    expect(result.ssh?.links).toEqual(['id_ed25519'])
+  })
+
+  it('leaves a home outside any environment as it is, whatever is beside the entries', async () => {
+    homeWith()
+    delete process.env.DOMO_DEV_ENVIRONMENT_ID
+    const result = await resolve()
+    expect(result.mounts.find(mount => mount.target === '/home/vscode/.ssh-host')?.source).toBe(join(home, '.ssh'))
   })
 })
