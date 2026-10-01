@@ -40,7 +40,6 @@ const environment: DevEnvironment = {
   leftovers: [],
   adapterVersions: null,
   branch: null,
-  branchCreated: false,
   cleanedAt: null,
 }
 

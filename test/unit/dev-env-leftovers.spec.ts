@@ -42,7 +42,6 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     leftovers: [],
     adapterVersions: null,
     branch: null,
-    branchCreated: false,
     cleanedAt: null,
     ...overrides
   }

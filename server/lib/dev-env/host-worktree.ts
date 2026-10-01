@@ -250,14 +250,13 @@ export interface BranchOutcome {
 }
 
 /**
- * Delete a branch an environment made, once nothing is lost by it: every
+ * Delete an environment's branch once nothing is lost by it: every
  * commit on it is also on another branch, local or remote, and no worktree has
  * it checked out. Otherwise it is kept and the reason said. Null when there is
  * no such branch any more.
  *
- * Only ever the branch recorded at creation, and only one Domo created: an
- * agent may have switched the worktree to another, and a branch that existed
- * before the environment is the developer's. A squash-merged branch has
+ * Only ever the branch recorded at creation, whether Domo made it or reused it:
+ * an agent may have switched the worktree to another. A squash-merged branch has
  * commits no other branch has, so it is kept, which is the safe mistake.
  */
 export async function deleteMergedBranch(repoPath: string, branch: string): Promise<BranchOutcome | null> {

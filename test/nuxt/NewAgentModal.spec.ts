@@ -35,7 +35,6 @@ function environment(id: string, projectId: string, name: string, status: DevEnv
     leftovers: [],
     adapterVersions: null,
     branch: null,
-    branchCreated: false,
     cleanedAt: null
   }
 }

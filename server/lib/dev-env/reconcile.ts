@@ -132,10 +132,10 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
 }
 
 /**
- * The branch half: once a claimant's worktree is gone, the branch Domo made for
- * it goes too if nothing would be lost (`deleteMergedBranch`). A branch that
- * existed before the environment is never touched, and neither is any other
- * branch the worktree may have been switched to. A worktree still there keeps
+ * The branch half: once a claimant's worktree is gone, the branch it was
+ * created on goes too if nothing would be lost (`deleteMergedBranch`), whether
+ * Domo made it or reused it. Any other branch the worktree may have been
+ * switched to is never touched. A worktree still there keeps
  * its branch checked out, so its branch waits for the pass that removes it.
  */
 async function settleBranches(
@@ -148,7 +148,7 @@ async function settleBranches(
   const outcomes: CleanupReport['branches'] = []
   for (const environment of claimants) {
     const repoPath = repoPaths.get(environment.projectId)
-    if (!repoPath || !environment.branch || !environment.branchCreated || blocked.has(environment.id)) continue
+    if (!repoPath || !environment.branch || blocked.has(environment.id)) continue
     if (await hostWorktreeExists(repoPath, environment.id)) continue
     const outcome = await deleteMergedBranch(repoPath, environment.branch).catch(error => ({
       name: environment.branch!,

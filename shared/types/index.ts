@@ -254,13 +254,11 @@ export interface DevEnvironment {
   lastError: string | null
   createdAt: string
   updatedAt: string
-  /** The branch the worktree was created on. An agent may have switched it since. */
-  branch: string | null
   /**
-   * Whether Domo made `branch` (false: it existed and was checked out). Only
-   * a branch Domo made is deleted at retirement, and only when fully merged.
+   * The branch the worktree was created on, made or reused. An agent may have
+   * switched it since. Retiring deletes it once fully merged.
    */
-  branchCreated: boolean
+  branch: string | null
   /**
    * When the container, its worktree and its image were destroyed.
    *

@@ -80,10 +80,11 @@ describe('describeSeed', () => {
       .toContain('`npm ci` failed, so dependencies may be missing: the image has no npm')
   })
 
-  it('warns that an existing branch was reused rather than made, and that retiring keeps it', () => {
+  it('warns that an existing branch was reused rather than made, and that retiring deletes it once merged', () => {
     const text = describeSeed(seedReport({ paths: [], branch: { name: 'main-ish', created: false } }))
     expect(text).toContain('It is on the branch main-ish, which already existed, so it was checked out')
-    expect(text).toContain('Retiring the environment keeps that branch.')
+    expect(text).toContain('Retiring the environment deletes that branch if every commit on it is also on another branch.')
+    expect(text).not.toContain('keeps')
     expect(text).not.toContain('new branch')
   })
 })
