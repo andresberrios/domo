@@ -3,7 +3,6 @@ import { access, mkdir, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
-import { dataDir } from '../paths'
 
 /**
  * Has the developer finished talking?
@@ -22,8 +21,10 @@ import { dataDir } from '../paths'
  * to any of them silently moves the probabilities, so they are not settings.
  *
  * The model file is fetched from Hugging Face on first use into the data
- * directory. An install that cannot reach it gets `null` from `endOfTurn`
- * and the caller falls back to "a long pause ends the turn".
+ * directory. An install that cannot reach it gets `null` and the caller falls
+ * back to "a long pause ends the turn". This runs in the local models'
+ * process (`local-models-worker.ts`); the server asks through `endOfTurn` in
+ * `local-speech.ts`.
  */
 
 export const SAMPLE_RATE = 16000
@@ -35,8 +36,6 @@ const N_MELS = 80
 const N_FREQS = N_FFT / 2 + 1
 /** Frames the model was exported for: 8 s at a 160 hop, minus Whisper's dropped last frame. */
 const N_FRAMES = WINDOW_SAMPLES / HOP
-/** The reference decision threshold. */
-export const COMPLETE_THRESHOLD = 0.5
 
 const MODEL_URL = 'https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx'
 const MODEL_FILE = 'smart-turn-v3.2-cpu.onnx'
@@ -189,12 +188,8 @@ export function logMelFeatures(waveform: Float32Array): Float32Array {
 
 /* ------------------------------- model ------------------------------- */
 
-function modelPath(): string {
-  return process.env.NUXT_SMART_TURN_MODEL || join(dataDir(), 'models', MODEL_FILE)
-}
-
-async function ensureModel(): Promise<string> {
-  const path = modelPath()
+async function ensureModel(modelsDir: string): Promise<string> {
+  const path = process.env.NUXT_SMART_TURN_MODEL || join(modelsDir, MODEL_FILE)
   if (await access(path).then(() => true, () => false)) return path
   await mkdir(dirname(path), { recursive: true })
   console.log(`[agent-voice] fetching the turn model into ${path}`)
@@ -207,21 +202,19 @@ async function ensureModel(): Promise<string> {
 }
 
 let session: Promise<any> | null = null
-let unavailable: string | null = null
 
-async function ensureSession(): Promise<any> {
+async function ensureSession(modelsDir: string): Promise<any> {
   if (!session) {
     session = (async () => {
       const ort = await import('onnxruntime-node')
-      return ort.InferenceSession.create(await ensureModel(), {
+      return ort.InferenceSession.create(await ensureModel(modelsDir), {
         executionMode: 'sequential',
         interOpNumThreads: 1,
         graphOptimizationLevel: 'all'
       })
     })()
     session.catch((error) => {
-      unavailable = error instanceof Error ? error.message : String(error)
-      console.warn(`[agent-voice] the turn model is unavailable, pauses end turns instead: ${unavailable}`)
+      console.warn(`[agent-voice] the turn model is unavailable, pauses end turns instead: ${error instanceof Error ? error.message : error}`)
       session = null
     })
   }
@@ -232,10 +225,10 @@ async function ensureSession(): Promise<any> {
  * The probability that the turn in `samples` (16 kHz PCM16, the whole turn so
  * far) is complete, or `null` when the model cannot be had.
  */
-export async function endOfTurn(samples: Int16Array): Promise<number | null> {
+export async function turnProbability(samples: Int16Array, modelsDir: string): Promise<number | null> {
   let model: any
   try {
-    model = await ensureSession()
+    model = await ensureSession(modelsDir)
   } catch {
     return null
   }
@@ -245,9 +238,4 @@ export async function endOfTurn(samples: Int16Array): Promise<number | null> {
   const output = await model.run({ input_features: input })
   const logits = output.logits ?? output[Object.keys(output)[0]!]
   return Number(logits.data[0])
-}
-
-/** Why the model is not answering, if it is not. For a log line, not a UI. */
-export function turnModelProblem(): string | null {
-  return unavailable
 }

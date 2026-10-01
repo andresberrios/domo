@@ -169,11 +169,9 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
 - **`onnxruntime-node` is pinned to the version transformers.js depends on.**
   Two versions in one process fail at `dlopen` with a symbol-version error,
   because the second binding finds the first shared library already loaded.
-- **Under `pnpm dev`, a `server/` edit breaks every ONNX model until the dev
-  server is restarted.** Nitro reloads into a new worker, and the native
-  binding cannot load twice in one process ("Module did not self-register").
-  The turn model then reports itself unavailable and the local engines fail.
-  A production process never reloads, so it is a dev-only cost.
+- **The ONNX models run in a child process of their own**
+  (`agent-voice/local-models-host.ts`), held by the dev process's main thread
+  under `pnpm dev`, so a Nitro reload keeps them loaded.
 - **The Kyutai engine was written from the reference clients and has not run
   against a server.** A moshi-server needs a GPU. Its key is
   `NUXT_KYUTAI_API_KEY`, the one environment variable here, because the
