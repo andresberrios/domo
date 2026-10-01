@@ -113,8 +113,9 @@ reason, `.claude` and `.claude.json` cannot be mounted into an environment.
 subscription**, so Domo passes it only when there is no other Claude
 credential.
 
-**Codex.** Run `codex login`, or set `NUXT_CODEX_API_KEY` or
-`NUXT_OPENAI_API_KEY`. Domo mounts `~/.codex` into environments.
+**Codex.** Run `codex login`. Domo mounts `~/.codex` into environments.
+`NUXT_CODEX_API_KEY` or `NUXT_OPENAI_API_KEY` bills the API, so Domo passes
+them to Codex only when there is no ChatGPT login.
 
 **Image generation** (assistant pictures, and the `generate_image` tool every
 agent has) uses Codex's built-in image tool on your ChatGPT login, so it counts
