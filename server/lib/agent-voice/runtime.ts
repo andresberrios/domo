@@ -3,7 +3,7 @@ import { acpManager } from '../acp/manager'
 import { getAgentSession, listRecentUserMessages } from '../repo'
 import { CLIENT_INPUT_SAMPLE_RATE, pcm16FromBase64 } from './pcm'
 import { needsFullInstructions, spokenContent } from './prompt'
-import { joinUtterance, parsePermissionAnswer, parseSpokenTurn, plainForSpeech, takeClause, takeSentences, type PermissionAnswer } from './utterance'
+import { joinUtterance, parsePermissionAnswer, parseSpokenTurn, plainForSpeech, speakableTitle, takeClause, takeSentences, type PermissionAnswer } from './utterance'
 import { concatPcm16, isSilent, synthesize, transcribe } from './speech'
 import { COMPLETE_THRESHOLD, endOfTurn } from './local-speech'
 import { endOfTurnKyutai } from './kyutai-speech'
@@ -603,7 +603,7 @@ export class AgentVoiceRuntime {
       who = agent.title
     }
     this.asked = permission
-    this.say(`${who} needs permission: ${permission.title}. ${own ? 'Allow it?' : 'Say allow or deny.'}`, { aside: true })
+    this.say(`${who} needs permission: ${speakableTitle(permission.title)}. ${own ? 'Allow it?' : 'Say allow or deny.'}`, { aside: true })
   }
 
   /** A spoken reply to the request last read out. True if that is what it was. */

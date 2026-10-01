@@ -13,6 +13,7 @@ import {
   parsePermissionAnswer,
   parseSpokenTurn,
   plainForSpeech,
+  speakableTitle,
   takeClause,
   takeSentences
 } from '../../server/lib/agent-voice/utterance'
@@ -241,6 +242,14 @@ describe('takeClause', () => {
     expect(takeClause('It records your voice, sends it up')).toEqual({ clause: 'It records your voice,', rest: 'sends it up' })
     expect(takeClause('Yes, it does, and then')).toBe(null)
     expect(takeClause('Look at this: ```code, more')).toBe(null)
+  })
+})
+
+describe('speakableTitle', () => {
+  it('says an MCP tool by name and server, and leaves anything else alone', () => {
+    expect(speakableTitle('mcp__domo__notify_supervisor')).toBe('notify supervisor, from domo')
+    expect(plainForSpeech(speakableTitle('mcp__domo__notify_supervisor'))).toContain('notify supervisor')
+    expect(speakableTitle('echo hi > /tmp/x')).toBe('echo hi > /tmp/x')
   })
 })
 

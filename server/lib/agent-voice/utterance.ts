@@ -70,6 +70,17 @@ export function parsePermissionAnswer(text: string, options: { bare?: boolean } 
   return null
 }
 
+/**
+ * A permission request's title as it can be said: an MCP tool id
+ * (`mcp__domo__notify_supervisor`) becomes "notify supervisor, from domo",
+ * where the Markdown clean-up would otherwise eat its double underscores.
+ */
+export function speakableTitle(title: string): string {
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(title.trim())
+  const words = (text: string) => text.replace(/[_-]+/g, ' ').trim()
+  return mcp ? `${words(mcp[2]!)}, from ${words(mcp[1]!)}` : title
+}
+
 /** Two pieces of one utterance, heard across a pause. */
 export function joinUtterance(held: string, more: string): string {
   return [held.trim(), more.trim()].filter(Boolean).join(' ')
