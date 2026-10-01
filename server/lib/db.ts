@@ -221,6 +221,10 @@ create table if not exists assistants (
   updated_at text not null
 );
 
+-- Who made it: 'user', or 'agent:<id>' for one made over the mesh. That agent
+-- may change it later; so may the assistant itself, and the human always.
+alter table assistants add column if not exists created_by text not null default 'user';
+
 -- The assistant a session belongs to; null for an ordinary session.
 alter table agent_sessions add column if not exists assistant_id text references assistants(id) on delete set null;
 create index if not exists agent_sessions_assistant on agent_sessions(assistant_id, created_at);

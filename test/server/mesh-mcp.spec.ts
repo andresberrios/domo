@@ -235,6 +235,8 @@ describe('the agent-mesh MCP endpoint', () => {
       'spawn_agent',
       'manage_agent_session',
       'list_assistants',
+      'create_assistant',
+      'update_assistant',
       'hand_off',
       'subscribe_to_agent',
       'unsubscribe_from_agent',

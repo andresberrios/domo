@@ -49,7 +49,7 @@ export function attachmentPath(notificationId: string, index: number): string {
  * base64, because the project's image may have neither Node nor `base64`, and
  * `docker exec cat` would mangle a binary through the utf8 pipe.
  */
-async function readAgentFile(caller: AgentSession, path: string): Promise<Buffer> {
+export async function readAgentFile(caller: AgentSession, path: string): Promise<Buffer> {
   if (!caller.devEnvironmentId) {
     const full = isAbsolute(path) ? path : resolve(caller.cwd, path)
     const info = await stat(full).catch(() => null)

@@ -19,7 +19,8 @@ import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPo
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import { notifyHuman } from '../notifications'
-import { deliverToAssistant, recordHandoffNote } from '../assistants'
+import { createAssistant, deliverToAssistant, recordHandoffNote, updateAssistantFields } from '../assistants'
+import { avatarFromSource } from '../assistants/avatar'
 import { deliverCronJob } from '../cron/scheduler'
 import {
   addAgentSubscription,
@@ -58,6 +59,7 @@ import { sessionStartability } from '../../../shared/retention'
 import type {
   AgentInboxMessage,
   AgentSession,
+  Assistant,
   AgentSessionStatus,
   CronJob,
   DevEnvironment,
@@ -270,6 +272,39 @@ function dockerAccess(inspection: ContainerInspection): 'host' | 'own' | 'none' 
   if (inspection.labels[DOOD_CONTAINER_LABEL] === 'true') return 'host'
   if (inspection.namedVolumes.some(name => name.includes('dind-var-lib-docker'))) return 'own'
   return 'none'
+}
+
+function describeAssistant(assistant: Assistant) {
+  return {
+    id: assistant.id,
+    name: assistant.name,
+    persona: clip(assistant.persona, 300),
+    hasPicture: !!assistant.avatar,
+    adapter: assistant.adapter,
+    model: assistant.model,
+    mode: assistant.modeId,
+    ...assistant.devEnvironmentId ? { environmentId: assistant.devEnvironmentId } : { cwd: assistant.cwd },
+    handoffThreshold: assistant.handoffThreshold ?? 'off',
+    currentSession: assistant.currentSessionId,
+    ...assistant.archived ? { archived: true } : {},
+    createdBy: assistant.createdBy
+  }
+}
+
+/**
+ * An assistant is the human's. Over the mesh it may be changed by itself and
+ * by the agent that created it, counting every session of that agent if it
+ * is an assistant too.
+ */
+async function assertOwnsAssistant(caller: AgentSession, assistant: Assistant): Promise<void> {
+  if (caller.assistantId === assistant.id) return
+  const creator = assistant.createdBy.startsWith('agent:') ? assistant.createdBy.slice(6) : null
+  if (creator === caller.id) return
+  if (creator && caller.assistantId && (await assistantSessionIds(caller.assistantId)).includes(creator)) return
+  throw new Error(
+    `Refusing to change assistant "${assistant.name}" (${assistant.id}): only the assistant itself and the agent `
+    + 'that created it can, over the mesh. Ask the human to change it in Domo.'
+  )
 }
 
 async function describeAssistantOf(session: AgentSession) {
@@ -522,6 +557,68 @@ export const MESH_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: { includeArchived: { type: 'boolean', description: 'Include archived assistants. Default false.' } },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'create_assistant',
+    description:
+      'Create an assistant for the human: a named agent with a persona that keeps one conversation going across '
+      + 'many sessions, handing off to a fresh one when its context fills. Starts its first session at once. '
+      + 'Settings other than name, persona and picture apply from its next session when changed later. '
+      + 'Talk to it with message_agent and its id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'What it is called, e.g. "Inbox organizer".' },
+        persona: { type: 'string', description: 'Who it is and how it works, in the second person ("You keep my inbox tidy…"). Goes into every session it has.' },
+        adapter: { type: 'string', enum: [...ADAPTERS], description: 'Harness its sessions run on.' },
+        model: { type: ['string', 'null'], description: 'Model id from list_models, for that harness. null for the harness default.' },
+        modeId: { type: ['string', 'null'], description: 'Permission mode id from list_models, for that harness. null for the default.' },
+        devEnvironmentId: { type: ['string', 'null'], description: 'Development environment to work in, from list_projects. null or omitted for the host.' },
+        cwd: { type: 'string', description: 'Absolute working directory on the host, when not in an environment.' },
+        handoffThreshold: {
+          type: ['number', 'null'],
+          description: 'Context-window percent (30-95) at which it starts a fresh session by itself. null turns that off; it can still be asked.'
+        },
+        picture: {
+          type: 'string',
+          description: 'Its picture: a path to an image you can see, or an http(s) URL. PNG, JPEG, WebP or GIF, under about 140 KB (nothing resizes it; 160×160 is plenty).'
+        }
+      },
+      required: ['name'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'update_assistant',
+    description:
+      'Change an assistant: name, persona, picture, harness, model, mode, workspace or handoff threshold, or retire '
+      + 'it with archived: true (its current session stops and its schedules pause; its sessions stay readable; '
+      + 'archived: false brings it back). Allowed for your own assistant and ones you created. Pass only what changes; '
+      + 'harness, model and workspace apply from its next session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assistantId: { type: 'string', description: 'Assistant id (as_…). Defaults to your own, if you are one.' },
+        name: { type: 'string', description: 'New name.' },
+        persona: { type: 'string', description: 'Who it is and how it works, in the second person ("You keep my inbox tidy…"). Goes into every session it has.' },
+        adapter: { type: 'string', enum: [...ADAPTERS], description: 'Harness its sessions run on.' },
+        model: { type: ['string', 'null'], description: 'Model id from list_models, for that harness. null for the harness default.' },
+        modeId: { type: ['string', 'null'], description: 'Permission mode id from list_models, for that harness. null for the default.' },
+        devEnvironmentId: { type: ['string', 'null'], description: 'Development environment to work in, from list_projects. null or omitted for the host.' },
+        cwd: { type: 'string', description: 'Absolute working directory on the host, when not in an environment.' },
+        handoffThreshold: {
+          type: ['number', 'null'],
+          description: 'Context-window percent (30-95) at which it starts a fresh session by itself. null turns that off; it can still be asked.'
+        },
+        picture: {
+          type: 'string',
+          description: 'Its picture: a path to an image you can see, or an http(s) URL. PNG, JPEG, WebP or GIF, under about 140 KB (nothing resizes it; 160×160 is plenty).'
+        },
+        removePicture: { type: 'boolean', description: 'Drop the picture, back to initials.' },
+        archived: { type: 'boolean', description: 'true retires it; false brings it back. Refused on yourself.' }
+      },
       additionalProperties: false
     }
   },
@@ -1154,6 +1251,54 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           }
         })
       }
+    }
+
+    case 'create_assistant': {
+      if (args.adapter !== undefined && !isAgentAdapter(args.adapter)) {
+        throw new Error(`Unknown adapter ${args.adapter}; use one of ${ADAPTERS.join(', ')}.`)
+      }
+      const picture = typeof args.picture === 'string' && args.picture.trim()
+        ? await avatarFromSource(caller, args.picture.trim())
+        : null
+      const assistant = await createAssistant({
+        name: args.name,
+        persona: args.persona,
+        adapter: args.adapter ?? caller.adapter,
+        model: args.model,
+        modeId: args.modeId,
+        avatar: picture,
+        handoffThreshold: args.handoffThreshold,
+        devEnvironmentId: args.devEnvironmentId || null,
+        // Like spawn_agent: the caller's own directory, or its environment's checkout.
+        cwd: args.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : await hostCwdFor(caller))
+      }, `agent:${caller.id}`)
+      return describeAssistant(assistant)
+    }
+
+    case 'update_assistant': {
+      const assistantId = String(args.assistantId ?? caller.assistantId ?? '')
+      if (!assistantId) throw new Error('Pass assistantId (from list_assistants).')
+      const target = await getAssistant(assistantId)
+      if (!target) throw new Error(`No assistant ${assistantId}. Use list_assistants to find ids.`)
+      await assertOwnsAssistant(caller, target)
+      if (args.archived === true && caller.assistantId === target.id) {
+        throw new Error('Refusing to retire the assistant this session belongs to: it would stop you mid-call. Ask the human or the agent that created you.')
+      }
+      if (args.adapter !== undefined && !isAgentAdapter(args.adapter)) {
+        throw new Error(`Unknown adapter ${args.adapter}; use one of ${ADAPTERS.join(', ')}.`)
+      }
+      const patch: Record<string, unknown> = {}
+      for (const key of ['name', 'persona', 'adapter', 'model', 'modeId', 'handoffThreshold', 'archived'] as const) {
+        if (args[key] !== undefined) patch[key] = args[key]
+      }
+      if (args.devEnvironmentId !== undefined) patch.devEnvironmentId = args.devEnvironmentId || null
+      if (args.cwd !== undefined) {
+        patch.cwd = normalizeCwd(args.cwd)
+        if (args.devEnvironmentId === undefined) patch.devEnvironmentId = null
+      }
+      if (args.removePicture === true) patch.avatar = null
+      else if (typeof args.picture === 'string' && args.picture.trim()) patch.avatar = await avatarFromSource(caller, args.picture.trim())
+      return describeAssistant(await updateAssistantFields(target.id, patch))
     }
 
     case 'hand_off': {

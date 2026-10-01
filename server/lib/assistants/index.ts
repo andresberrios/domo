@@ -128,9 +128,13 @@ export async function normalizeAssistantFields(
 }
 
 /** Make an assistant and its first session. */
-export async function createAssistant(input: Partial<Record<keyof AssistantFields, unknown>>): Promise<Assistant> {
+export async function createAssistant(
+  input: Partial<Record<keyof AssistantFields, unknown>>,
+  createdBy: Assistant['createdBy'] = 'user'
+): Promise<Assistant> {
   const fields = await normalizeAssistantFields(input)
   const assistant = await createAssistantRow({
+    createdBy,
     name: fields.name!,
     avatar: fields.avatar ?? null,
     persona: fields.persona ?? '',

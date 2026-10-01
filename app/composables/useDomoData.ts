@@ -118,6 +118,7 @@ function toAssistant(row: any): Assistant {
     currentSessionId: row.current_session_id ?? null,
     handoff: row.handoff ?? null,
     archived: !!row.archived,
+    createdBy: row.created_by ?? 'user',
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }

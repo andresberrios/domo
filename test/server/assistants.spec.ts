@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { query } from '../../server/lib/db'
@@ -364,6 +367,51 @@ describe('the mesh, for an assistant', () => {
     expect(listed.assistants).toMatchObject([{ id: assistant.id, name: 'Pete', currentSession: { id: assistant.currentSessionId } }])
     const sent = JSON.parse(await call(withToken(other.id), 'message_agent', { agentId: assistant.id, message: 'ahoy' }))
     expect(sent).toMatchObject({ delivered: true, assistantId: assistant.id, agentId: assistant.currentSessionId })
+  })
+
+  it('creates an assistant for whoever asks, with a picture from a file it can see', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'domo-assistant-'))
+    // The smallest PNG there is: the signature is what makes it one.
+    const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000'
+      + '1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082', 'hex')
+    await writeFile(join(dir, 'face.png'), png)
+    await writeFile(join(dir, 'face.txt'), 'not an image')
+    const maker = await createAgentSession({ adapter: 'codex', title: 'maker', cwd: dir })
+
+    const refused = await call(withToken(maker.id), 'create_assistant', { name: 'Clerk', picture: 'face.txt' })
+    expect(refused).toContain('is not a PNG')
+
+    const made = JSON.parse(await call(withToken(maker.id), 'create_assistant', {
+      name: 'Clerk', persona: 'Keep the books.', picture: 'face.png', handoffThreshold: null
+    }))
+    expect(made).toMatchObject({
+      name: 'Clerk', adapter: 'codex', cwd: dir, hasPicture: true, handoffThreshold: 'off', createdBy: `agent:${maker.id}`
+    })
+    const row = (await getAssistant(made.id))!
+    expect(row.avatar).toBe(`data:image/png;base64,${png.toString('base64')}`)
+    expect(row.currentSessionId).toBe(made.currentSession)
+  })
+
+  it('lets the creator and the assistant itself change it, and nobody else', async () => {
+    const maker = await createAgentSession({ adapter: 'claude-code', title: 'maker', cwd: '/tmp' })
+    const stranger = await createAgentSession({ adapter: 'claude-code', title: 'stranger', cwd: '/tmp' })
+    const made = JSON.parse(await call(withToken(maker.id), 'create_assistant', { name: 'Clerk', adapter: 'opencode' }))
+
+    expect(await call(withToken(stranger.id), 'update_assistant', { assistantId: made.id, name: 'Mine now' }))
+      .toContain('only the assistant itself and the agent that created it')
+
+    const renamed = JSON.parse(await call(withToken(maker.id), 'update_assistant', { assistantId: made.id, name: 'Bookkeeper', model: 'opencode-go/glm-5.3-flash' }))
+    expect(renamed).toMatchObject({ name: 'Bookkeeper', model: 'opencode-go/glm-5.3-flash' })
+    // A rename is the current session's name too, which notifications and the voice bar use.
+    expect((await getAgentSession(made.currentSession))!.title).toBe('Bookkeeper')
+
+    const itself = withToken(made.currentSession)
+    expect(JSON.parse(await call(itself, 'update_assistant', { persona: 'Be terse.' }))).toMatchObject({ persona: 'Be terse.' })
+    expect(await call(itself, 'update_assistant', { archived: true })).toContain('Refusing to retire')
+
+    expect(JSON.parse(await call(withToken(maker.id), 'update_assistant', { assistantId: made.id, archived: true })))
+      .toMatchObject({ archived: true })
+    expect(acp.stop).toHaveBeenCalledWith(made.currentSession)
   })
 
   it('records the note through hand_off', async () => {

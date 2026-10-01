@@ -80,6 +80,7 @@ function mapAssistant(r: any): Assistant {
     currentSessionId: r.current_session_id ?? null,
     handoff: r.handoff ?? null,
     archived: !!r.archived,
+    createdBy: r.created_by ?? 'user',
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -858,15 +859,17 @@ export interface AssistantFields {
   handoffThreshold: number | null
 }
 
-export async function createAssistantRow(input: AssistantFields): Promise<Assistant> {
+export async function createAssistantRow(
+  input: AssistantFields & { createdBy?: Assistant['createdBy'] }
+): Promise<Assistant> {
   const now = nowIso()
   const row = await queryOne(
     `insert into assistants
        (id, name, avatar, persona, adapter, model, mode_id, cwd, dev_environment_id, handoff_threshold,
-        created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11) returning *`,
+        created_by, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12) returning *`,
     [newId('as'), input.name, input.avatar, input.persona, input.adapter, input.model, input.modeId,
-      input.cwd, input.devEnvironmentId, input.handoffThreshold, now]
+      input.cwd, input.devEnvironmentId, input.handoffThreshold, input.createdBy ?? 'user', now]
   )
   const assistant = mapAssistant(row)
   bus.publish({ type: 'assistant-changed', assistantId: assistant.id })

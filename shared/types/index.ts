@@ -124,6 +124,8 @@ export interface Assistant {
   currentSessionId: string | null
   handoff: PendingHandoff | null
   archived: boolean
+  /** The human, or the agent that made it over the mesh. */
+  createdBy: 'user' | `agent:${string}`
   createdAt: string
   updatedAt: string
 }
