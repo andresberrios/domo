@@ -22,6 +22,8 @@ import {
   type AssistantFields
 } from '../repo'
 import { recentExchange, type HandoffPayload } from './context'
+import { avatarDataUrl, dataUrlBytes } from '../images/resize'
+import { avatarPrompt, generateImage } from '../images/generate'
 import { sessionStartability } from '../../../shared/retention'
 import { isAgentAdapter } from '../../../shared/agent-adapters'
 import {
@@ -31,7 +33,6 @@ import {
   HANDOFF_THRESHOLD_MAX,
   HANDOFF_THRESHOLD_MIN,
   MAX_ASSISTANT_NAME_CHARS,
-  MAX_AVATAR_CHARS,
   MAX_PERSONA_CHARS,
   isHandoffRequest
 } from '../../../shared/assistants'
@@ -84,10 +85,15 @@ export async function normalizeAssistantFields(
     out.persona = persona
   }
   if (input.avatar !== undefined) {
-    const avatar = input.avatar ? String(input.avatar) : null
-    if (avatar && !/^data:image\/(png|jpeg|webp|gif);base64,/.test(avatar)) fail('The picture must be a PNG, JPEG, WebP or GIF image.')
-    if (avatar && avatar.length > MAX_AVATAR_CHARS) fail('The picture is too large; pick a smaller one.')
-    out.avatar = avatar
+    // Any picture, any size: what is stored is always the same small square,
+    // made here from the bytes, whatever the data URL claimed to be.
+    const bytes = input.avatar ? dataUrlBytes(String(input.avatar)) : null
+    if (input.avatar && !bytes) fail('Pass the picture as a base64 data URL.')
+    try {
+      out.avatar = bytes ? await avatarDataUrl(bytes) : null
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error))
+    }
   }
   if (input.adapter !== undefined || !existing) {
     const adapter = input.adapter ?? 'claude-code'
@@ -169,6 +175,17 @@ export async function updateAssistantFields(
     updated = await setAssistantArchived(id, input.archived)
   }
   return updated!
+}
+
+/**
+ * Draw the assistant a picture from who it is, and use it. About a minute,
+ * on the human's ChatGPT plan through Codex. Returns the picture it set.
+ */
+export async function generateAssistantPicture(id: string, style?: string): Promise<Assistant> {
+  const assistant = await getAssistant(id)
+  if (!assistant) fail(`No assistant ${id}.`, 404)
+  const image = await generateImage(avatarPrompt({ name: assistant.name, persona: assistant.persona, style }))
+  return (await updateAssistant(id, { avatar: await avatarDataUrl(image.bytes) }))!
 }
 
 /**

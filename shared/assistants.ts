@@ -54,7 +54,5 @@ export const HANDOFF_THRESHOLD_MIN = 30
 export const HANDOFF_THRESHOLD_MAX = 95
 export const DEFAULT_HANDOFF_THRESHOLD = 75
 
-/** A data URL the browser made by shrinking the picture; a cap keeps the synced row small. */
-export const MAX_AVATAR_CHARS = 200_000
 export const MAX_PERSONA_CHARS = 20_000
 export const MAX_ASSISTANT_NAME_CHARS = 60

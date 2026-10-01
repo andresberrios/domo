@@ -81,6 +81,11 @@ credential.
 **Codex.** Run `codex login`, or set `NUXT_CODEX_API_KEY` or
 `NUXT_OPENAI_API_KEY`. Domo mounts `~/.codex` into environments.
 
+**Image generation** (assistant pictures, and the `generate_image` tool every
+agent has) uses Codex's built-in image tool on your ChatGPT login, so it counts
+against your Codex plan limits and bills nothing per image. Domo never uses an
+OpenAI API key for it; without a ChatGPT `codex login` it is unavailable.
+
 **OpenCode.** Host sessions use your `opencode auth login`. A development
 environment needs an OpenCode console service-account key in
 `NUXT_OPENCODE_API_KEY` or on the OpenCode settings page (for the same

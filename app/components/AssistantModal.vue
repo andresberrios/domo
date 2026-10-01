@@ -156,6 +156,24 @@ watch(() => form.projectId, (id) => {
   form.cwd = projects.value.find(project => project.id === id)?.repoPath ?? settings.value?.defaultCwd ?? ''
 })
 
+/** Drawing a picture from the name and persona: about a minute, on the ChatGPT plan through Codex. */
+const generating = ref(false)
+async function generateAvatar() {
+  generating.value = true
+  try {
+    const { avatar } = await $fetch<{ avatar: string }>('/api/assistants/avatar', {
+      method: 'POST',
+      body: { name: form.name, persona: form.persona },
+      timeout: 6 * 60_000
+    })
+    form.avatar = avatar
+  } catch (error: any) {
+    toast.add({ title: 'Could not generate a picture', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
+  } finally {
+    generating.value = false
+  }
+}
+
 const fileInput = ref<HTMLInputElement | null>(null)
 async function pickAvatar(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
@@ -174,7 +192,8 @@ async function save() {
   submitting.value = true
   const body = {
     name: form.name.trim(),
-    avatar: form.avatar,
+    // Only a new picture: the server re-encodes what it is sent.
+    ...props.assistant?.avatar === form.avatar ? {} : { avatar: form.avatar },
     persona: form.persona,
     adapter: form.adapter,
     model: form.model === ADAPTER_DEFAULT ? null : form.model,
@@ -231,6 +250,17 @@ async function save() {
           <UFormField label="Name" class="flex-1">
             <UInput v-model="form.name" placeholder="Inbox organizer" class="w-full" autofocus />
           </UFormField>
+          <UTooltip text="Draw one from the name and persona. About a minute, on your ChatGPT plan through Codex.">
+            <UButton
+              icon="i-lucide-wand-sparkles"
+              :label="generating ? 'Drawing…' : 'Generate'"
+              color="neutral"
+              variant="subtle"
+              :loading="generating"
+              :disabled="!form.name.trim()"
+              @click="generateAvatar"
+            />
+          </UTooltip>
           <UButton
             v-if="form.avatar"
             icon="i-lucide-x"

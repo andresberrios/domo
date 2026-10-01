@@ -23,7 +23,7 @@ export async function run(
   options: {
     cwd?: string
     env?: NodeJS.ProcessEnv
-    input?: string
+    input?: string | Buffer
     allowFailure?: boolean
     trimOutput?: boolean
     /**

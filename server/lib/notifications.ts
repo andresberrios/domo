@@ -1,8 +1,9 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, posix, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, posix, resolve } from 'node:path'
 
 import { newId } from './db'
 import { run } from './dev-env/docker'
+import { writeEnvironmentFile } from './dev-environments'
 import { RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { dataDir } from './paths'
 import { appendAgentEvent, createNotification, getDevEnvironment } from './repo'
@@ -80,6 +81,25 @@ export async function readAgentFile(caller: AgentSession, path: string): Promise
     throw new Error(`Could not read ${full} in the environment: ${message}`)
   })
   return Buffer.from(result.stdout, 'base64')
+}
+
+/**
+ * Write a file where the calling agent will find it: in its container when it
+ * runs in a development environment, on the host otherwise. A relative path
+ * is taken from its working directory. Returns the full path, as it sees it.
+ */
+export async function writeAgentFile(caller: AgentSession, path: string, bytes: Buffer): Promise<string> {
+  if (!caller.devEnvironmentId) {
+    const full = isAbsolute(path) ? path : resolve(caller.cwd, path)
+    await mkdir(dirname(full), { recursive: true })
+    await writeFile(full, bytes)
+    return full
+  }
+  const environment = await getDevEnvironment(caller.devEnvironmentId)
+  if (!environment || environment.retiredAt) throw new Error('This agent\'s development environment no longer exists.')
+  const full = posix.isAbsolute(path) ? path : posix.join(caller.cwd, path)
+  await writeEnvironmentFile(environment, full, bytes)
+  return full
 }
 
 /**

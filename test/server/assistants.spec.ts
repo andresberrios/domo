@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import sharp from 'sharp'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { query } from '../../server/lib/db'
@@ -116,7 +117,7 @@ describe('an assistant', () => {
   })
 
   it('refuses a picture that is not an image, and a threshold out of range', async () => {
-    await expect(pirate({ avatar: 'data:text/html;base64,PHNjcmlwdD4=' })).rejects.toThrow('must be a PNG')
+    await expect(pirate({ avatar: 'data:text/html;base64,PHNjcmlwdD4=' })).rejects.toThrow('not an image')
     await expect(pirate({ handoffThreshold: 5 })).rejects.toThrow('percentage')
   })
 
@@ -371,15 +372,14 @@ describe('the mesh, for an assistant', () => {
 
   it('creates an assistant for whoever asks, with a picture from a file it can see', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'domo-assistant-'))
-    // The smallest PNG there is: the signature is what makes it one.
-    const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000'
-      + '1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082', 'hex')
+    // A big photo-sized picture: nobody has to shrink it first.
+    const png = await sharp({ create: { width: 2000, height: 1500, channels: 3, background: '#c86428' } }).png().toBuffer()
     await writeFile(join(dir, 'face.png'), png)
     await writeFile(join(dir, 'face.txt'), 'not an image')
     const maker = await createAgentSession({ adapter: 'codex', title: 'maker', cwd: dir })
 
     const refused = await call(withToken(maker.id), 'create_assistant', { name: 'Clerk', picture: 'face.txt' })
-    expect(refused).toContain('is not a PNG')
+    expect(refused).toContain('not an image')
 
     const made = JSON.parse(await call(withToken(maker.id), 'create_assistant', {
       name: 'Clerk', persona: 'Keep the books.', picture: 'face.png', handoffThreshold: null
@@ -388,7 +388,8 @@ describe('the mesh, for an assistant', () => {
       name: 'Clerk', adapter: 'codex', cwd: dir, hasPicture: true, handoffThreshold: 'off', createdBy: `agent:${maker.id}`
     })
     const row = (await getAssistant(made.id))!
-    expect(row.avatar).toBe(`data:image/png;base64,${png.toString('base64')}`)
+    const stored = await sharp(Buffer.from(row.avatar!.split(',')[1]!, 'base64')).metadata()
+    expect([row.avatar!.slice(0, 23), stored.width, stored.height]).toEqual(['data:image/webp;base64,', 256, 256])
     expect(row.currentSessionId).toBe(made.currentSession)
   })
 
@@ -412,6 +413,21 @@ describe('the mesh, for an assistant', () => {
     expect(JSON.parse(await call(withToken(maker.id), 'update_assistant', { assistantId: made.id, archived: true })))
       .toMatchObject({ archived: true })
     expect(acp.stop).toHaveBeenCalledWith(made.currentSession)
+  })
+
+  it('refuses to generate an image at once when there is no ChatGPT login to run it on', async () => {
+    const previous = process.env.CODEX_HOME
+    process.env.CODEX_HOME = await mkdtemp(join(tmpdir(), 'domo-no-codex-'))
+    try {
+      const caller = await createAgentSession({ adapter: 'claude-code', title: 'artist', cwd: '/tmp' })
+      expect(await call(withToken(caller.id), 'generate_image', { prompt: 'an owl' })).toContain('logged in with ChatGPT')
+      expect(await call(withToken(caller.id), 'create_assistant', { name: 'Owl', generatePicture: true })).toContain('logged in with ChatGPT')
+      // Refused before anything was made, not after.
+      expect(JSON.parse(await call(withToken(caller.id), 'list_assistants')).assistants).toEqual([])
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = previous
+    }
   })
 
   it('records the note through hand_off', async () => {

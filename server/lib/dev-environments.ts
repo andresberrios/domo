@@ -956,7 +956,7 @@ export async function readEnvironmentFile(environment: DevEnvironment, path: str
 export async function writeEnvironmentFile(
   environment: DevEnvironment,
   path: string,
-  content: string
+  content: string | Buffer
 ): Promise<void> {
   const args = ['exec', '--interactive']
   if (environment.remoteUser) args.push('--user', environment.remoteUser)

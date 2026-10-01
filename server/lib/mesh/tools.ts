@@ -18,8 +18,9 @@ import {
 import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPort } from '../dev-environment-ports'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
-import { notifyHuman } from '../notifications'
-import { createAssistant, deliverToAssistant, recordHandoffNote, updateAssistantFields } from '../assistants'
+import { notifyHuman, writeAgentFile } from '../notifications'
+import { createAssistant, deliverToAssistant, generateAssistantPicture, recordHandoffNote, updateAssistantFields } from '../assistants'
+import { generateImage, hasChatGptLogin, ImageGenerationError } from '../images/generate'
 import { avatarFromSource } from '../assistants/avatar'
 import { deliverCronJob } from '../cron/scheduler'
 import {
@@ -307,6 +308,27 @@ async function assertOwnsAssistant(caller: AgentSession, assistant: Assistant): 
   )
 }
 
+/** Refuse at once, rather than a minute later, when there is no login to generate on. */
+async function assertCanGenerate(): Promise<void> {
+  if (!await hasChatGptLogin()) {
+    throw new ImageGenerationError(
+      'Image generation needs Codex logged in with ChatGPT on the human\'s machine. Domo does not use an OpenAI API key for it, because that bills the API per image.',
+      409
+    )
+  }
+}
+
+/** Start drawing an assistant's picture if asked; the caller hears when it is set. */
+async function drawPictureLater(caller: AgentSession, assistantId: string, args: any): Promise<{ picture?: string }> {
+  if (args.generatePicture !== true) return {}
+  await assertCanGenerate()
+  generateAssistantPicture(assistantId, typeof args.pictureStyle === 'string' ? args.pictureStyle : undefined).then(
+    assistant => tellAgent(caller.id, `The picture for assistant "${assistant.name}" (${assistant.id}) is generated and set.`),
+    error => tellAgent(caller.id, `Generating a picture for assistant ${assistantId} failed: ${error instanceof Error ? error.message : String(error)}`)
+  )
+  return { picture: 'generating in the background (about a minute); you will be messaged when it is set' }
+}
+
 async function describeAssistantOf(session: AgentSession) {
   const assistant = await getAssistant(session.assistantId!)
   if (!assistant) return null
@@ -583,8 +605,13 @@ export const MESH_TOOLS = [
         },
         picture: {
           type: 'string',
-          description: 'Its picture: a path to an image you can see, or an http(s) URL. PNG, JPEG, WebP or GIF, under about 140 KB (nothing resizes it; 160×160 is plenty).'
-        }
+          description: 'Its picture: a path to an image you can see, or an http(s) URL. Any common format and size; Domo crops and shrinks it.'
+        },
+        generatePicture: {
+          type: 'boolean',
+          description: 'Draw it a picture from its name and persona with image generation (about a minute, on the human\'s ChatGPT plan through Codex). Runs in the background; you are messaged when it is set.'
+        },
+        pictureStyle: { type: 'string', description: 'With generatePicture: the look, e.g. "watercolour fox" or "pixel art robot".' }
       },
       required: ['name'],
       additionalProperties: false
@@ -614,11 +641,33 @@ export const MESH_TOOLS = [
         },
         picture: {
           type: 'string',
-          description: 'Its picture: a path to an image you can see, or an http(s) URL. PNG, JPEG, WebP or GIF, under about 140 KB (nothing resizes it; 160×160 is plenty).'
+          description: 'Its picture: a path to an image you can see, or an http(s) URL. Any common format and size; Domo crops and shrinks it.'
         },
+        generatePicture: {
+          type: 'boolean',
+          description: 'Draw it a picture from its name and persona with image generation (about a minute, on the human\'s ChatGPT plan through Codex). Runs in the background; you are messaged when it is set.'
+        },
+        pictureStyle: { type: 'string', description: 'With generatePicture: the look, e.g. "watercolour fox" or "pixel art robot".' },
         removePicture: { type: 'boolean', description: 'Drop the picture, back to initials.' },
         archived: { type: 'boolean', description: 'true retires it; false brings it back. Refused on yourself.' }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'generate_image',
+    description:
+      'Generate an image from a description and save it as a PNG in your workspace (in your environment, if you run in '
+      + 'one). Uses Codex\'s image generation on the human\'s ChatGPT plan: no API billing, but it counts against their '
+      + 'Codex limits, so make one image per real need. Takes about a minute and runs in the background: you are '
+      + 'messaged with the path when it is saved. Show it to the human with notify_supervisor and files.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'What to draw: subject, style, composition, colours, any exact text.' },
+        path: { type: 'string', description: 'Where to save it, relative to your working directory or absolute. Default generated-images/<name>-<time>.png.' }
+      },
+      required: ['prompt'],
       additionalProperties: false
     }
   },
@@ -1257,6 +1306,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (args.adapter !== undefined && !isAgentAdapter(args.adapter)) {
         throw new Error(`Unknown adapter ${args.adapter}; use one of ${ADAPTERS.join(', ')}.`)
       }
+      if (args.generatePicture === true) await assertCanGenerate()
       const picture = typeof args.picture === 'string' && args.picture.trim()
         ? await avatarFromSource(caller, args.picture.trim())
         : null
@@ -1272,7 +1322,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         // Like spawn_agent: the caller's own directory, or its environment's checkout.
         cwd: args.devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : await hostCwdFor(caller))
       }, `agent:${caller.id}`)
-      return describeAssistant(assistant)
+      return { ...describeAssistant(assistant), ...await drawPictureLater(caller, assistant.id, args) }
     }
 
     case 'update_assistant': {
@@ -1287,6 +1337,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (args.adapter !== undefined && !isAgentAdapter(args.adapter)) {
         throw new Error(`Unknown adapter ${args.adapter}; use one of ${ADAPTERS.join(', ')}.`)
       }
+      if (args.generatePicture === true) await assertCanGenerate()
       const patch: Record<string, unknown> = {}
       for (const key of ['name', 'persona', 'adapter', 'model', 'modeId', 'handoffThreshold', 'archived'] as const) {
         if (args[key] !== undefined) patch[key] = args[key]
@@ -1298,7 +1349,24 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       }
       if (args.removePicture === true) patch.avatar = null
       else if (typeof args.picture === 'string' && args.picture.trim()) patch.avatar = await avatarFromSource(caller, args.picture.trim())
-      return describeAssistant(await updateAssistantFields(target.id, patch))
+      const updated = await updateAssistantFields(target.id, patch)
+      return { ...describeAssistant(updated), ...await drawPictureLater(caller, updated.id, args) }
+    }
+
+    case 'generate_image': {
+      const prompt = String(args.prompt ?? '').trim()
+      if (!prompt) throw new Error('Describe the image to generate.')
+      await assertCanGenerate()
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
+      const slug = prompt.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'image'
+      const path = String(args.path ?? '').trim() || `generated-images/${slug}-${stamp}.png`
+      generateImage(prompt).then(
+        async (image) => {
+          const saved = await writeAgentFile(caller, path, image.bytes)
+          await tellAgent(caller.id, `The image you asked for is saved at ${saved} (${Math.round(image.bytes.length / 1024)} KB PNG). Prompt: ${clip(prompt, 200)}`)
+        }
+      ).catch(error => tellAgent(caller.id, `Image generation failed: ${error instanceof Error ? error.message : String(error)} Prompt: ${clip(prompt, 200)}`))
+      return { generating: true, path, note: 'About a minute; you will be messaged when it is saved.' }
     }
 
     case 'hand_off': {
