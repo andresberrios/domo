@@ -69,6 +69,7 @@ const agent: AgentSession = {
   usage: null,
   archived: false,
   spawnedBy: null,
+  assistantId: null,
 }
 
 mockNuxtImport('useProjects', () => () => ({ projects: computed(() => [project]), isReady: ref(true) }))

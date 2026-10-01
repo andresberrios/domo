@@ -1,4 +1,5 @@
 import { listAgentEventsWindow } from '../repo'
+import { isAssistantContext } from '../../../shared/assistants'
 import type { AgentEvent } from '../../../shared/types'
 
 export const TRANSCRIPT_DIGEST_KINDS = ['messages', 'thoughts', 'tools', 'plan', 'notices'] as const
@@ -92,8 +93,9 @@ function fold(events: AgentEvent[], messageChars: number): TranscriptPageItem[] 
     switch (event.type) {
       case 'user_message': {
         flushText()
+        // The assistant's own context, which Domo put there, is not something the human said.
         const text = (event.payload?.content ?? [])
-          .filter((block: any) => block?.type === 'text')
+          .filter((block: any) => block?.type === 'text' && !isAssistantContext(block.text))
           .map((block: any) => block.text)
           .join(' ')
         items.push({ seq, kind: 'user', text: summarise(text, Math.min(messageChars, 2000)) })

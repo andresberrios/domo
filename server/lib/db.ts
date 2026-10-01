@@ -193,6 +193,38 @@ delete from settings where key in (
   'systemInstruction', 'proactiveNotifications', 'language', 'autoTitle'
 );
 
+-- An assistant: a named identity that outlives any one coding session. Its
+-- sessions are ordinary agent_sessions rows chained by handoffs; this row says
+-- who it is, what the next session starts on, and which session is current.
+-- Streamed to the browser, so nothing secret: the avatar is a small data URL
+-- the browser shrank before upload, and the row is written on edits and
+-- handoffs only, never per turn.
+create table if not exists assistants (
+  id text primary key,
+  name text not null,
+  avatar text,
+  persona text not null default '',
+  adapter text not null default 'claude-code',
+  model text,
+  mode_id text,
+  cwd text not null,
+  dev_environment_id text references dev_environments(id) on delete set null,
+  -- Percent of the context window at which a finished turn triggers a
+  -- handoff. Null is never.
+  handoff_threshold integer,
+  current_session_id text,
+  -- A handoff under way: why, which session is writing the note, and the note
+  -- once the agent has written it. Null when none is.
+  handoff jsonb,
+  archived boolean not null default false,
+  created_at text not null,
+  updated_at text not null
+);
+
+-- The assistant a session belongs to; null for an ordinary session.
+alter table agent_sessions add column if not exists assistant_id text references assistants(id) on delete set null;
+create index if not exists agent_sessions_assistant on agent_sessions(assistant_id, created_at);
+
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.
 create table if not exists agent_events (
@@ -372,6 +404,15 @@ create table if not exists cron_jobs (
 create index if not exists cron_jobs_due on cron_jobs(next_run_at) where enabled = true;
 create index if not exists cron_jobs_agent on cron_jobs(agent_session_id);
 
+-- A schedule may wake an assistant instead of one session: it is delivered to
+-- whichever session is current when it fires, so it survives every handoff.
+-- Exactly one of the two targets is set.
+alter table cron_jobs add column if not exists assistant_id text references assistants(id) on delete cascade;
+alter table cron_jobs alter column agent_session_id drop not null;
+alter table cron_jobs drop constraint if exists cron_jobs_one_target;
+alter table cron_jobs add constraint cron_jobs_one_target
+  check ((agent_session_id is null) <> (assistant_id is null));
+
 -- One row per attempted firing makes failures inspectable and gives each
 -- scheduled instant a unique durable claim across overlapping timer ticks.
 create table if not exists cron_runs (
@@ -476,6 +517,7 @@ create table if not exists usage_providers (
 -- Electric replays updates from the WAL: FULL replica identity makes sure a
 -- changed row arrives complete, not just its key + changed columns.
 alter table agent_sessions replica identity full;
+alter table assistants replica identity full;
 alter table agent_events replica identity full;
 alter table agent_permissions replica identity full;
 alter table agent_inbox replica identity full;

@@ -10,6 +10,7 @@ import type {
   AgentSessionStatus,
   AgentSubscription,
   AgentUsage,
+  Assistant,
   CronJob,
   CronRun,
   DevEnvironment,
@@ -21,6 +22,7 @@ import type {
   MessageDelivery,
   MessageOrigin,
   NotificationAttachment,
+  PendingHandoff,
   PendingPermission,
   Project,
   UsageLimit,
@@ -57,7 +59,28 @@ function mapAgentSession(r: any): AgentSession {
     lastActivityAt: r.last_activity_at,
     archived: r.archived,
     usage: r.usage ?? null,
-    spawnedBy: r.spawned_by ?? null
+    spawnedBy: r.spawned_by ?? null,
+    assistantId: r.assistant_id ?? null
+  }
+}
+
+function mapAssistant(r: any): Assistant {
+  return {
+    id: r.id,
+    name: r.name,
+    avatar: r.avatar ?? null,
+    persona: r.persona ?? '',
+    adapter: isAgentAdapter(r.adapter) ? r.adapter : 'claude-code',
+    model: r.model ?? null,
+    modeId: r.mode_id ?? null,
+    cwd: r.cwd,
+    devEnvironmentId: r.dev_environment_id ?? null,
+    handoffThreshold: r.handoff_threshold ?? null,
+    currentSessionId: r.current_session_id ?? null,
+    handoff: r.handoff ?? null,
+    archived: !!r.archived,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
   }
 }
 
@@ -201,7 +224,8 @@ function mapMcp(r: any): McpServer {
 function mapCronJob(r: any): CronJob {
   return {
     id: r.id,
-    agentSessionId: r.agent_session_id,
+    agentSessionId: r.agent_session_id ?? null,
+    assistantId: r.assistant_id ?? null,
     name: r.name,
     prompt: r.prompt,
     scheduleType: r.schedule_type,
@@ -647,6 +671,17 @@ export async function disableCronJobsForAgent(agentSessionId: string): Promise<n
   return rows.length
 }
 
+/** Pause every schedule of an assistant that was put away. */
+export async function disableCronJobsForAssistant(assistantId: string): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `update cron_jobs set enabled = false, next_run_at = null, updated_at = $2
+      where assistant_id = $1 and enabled = true returning id`,
+    [assistantId, nowIso()]
+  )
+  for (const row of rows) bus.publish({ type: 'cron-job-changed', cronJobId: row.id })
+  return rows.length
+}
+
 /** Drop the subscriptions an unstartable session is either end of. Pure plumbing; no record value. */
 export async function removeAllAgentSubscriptions(agentSessionId: string): Promise<number> {
   const rows = await query(
@@ -669,16 +704,18 @@ export async function createAgentSession(input: {
   model?: string | null
   devEnvironmentId?: string | null
   spawnedBy?: string | null
+  assistantId?: string | null
 }): Promise<AgentSession> {
   const now = nowIso()
   const row = await queryOne(
     `insert into agent_sessions
-       (id, adapter, title, cwd, dev_environment_id, status, mode_id, model, spawned_by,
+       (id, adapter, title, cwd, dev_environment_id, status, mode_id, model, spawned_by, assistant_id,
         created_at, updated_at)
-     values ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $9) returning *`,
+     values ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $10, $10) returning *`,
     [
       newId('ag'), input.adapter, input.title, input.cwd,
-      input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, input.spawnedBy ?? null, now
+      input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, input.spawnedBy ?? null,
+      input.assistantId ?? null, now
     ]
   )
   bus.publish({ type: 'agent-list-changed' })
@@ -760,10 +797,10 @@ export async function titleUntitledAgentSession(id: string, title: string): Prom
 }
 
 /**
- * Whether `ancestorId` spawned `agentId`, directly or through agents it
- * spawned in turn. The ownership edge the mesh ties cross-agent powers to.
+ * Whether `ancestorId` (or any of several, such as every session of one
+ * assistant) spawned `agentId`, directly or through agents it spawned in turn. The ownership edge the mesh ties cross-agent powers to.
  */
-export async function isSpawnedBy(agentId: string, ancestorId: string): Promise<boolean> {
+export async function isSpawnedBy(agentId: string, ancestorId: string | string[]): Promise<boolean> {
   const row = await queryOne(
     `with recursive chain(id, spawned_by, depth) as (
        select id, spawned_by, 0 from agent_sessions where id = $1
@@ -772,8 +809,8 @@ export async function isSpawnedBy(agentId: string, ancestorId: string): Promise<
          from agent_sessions a join chain c on a.id = c.spawned_by
         where c.depth < 32
      )
-     select 1 from chain where spawned_by = $2 limit 1`,
-    [agentId, ancestorId]
+     select 1 from chain where spawned_by = any($2::text[]) limit 1`,
+    [agentId, Array.isArray(ancestorId) ? ancestorId : [ancestorId]]
   )
   return !!row
 }
@@ -781,6 +818,172 @@ export async function isSpawnedBy(agentId: string, ancestorId: string): Promise<
 export async function deleteAgentSession(id: string): Promise<void> {
   await query('delete from agent_sessions where id = $1', [id])
   bus.publish({ type: 'agent-list-changed' })
+}
+
+/* ------------------------------------------------------------------ */
+/* assistants                                                          */
+/* ------------------------------------------------------------------ */
+
+export async function listAssistants(includeArchived = false): Promise<Assistant[]> {
+  const rows = await query(
+    `select * from assistants ${includeArchived ? '' : 'where archived = false'} order by name asc`
+  )
+  return rows.map(mapAssistant)
+}
+
+export async function getAssistant(id: string): Promise<Assistant | null> {
+  const row = await queryOne('select * from assistants where id = $1', [id])
+  return row ? mapAssistant(row) : null
+}
+
+/** The assistant a session belongs to, if any. */
+export async function getAssistantOfSession(agentSessionId: string): Promise<Assistant | null> {
+  const row = await queryOne(
+    `select a.* from assistants a join agent_sessions s on s.assistant_id = a.id where s.id = $1`,
+    [agentSessionId]
+  )
+  return row ? mapAssistant(row) : null
+}
+
+export interface AssistantFields {
+  name: string
+  avatar: string | null
+  persona: string
+  adapter: AgentAdapter
+  model: string | null
+  modeId: string | null
+  cwd: string
+  devEnvironmentId: string | null
+  handoffThreshold: number | null
+}
+
+export async function createAssistantRow(input: AssistantFields): Promise<Assistant> {
+  const now = nowIso()
+  const row = await queryOne(
+    `insert into assistants
+       (id, name, avatar, persona, adapter, model, mode_id, cwd, dev_environment_id, handoff_threshold,
+        created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11) returning *`,
+    [newId('as'), input.name, input.avatar, input.persona, input.adapter, input.model, input.modeId,
+      input.cwd, input.devEnvironmentId, input.handoffThreshold, now]
+  )
+  const assistant = mapAssistant(row)
+  bus.publish({ type: 'assistant-changed', assistantId: assistant.id })
+  return assistant
+}
+
+export async function updateAssistant(
+  id: string,
+  patch: Partial<AssistantFields & { currentSessionId: string | null, archived: boolean }>
+): Promise<Assistant | null> {
+  const columns: Record<string, string> = {
+    name: 'name',
+    avatar: 'avatar',
+    persona: 'persona',
+    adapter: 'adapter',
+    model: 'model',
+    modeId: 'mode_id',
+    cwd: 'cwd',
+    devEnvironmentId: 'dev_environment_id',
+    handoffThreshold: 'handoff_threshold',
+    currentSessionId: 'current_session_id',
+    archived: 'archived'
+  }
+  const sets = ['updated_at = $2']
+  const params: any[] = [id, nowIso()]
+  for (const [key, column] of Object.entries(columns)) {
+    const value = (patch as any)[key]
+    if (value === undefined) continue
+    params.push(value)
+    sets.push(`${column} = $${params.length}`)
+  }
+  const row = await queryOne(`update assistants set ${sets.join(', ')} where id = $1 returning *`, params)
+  if (!row) return null
+  bus.publish({ type: 'assistant-changed', assistantId: id })
+  return mapAssistant(row)
+}
+
+/**
+ * Write the handoff under way. `expect` makes it a compare-and-set on the
+ * session writing the note, so two triggers cannot both start one and a late
+ * note cannot land on a handoff that has already completed: `null` claims a
+ * free slot, a session id updates only that session's handoff.
+ */
+export async function setAssistantHandoff(
+  id: string,
+  handoff: PendingHandoff | null,
+  expect?: string | null
+): Promise<Assistant | null> {
+  const guard = expect === undefined
+    ? ''
+    : expect === null ? ' and handoff is null' : ` and handoff->>'sessionId' = $4`
+  const params: any[] = [id, handoff ? JSON.stringify(handoff) : null, nowIso()]
+  if (expect) params.push(expect)
+  const row = await queryOne(
+    `update assistants set handoff = $2::jsonb, updated_at = $3 where id = $1${guard} returning *`,
+    params
+  )
+  if (!row) return null
+  bus.publish({ type: 'assistant-changed', assistantId: id })
+  return mapAssistant(row)
+}
+
+/** Every session of an assistant, oldest first: its journal. */
+export async function listAssistantSessions(assistantId: string): Promise<AgentSession[]> {
+  const rows = await query(
+    'select * from agent_sessions where assistant_id = $1 order by created_at asc',
+    [assistantId]
+  )
+  return rows.map(mapAgentSession)
+}
+
+/**
+ * Hand what was still waiting for one session to the next: its queued
+ * messages, and the subscriptions on either side of it. Agents it followed
+ * still report to the assistant, and whoever followed the assistant still
+ * hears about it.
+ */
+export async function carryOverToSession(fromId: string, toId: string): Promise<number> {
+  const moved = await query(
+    `update agent_inbox set agent_session_id = $2 where agent_session_id = $1 and delivered_at is null returning *`,
+    [fromId, toId]
+  )
+  for (const row of moved) {
+    bus.publish({ type: 'agent-inbox-changed', agentSessionId: toId, message: mapInboxMessage(row) })
+  }
+  await query(
+    `insert into agent_subscriptions (subscriber_id, target_id, created_at, remaining_turns)
+       select $2, target_id, created_at, remaining_turns from agent_subscriptions
+        where subscriber_id = $1 and target_id <> $2
+     on conflict do nothing`,
+    [fromId, toId]
+  )
+  await query(
+    `insert into agent_subscriptions (subscriber_id, target_id, created_at, remaining_turns)
+       select subscriber_id, $2, created_at, remaining_turns from agent_subscriptions
+        where target_id = $1 and subscriber_id <> $2
+     on conflict do nothing`,
+    [fromId, toId]
+  )
+  await query('delete from agent_subscriptions where subscriber_id = $1 or target_id = $1', [fromId])
+  return moved.length
+}
+
+/** Whether anything has been said to a session yet: its first prompt is the one that carries the assistant's context. */
+export async function hasUserMessage(agentSessionId: string): Promise<boolean> {
+  return !!await queryOne(
+    `select 1 from agent_events where agent_session_id = $1 and type = 'user_message' limit 1`,
+    [agentSessionId]
+  )
+}
+
+/** The newest event of one type in a session. */
+export async function latestAgentEvent(agentSessionId: string, type: string): Promise<AgentEvent | null> {
+  const row = await queryOne(
+    `select * from agent_events where agent_session_id = $1 and type = $2 order by seq desc limit 1`,
+    [agentSessionId, type]
+  )
+  return row ? mapAgentEvent(row) : null
 }
 
 export async function listAgentEvents(
@@ -1096,17 +1299,37 @@ export async function setUsageProviderState(
 /* scheduled agent prompts                                            */
 /* ------------------------------------------------------------------ */
 
-type StoredCronInput = Pick<CronJob,
+type StoredCronInput = { assistantId?: string | null } & Pick<CronJob,
   'agentSessionId' | 'name' | 'prompt' | 'scheduleType' | 'cronExpression'
   | 'timezone' | 'runAt' | 'enabled' | 'delivery' | 'nextRunAt' | 'createdBy'>
 
-export async function listCronJobs(agentSessionId?: string): Promise<CronJob[]> {
+export async function listCronJobs(
+  target?: string | { agentSessionId?: string, assistantId?: string }
+): Promise<CronJob[]> {
+  if (typeof target === 'string') target = { agentSessionId: target }
+  const where = target?.assistantId ? 'where assistant_id = $1' : target?.agentSessionId ? 'where agent_session_id = $1' : ''
   const rows = await query(
-    `select * from cron_jobs ${agentSessionId ? 'where agent_session_id = $1' : ''}
+    `select * from cron_jobs ${where}
      order by coalesce(next_run_at, '9999') asc, created_at desc`,
-    agentSessionId ? [agentSessionId] : []
+    where ? [target!.assistantId ?? target!.agentSessionId] : []
   )
   return rows.map(mapCronJob)
+}
+
+/**
+ * A schedule's target must be able to take its prompt: a session that can
+ * still start, or an assistant that has not been archived. An assistant whose
+ * workspace went away is caught when it fires, where the error is recorded.
+ */
+async function assertCronTarget(input: StoredCronInput): Promise<void> {
+  if (input.assistantId) {
+    const assistant = await getAssistant(input.assistantId)
+    if (!assistant) throw new Error(`No assistant ${input.assistantId}.`)
+    if (assistant.archived) throw new Error(`Assistant "${assistant.name}" is archived; unarchive it to schedule work for it.`)
+    return
+  }
+  const target = await getAgentSessionWithEnvironment(input.agentSessionId ?? '')
+  assertSessionStartable(target.session, target.environment, null, 'scheduling a task for it')
 }
 
 export async function getCronJob(id: string): Promise<CronJob | null> {
@@ -1121,18 +1344,17 @@ export async function getCronJob(id: string): Promise<CronJob | null> {
  * belongs where every path already meets.
  */
 export async function createCronJob(input: StoredCronInput): Promise<CronJob> {
-  const created = await getAgentSessionWithEnvironment(input.agentSessionId)
-  assertSessionStartable(created.session, created.environment, null, 'scheduling a task for it')
+  await assertCronTarget(input)
   const now = nowIso()
   const row = await queryOne(
     `insert into cron_jobs
-       (id, agent_session_id, name, prompt, schedule_type, cron_expression, timezone,
+       (id, agent_session_id, assistant_id, name, prompt, schedule_type, cron_expression, timezone,
         run_at, enabled, delivery, next_run_at, created_by, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+     values ($1, $2, $14, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
      returning *`,
     [newId('cron'), input.agentSessionId, input.name, input.prompt, input.scheduleType,
       input.cronExpression, input.timezone, input.runAt, input.enabled, input.delivery,
-      input.nextRunAt, input.createdBy, now]
+      input.nextRunAt, input.createdBy, now, input.assistantId ?? null]
   )
   const job = mapCronJob(row)
   bus.publish({ type: 'cron-job-changed', cronJobId: job.id })
@@ -1140,17 +1362,16 @@ export async function createCronJob(input: StoredCronInput): Promise<CronJob> {
 }
 
 export async function replaceCronJob(id: string, input: StoredCronInput): Promise<CronJob | null> {
-  const target = await getAgentSessionWithEnvironment(input.agentSessionId)
-  assertSessionStartable(target.session, target.environment, null, 'scheduling a task for it')
+  await assertCronTarget(input)
   const row = await queryOne(
     `update cron_jobs set
-       agent_session_id = $2, name = $3, prompt = $4, schedule_type = $5,
+       agent_session_id = $2, assistant_id = $13, name = $3, prompt = $4, schedule_type = $5,
        cron_expression = $6, timezone = $7, run_at = $8, enabled = $9,
        delivery = $10, next_run_at = $11, updated_at = $12
      where id = $1 returning *`,
     [id, input.agentSessionId, input.name, input.prompt, input.scheduleType,
       input.cronExpression, input.timezone, input.runAt, input.enabled,
-      input.delivery, input.nextRunAt, nowIso()]
+      input.delivery, input.nextRunAt, nowIso(), input.assistantId ?? null]
   )
   if (!row) return null
   const job = mapCronJob(row)

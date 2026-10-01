@@ -1,5 +1,5 @@
 import { normalizeCronJobInput } from '../../lib/cron/input'
-import { getAgentSession, getCronJob, replaceCronJob } from '../../lib/repo'
+import { getAgentSession, getAssistant, getCronJob, replaceCronJob } from '../../lib/repo'
 import type { CronJobInput } from '../../lib/cron/input'
 
 export default defineEventHandler(async (event) => {
@@ -13,8 +13,11 @@ export default defineEventHandler(async (event) => {
     if (switchesToCron && switchesToOnce) {
       throw new Error('Provide only one of cronExpression or runAt.')
     }
+    // Naming one target replaces the other.
+    const retargets = patch.agentSessionId !== undefined || patch.assistantId !== undefined
     const input = normalizeCronJobInput({
-      agentSessionId: patch.agentSessionId ?? existing.agentSessionId,
+      agentSessionId: retargets ? patch.agentSessionId : existing.agentSessionId,
+      assistantId: retargets ? patch.assistantId : existing.assistantId,
       name: patch.name ?? existing.name,
       prompt: patch.prompt ?? existing.prompt,
       cronExpression: switchesToOnce ? null : (patch.cronExpression ?? existing.cronExpression),
@@ -24,8 +27,8 @@ export default defineEventHandler(async (event) => {
       enabled: patch.enabled ?? existing.enabled,
       createdBy: existing.createdBy
     })
-    if (!await getAgentSession(input.agentSessionId)) {
-      throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
+    if (input.assistantId ? !await getAssistant(input.assistantId) : !await getAgentSession(input.agentSessionId!)) {
+      throw createError({ statusCode: 404, statusMessage: input.assistantId ? 'Assistant not found' : 'Agent session not found' })
     }
     return replaceCronJob(id, input)
   } catch (error) {

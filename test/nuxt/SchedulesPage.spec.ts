@@ -33,6 +33,7 @@ function job(overrides: Partial<CronJob> = {}): CronJob {
   return {
     id: 'cron_1',
     agentSessionId: 'ag_chosen',
+    assistantId: null,
     name: 'Review CI',
     prompt: 'Inspect CI.',
     scheduleType: 'cron',

@@ -1,4 +1,5 @@
 import { acpManager } from '../acp/manager'
+import { deliverToAssistant } from '../assistants'
 import { sessionStartability } from '../../../shared/retention'
 import { nextCronOccurrence } from './expression'
 import {
@@ -13,6 +14,21 @@ import {
 import type { CronJob } from '../../../shared/types'
 
 const TICK_MS = 15_000
+
+/**
+ * Hand a job's prompt to its target: one session, or an assistant's current
+ * session. Shared with `run_scheduled_task`, so a test run is the real thing.
+ */
+export function deliverCronJob(job: CronJob) {
+  const input = {
+    content: [{ type: 'text', text: `[Scheduled task "${job.name}" (${job.id})]\n\n${job.prompt}` }],
+    delivery: job.delivery,
+    origin: `cron:${job.id}` as const
+  }
+  return job.assistantId
+    ? deliverToAssistant(job.assistantId, input)
+    : acpManager.deliver(job.agentSessionId!, input)
+}
 
 export class CronScheduler {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -55,10 +71,14 @@ export class CronScheduler {
     // so this is the case where the two raced — a job claimed in the same tick.
     // Disabling here as well means a due job can never spin: the alternative is
     // a failed run every fifteen seconds for ever.
-    const { session, environment } = await getAgentSessionWithEnvironment(job.agentSessionId)
-    if (session && !sessionStartability(session, environment).startable) {
-      await disableCronJobsForAgent(job.agentSessionId)
-      return
+    // An assistant's job has no session of its own to check: it goes to
+    // whichever session is current, and a failure is recorded on the run.
+    if (job.agentSessionId) {
+      const { session, environment } = await getAgentSessionWithEnvironment(job.agentSessionId)
+      if (session && !sessionStartability(session, environment).startable) {
+        await disableCronJobsForAgent(job.agentSessionId)
+        return
+      }
     }
     let nextRunAt: string | null
     try {
@@ -76,15 +96,8 @@ export class CronScheduler {
     if (!run) return
 
     try {
-      const result = await acpManager.deliver(job.agentSessionId, {
-        content: [{
-          type: 'text',
-          text: `[Scheduled task "${job.name}" (${job.id})]\n\n${job.prompt}`
-        }],
-        delivery: job.delivery,
-        origin: `cron:${job.id}`
-      })
-      await appendAgentEvent(job.agentSessionId, 'cron_triggered', {
+      const result = await deliverCronJob(job)
+      await appendAgentEvent(result.agentSessionId, 'cron_triggered', {
         cronJobId: job.id,
         name: job.name,
         scheduledFor: run.scheduledFor,

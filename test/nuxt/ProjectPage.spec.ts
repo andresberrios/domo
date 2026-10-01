@@ -67,6 +67,7 @@ const agents: AgentSession[] = [
     usage: null,
     archived: false,
     spawnedBy: null,
+    assistantId: null,
   },
   {
     id: 'ag_local',
@@ -90,6 +91,7 @@ const agents: AgentSession[] = [
     usage: null,
     archived: false,
     spawnedBy: null,
+    assistantId: null,
   }
 ]
 

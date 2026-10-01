@@ -70,6 +70,62 @@ export interface AgentSession {
   usage: AgentUsage | null
   /** The agent that spawned this one over the mesh; null for one a person started. */
   spawnedBy: string | null
+  /** The assistant this session is one chapter of; null for an ordinary session. */
+  assistantId: string | null
+}
+
+/* ------------------------------------------------------------------ */
+/* assistants                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Why a session handed its work to the next one: the human asked (the button,
+ * or in words), the context window passed the assistant's threshold, or the
+ * agent decided by itself (the conversation moved on), or the session it was
+ * in could no longer run (its workspace went away).
+ */
+export type HandoffReason = 'user' | 'context' | 'agent' | 'unavailable'
+
+/** A handoff under way. Written when it is asked for, completed at the end of the writing session's turn. */
+export interface PendingHandoff {
+  reason: HandoffReason
+  /** The session writing the note. */
+  sessionId: string
+  requestedAt: string
+  /** The note, once the agent has written it with `hand_off`. */
+  note?: string
+  /** What the next session should start on at once, instead of waiting for the human. */
+  nextPrompt?: string
+}
+
+/**
+ * A named identity that outlives its coding sessions.
+ *
+ * Its sessions are ordinary `agent_sessions` rows (`assistantId` names it),
+ * chained by handoffs: when one fills up or drifts, it writes a note and the
+ * next one starts from it. `currentSessionId` is where anything said to the
+ * assistant goes. Harness, model and workspace are what the *next* session
+ * starts on; the current one keeps its own.
+ */
+export interface Assistant {
+  id: string
+  name: string
+  /** A small image as a data URL, or null for initials. */
+  avatar: string | null
+  /** Who it is and how it works, in the human's words. */
+  persona: string
+  adapter: AgentAdapter
+  model: string | null
+  modeId: string | null
+  cwd: string
+  devEnvironmentId: string | null
+  /** Context-window percent at which a finished turn hands off. Null is never. */
+  handoffThreshold: number | null
+  currentSessionId: string | null
+  handoff: PendingHandoff | null
+  archived: boolean
+  createdAt: string
+  updatedAt: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -422,7 +478,10 @@ export type CronRunStatus = 'running' | 'delivered' | 'failed'
 /** A durable prompt that wakes an existing coding-agent session on a schedule. */
 export interface CronJob {
   id: string
-  agentSessionId: string
+  /** The session it wakes; null when it wakes an assistant instead. */
+  agentSessionId: string | null
+  /** The assistant it wakes, through whichever session is current when it fires. */
+  assistantId: string | null
   name: string
   prompt: string
   scheduleType: CronScheduleType
@@ -656,6 +715,7 @@ export type StreamEvent =
   | { type: 'agent-event', agentSessionId: string, event: AgentEvent }
   | { type: 'agent-changed', agentSessionId: string }
   | { type: 'agent-list-changed' }
+  | { type: 'assistant-changed', assistantId: string }
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
   | { type: 'agent-inbox-changed', agentSessionId: string, message: AgentInboxMessage }
   // TODO: published by writeUsageLimits/setUsageProviderState in repo.ts, but

@@ -19,6 +19,8 @@ import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPo
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import { notifyHuman } from '../notifications'
+import { deliverToAssistant, recordHandoffNote } from '../assistants'
+import { deliverCronJob } from '../cron/scheduler'
 import {
   addAgentSubscription,
   appendAgentEvent,
@@ -29,6 +31,7 @@ import {
   finishCronRun,
   getAgentSession,
   getAgentSessionWithEnvironment,
+  getAssistant,
   getCronJob,
   getDevEnvironment,
   getProject,
@@ -36,6 +39,7 @@ import {
   listAgentFollowers,
   listAgentSessions,
   listAgentSubscriptions,
+  listAssistants,
   listCronJobs,
   listCronRuns,
   listDevEnvironments,
@@ -76,7 +80,8 @@ export const MESH_INSTRUCTIONS = [
   'An agent session has an id (ag_…); most tools default to your own session when agentId is omitted.',
   'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own copy of it. Agents run either on the host or inside an environment.',
   'You cannot wait for another agent: its turn ends long after yours. Use spawn_agent or subscribe_to_agent and Domo will message you when it finishes.',
-  'To reach the human, use notify_supervisor: it stays in the UI until they have seen it.'
+  'To reach the human, use notify_supervisor: it stays in the UI until they have seen it.',
+  'An assistant (as_…) is a named agent the human keeps talking to: it lives across many sessions chained by handoffs, so message it by its assistant id, not a session id.'
 ].join(' ')
 
 /** One line of text, clipped. */
@@ -181,11 +186,30 @@ async function requireEnvironment(id: unknown): Promise<DevEnvironment> {
  */
 async function assertOwns(caller: AgentSession, target: AgentSession, doing: string): Promise<void> {
   if (target.id === caller.id) return
-  if (await isSpawnedBy(target.id, caller.id)) return
+  // An assistant is one agent across its sessions: what an earlier session
+  // spawned, and the earlier sessions themselves, are still its own.
+  if (caller.assistantId && target.assistantId === caller.assistantId) return
+  if (await isSpawnedBy(target.id, caller.assistantId ? await assistantSessionIds(caller.assistantId) : caller.id)) return
   throw new Error(
     `Refusing ${doing}: agent "${target.title}" (${target.id}) was not spawned by you. `
     + 'You can only do this for your own session and agents you spawned; ask the human or the agent\'s owner.'
   )
+}
+
+async function assistantSessionIds(assistantId: string): Promise<string[]> {
+  return (await listAgentSessions(true)).filter(session => session.assistantId === assistantId).map(session => session.id)
+}
+
+/** The assistant a schedule names may only be scheduled for by that assistant's own sessions. */
+function assertOwnAssistant(caller: AgentSession, assistantId: string, doing: string): void {
+  if (caller.assistantId === assistantId) return
+  throw new Error(`Refusing ${doing}: only the assistant itself (or the human) can manage its scheduled tasks.`)
+}
+
+/** Whether a schedule's target is the caller's to manage. */
+async function assertOwnsJob(caller: AgentSession, job: CronJob, doing: string): Promise<void> {
+  if (job.assistantId) assertOwnAssistant(caller, job.assistantId, doing)
+  else await assertOwns(caller, await requireAgent(job.agentSessionId), doing)
 }
 
 /** The environment a tool acts on: the one named, or the caller's own. */
@@ -221,7 +245,7 @@ function describeUsage(session: AgentSession) {
 function describeJob(job: CronJob) {
   return {
     id: job.id,
-    agentId: job.agentSessionId,
+    ...job.assistantId ? { assistantId: job.assistantId } : { agentId: job.agentSessionId },
     name: job.name,
     prompt: job.prompt,
     schedule: job.scheduleType === 'cron' ? `${job.cronExpression} (${job.timezone})` : `once at ${job.runAt}`,
@@ -246,6 +270,17 @@ function dockerAccess(inspection: ContainerInspection): 'host' | 'own' | 'none' 
   if (inspection.labels[DOOD_CONTAINER_LABEL] === 'true') return 'host'
   if (inspection.namedVolumes.some(name => name.includes('dind-var-lib-docker'))) return 'own'
   return 'none'
+}
+
+async function describeAssistantOf(session: AgentSession) {
+  const assistant = await getAssistant(session.assistantId!)
+  if (!assistant) return null
+  return {
+    id: assistant.id,
+    name: assistant.name,
+    currentSession: assistant.currentSessionId,
+    ...assistant.currentSessionId === session.id ? {} : { handedOff: true }
+  }
 }
 
 const agentId = (description: string) => ({ type: 'string', description })
@@ -347,7 +382,7 @@ export const MESH_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        agentId: agentId('Target agent session id.'),
+        agentId: agentId('Target agent session id, or an assistant id (as_…) to reach whichever session it is in now.'),
         message: { type: 'string', description: 'What to tell that agent.' },
         delivery: {
           type: 'string',
@@ -473,6 +508,45 @@ export const MESH_TOOLS = [
           description: 'true stops the session, hides it from lists and drops its subscriptions; false brings it back. Refused on your own session.'
         }
       },
+      additionalProperties: false
+    }
+  },
+
+  // ---------------------------------------------------------------- assistants
+  {
+    name: 'list_assistants',
+    description:
+      'List the assistants: named agents the human set up, each with a persona, that live across many sessions '
+      + 'chained by handoffs. Each has an id (as_…), the session it is in now and that session\'s status. Message one '
+      + 'with message_agent and its assistant id.',
+    inputSchema: {
+      type: 'object',
+      properties: { includeArchived: { type: 'boolean', description: 'Include archived assistants. Default false.' } },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'hand_off',
+    description:
+      'Only if you are an assistant: end this session and carry on in a fresh one that starts from your note. Use it '
+      + 'when the human asks you to clean up or reset your context, when the conversation has moved on to an '
+      + 'unrelated topic, or when Domo asks. Your last few messages carry over word for word; the note carries the '
+      + 'rest. After calling it, end your turn.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        note: {
+          type: 'string',
+          description: 'For your next session, in your own voice: what the human is working on and why, decisions '
+            + 'and preferences, agents, environments, files and branches involved and how each ended, open questions, '
+            + 'and promises not yet kept. Exact identifiers. Under 400 words.'
+        },
+        nextPrompt: {
+          type: 'string',
+          description: 'What your next session should start doing at once, if work should go on without waiting for the human. Omit to wait for them.'
+        }
+      },
+      required: ['note'],
       additionalProperties: false
     }
   },
@@ -689,7 +763,8 @@ export const MESH_TOOLS = [
           type: 'string', enum: DELIVERIES,
           description: 'If the agent is busy when it fires. Default "queue" (after its current turn).'
         },
-        agentId: agentId('Agent to deliver it to. Defaults to your own session.')
+        agentId: agentId('Agent to deliver it to. Defaults to your own session, or to your assistant if you are one.'),
+        assistantId: { type: 'string', description: 'Deliver it to an assistant (as_…) instead, whichever session it is in when it fires. Only for your own assistant.' }
       },
       required: ['name', 'prompt'],
       additionalProperties: false
@@ -703,7 +778,8 @@ export const MESH_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        agentId: agentId('Whose tasks. Defaults to your own session.'),
+        agentId: agentId('Whose tasks. Defaults to your own session, or to your assistant if you are one.'),
+        assistantId: { type: 'string', description: 'An assistant\'s tasks (as_…).' },
         jobId: { type: 'string', description: 'One task, with its run history.' }
       },
       additionalProperties: false
@@ -806,10 +882,12 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       return listAdapterCatalog(isAgentAdapter(args.adapter) ? args.adapter : undefined)
 
     case 'list_agents': {
-      const [sessions, environments] = await Promise.all([
+      const [sessions, environments, assistants] = await Promise.all([
         listAgentSessions(args.includeArchived === true),
-        listDevEnvironments(undefined, true)
+        listDevEnvironments(undefined, true),
+        listAssistants(true)
       ])
+      const assistantOf = new Map(assistants.map(assistant => [assistant.id, assistant]))
       const environmentOf = (session: AgentSession) =>
         environments.find(environment => environment.id === session.devEnvironmentId) ?? null
       const statuses = Array.isArray(args.status) ? new Set<string>(args.status) : null
@@ -827,9 +905,15 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         const state = sessionStartability(session, environment)
         if (!state.startable && args.includeUnstartable !== true) continue
         if (args.spawnedByMe === true && !(await isSpawnedBy(session.id, caller.id))) continue
+        // A session of an assistant that has handed off is a closed chapter,
+        // listed with the archived ones; the current one says whose it is.
+        const assistant = session.assistantId ? assistantOf.get(session.assistantId) : undefined
+        const closed = !!assistant && assistant.currentSessionId !== session.id
+        if (closed && args.includeArchived !== true) continue
         listed.push({
           id: session.id,
           title: session.title,
+          ...assistant ? { assistant: { id: assistant.id, name: assistant.name, ...closed ? { handedOff: true } : {} } } : {},
           adapter: session.adapter,
           status: session.status,
           model: session.model,
@@ -870,6 +954,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         startable: state.startable,
         ...state.startable ? {} : { cannotStart: state.reason },
         archived: target.archived,
+        ...target.assistantId ? { assistant: await describeAssistantOf(target) } : {},
         spawnedBy: target.spawnedBy,
         createdAt: target.createdAt,
         lastActivityAt: target.lastActivityAt,
@@ -906,6 +991,23 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'message_agent': {
+      if (String(args.agentId ?? '').startsWith('as_')) {
+        const assistant = await getAssistant(args.agentId)
+        if (!assistant) throw new Error(`No assistant ${args.agentId}. Use list_assistants to find ids.`)
+        const delivery = DELIVERIES.find(mode => mode === args.delivery) ?? 'queue'
+        const result = await deliverToAssistant(assistant.id, {
+          content: [{ type: 'text', text: `[Message from agent "${caller.title}" (${caller.id})]\n\n${args.message}` }],
+          delivery,
+          origin: `agent:${caller.id}`
+        })
+        await appendAgentEvent(result.agentSessionId, 'mesh_inbound', {
+          from: caller.id, fromTitle: caller.title, message: args.message, delivery: result.delivery
+        })
+        await appendAgentEvent(caller.id, 'mesh_outbound', {
+          to: result.agentSessionId, toTitle: assistant.name, message: args.message, delivery: result.delivery
+        })
+        return { delivered: true, assistantId: assistant.id, agentId: result.agentSessionId, name: assistant.name, delivery: result.delivery, outcome: result.outcome }
+      }
       const messaged = await getAgentSessionWithEnvironment(args.agentId)
       const target = messaged.session
       if (!target) throw new Error(`No agent ${args.agentId}. Use list_agents to find ids.`)
@@ -1032,6 +1134,37 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         ...args,
         config: args.setting && args.settingValue ? { [args.setting]: args.settingValue } : undefined
       })
+    }
+
+    case 'list_assistants': {
+      const [assistants, sessions] = await Promise.all([listAssistants(args.includeArchived === true), listAgentSessions(true)])
+      return {
+        assistants: assistants.map((assistant) => {
+          const current = sessions.find(session => session.id === assistant.currentSessionId)
+          return {
+            id: assistant.id,
+            name: assistant.name,
+            ...assistant.id === caller.assistantId ? { you: true } : {},
+            persona: clip(assistant.persona, 200),
+            adapter: assistant.adapter,
+            currentSession: current ? { id: current.id, status: current.status, model: current.model } : null,
+            sessions: sessions.filter(session => session.assistantId === assistant.id).length,
+            ...assistant.handoff ? { handingOff: true } : {},
+            ...assistant.archived ? { archived: true } : {}
+          }
+        })
+      }
+    }
+
+    case 'hand_off': {
+      const { assistant, reason } = await recordHandoffNote(caller, { note: args.note, nextPrompt: args.nextPrompt })
+      return {
+        handingOff: true,
+        assistant: assistant.name,
+        reason,
+        note: 'Noted. End your turn now; your next session starts from this note'
+          + (args.nextPrompt ? ' and begins on nextPrompt.' : ' and waits for the human.')
+      }
     }
 
     case 'subscribe_to_agent': {
@@ -1257,10 +1390,14 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'schedule_task': {
-      const target = await requireAgent(args.agentId ?? caller.id)
-      await assertOwns(caller, target, 'scheduling a task for it')
+      // An assistant schedules for itself, not for the session it happens to
+      // be in, so the task survives its handoffs.
+      const assistantId: string | null = args.assistantId ?? (args.agentId ? null : caller.assistantId)
+      if (assistantId) assertOwnAssistant(caller, assistantId, 'scheduling a task for it')
+      else await assertOwns(caller, await requireAgent(args.agentId ?? caller.id), 'scheduling a task for it')
       const normalized = normalizeCronJobInput({
-        agentSessionId: target.id,
+        agentSessionId: assistantId ? null : String(args.agentId ?? caller.id),
+        assistantId,
         name: args.name,
         prompt: args.prompt,
         cronExpression: args.cronExpression,
@@ -1287,19 +1424,22 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           }))
         }
       }
+      const assistantId: string | null = args.assistantId ?? (args.agentId ? null : caller.assistantId)
+      if (assistantId) return { assistantId, jobs: (await listCronJobs({ assistantId })).map(describeJob) }
       const target = await requireAgent(args.agentId ?? caller.id)
-      return { agentId: target.id, jobs: (await listCronJobs(target.id)).map(describeJob) }
+      return { agentId: target.id, jobs: (await listCronJobs({ agentSessionId: target.id })).map(describeJob) }
     }
 
     case 'update_scheduled_task': {
       const existing = await getCronJob(args.jobId)
       if (!existing) throw new Error(`No scheduled task ${args.jobId}.`)
-      await assertOwns(caller, await requireAgent(existing.agentSessionId), 'changing its scheduled task')
+      await assertOwnsJob(caller, existing, 'changing its scheduled task')
       const switchesToCron = args.cronExpression !== undefined
       const switchesToOnce = args.runAt !== undefined
       if (switchesToCron && switchesToOnce) throw new Error('Provide only one of cronExpression or runAt.')
       const normalized = normalizeCronJobInput({
         agentSessionId: existing.agentSessionId,
+        assistantId: existing.assistantId,
         name: args.name ?? existing.name,
         prompt: args.prompt ?? existing.prompt,
         cronExpression: switchesToOnce ? null : (args.cronExpression ?? existing.cronExpression),
@@ -1316,21 +1456,17 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'run_scheduled_task': {
       const job = await getCronJob(args.jobId)
       if (!job) throw new Error(`No scheduled task ${args.jobId}.`)
-      await assertOwns(caller, await requireAgent(job.agentSessionId), 'running its scheduled task')
+      await assertOwnsJob(caller, job, 'running its scheduled task')
       const run = await startManualCronRun(job.id)
       try {
         // The same content, delivery and origin the scheduler uses, so a test
         // run is the real thing.
-        const result = await acpManager.deliver(job.agentSessionId, {
-          content: [{ type: 'text', text: `[Scheduled task "${job.name}" (${job.id})]\n\n${job.prompt}` }],
-          delivery: job.delivery,
-          origin: `cron:${job.id}`
-        })
-        await appendAgentEvent(job.agentSessionId, 'cron_triggered', {
+        const result = await deliverCronJob(job)
+        await appendAgentEvent(result.agentSessionId, 'cron_triggered', {
           cronJobId: job.id, name: job.name, scheduledFor: run.scheduledFor, delivery: result.delivery, outcome: result.outcome, manual: true
         })
         await finishCronRun(run.id, 'delivered', result.outcome)
-        return { jobId: job.id, agentId: job.agentSessionId, delivered: true, outcome: result.outcome }
+        return { jobId: job.id, agentId: result.agentSessionId, delivered: true, outcome: result.outcome }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await finishCronRun(run.id, 'failed', message).catch(() => {})
@@ -1341,7 +1477,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'delete_scheduled_task': {
       const existing = await getCronJob(args.jobId)
       if (!existing) throw new Error(`No scheduled task ${args.jobId}.`)
-      await assertOwns(caller, await requireAgent(existing.agentSessionId), 'deleting its scheduled task')
+      await assertOwnsJob(caller, existing, 'deleting its scheduled task')
       await deleteCronJob(existing.id)
       return { id: existing.id, deleted: true }
     }

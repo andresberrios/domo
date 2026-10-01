@@ -45,9 +45,10 @@ const acp = vi.hoisted(() => ({
   isBusy: vi.fn(() => false),
   cancel: vi.fn(async () => {}),
   answerPermission: vi.fn(async () => true),
-  deliver: vi.fn(async (_id: string, input: any) => ({
+  deliver: vi.fn(async (id: string, input: any) => ({
     delivery: input.delivery,
-    outcome: input.delivery === 'queue' ? 'queued' : 'prompted'
+    outcome: input.delivery === 'queue' ? 'queued' : 'prompted',
+    agentSessionId: id
   })),
   // The implementation is set in `beforeEach`: it has to insert a real row, or
   // a subscription to the spawned peer has nothing to reference.
@@ -233,6 +234,8 @@ describe('the agent-mesh MCP endpoint', () => {
       'answer_permission_request',
       'spawn_agent',
       'manage_agent_session',
+      'list_assistants',
+      'hand_off',
       'subscribe_to_agent',
       'unsubscribe_from_agent',
       'list_subscriptions',

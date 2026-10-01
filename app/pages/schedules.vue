@@ -173,7 +173,7 @@ async function remove() {
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <h2 class="text-sm font-semibold">{{ job.name }}</h2>
-                  <UBadge color="neutral" variant="subtle" :label="agentName(job.agentSessionId)" />
+                  <UBadge color="neutral" variant="subtle" :label="agentName(job.agentSessionId ?? '')" />
                   <UBadge v-if="job.lastStatus" :color="job.lastStatus === 'failed' ? 'error' : 'success'" variant="subtle" :label="job.lastStatus" />
                 </div>
                 <p class="mt-1 line-clamp-2 text-sm text-muted">{{ job.prompt }}</p>

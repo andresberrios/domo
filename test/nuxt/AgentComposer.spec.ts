@@ -116,6 +116,7 @@ function session(
     archived: false,
     usage: null,
     spawnedBy: null,
+    assistantId: null,
     ...overrides
   }
 }

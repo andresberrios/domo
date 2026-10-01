@@ -62,7 +62,8 @@ function toAgentSession(row: any): AgentSession {
     lastActivityAt: row.last_activity_at ?? null,
     archived: !!row.archived,
     usage: row.usage ?? null,
-    spawnedBy: row.spawned_by ?? null
+    spawnedBy: row.spawned_by ?? null,
+    assistantId: row.assistant_id ?? null
   }
 }
 
@@ -186,7 +187,8 @@ export function useCronJobs() {
   const jobs = computed<CronJob[]>(() =>
     (data.value ?? []).map((row: any) => ({
       id: row.id,
-      agentSessionId: row.agent_session_id,
+      agentSessionId: row.agent_session_id ?? null,
+      assistantId: row.assistant_id ?? null,
       name: row.name,
       prompt: row.prompt,
       scheduleType: row.schedule_type,

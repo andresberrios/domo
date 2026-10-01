@@ -1,13 +1,13 @@
 import { normalizeCronJobInput } from '../../lib/cron/input'
-import { createCronJob, getAgentSession } from '../../lib/repo'
+import { createCronJob, getAgentSession, getAssistant } from '../../lib/repo'
 import type { CronJobInput } from '../../lib/cron/input'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<CronJobInput>(event)
   try {
     const input = normalizeCronJobInput({ ...body, createdBy: 'user' })
-    if (!await getAgentSession(input.agentSessionId)) {
-      throw createError({ statusCode: 404, statusMessage: 'Agent session not found' })
+    if (input.assistantId ? !await getAssistant(input.assistantId) : !await getAgentSession(input.agentSessionId!)) {
+      throw createError({ statusCode: 404, statusMessage: input.assistantId ? 'Assistant not found' : 'Agent session not found' })
     }
     return createCronJob(input)
   } catch (error) {

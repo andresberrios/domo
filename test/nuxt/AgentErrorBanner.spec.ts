@@ -51,6 +51,7 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     lastActivityAt: null,
     archived: false,
     spawnedBy: null,
+    assistantId: null,
     ...overrides
   }
 }

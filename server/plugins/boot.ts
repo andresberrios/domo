@@ -3,6 +3,7 @@ import { acpManager } from '../lib/acp/manager'
 import { startSubscriptionNotifier } from '../lib/acp/subscriptions'
 import { usagePoller } from '../lib/usage/poller'
 import { cronScheduler } from '../lib/cron/scheduler'
+import { startAssistants } from '../lib/assistants'
 import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
@@ -39,6 +40,9 @@ export default defineNitroPlugin(async (nitro) => {
   } catch (error) {
     console.error(`\n[domo] ${error instanceof Error ? error.message : error}\n`)
   }
+
+  // Before anything can run a turn: a handoff completes at the end of one.
+  startAssistants()
 
   // Subscriptions are rows, so they outlive the process that made them.
   await startSubscriptionNotifier().catch(error => console.error('[domo] subscriptions', error))

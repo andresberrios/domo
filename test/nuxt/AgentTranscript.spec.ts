@@ -26,7 +26,8 @@ const session: AgentSession = {
   lastActivityAt: null,
   archived: false,
   usage: null,
-  spawnedBy: null
+  spawnedBy: null,
+  assistantId: null
 }
 
 function render(events: AgentEvent[], permissions: PendingPermission[] = [], condensed = false) {

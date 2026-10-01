@@ -5,6 +5,8 @@ const ELECTRIC_URL = process.env.ELECTRIC_URL || process.env.NUXT_ELECTRIC_URL |
 /** Only these tables may be synced to the browser. */
 const ALLOWED_TABLES = new Set([
   'agent_sessions',
+  // The avatar is a small data URL and the persona is the human's own words; nothing secret.
+  'assistants',
   'agent_events',
   'agent_permissions',
   'agent_inbox',

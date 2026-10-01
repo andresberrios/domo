@@ -66,6 +66,7 @@ const agent: AgentSession = {
   usage: null,
   archived: false,
   spawnedBy: null,
+  assistantId: null,
 }
 
 mockNuxtImport('useRoute', () => () => ({ params: { id: 'env_1' } }))

@@ -3,7 +3,7 @@ import type { CronJob } from '../../shared/types'
 import { CronScheduler } from '../../server/lib/cron/scheduler'
 
 const acp = vi.hoisted(() => ({
-  deliver: vi.fn(async () => ({ delivery: 'queue', outcome: 'queued' }))
+  deliver: vi.fn(async (id: string) => ({ delivery: 'queue', outcome: 'queued', agentSessionId: id }))
 }))
 const repo = vi.hoisted(() => ({
   listDueCronJobs: vi.fn(),
@@ -28,6 +28,7 @@ function job(patch: Partial<CronJob> = {}): CronJob {
   return {
     id: 'cron_1',
     agentSessionId: 'ag_1',
+    assistantId: null,
     name: 'Check CI',
     prompt: 'Inspect CI and fix regressions.',
     scheduleType: 'cron',

@@ -16,6 +16,7 @@ const TABLES = [
   'dev_environments',
   'dev_environment_ports',
   'agent_sessions',
+  'assistants',
   'agent_events',
   'agent_permissions',
   'agent_inbox',

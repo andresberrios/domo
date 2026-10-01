@@ -21,6 +21,7 @@ import { adapterEnv, adapterLaunch } from './adapter-process'
 import { assertSessionStartable } from './startable'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
+import { assistantSystemPrompt, currentSessionFor, primeFirstPrompt } from '../assistants/context'
 import {
   adapterConfigOptions,
   configValueIds,
@@ -768,6 +769,12 @@ class AgentRuntime {
     const settings = await getSettings()
     const mcpServers = await this.mcpServersForSession(environment, httpMcp, settings)
 
+    // An assistant's identity and handoff note, for a harness that takes a
+    // system prompt. Sent on load as well as new, so a reattach keeps it and a
+    // persona edited since takes effect.
+    const systemPrompt = await assistantSystemPrompt(session)
+    const meta = systemPrompt ? { _meta: { systemPrompt: { append: systemPrompt } } } : {}
+
     // Everything the adapter says from here until the end of this boot is
     // history, not news. See `restoring`.
     this.restoring = !!session.acpSessionId
@@ -778,7 +785,8 @@ class AgentRuntime {
         sessionResponse = await connection.agent.request(acp.methods.agent.session.load, {
           sessionId: session.acpSessionId,
           cwd: session.cwd,
-          mcpServers
+          mcpServers,
+          ...meta
         } as any)
         this.acpSessionId = session.acpSessionId
       } catch (error) {
@@ -796,7 +804,8 @@ class AgentRuntime {
       if (!this.acpSessionId) {
         const created = (await connection.agent.request(acp.methods.agent.session.new, {
           cwd: session.cwd,
-          mcpServers
+          mcpServers,
+          ...meta
         } as any)) as any
         sessionResponse = created
         fresh = true
@@ -1279,13 +1288,18 @@ class AgentRuntime {
   }
 
   private async runTurn(
-    content: any[],
+    asked: any[],
     turn: Turn,
     controller: AbortController
   ): Promise<{ stopReason: string }> {
     await this.assertStartable('sending it a message')
     await this.ensureStarted()
     if (!this.connection || !this.acpSessionId) throw new Error('agent not started')
+    // A session of an assistant on a harness without a system prompt gets its
+    // identity and handoff note on its first prompt. Recorded as sent, so the
+    // log says what the agent really read; the transcript hides the block.
+    const session = await getAgentSession(this.agentSessionId)
+    const content = session ? await primeFirstPrompt(session, asked) : asked
 
     this.textBuffer = ''
     const stale = this.takeStream()
@@ -1319,12 +1333,16 @@ class AgentRuntime {
         // is written now rather than left in a timer a restart would drop.
         await this.flushUsage()
       })
+      await this.turnEnded({ content, ok: true, text: this.textBuffer })
       return { stopReason: response?.stopReason ?? 'end_turn' }
     } catch (error) {
       // An `interrupt` aborts this request on purpose and `cancel` has already
       // written the `cancelled` line; calling that an error would put the
       // session in `error` for doing what it was told.
-      if (turn.interrupted) return { stopReason: 'cancelled' }
+      if (turn.interrupted) {
+        await this.turnEnded({ content, ok: false, text: this.textBuffer })
+        return { stopReason: 'cancelled' }
+      }
       const message = error instanceof Error ? error.message : String(error)
       const block = this.takeStream()
       await this.serial(async () => {
@@ -1333,7 +1351,24 @@ class AgentRuntime {
         await this.setStatus('error', { lastError: message, touch: true })
         await this.flushUsage()
       })
+      await this.turnEnded({ content, ok: false, text: this.textBuffer })
       throw error
+    }
+  }
+
+  /**
+   * Tell whoever listens that a turn is over, before the inbox drains: an
+   * assistant's handoff moves what is waiting to the next session, and it
+   * has to get there first. A listener that fails costs a log line, never
+   * the turn.
+   */
+  private async turnEnded(input: Omit<TurnEnd, 'agentSessionId'>): Promise<void> {
+    for (const listener of turnEndListeners) {
+      try {
+        await listener({ agentSessionId: this.agentSessionId, ...input })
+      } catch (error) {
+        console.error(`[acp:${this.agentSessionId}] turn-end listener failed`, error)
+      }
     }
   }
 
@@ -1761,6 +1796,26 @@ class AgentRuntime {
 /* manager                                                             */
 /* ------------------------------------------------------------------ */
 
+/** A turn that has just ended, normally (`ok`) or not (failed, cancelled, interrupted). */
+export interface TurnEnd {
+  agentSessionId: string
+  /** What the turn was prompted with, as sent. */
+  content: any[]
+  ok: boolean
+  /** Everything the agent said in it. */
+  text: string
+}
+
+type TurnEndListener = (turn: TurnEnd) => Promise<void> | void
+
+/**
+ * Who hears about turn ends. Module state on `globalThis` rather than on the
+ * manager, so a listener registered by a module the manager does not import
+ * (assistants, which import the manager) survives a hot reload of either.
+ */
+const turnEndListeners: Set<TurnEndListener>
+  = (globalThis as any).__domo_turn_end_listeners__ ??= new Set<TurnEndListener>()
+
 const warnedNoHttpMcp = new Set<AgentAdapter>()
 
 /** Said once per adapter: a storm of this would drown the adapter's own output. */
@@ -1798,6 +1853,10 @@ class AcpManager {
     initialPrompt?: string
     /** The agent spawning this one over the mesh. */
     spawnedBy?: string | null
+    /** The assistant this session belongs to. */
+    assistantId?: string | null
+    /** Written before the adapter starts, so a system prompt built at attach can read it. */
+    firstEvent?: { type: string, payload: any }
   }): Promise<AgentSession> {
     const settings = await getSettings()
     const environment = input.devEnvironmentId
@@ -1817,8 +1876,10 @@ class AcpManager {
       modeId: input.modeId ?? settings.defaultAgentModes[input.adapter ?? 'claude-code'],
       model: input.model?.trim() || null,
       devEnvironmentId: environment?.id ?? null,
-      spawnedBy: input.spawnedBy ?? null
+      spawnedBy: input.spawnedBy ?? null,
+      assistantId: input.assistantId ?? null
     })
+    if (input.firstEvent) await appendAgentEvent(session.id, input.firstEvent.type, input.firstEvent.payload)
     // A failed boot is recorded on the session row (status + lastError) so the
     // UI can show it and offer a retry instead of blowing up the request.
     const started = await this.runtime(session.id)
@@ -1864,7 +1925,10 @@ class AcpManager {
   async deliver(
     agentSessionId: string,
     input: { content: any[], delivery?: MessageDelivery, origin?: MessageOrigin }
-  ): Promise<DeliveryResult> {
+  ): Promise<DeliveryResult & { agentSessionId: string }> {
+    // A session of an assistant that has handed off is a closed chapter; what
+    // is said to it is said to the assistant, whose current session takes it.
+    agentSessionId = await currentSessionFor(agentSessionId)
     // A session started with no title and no prompt (Talk, or a bare New
     // agent) is named by the first thing said to it, as a person would.
     const origin = input.origin ?? 'user'
@@ -1872,11 +1936,18 @@ class AcpManager {
     if ((origin === 'user' || origin === 'voice') && words?.trim()) {
       await titleUntitledAgentSession(agentSessionId, titleFrom(words)).catch(() => {})
     }
-    return this.runtime(agentSessionId).deliver({
+    const result = await this.runtime(agentSessionId).deliver({
       content: input.content,
       delivery: input.delivery ?? 'steer',
       origin: input.origin ?? 'user'
     })
+    return { ...result, agentSessionId }
+  }
+
+  /** Hear about every turn end. Returns the unsubscribe. */
+  onTurnEnd(listener: TurnEndListener): () => void {
+    turnEndListeners.add(listener)
+    return () => turnEndListeners.delete(listener)
   }
 
   /** Hand over anything waiting, if the agent is free to take it. */

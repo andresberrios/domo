@@ -4,7 +4,9 @@ import type { CronJob, MessageDelivery } from '../../../shared/types'
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 
 export interface CronJobInput {
-  agentSessionId: string
+  /** The session to wake; or `assistantId`, exactly one of the two. */
+  agentSessionId?: string | null
+  assistantId?: string | null
   name: string
   prompt: string
   cronExpression?: string | null
@@ -17,8 +19,9 @@ export interface CronJobInput {
 export function normalizeCronJobInput(input: CronJobInput, now = new Date()) {
   const name = String(input.name ?? '').trim()
   const prompt = String(input.prompt ?? '').trim()
-  const agentSessionId = String(input.agentSessionId ?? '').trim()
-  if (!agentSessionId) throw new Error('agentSessionId is required.')
+  const assistantId = String(input.assistantId ?? '').trim() || null
+  const agentSessionId = assistantId ? null : String(input.agentSessionId ?? '').trim() || null
+  if (!agentSessionId && !assistantId) throw new Error('agentSessionId or assistantId is required.')
   if (!name) throw new Error('name is required.')
   if (!prompt) throw new Error('prompt is required.')
   if (!!input.cronExpression === !!input.runAt) {
@@ -32,7 +35,7 @@ export function normalizeCronJobInput(input: CronJobInput, now = new Date()) {
     const timezone = validateTimezone(input.timezone ?? 'UTC')
     const nextRunAt = enabled ? nextCronOccurrence(cronExpression, timezone, now).toISOString() : null
     return {
-      agentSessionId, name, prompt, scheduleType: 'cron' as const,
+      agentSessionId, assistantId, name, prompt, scheduleType: 'cron' as const,
       cronExpression, timezone, runAt: null, enabled, delivery, nextRunAt,
       createdBy: input.createdBy ?? 'user'
     }
@@ -42,7 +45,7 @@ export function normalizeCronJobInput(input: CronJobInput, now = new Date()) {
   if (!Number.isFinite(date.getTime())) throw new Error('runAt must be a valid ISO date and time.')
   if (enabled && date.getTime() <= now.getTime()) throw new Error('runAt must be in the future.')
   return {
-    agentSessionId, name, prompt, scheduleType: 'once' as const,
+    agentSessionId, assistantId, name, prompt, scheduleType: 'once' as const,
     cronExpression: null, timezone: 'UTC', runAt: date.toISOString(), enabled, delivery,
     nextRunAt: enabled ? date.toISOString() : null,
     createdBy: input.createdBy ?? 'user'

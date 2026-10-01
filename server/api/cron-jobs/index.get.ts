@@ -1,6 +1,9 @@
 import { listCronJobs } from '../../lib/repo'
 
 export default defineEventHandler(async (event) => {
-  const agentSessionId = getQuery(event).agentSessionId
-  return listCronJobs(typeof agentSessionId === 'string' ? agentSessionId : undefined)
+  const { agentSessionId, assistantId } = getQuery(event)
+  return listCronJobs({
+    agentSessionId: typeof agentSessionId === 'string' ? agentSessionId : undefined,
+    assistantId: typeof assistantId === 'string' ? assistantId : undefined
+  })
 })
