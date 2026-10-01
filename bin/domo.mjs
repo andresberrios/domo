@@ -560,9 +560,11 @@ async function smokeTest(dir, env) {
 
 function pruneReleases(keep) {
   if (!existsSync(P.releases)) return
+  // By real path: on macOS /tmp is /private/tmp, and `current` resolves to the latter.
+  const kept = keep.map(dir => realpathSync(dir))
   for (const name of readdirSync(P.releases)) {
     const dir = join(P.releases, name)
-    if (keep.includes(dir)) continue
+    if (kept.includes(realpathSync(dir))) continue
     log(`removing old release ${name}`)
     rmSync(dir, { recursive: true, force: true })
   }
