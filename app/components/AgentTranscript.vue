@@ -9,7 +9,9 @@ const props = withDefaults(defineProps<{
   permissions: PendingPermission[]
   /** Collapse runs of tool activity into one row. On unless told otherwise. */
   condensed?: boolean
-}>(), { condensed: true })
+  /** An assistant's face and name, for its side of the conversation. */
+  avatar?: { src?: string, alt: string }
+}>(), { condensed: true, avatar: undefined })
 
 /**
  * Two passes, and only the first one is about the log: `buildTranscript()` says
@@ -67,6 +69,8 @@ function plainText(item: CondensedItem): string {
       return item.title
     case 'notice':
       return item.text
+    case 'handoff':
+      return item.note
     case 'activity':
       return activityLabel(item)
   }
@@ -86,7 +90,13 @@ function messageFor(item: CondensedItem) {
 }
 
 const USER_PROPS = { side: 'right', variant: 'soft', avatar: { icon: 'i-lucide-user' } } as const
-const ASSISTANT_PROPS = { side: 'left', variant: 'naked', avatar: { icon: 'i-lucide-sparkles' } } as const
+const ASSISTANT_PROPS = computed(() => ({
+  side: 'left',
+  variant: 'naked',
+  avatar: props.avatar ? { src: props.avatar.src, alt: props.avatar.alt } : { icon: 'i-lucide-sparkles' }
+}) as const)
+/** A handoff is a divider across the conversation, not something either side said. */
+const DIVIDER_PROPS = { side: 'left', variant: 'naked', avatar: undefined } as const
 
 const pendingPermissionIds = computed(() =>
   props.permissions.filter(permission => !permission.resolvedAt).map(permission => permission.id)
@@ -271,7 +281,9 @@ onMounted(() => nextTick(() => followTail()))
         >
           <UChatMessage
             v-bind="{
-              ...(items[row.index]!.kind === 'user' ? USER_PROPS : ASSISTANT_PROPS),
+              ...(items[row.index]!.kind === 'user'
+                ? USER_PROPS
+                : items[row.index]!.kind === 'handoff' ? DIVIDER_PROPS : ASSISTANT_PROPS),
               ...messageFor(items[row.index]!)
             }"
           >

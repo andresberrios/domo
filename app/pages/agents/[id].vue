@@ -38,9 +38,17 @@ const spawner = computed(() => {
   const id = session.value?.spawnedBy
   return id ? { id, title: allSessions.value.find(item => item.id === id)?.title ?? id } : null
 })
+/** The assistant this session is one chapter of, and whether it has since handed off. */
+const { assistant } = useAssistant(() => session.value?.assistantId)
+const handedOff = computed(() => !!assistant.value && assistant.value.currentSessionId !== session.value?.id)
 const startability = useSessionStartability(session)
-/** Set only when the session cannot run; the sentence to show for it. */
+/**
+ * Set only when the session cannot run; the sentence to show for it. A
+ * session that handed off can run, but what is said to it goes to the
+ * assistant, so its page is a record and offers nothing to send.
+ */
 const blocked = computed(() => startability.value.startable ? null : startability.value.reason)
+const closed = computed(() => !!blocked.value || handedOff.value)
 const adapter = computed(() => session.value ? agentAdapterInfo(session.value.adapter) : null)
 const usageProvider = computed(() => session.value?.adapter === 'claude-code'
   ? 'claude' as const
@@ -112,7 +120,7 @@ async function purge() {
 const menuItems = computed(() => [
   { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
   // A session that cannot start has nothing to restart.
-  ...blocked.value ? [] : [{ label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start }],
+  ...closed.value ? [] : [{ label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start }],
   session.value?.archived
     ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: unarchive }
     : { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
@@ -142,7 +150,7 @@ const menuItems = computed(() => [
             :provider="usageProvider"
           />
           <UButton
-            v-if="session && !blocked && (session.status === 'stopped' || session.status === 'error')"
+            v-if="session && !closed && (session.status === 'stopped' || session.status === 'error')"
             :label="'Start'"
             icon="i-lucide-play"
             size="sm"
@@ -150,7 +158,7 @@ const menuItems = computed(() => [
             :ui="{ label: 'hidden sm:inline' }"
             @click="start"
           />
-          <UTooltip :text="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'">
+          <UTooltip v-if="!closed" :text="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'">
             <UButton
               icon="i-lucide-mic"
               :color="voiceOpen ? 'primary' : 'neutral'"
@@ -187,6 +195,17 @@ const menuItems = computed(() => [
             <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
           </UBadge>
           <UBadge
+            v-if="assistant"
+            color="primary"
+            variant="subtle"
+            size="sm"
+            :label="handedOff ? `${assistant.name}, an earlier session` : `${assistant.name}'s current session`"
+            as="NuxtLink"
+            :to="`/assistants/${assistant.id}`"
+          >
+            <template #leading><UAvatar :src="assistant.avatar ?? undefined" :alt="assistant.name" size="3xs" /></template>
+          </UBadge>
+          <UBadge
             v-if="spawner"
             color="neutral"
             variant="subtle"
@@ -209,6 +228,16 @@ const menuItems = computed(() => [
       <div class="flex h-full min-h-0 flex-col">
         <ServiceBanner />
         <AgentUnstartableBanner v-if="session && blocked" :session="session" :reason="blocked" />
+        <UAlert
+          v-else-if="assistant && handedOff"
+          icon="i-lucide-notebook-pen"
+          color="neutral"
+          variant="subtle"
+          :title="`This session handed off. ${assistant.name} carries on in a newer one.`"
+          description="It is kept as a record. Anything sent to it goes to the current session."
+          :actions="[{ label: `Open ${assistant.name}`, to: `/assistants/${assistant.id}`, trailingIcon: 'i-lucide-arrow-right' }]"
+          class="mb-2"
+        />
         <AgentErrorBanner v-else-if="session" :session="session" />
 
         <div v-if="!events.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
@@ -259,11 +288,11 @@ const menuItems = computed(() => [
           <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" />
         </div>
 
-        <div v-if="!blocked && voiceOpen && session" class="shrink-0 pt-2">
+        <div v-if="!closed && voiceOpen && session" class="shrink-0 pt-2">
           <AgentVoiceBar :session="session" />
         </div>
 
-        <div v-if="!blocked" class="shrink-0 pt-2">
+        <div v-if="!closed" class="shrink-0 pt-2">
           <AgentComposer v-if="session" :session="session" />
         </div>
       </div>

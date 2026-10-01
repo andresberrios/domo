@@ -3,8 +3,10 @@ import {
   agentEventsCollection,
   agentInboxCollection,
   agentSessionsCollection,
+  assistantsCollection,
   cronJobsCollection,
   devEnvironmentsCollection,
+  handoffEventsCollection,
   mcpServersCollection,
   notificationsCollection,
   permissionsCollection,
@@ -16,6 +18,7 @@ import type {
   AgentEvent,
   AgentInboxMessage,
   AgentSession,
+  Assistant,
   CronJob,
   DevEnvironment,
   DomoNotification,
@@ -98,6 +101,49 @@ export function useAgentSession(agentSessionId: MaybeRefOrGetter<string | null |
     return (id && all.value.find(item => item.id === id)) || null
   })
   return { session, isReady }
+}
+
+function toAssistant(row: any): Assistant {
+  return {
+    id: row.id,
+    name: row.name,
+    avatar: row.avatar ?? null,
+    persona: row.persona ?? '',
+    adapter: isAgentAdapter(row.adapter) ? row.adapter : 'claude-code',
+    model: row.model ?? null,
+    modeId: row.mode_id ?? null,
+    cwd: row.cwd,
+    devEnvironmentId: row.dev_environment_id ?? null,
+    handoffThreshold: row.handoff_threshold ?? null,
+    currentSessionId: row.current_session_id ?? null,
+    handoff: row.handoff ?? null,
+    archived: !!row.archived,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+/**
+ * The assistants, by name. `assistants` honours the "show archived" switch;
+ * `all` is for the page reached by URL and for naming a schedule's target.
+ */
+export function useAssistants() {
+  const { data, isReady } = useLiveQuery(q => q.from({ assistant: assistantsCollection() }))
+  const showArchived = useShowArchivedSessions()
+  const all = computed<Assistant[]>(() =>
+    (data.value ?? []).map(toAssistant).sort((a: Assistant, b: Assistant) => a.name.localeCompare(b.name)))
+  const assistants = computed(() => showArchived.value ? all.value : all.value.filter(item => !item.archived))
+  return { assistants, all, isReady }
+}
+
+/** One assistant by id, archived or not. */
+export function useAssistant(assistantId: MaybeRefOrGetter<string | null | undefined>) {
+  const { all, isReady } = useAssistants()
+  const assistant = computed<Assistant | null>(() => {
+    const id = toValue(assistantId)
+    return (id && all.value.find(item => item.id === id)) || null
+  })
+  return { assistant, isReady }
 }
 
 /**
@@ -241,6 +287,21 @@ export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | 
     bySeq
   )
 
+  return { events, isReady }
+}
+
+/**
+ * Several sessions' transcripts as one log: an assistant's conversation
+ * across its sessions. `seq` is global, so ordering by it puts each session
+ * after the one it took over from. One shape per session, as on a session's
+ * own page, so only the sessions on screen are synced.
+ */
+export function useSessionsEvents(agentSessionIds: MaybeRefOrGetter<string[]>) {
+  const { items: events, isReady } = useSyncedLog<any, AgentEvent>(
+    () => toValue(agentSessionIds).map(id => agentEventsCollection(id)),
+    toAgentEvent,
+    bySeq
+  )
   return { events, isReady }
 }
 
@@ -402,4 +463,15 @@ export function useNotifications() {
   )
   const unseen = computed(() => notifications.value.filter(notification => !notification.seenAt))
   return { notifications, unseen, isReady }
+}
+
+/** Every assistant session's `handoff` event, by session: what it started from. */
+export function useHandoffEvents() {
+  const { data, isReady } = useLiveQuery(q => q.from({ event: handoffEventsCollection() }))
+  const bySession = computed(() => {
+    const map = new Map<string, AgentEvent>()
+    for (const row of (data.value ?? []) as any[]) map.set(row.agent_session_id, toAgentEvent(row))
+    return map
+  })
+  return { bySession, isReady }
 }

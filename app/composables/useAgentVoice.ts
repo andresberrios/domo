@@ -948,6 +948,19 @@ export function useAgentVoice(
     state.value = 'offline'
   }
 
+  /**
+   * A new session behind the same bar — an assistant's handoff — gets a new
+   * socket at once. The microphone stays as it is, so a hands-free
+   * conversation goes on across it.
+   */
+  watch(() => toValue(agentSessionId), (next, previous) => {
+    if (!socket || next === previous) return
+    const old = socket
+    socket = null
+    old.close()
+    connect()
+  })
+
   /* ------------------------------ controls ---------------------------- */
 
   /** From a tap: connect, get the audio graphs running, open the microphone. */

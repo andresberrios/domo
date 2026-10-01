@@ -5,7 +5,11 @@ const toast = useToast()
 // `agents` is who you may schedule *for*; `all` is who a job may point *at*.
 // Retiring an environment disables its sessions' jobs but leaves them in this
 // list, and a row naming a bare id rather than the agent reads as a bug.
-const { sessions: agents, all: allAgents } = useAgentSessions()
+const { sessions: everySession, all: allAgents } = useAgentSessions()
+// An assistant is scheduled as itself, so the job survives its handoffs; its
+// sessions are not offered on their own.
+const { assistants, all: allAssistants } = useAssistants()
+const agents = computed(() => everySession.value.filter(agent => !agent.assistantId))
 const { jobs } = useCronJobs()
 const saving = ref(false)
 const deleteOpen = ref(false)
@@ -31,14 +35,23 @@ const form = reactive({
 })
 
 watchEffect(() => {
-  if (!form.agentSessionId && agents.value[0]) form.agentSessionId = agents.value[0].id
+  if (!form.agentSessionId) form.agentSessionId = assistants.value[0]?.id ?? agents.value[0]?.id ?? ''
 })
 
-const agentItems = computed(() => agents.value.map(agent => ({ label: agent.title, value: agent.id })))
+/** Assistants first: they are who recurring work is usually for. Ids say which is which. */
+const agentItems = computed(() => [
+  ...assistants.value.map(assistant => ({ label: assistant.name, value: assistant.id, icon: 'i-lucide-sparkles' })),
+  ...agents.value.map(agent => ({ label: agent.title, value: agent.id, icon: 'i-lucide-bot' }))
+])
 
-function agentName(id: string) {
-  const agent = allAgents.value.find(item => item.id === id)
-  if (!agent) return id
+function targetName(job: CronJob) {
+  if (job.assistantId) {
+    const assistant = allAssistants.value.find(item => item.id === job.assistantId)
+    if (!assistant) return job.assistantId
+    return assistant.archived ? `${assistant.name} (archived)` : assistant.name
+  }
+  const agent = allAgents.value.find(item => item.id === job.agentSessionId)
+  if (!agent) return job.agentSessionId ?? ''
   return agent.archived ? `${agent.title} (archived)` : agent.title
 }
 
@@ -58,7 +71,9 @@ async function createJob() {
     await $fetch('/api/cron-jobs', {
       method: 'POST',
       body: {
-        agentSessionId: form.agentSessionId,
+        ...form.agentSessionId.startsWith('as_')
+          ? { assistantId: form.agentSessionId }
+          : { agentSessionId: form.agentSessionId },
         name: form.name,
         prompt: form.prompt,
         delivery: form.delivery,
@@ -119,7 +134,7 @@ async function remove() {
             <h2 class="text-sm font-semibold">New scheduled task</h2>
             <p class="text-xs text-muted">Use a standard five-field cron expression or choose one exact time.</p>
           </div>
-          <div v-if="!agents.length" class="text-sm text-muted">Create a coding agent before scheduling work.</div>
+          <div v-if="!agentItems.length" class="text-sm text-muted">Create an assistant or a coding agent before scheduling work.</div>
           <template v-else>
             <div class="grid gap-3 sm:grid-cols-2">
               <UFormField label="Agent">
@@ -173,7 +188,7 @@ async function remove() {
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <h2 class="text-sm font-semibold">{{ job.name }}</h2>
-                  <UBadge color="neutral" variant="subtle" :label="agentName(job.agentSessionId ?? '')" />
+                  <UBadge color="neutral" variant="subtle" :label="targetName(job)" />
                   <UBadge v-if="job.lastStatus" :color="job.lastStatus === 'failed' ? 'error' : 'success'" variant="subtle" :label="job.lastStatus" />
                 </div>
                 <p class="mt-1 line-clamp-2 text-sm text-muted">{{ job.prompt }}</p>

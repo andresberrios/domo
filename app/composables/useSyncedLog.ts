@@ -22,7 +22,8 @@ import type { Collection } from '@tanstack/db'
  * diffing — tell what actually moved.
  */
 export function useSyncedLog<TRow extends object, TItem>(
-  collection: MaybeRefOrGetter<Collection<any, any, any> | null | undefined>,
+  /** One collection, or several read as one log (their keys must not collide). */
+  collection: MaybeRefOrGetter<Collection<any, any, any> | Collection<any, any, any>[] | null | undefined>,
   map: (row: TRow) => TItem,
   compare: (a: TItem, b: TItem) => number
 ) {
@@ -31,9 +32,10 @@ export function useSyncedLog<TRow extends object, TItem>(
 
   watchEffect((onCleanup) => {
     const source = toValue(collection)
+    const sources = Array.isArray(source) ? source : source ? [source] : []
     items.value = []
     isReady.value = false
-    if (!source) return
+    if (!sources.length) return
 
     /* Plain structures, deliberately outside Vue: only `items` is reactive, and
      * it is replaced wholesale so nothing here needs to be observed. */
@@ -45,7 +47,7 @@ export function useSyncedLog<TRow extends object, TItem>(
       if (at >= 0) sorted.splice(at, 1)
     }
 
-    const subscription = source.subscribeChanges((changes: any[]) => {
+    const onChanges = (changes: any[]) => {
       for (const change of changes) {
         const key = String(change.key)
         const previous = byKey.get(key)
@@ -66,9 +68,10 @@ export function useSyncedLog<TRow extends object, TItem>(
       // One new identity per batch: Vue re-reads the array, not the rows in it.
       items.value = sorted.slice()
       isReady.value = true
-    }, { includeInitialState: true })
+    }
+    const subscriptions = sources.map(entry => entry.subscribeChanges(onChanges, { includeInitialState: true }))
 
-    onCleanup(() => subscription.unsubscribe())
+    onCleanup(() => subscriptions.forEach(subscription => subscription.unsubscribe()))
   })
 
   return { items, isReady }

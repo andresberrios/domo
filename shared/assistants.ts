@@ -41,11 +41,11 @@ export function supportsSystemPrompt(adapter: AgentAdapter): boolean {
   return adapter === 'claude-code'
 }
 
-/** How a handoff is described to the human, after "Handed off: ". */
+/** Why a session began, completing "…because" and "New session · …". */
 export const HANDOFF_REASON_LABELS: Record<HandoffReason, string> = {
   user: 'you asked for a fresh start',
   context: 'the context window was filling up',
-  agent: 'the conversation moved on',
+  agent: 'it chose to start fresh',
   unavailable: 'the previous session could no longer run'
 }
 

@@ -207,6 +207,16 @@ function titleFrom(text: string): string {
   return text.trim().split('\n')[0]!.slice(0, 80)
 }
 
+/**
+ * Whether a permission request is for the domo mesh's `hand_off` tool. Claude
+ * Code names it `mcp__domo__hand_off`; other harnesses name MCP tools their
+ * own way, so the server and the tool are matched loosely in the title.
+ */
+export function isDomoHandOff(toolCall: any): boolean {
+  const name = String(toolCall?._meta?.claudeCode?.toolName ?? toolCall?.name ?? toolCall?.title ?? '')
+  return /domo/i.test(name) && /hand_off$/.test(name)
+}
+
 function pendingMark(live: boolean): { pending?: true } {
   return live ? {} : { pending: true }
 }
@@ -1195,6 +1205,15 @@ class AgentRuntime {
       kind: option.kind
     }))
     const title: string = params.toolCall?.title || params.toolCall?.rawInput?.description || 'Tool call'
+
+    // An assistant handing off with Domo's own tool is asking to do what the
+    // human or Domo asked of it, and the tool touches nothing but the
+    // assistant's sessions. Asking first would put a permission prompt
+    // between the "Fresh start" button and the fresh start.
+    if (isDomoHandOff(params.toolCall)) {
+      const allow = options.find((o: any) => o.kind === 'allow_once') ?? options.find((o: any) => o.kind === 'allow_always')
+      if (allow) return { outcome: { outcome: 'selected', optionId: allow.optionId } }
+    }
 
     const block = this.takeStream()
     const permission = await this.serial(async () => {

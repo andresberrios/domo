@@ -100,6 +100,7 @@ function collection(key: string, def: ShapeDef): any {
 }
 
 export const agentSessionsCollection = () => collection('agent_sessions', { table: 'agent_sessions' })
+export const assistantsCollection = () => collection('assistants', { table: 'assistants' })
 export const mcpServersCollection = () => collection('mcp_servers', { table: 'mcp_servers' })
 export const permissionsCollection = () => collection('agent_permissions', { table: 'agent_permissions' })
 export const cronJobsCollection = () => collection('cron_jobs', { table: 'cron_jobs' })
@@ -136,4 +137,16 @@ export const agentInboxCollection = (agentSessionId: string) =>
     where: 'agent_session_id = $1',
     params: [agentSessionId],
     gcTime: SESSION_SHAPE_GC_MS
+  })
+
+/**
+ * The note each assistant session started from: one `handoff` row per
+ * session, so the journal can say why every session began without syncing
+ * a single transcript.
+ */
+export const handoffEventsCollection = () =>
+  collection('agent_events:handoff', {
+    table: 'agent_events',
+    where: 'type = $1',
+    params: ['handoff']
   })

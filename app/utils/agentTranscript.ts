@@ -1,5 +1,12 @@
 import { isSpokenNote } from '~~/shared/agent-voice'
-import type { AgentEvent, PendingPermission } from '~~/shared/types'
+import {
+  HANDOFF_CONTINUE_PREFIX,
+  HANDOFF_REASON_LABELS,
+  isAssistantContext,
+  isHandoffContinuation,
+  isHandoffRequest
+} from '~~/shared/assistants'
+import type { AgentEvent, HandoffReason, PendingPermission } from '~~/shared/types'
 
 export interface ToolCallView {
   toolCallId: string
@@ -21,6 +28,8 @@ export type TranscriptItem =
   | { id: string, seq: number, at: string, kind: 'plan', entries: Array<{ content: string, status: string, priority: string }> }
   | { id: string, seq: number, at: string, kind: 'permission', permissionId: string, title: string, toolCall: any }
   | { id: string, seq: number, at: string, kind: 'notice', tone: 'info' | 'error', text: string }
+  /** Where an assistant's session took over from the one before: the note it started from. */
+  | { id: string, seq: number, at: string, kind: 'handoff', reason: HandoffReason, note: string, sessionId: string }
 
 /**
  * A setting changed on a session with no adapter running is a request, not a
@@ -53,6 +62,7 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   mesh_permission_answered: payload =>
     `Answered a permission request from agent "${payload?.title}": ${payload?.optionId ?? 'rejected'}`,
   cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
+  handed_off: () => 'Handed off to a new session',
   environment_retired: () =>
     'Its development environment was retired — this session can no longer be started'
 }
@@ -92,7 +102,20 @@ export function buildTranscript(
     switch (event.type) {
       case 'user_message': {
         closeText()
-        const blocks: any[] = event.payload?.content ?? []
+        // An assistant's identity rides on its session's first prompt when the
+        // harness has no system prompt; Domo put it there, so it is not shown.
+        const blocks: any[] = (event.payload?.content ?? []).filter((block: any) => !isAssistantContext(block?.text))
+        // Domo asking for a handoff note, or starting the next session on
+        // work the last one left: said by Domo, so shown as a line, not a bubble.
+        if (blocks.some(block => isHandoffRequest(block?.text))) {
+          items.push({ ...base, kind: 'notice', tone: 'info', text: 'Writing a handoff note for a fresh session' })
+          break
+        }
+        const continuation = blocks.find(block => isHandoffContinuation(block?.text))
+        if (continuation) {
+          items.push({ ...base, kind: 'notice', tone: 'info', text: `Carrying on: ${continuation.text.slice(HANDOFF_CONTINUE_PREFIX.length).trim()}` })
+          break
+        }
         // A spoken turn carries a note for the agent saying so; the reader
         // gets a microphone instead of the note.
         const texts = blocks.filter(block => block?.type === 'text')
@@ -222,6 +245,18 @@ export function buildTranscript(
           permissionId: event.payload?.permissionId,
           title: event.payload?.toolCall?.title ?? 'Permission needed',
           toolCall: event.payload?.toolCall
+        })
+        break
+      }
+
+      case 'handoff': {
+        closeText()
+        items.push({
+          ...base,
+          kind: 'handoff',
+          reason: event.payload?.reason ?? 'user',
+          note: event.payload?.note ?? '',
+          sessionId: event.agentSessionId
         })
         break
       }
@@ -431,6 +466,8 @@ function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
     case 'thought':
     case 'notice':
       return a.text === (b as typeof a).text
+    case 'handoff':
+      return a.note === (b as typeof a).note
     case 'tool': {
       const mine = a.tool
       const theirs = (b as typeof a).tool
@@ -502,4 +539,9 @@ export function reconcileCondensed(
       && old.items.every((entry, index) => entry === item.items[index])
     return same ? old : item
   })
+}
+
+/** "Fresh session · the context window was filling up" — the line a handoff draws. */
+export function handoffLabel(reason: HandoffReason): string {
+  return `New session · ${HANDOFF_REASON_LABELS[reason] ?? 'handed off'}`
 }

@@ -30,7 +30,7 @@ import { deliverCronJob } from '../../server/lib/cron/scheduler'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
 import { mintMeshToken } from '../../server/lib/mesh/token'
 import { ASSISTANT_CONTEXT_OPEN, HANDOFF_CONTINUE_PREFIX, HANDOFF_REQUEST_PREFIX } from '../../shared/assistants'
-import type { TurnEnd } from '../../server/lib/acp/manager'
+import { isDomoHandOff, type TurnEnd } from '../../server/lib/acp/manager'
 
 /**
  * An assistant against the real Postgres. Only the ACP manager is faked: a
@@ -250,6 +250,13 @@ describe('a handoff', () => {
     await endTurn({ agentSessionId: first })
     expect((await getAssistant(assistant.id))!.handoff).toMatchObject({ reason: 'context', sessionId: first })
     expect(textOf(acp.deliver.mock.calls.at(-1)![1].content)).toContain('nearly full')
+  })
+
+  it('is never held up by a permission prompt for Domo\'s own tool', () => {
+    expect(isDomoHandOff({ title: 'mcp__domo__hand_off', _meta: { claudeCode: { toolName: 'mcp__domo__hand_off' } } })).toBe(true)
+    expect(isDomoHandOff({ title: 'mcp__other__hand_off' })).toBe(false)
+    expect(isDomoHandOff({ title: 'mcp__domo__notify_supervisor' })).toBe(false)
+    expect(isDomoHandOff({ title: 'Bash', rawInput: { command: 'echo mcp__domo__hand_off' } })).toBe(false)
   })
 
   it('is refused to an ordinary session', async () => {

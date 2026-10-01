@@ -14,9 +14,9 @@ const props = defineProps<{
 
 const item = computed(() => props.item)
 
-/** Only on a coding agent's page, which is where the voice bar lives. */
+/** Only on a coding agent's or an assistant's page, which is where the voice bar lives. */
 const route = useRoute()
-const replayable = computed(() => route.path.startsWith('/agents/') && props.item.kind === 'assistant')
+const replayable = computed(() => /^\/(agents|assistants)\//.test(route.path) && props.item.kind === 'assistant')
 const { replay } = useAgentVoiceReplay()
 /** A tap on the message shows its replay button; there is no hover on a phone. */
 const revealed = ref(false)
@@ -107,6 +107,31 @@ const permissionPending = computed(() =>
     <UIcon name="i-lucide-shield-question" class="size-3.5 shrink-0" />
     <span>Waiting for permission: {{ item.title }}</span>
   </div>
+
+  <!-- An assistant's session taking over: a divider, with the note it started from behind it. -->
+  <UCollapsible v-else-if="item.kind === 'handoff'" class="w-full">
+    <div class="flex items-center gap-2 text-xs text-dimmed">
+      <span class="h-px flex-1 bg-(--ui-border)" />
+      <UButton
+        :label="handoffLabel(item.reason)"
+        icon="i-lucide-notebook-pen"
+        color="neutral"
+        variant="link"
+        size="xs"
+        trailing-icon="i-lucide-chevron-down"
+        class="text-dimmed"
+      />
+      <span class="h-px flex-1 bg-(--ui-border)" />
+    </div>
+    <template #content>
+      <div class="mx-auto mt-2 max-w-2xl rounded-md border border-default bg-elevated/40 px-3 py-2 text-sm text-muted">
+        <p class="mb-1 text-xs font-medium text-dimmed">
+          The note it started from
+        </p>
+        <MarkdownView :text="item.note" />
+      </div>
+    </template>
+  </UCollapsible>
 
   <div
     v-else-if="item.kind === 'notice'"

@@ -11,7 +11,9 @@ import type { Project } from '~~/shared/types'
  */
 const { projects } = useProjects()
 const { environments, showRetired } = useDevEnvironments()
-const { sessions: agentSessions, showArchived } = useAgentSessions()
+const { sessions: everySession, showArchived } = useAgentSessions()
+/** An assistant's sessions are its own; they live in its journal, not here. */
+const agentSessions = computed(() => everySession.value.filter(session => !session.assistantId))
 const { pending } = usePermissions()
 
 /**

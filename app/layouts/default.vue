@@ -59,6 +59,8 @@ const newAgentOpen = ref(false)
             </nav>
           </div>
 
+          <SidebarAssistants />
+
           <ProjectTree />
         </div>
 

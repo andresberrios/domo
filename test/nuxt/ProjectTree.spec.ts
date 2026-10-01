@@ -74,7 +74,10 @@ const agent: AgentSession = {
 
 mockNuxtImport('useProjects', () => () => ({ projects: computed(() => [project]), isReady: ref(true) }))
 mockNuxtImport('useDevEnvironments', () => () => ({ environments: computed(() => [environment, ...grouped]), isReady: ref(true) }))
-mockNuxtImport('useAgentSessions', () => () => ({ sessions: computed(() => [agent]), isReady: ref(true) }))
+/** A session of an assistant in the same environment: its journal's, not the tree's. */
+const assistantSession: AgentSession = { ...agent, id: 'ag_assistant', title: 'Inbox organizer', assistantId: 'as_1' }
+
+mockNuxtImport('useAgentSessions', () => () => ({ sessions: computed(() => [agent, assistantSession]), isReady: ref(true) }))
 mockNuxtImport('usePermissions', () => () => ({
   permissions: computed(() => []),
   pending: computed(() => []),
@@ -405,6 +408,15 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
       expect.objectContaining({ method: 'DELETE', path: '/api/projects/p1' })
     ))
 
+    wrapper.unmount()
+  })
+})
+
+describe('ProjectTree and assistants', () => {
+  it('leaves an assistant\'s sessions out of the tree', async () => {
+    const wrapper = await mountTree()
+    expect(wrapper.text()).toContain('Auth refactor')
+    expect(wrapper.text()).not.toContain('Inbox organizer')
     wrapper.unmount()
   })
 })

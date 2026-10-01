@@ -1,6 +1,6 @@
 import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { readBody } from 'h3'
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SchedulesPage from '~/pages/schedules.vue'
@@ -8,10 +8,17 @@ import type { CronJob } from '~~/shared/types'
 
 let agentRows: any[] = []
 let jobRows: CronJob[] = []
+let assistantRows: any[] = []
 
 mockNuxtImport('useAgentSessions', () => () => ({
   sessions: computed(() => agentRows.filter(row => !row.archived)),
   all: computed(() => agentRows),
+  isReady: ref(true)
+}))
+
+mockNuxtImport('useAssistants', () => () => ({
+  assistants: computed(() => assistantRows.filter(row => !row.archived)),
+  all: computed(() => assistantRows),
   isReady: ref(true)
 }))
 
@@ -107,7 +114,28 @@ describe('schedules page', () => {
     agentRows = []
     const wrapper = await mountSuspended(SchedulesPage, { attachTo: document.body })
 
-    expect(document.body.textContent).toContain('Create a coding agent before scheduling work.')
+    expect(document.body.textContent).toContain('Create an assistant or a coding agent before scheduling work.')
     wrapper.unmount()
+  })
+
+  it('schedules an assistant as itself, so the job outlives its sessions', async () => {
+    agentRows = [{ id: 'ag_of_assistant', title: 'Inbox organizer', archived: false, assistantId: 'as_1' }]
+    assistantRows = [{ id: 'as_1', name: 'Inbox organizer', archived: false }]
+    const wrapper = await mountSuspended(SchedulesPage, { attachTo: document.body })
+
+    // Preselected as the target, ahead of every session.
+    expect(document.body.textContent).toContain('Inbox organizer')
+    const name = document.querySelector('input[placeholder="Review open pull requests"]') as HTMLInputElement
+    const prompt = document.querySelector('textarea') as HTMLTextAreaElement
+    name.value = 'Morning sweep'
+    name.dispatchEvent(new Event('input'))
+    prompt.value = 'Sort the inbox.'
+    prompt.dispatchEvent(new Event('input'))
+    await nextTick()
+    ;[...document.querySelectorAll('button')].find(button => button.textContent?.includes('Schedule task'))!.click()
+    await vi.waitFor(() => expect(posted.at(-1)).toMatchObject({ assistantId: 'as_1', name: 'Morning sweep' }))
+    expect(posted.at(-1).agentSessionId).toBeUndefined()
+    wrapper.unmount()
+    assistantRows = []
   })
 })

@@ -32,6 +32,7 @@ import type {
   UsageProviderState
 } from '../../shared/types'
 import { isAgentAdapter } from '../../shared/agent-adapters'
+import { isAssistantContext } from '../../shared/assistants'
 
 /* ------------------------------------------------------------------ */
 /* row mappers                                                         */
@@ -1103,7 +1104,8 @@ export async function listRecentConversation(
     type: row.type,
     text: row.type === 'user_message'
       ? (row.payload?.content ?? [])
-          .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+          // An assistant's hidden context is Domo's words, not the human's.
+          .filter((block: any) => block?.type === 'text' && typeof block.text === 'string' && !isAssistantContext(block.text))
           .map((block: any) => block.text as string)
           .join('\n')
       : String((row.type === 'tool_call' ? row.payload?.title : row.payload?.text) ?? '')

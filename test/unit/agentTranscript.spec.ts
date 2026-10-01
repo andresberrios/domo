@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { buildTranscript, type TranscriptItem } from '~/utils/agentTranscript'
 import { agentEvent, permission, textChunk, thoughtChunk, userMessage } from '../helpers/events'
+import { ASSISTANT_CONTEXT_OPEN, HANDOFF_CONTINUE_PREFIX, HANDOFF_REQUEST_PREFIX } from '../../shared/assistants'
 
 /**
  * `buildTranscript()` is the one place where the append-only ACP log becomes
@@ -408,5 +409,28 @@ describe('spoken turns', () => {
     const items = buildTranscript([userMessage('typed')])
 
     expect(items[0]).toMatchObject({ kind: 'user', text: 'typed', spoken: false })
+  })
+})
+
+describe('buildTranscript, for an assistant', () => {
+  it('hides the context Domo puts on a first prompt and keeps what the human said', () => {
+    const items = buildTranscript([agentEvent('user_message', {
+      content: [
+        { type: 'text', text: `${ASSISTANT_CONTEXT_OPEN}\nYou are Pete.\n</domo-assistant-context>` },
+        { type: 'text', text: 'Where is my boat?' }
+      ]
+    })])
+    expect(items).toMatchObject([{ kind: 'user', text: 'Where is my boat?' }])
+  })
+
+  it('draws a handoff as a divider carrying its note, and Domo\'s request and continuation as lines', () => {
+    const items = buildTranscript([
+      agentEvent('user_message', { content: [{ type: 'text', text: `${HANDOFF_REQUEST_PREFIX} Write your note.` }] }),
+      agentEvent('handoff', { note: 'The boat is the Salty Gull.', reason: 'context', fromSessionId: 'ag_1', recent: [] }),
+      agentEvent('user_message', { content: [{ type: 'text', text: `${HANDOFF_CONTINUE_PREFIX} Finish the refactor.` }] })
+    ])
+    expect(kinds(items)).toEqual(['notice', 'handoff', 'notice'])
+    expect(items[1]).toMatchObject({ reason: 'context', note: 'The boat is the Salty Gull.' })
+    expect(items[2]).toMatchObject({ text: 'Carrying on: Finish the refactor.' })
   })
 })
