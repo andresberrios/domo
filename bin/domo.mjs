@@ -209,7 +209,8 @@ async function run() {
   if (other && other !== process.pid) fail(`a supervisor is already running (pid ${other})`)
   writeFileSync(P.supervisorPid, String(process.pid))
 
-  const env = serverEnv()
+  // Read again at every server start, so `domo restart` picks up an edit to `.env`.
+  let env = serverEnv()
   log(`home ${HOME}, https://${env.DOMO_HTTPS_ADDRESS}, upstream :${env.PORT}`)
 
   let stopping = false
@@ -258,12 +259,13 @@ async function run() {
 
   let crashes = 0
   while (!stopping) {
+    env = serverEnv()
     const release = currentRelease()
     const info = releaseInfo(release)
     log(`starting ${basename(release)} (${info?.commit?.slice(0, 7) ?? '?'}, built ${info?.builtAt ?? '?'})`)
     const candidate = restartRequested
     restartRequested = false
-    const child = spawn(P.node, [join(release, 'server', 'index.mjs')], { env, stdio: 'inherit', cwd: release })
+    const child = spawn(P.node, [join(release, '.output', 'server', 'index.mjs')], { env, stdio: 'inherit', cwd: release })
     server = child
     let exited = null
     const exit = new Promise(r => child.on('exit', (code, signal) => r((exited = { code, signal }))))
@@ -493,8 +495,13 @@ function updateCheck(channel) {
 }
 
 /**
- * Build `commit` into releases/<commit>: the Nuxt output plus the files the
- * supervisor and Caddy read from a release. Skipped when it is already there.
+ * Build `commit` into releases/<commit>: a git worktree of the checkout at
+ * that commit, with its own `node_modules` and `.output`. The server runs
+ * from the worktree, so the native adapter binaries (Claude Code, Codex,
+ * OpenCode) resolve from a full install, which Nitro's tracing does not
+ * carry, and `pnpm` hard-links every package from one store, so a second
+ * release costs little disk. A worktree without `build.json` did not finish
+ * and is built again.
  */
 async function buildRelease(commit, env) {
   const dir = join(P.releases, commit)
@@ -502,32 +509,32 @@ async function buildRelease(commit, env) {
     log(`release ${commit.slice(0, 7)} is already built`)
     return dir
   }
-  const building = `${dir}.building`
-  rmSync(building, { recursive: true, force: true })
   mkdirSync(P.releases, { recursive: true })
+  removeRelease(dir)
 
   log(`checking out ${commit.slice(0, 7)}`)
-  git(['checkout', '--quiet', '--detach', commit])
-  const buildEnv = { ...env, NODE_ENV: undefined, CI: '1', COREPACK_ENABLE_STRICT: '0' }
+  git(['worktree', 'add', '--quiet', '--detach', dir, commit])
+  const buildEnv = { ...env, CI: '1', COREPACK_ENABLE_STRICT: '0' }
   delete buildEnv.NODE_ENV
   log('pnpm install --frozen-lockfile')
-  await runStreaming(P.pnpm, ['install', '--frozen-lockfile'], { cwd: P.app, env: buildEnv })
+  await runStreaming(P.pnpm, ['install', '--frozen-lockfile'], { cwd: dir, env: buildEnv })
   log('pnpm build')
-  await runStreaming(P.pnpm, ['build'], { cwd: P.app, env: buildEnv })
+  await runStreaming(P.pnpm, ['build'], { cwd: dir, env: buildEnv })
 
-  log('assembling the release')
-  cpSync(join(P.app, '.output'), building, { recursive: true })
-  for (const file of ['Caddyfile', 'docker-compose.yml']) cpSync(join(P.app, file), join(building, file))
-  mkdirSync(join(building, 'bin'), { recursive: true })
-  cpSync(join(P.app, 'bin', 'domo.mjs'), join(building, 'bin', 'domo.mjs'))
-  writeJson(join(building, 'build.json'), {
+  writeJson(join(dir, 'build.json'), {
     commit,
     builtAt: new Date().toISOString(),
     nodeVersion: process.version,
     subject: git(['log', '-1', '--format=%s', commit])
   })
-  renameSync(building, dir)
   return dir
+}
+
+function removeRelease(dir) {
+  if (!existsSync(dir)) return
+  git(['worktree', 'remove', '--force', dir], { lenient: true })
+  rmSync(dir, { recursive: true, force: true })
+  git(['worktree', 'prune'], { lenient: true })
 }
 
 /** Start the release on a spare port against no database: proves the bundle loads and serves. */
@@ -544,7 +551,7 @@ async function smokeTest(dir, env) {
     NUXT_OPENCODE_API_KEY: ''
   }
   log(`smoke test on :${port}`)
-  const child = spawn(P.node, [join(dir, 'server', 'index.mjs')], { env: testEnv, cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(P.node, [join(dir, '.output', 'server', 'index.mjs')], { env: testEnv, cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
   let output = ''
   child.stdout.on('data', d => (output += d))
   child.stderr.on('data', d => (output += d))
@@ -566,7 +573,7 @@ function pruneReleases(keep) {
     const dir = join(P.releases, name)
     if (kept.includes(realpathSync(dir))) continue
     log(`removing old release ${name}`)
-    rmSync(dir, { recursive: true, force: true })
+    removeRelease(dir)
   }
 }
 
