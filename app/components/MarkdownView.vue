@@ -3,19 +3,32 @@ const props = defineProps<{ text: string }>()
 
 const html = ref('')
 
-// Rendering is async (Shiki), and streaming changes `text` many times a second:
-// only the newest render may land, or a slow older one overwrites newer text.
-let latest = 0
+// Rendering is async (Shiki), and streaming changes `text` every 150 ms. One
+// render runs at a time, and when it lands the newest text is rendered next.
+// Keeping only the newest render instead starved the view: on a phone a
+// render outlasted the next delta, so every one was overtaken and the message
+// sat at its first few words until the stream paused, while the voice bar was
+// already reading far past them.
+let rendering = false
+let pending: string | null = null
 
-watch(
-  () => props.text ?? '',
-  async (text) => {
-    const run = ++latest
-    const rendered = await renderMarkdown(text)
-    if (run === latest) html.value = rendered
-  },
-  { immediate: true }
-)
+async function render(text: string) {
+  if (rendering) {
+    pending = text
+    return
+  }
+  rendering = true
+  try {
+    for (let next: string | null = text; next !== null; next = pending) {
+      pending = null
+      html.value = await renderMarkdown(next)
+    }
+  } finally {
+    rendering = false
+  }
+}
+
+watch(() => props.text ?? '', text => void render(text), { immediate: true })
 </script>
 
 <template>

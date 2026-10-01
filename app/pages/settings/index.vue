@@ -126,5 +126,6 @@ async function save() {
       <USwitch v-model="form.proactiveNotifications" label="Speak up on agent activity" description="When a coding agent finishes a turn or needs a decision, the voice agent tells you." />
       <USwitch v-model="form.autoTitle" label="Name conversations automatically" description="The voice agent titles each conversation as it goes. A title you set yourself is never replaced." />
     </section>
+
   </SettingsShell>
 </template>

@@ -8,11 +8,17 @@ Give each parallel task to an agent in a dev environment, with one environment
 and one branch per task. The branch is in your checkout as soon as the agent
 makes it: environments share the project's refs.
 
-## Applying `server/` changes
+## Applying changes that restart the server
 
-Any edit to `server/` in the running checkout restarts Nitro and kills every
-agent, including the one that made the edit. Apply the edit only when no turn
-is running. If you have to apply it yourself, run it as a detached job that
+These edits in the running checkout kill every agent, including the one that
+made the edit:
+
+- `server/`, and anything it imports, such as `shared/`: Nitro rebuilds.
+- `.env`: the whole dev server restarts, so a new key or token is also only
+  read then.
+- `nuxt.config.ts`, `.nuxtrc`, `.nuxtignore`: Nuxt reloads.
+
+Apply such an edit only when no turn is running. If you have to apply it yourself, run it as a detached job that
 starts after your own turn ends:
 
 ```sh

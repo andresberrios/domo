@@ -123,7 +123,7 @@ async function remove() {
           <template v-else>
             <div class="grid gap-3 sm:grid-cols-2">
               <UFormField label="Agent">
-                <USelectMenu
+                <ChoiceMenu
                   v-model="form.agentSessionId"
                   :items="agentItems"
                   value-key="value"

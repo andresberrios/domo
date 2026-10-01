@@ -1,4 +1,14 @@
+import { readdirSync } from 'node:fs'
 // https://nuxt.com/docs/api/configuration/nuxt-config
+function kokoroVoices(): string[] {
+  const dir = new URL('./node_modules/kokoro-js/voices/', import.meta.url).pathname
+  try {
+    return readdirSync(dir).filter(name => name.endsWith('.bin')).map(name => `${dir}${name}`)
+  } catch {
+    return []
+  }
+}
+
 export default defineNuxtConfig({
   compatibilityDate: '2026-09-01',
   devtools: { enabled: false },
@@ -38,7 +48,11 @@ export default defineNuxtConfig({
         '@agentclientprotocol/claude-agent-acp',
         '@agentclientprotocol/codex-acp',
         '@openai/codex',
-        '@agentclientprotocol/sdk'
+        '@agentclientprotocol/sdk',
+        // Native ONNX runtime and the open speech models that run on it.
+        'onnxruntime-node',
+        '@huggingface/transformers',
+        'kokoro-js'
       ],
       traceInclude: [
         new URL('./node_modules/@devcontainers/cli/devcontainer.js', import.meta.url).pathname,
@@ -48,7 +62,10 @@ export default defineNuxtConfig({
         new URL('./node_modules/@agentclientprotocol/codex-acp/package.json', import.meta.url).pathname,
         new URL('./node_modules/@agentclientprotocol/codex-acp/dist/index.js', import.meta.url).pathname,
         new URL('./node_modules/@openai/codex/package.json', import.meta.url).pathname,
-        new URL('./node_modules/@openai/codex/bin/codex.js', import.meta.url).pathname
+        new URL('./node_modules/@openai/codex/bin/codex.js', import.meta.url).pathname,
+        // kokoro-js reads its voices by a path built at run time, which the
+        // tracer cannot follow; without them the local speaker fails in a build.
+        ...kokoroVoices()
       ]
     }
   },

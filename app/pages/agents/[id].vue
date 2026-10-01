@@ -51,6 +51,12 @@ const usageProvider = computed(() => session.value?.adapter === 'claude-code'
       : undefined)
 
 
+/**
+ * Whether the voice bar is open. Remembered across pages and reloads: someone
+ * who talks to their agents does not want to find the microphone every time.
+ */
+const voiceOpen = useAgentVoiceOpen()
+
 const renaming = ref(false)
 const titleDraft = ref('')
 const starting = ref(false)
@@ -144,6 +150,15 @@ const menuItems = computed(() => [
             :ui="{ label: 'hidden sm:inline' }"
             @click="start"
           />
+          <UTooltip :text="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'">
+            <UButton
+              icon="i-lucide-mic"
+              :color="voiceOpen ? 'primary' : 'neutral'"
+              :variant="voiceOpen ? 'soft' : 'ghost'"
+              :aria-label="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'"
+              @click="voiceOpen = !voiceOpen"
+            />
+          </UTooltip>
           <UDropdownMenu :items="menuItems">
             <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
           </UDropdownMenu>
@@ -242,6 +257,10 @@ const menuItems = computed(() => [
         -->
         <div v-if="queued.length" class="shrink-0 pt-2">
           <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" />
+        </div>
+
+        <div v-if="!blocked && voiceOpen && session" class="shrink-0 pt-2">
+          <AgentVoiceBar :session="session" />
         </div>
 
         <div v-if="!blocked" class="shrink-0 pt-2">

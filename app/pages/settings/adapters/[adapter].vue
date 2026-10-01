@@ -225,17 +225,17 @@ async function removeKey() {
           </p>
         </div>
         <UFormField label="Development environments" help="A disposable checkout in a volume Domo can re-create.">
-          <USelectMenu v-model="permission.environment" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
+          <ChoiceMenu v-model="permission.environment" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
         </UFormField>
         <UFormField label="This machine" help="Your real checkout, with no container around it.">
-          <USelectMenu v-model="permission.host" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
+          <ChoiceMenu v-model="permission.host" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
         </UFormField>
       </section>
       <USeparator />
     </template>
 
     <UFormField :label="`Default ${adapter.modeLabel.toLowerCase()}`" :help="adapter.modeDescription">
-      <USelectMenu
+      <ChoiceMenu
         v-model="mode"
         :items="modeItems"
         value-key="value"
@@ -250,7 +250,7 @@ async function removeKey() {
       label="Default model"
       help="What a new session of this adapter starts on. A session that asks for its own model keeps it."
     >
-      <USelectMenu
+      <ChoiceMenu
         v-model="modelValue"
         :items="modelItems"
         value-key="value"
@@ -272,12 +272,12 @@ async function removeKey() {
           :label="option.name"
           :description="option.description ?? undefined"
         >
-          <USelectMenu
+          <ChoiceMenu
             :model-value="configValue(option)"
             :items="configItems(option)"
             value-key="value"
             class="w-full"
-            @update:model-value="value => setConfigValue(option, value as string)"
+            @update:model-value="(value: string) => setConfigValue(option, value)"
           />
         </UFormField>
       </section>

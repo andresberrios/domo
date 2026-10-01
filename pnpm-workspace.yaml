@@ -2,7 +2,9 @@ allowBuilds:
   '@google/genai': true
   '@opencode/cli': true
   esbuild: true
+  onnxruntime-node: true
   protobufjs: true
+  sharp: false
   unrs-resolver: true
   vue-demi: true
 minimumReleaseAgeExclude:
