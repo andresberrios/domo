@@ -5,7 +5,6 @@ import { AGENT_ADAPTERS, agentAdapterInfo } from '~~/shared/agent-adapters'
 const open = defineModel<boolean>('open', { default: false })
 
 const props = defineProps<{
-  voiceSessionId?: string | null
   /**
    * Which project to start in. An agent belongs to a project's work even when
    * it runs outside a container, so the project is chosen first and everything
@@ -212,7 +211,6 @@ async function create() {
         model: model.value === ADAPTER_DEFAULT ? undefined : model.value,
         modeId: mode.value || undefined,
         devEnvironmentId: devEnvironmentId.value === LOCAL ? undefined : devEnvironmentId.value,
-        voiceSessionId: props.voiceSessionId ?? null,
         initialPrompt: task.value.trim() || undefined
       }
     })

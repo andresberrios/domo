@@ -790,7 +790,7 @@ describe('the model a session runs on', () => {
 
   it('corrects a row the adapter will not honour, rather than leaving it saying so forever', async () => {
     // A model can be recorded with no adapter to check it against, so a typo
-    // through the voice agent or the API must not leave a session that can
+    // through the mesh or the API must not leave a session that can
     // never start again — and the row must not go on claiming a model the
     // session is not running.
     const { acpManager } = await import('../../server/lib/acp/manager')
@@ -1978,7 +1978,7 @@ describe('usage updates', () => {
     expect(writes).toBe(1)
   })
 
-  it('does not touch last_activity_at, which the voice agent picks agents by', async () => {
+  it('does not touch last_activity_at, which orders the sessions', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const agent = await session()
     await updateAgentSession(agent.id, { touch: true })

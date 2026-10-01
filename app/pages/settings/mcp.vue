@@ -17,7 +17,7 @@ async function remove(server: McpServer) {
 </script>
 
 <template>
-  <SettingsShell title="MCP servers" description="Extra tools made available to the voice agent, coding agents, or both.">
+  <SettingsShell title="MCP servers" description="Extra tools made available to every coding agent.">
     <div class="flex justify-end">
       <UButton label="Add server" icon="i-lucide-plus" size="sm" @click="add" />
     </div>
@@ -31,7 +31,6 @@ async function remove(server: McpServer) {
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium">
             {{ server.name }}
-            <UBadge size="sm" color="neutral" variant="subtle" class="ms-1.5" :label="server.scope === 'both' ? 'all agents' : server.scope" />
           </p>
           <p class="truncate font-mono text-xs text-dimmed">{{ server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.url }}</p>
         </div>

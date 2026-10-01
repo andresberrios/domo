@@ -5,12 +5,12 @@ import { getDb, query } from '../../server/lib/db'
 
 /**
  * The schema is also the migration: every boot re-runs it against whatever the
- * previous version left behind. This file starts from the *old* shape of two
+ * previous version left behind. This file starts from the *old* shape of some
  * tables and checks that booting brings them forward — the case a fresh
  * database can never exercise, and the one that breaks a real install.
  */
 
-/** The tables as they were before `title_source` and the container columns. */
+/** The tables as they were before the container columns, with the live voice conversation still in. */
 const LEGACY = /* sql */ `
 create table voice_sessions (
   id text primary key,
@@ -23,6 +23,44 @@ create table voice_sessions (
   last_activity_at text,
   archived boolean not null default false,
   resumption_handle text
+);
+
+create table settings (
+  key text primary key,
+  value jsonb not null
+);
+
+create table agent_sessions (
+  id text primary key,
+  voice_session_id text references voice_sessions(id) on delete set null,
+  adapter text not null default 'claude-code',
+  acp_session_id text,
+  title text not null,
+  cwd text not null,
+  status text not null default 'idle',
+  mode_id text,
+  modes jsonb,
+  last_error text,
+  summary text,
+  created_at text not null,
+  updated_at text not null,
+  last_activity_at text,
+  archived boolean not null default false
+);
+
+create table mcp_servers (
+  id text primary key,
+  name text not null,
+  transport text not null,
+  command text,
+  args jsonb not null default '[]'::jsonb,
+  env jsonb not null default '{}'::jsonb,
+  url text,
+  headers jsonb not null default '{}'::jsonb,
+  enabled boolean not null default true,
+  scope text not null default 'both',
+  created_at text not null,
+  updated_at text not null
 );
 
 create table projects (
@@ -65,6 +103,17 @@ insert into voice_sessions (id, title, model, voice, created_at, updated_at)
 values ('vs_untouched', 'New conversation', 'm', 'v', 'now', 'now'),
        ('vs_renamed', 'Payments', 'm', 'v', 'now', 'now');
 
+insert into agent_sessions (id, voice_session_id, title, cwd, created_at, updated_at)
+values ('ag_thinking', 'vs_renamed', 'Voice thinking', '/srv/api', 'now', 'now');
+
+insert into settings (key, value)
+values ('voiceName', '{"v": "Kore"}'), ('systemInstruction', '{"v": "Be terse."}'),
+       ('voiceProvider', '{"v": "openai"}'), ('agentVoice', '{"v": {"speaker": "gemini"}}'),
+       ('autoApprovePermissions', '{"v": true}');
+
+insert into mcp_servers (id, name, transport, url, scope, created_at, updated_at)
+values ('mcp_voice', 'calendar', 'http', 'https://calendar.test/mcp', 'voice', 'now', 'now');
+
 insert into projects (id, name, repo_path, created_at, updated_at)
 values ('prj_1', 'api', '/srv/api', 'now', 'now');
 
@@ -88,7 +137,7 @@ beforeAll(async () => {
   await getDb()
 })
 
-describe('booting on top of a pre-title_source database', () => {
+describe('booting on top of an old database', () => {
   it('keys a port by its container too, so two services may share a port number', async () => {
     // The old unique constraint would refuse the second row outright.
     await query(
@@ -107,21 +156,31 @@ describe('booting on top of a pre-title_source database', () => {
     ])
   })
 
-  it('treats the untouched placeholder as Domo\'s to rename', async () => {
-    const rows = await query<{ id: string, title_source: string }>(
-      'select id, title_source from voice_sessions order by id'
+  it('drops the live voice conversation and keeps the sessions it made', async () => {
+    const tables = await query("select table_name from information_schema.tables where table_name like 'voice_%'")
+    expect(tables).toEqual([])
+    const columns = await query(
+      "select column_name from information_schema.columns where table_name = 'agent_sessions' and column_name = 'voice_session_id'"
     )
+    expect(columns).toEqual([])
+    await expect(query('select id from agent_sessions')).resolves.toEqual([{ id: 'ag_thinking' }])
+  })
+
+  it('moves the Gemini voice to the voice bar and forgets the settings only the conversation read', async () => {
+    const rows = await query<{ key: string, value: any }>('select key, value from settings order by key')
 
     expect(rows).toEqual([
-      { id: 'vs_renamed', title_source: 'user' },
-      { id: 'vs_untouched', title_source: 'auto' }
+      { key: 'agentVoice', value: { v: { speaker: 'gemini', geminiVoice: 'Kore' } } },
+      { key: 'autoApprovePermissions', value: { v: true } }
     ])
   })
 
-  it('leaves no row without an owner', async () => {
-    const rows = await query('select 1 from voice_sessions where title_source is null')
-
-    expect(rows).toEqual([])
+  it('gives every MCP server to the coding agents, the voice agent\'s too', async () => {
+    const columns = await query(
+      "select column_name from information_schema.columns where table_name = 'mcp_servers' and column_name = 'scope'"
+    )
+    expect(columns).toEqual([])
+    await expect(query('select id, enabled from mcp_servers')).resolves.toEqual([{ id: 'mcp_voice', enabled: true }])
   })
 
   it('adds the columns the Dev Container work introduced', async () => {

@@ -18,7 +18,8 @@ const textOf = (content: any[]) => content.map(block => block.text).join('')
 describe('inboxDivider', () => {
   it.each([
     ['user' as const, '[From you]'],
-    ['voice' as const, '[From Domo]'],
+    // A spoken turn is the human too, heard through the voice bar.
+    ['voice' as const, '[From you]'],
     // A subscription note is Domo talking too, not the agent it is about.
     ['system' as const, '[From Domo]'],
     ['agent:ag_7f3' as const, '[Message from agent ag_7f3]']
@@ -49,7 +50,7 @@ describe('combineInboxContent', () => {
   it('keeps every block of every message, in order', () => {
     const first = inboxMessage({
       content: [{ type: 'text', text: 'look at this' }, { type: 'resource_link', uri: 'file:///tmp/log' }],
-      origin: 'voice'
+      origin: 'system'
     })
     const second = said('and this', 'user')
 

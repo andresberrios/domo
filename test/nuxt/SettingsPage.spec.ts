@@ -39,12 +39,11 @@ registerEndpoint('/api/adapters/models', (event) => {
 
 function settings() {
   return {
-    liveModel: 'gemini-live', voiceName: 'Puck', systemInstruction: '', defaultCwd: '/work',
-    proactiveNotifications: true, autoApprovePermissions: false,
+    defaultCwd: '/work', autoApprovePermissions: false,
     defaultAgentModes: { 'claude-code': 'plan', codex: 'agent', opencode: 'build' },
     defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' },
     defaultAgentConfig: { 'claude-code': {}, codex: {}, opencode: {} },
-    language: 'en-US', autoTitle: true, vscodeSshHost: '', homeMounts: []
+    vscodeSshHost: '', homeMounts: []
   }
 }
 

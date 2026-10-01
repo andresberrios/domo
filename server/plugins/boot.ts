@@ -1,7 +1,6 @@
 import { getDb, query } from '../lib/db'
 import { acpManager } from '../lib/acp/manager'
 import { startSubscriptionNotifier } from '../lib/acp/subscriptions'
-import { voiceManager } from '../lib/voice/runtime'
 import { usagePoller } from '../lib/usage/poller'
 import { cronScheduler } from '../lib/cron/scheduler'
 import {
@@ -32,7 +31,6 @@ export default defineNitroPlugin(async (nitro) => {
         where status = 'creating' and retired_at is null`,
       [new Date().toISOString()]
     )
-    await query(`update voice_sessions set status = 'idle' where status <> 'idle'`)
     await query(
       `update agent_permissions set resolved_at = $1, resolved_by = 'auto'
        where resolved_at is null`,
@@ -66,7 +64,6 @@ export default defineNitroPlugin(async (nitro) => {
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()
     cronScheduler.stop()
-    await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()
     await stopAllDoodProxies().catch(() => {})

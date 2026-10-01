@@ -13,9 +13,9 @@
 > those. When a change makes a doc wrong, fix the doc in the same change, and
 > prefer deleting a line to qualifying it.
 
-Domo is a self-hosted Nuxt 4 SPA. You talk to a live voice agent — Gemini Live
-or OpenAI GPT-Live, chosen in Settings — and it runs coding agents (Claude
-Code, Codex, OpenCode) over ACP. Read `README.md` for the
+Domo is a self-hosted Nuxt 4 SPA. It runs coding agents (Claude Code, Codex,
+OpenCode) over ACP, and you talk to them out loud through a voice bar on each
+agent's page. Read `README.md` for the
 product and setup. Domo has one user today and will have more. Build features
 for the people who run Domo, not for the people who develop it. Maintainer
 needs, such as tracking adapter releases, belong in agents, cron jobs or docs,
@@ -98,6 +98,6 @@ not in the UI.
 - `docs/dev-environments.md`: read before you change the environment
   lifecycle or the Docker proxy (`server/lib/dood/`), or when `docker` in an
   environment acts in an unexpected way.
-- `docs/voice.md`: read before you change the voice runtime, either provider,
-  or anything about delegation, transcripts or voice usage.
+- `docs/voice.md`: read before you change the voice bar (`agent-voice`), its
+  speech engines or turn detection.
 - `test/AGENTS.md`: read before you work under `test/`.

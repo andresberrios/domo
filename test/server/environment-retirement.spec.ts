@@ -78,7 +78,7 @@ vi.mock('../../server/lib/dev-environments', async (importOriginal) => {
 })
 
 beforeEach(async () => {
-  await query('truncate projects, voice_sessions, agent_sessions, settings cascade')
+  await query('truncate projects, agent_sessions, settings cascade')
   spawned.calls = 0
 })
 

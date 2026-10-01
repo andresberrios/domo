@@ -4,21 +4,17 @@ import { query } from '../../server/lib/db'
 import {
   addAgentSubscription,
   appendAgentEvent,
-  appendVoiceMessage,
   claimInboxMessages,
   createAgentSession,
   createDevEnvironmentRow,
   createMcpServer,
   createPermission,
   createProject,
-  createVoiceSession,
   deleteAgentSession,
   deleteInboxMessage,
   pruneRetiredProjects,
-  deleteVoiceSession,
   getAgentSession,
   enqueueInboxMessage,
-  getResumptionHandle,
   latestAgentMessage,
   listAgentEvents,
   listAgentSessions,
@@ -30,12 +26,9 @@ import {
   listMcpServers,
   listPermissions,
   listProjects,
-  listVoiceMessages,
-  listVoiceSessions,
   openAgentStream,
   removeAgentSubscription,
   resolvePermissionRow,
-  setAutoTitle,
   titleUntitledAgentSession,
   UNTITLED_AGENT_TITLE,
   updateAgentSession,
@@ -43,7 +36,6 @@ import {
   updateDevEnvironmentPort,
   updateMcpServer,
   retireProjectRow,
-  updateVoiceSession,
   upsertDevEnvironmentPort,
   writeAgentStream
 } from '../../server/lib/repo'
@@ -60,8 +52,8 @@ const seen = captureBus()
 afterAll(() => seen.stop())
 
 beforeEach(async () => {
-  // Projects and voice sessions cascade to everything else.
-  await query('truncate projects, voice_sessions, agent_sessions, mcp_servers, settings cascade')
+  // Projects and sessions cascade to everything else.
+  await query('truncate projects, agent_sessions, mcp_servers, settings cascade')
   seen.clear()
 })
 
@@ -274,146 +266,6 @@ describe('dev environments', () => {
   })
 })
 
-describe('voice sessions', () => {
-  it('starts nameless, auto-titled, and takes its model from the settings', async () => {
-    const session = await createVoiceSession()
-
-    expect(session).toMatchObject({ title: 'New conversation', titleSource: 'auto', status: 'idle' })
-    expect(session.model).toBeTruthy()
-    expect(seen.types()).toEqual(['voice-list-changed'])
-  })
-
-  it('is the user\'s from the start when they named it', async () => {
-    await expect(createVoiceSession({ title: '  Payments  ' })).resolves.toMatchObject({
-      title: 'Payments',
-      titleSource: 'user'
-    })
-  })
-
-  it('hides archived conversations unless asked for', async () => {
-    const session = await createVoiceSession()
-    await updateVoiceSession(session.id, { archived: true })
-
-    await expect(listVoiceSessions()).resolves.toEqual([])
-    await expect(listVoiceSessions(true)).resolves.toHaveLength(1)
-  })
-
-  it('sorts by activity, falling back to creation', async () => {
-    const older = await createVoiceSession({ title: 'older' })
-    const newer = await createVoiceSession({ title: 'newer' })
-    await updateVoiceSession(older.id, { lastActivityAt: '2099-01-01T00:00:00.000Z' })
-
-    await expect(listVoiceSessions().then(items => items.map(item => item.title)))
-      .resolves.toEqual(['older', 'newer'])
-    expect(newer.title).toBe('newer')
-  })
-
-  describe('title ownership', () => {
-    it('lets the voice agent name a conversation it still owns', async () => {
-      const session = await createVoiceSession()
-
-      await expect(setAutoTitle(session.id, 'Flaky invoice tests')).resolves.toMatchObject({
-        title: 'Flaky invoice tests',
-        titleSource: 'auto'
-      })
-    })
-
-    it('refuses to overwrite a title the user set', async () => {
-      const session = await createVoiceSession()
-      await updateVoiceSession(session.id, { title: 'Payments', titleSource: 'user' })
-
-      await expect(setAutoTitle(session.id, 'Flaky invoice tests')).resolves.toBeNull()
-      await expect(listVoiceSessions().then(items => items[0]!.title)).resolves.toBe('Payments')
-    })
-
-    it('says nothing on the bus when it did not write', async () => {
-      const session = await createVoiceSession({ title: 'Payments' })
-      seen.clear()
-
-      await setAutoTitle(session.id, 'Something else')
-
-      expect(seen.types()).toEqual([])
-    })
-  })
-
-  it('remembers the resumption handle with the fingerprint that issued it', async () => {
-    const session = await createVoiceSession()
-    await updateVoiceSession(session.id, { resumptionHandle: 'handle-1', resumptionFingerprint: 'model+tools' })
-
-    await expect(getResumptionHandle(session.id)).resolves.toEqual({
-      handle: 'handle-1',
-      fingerprint: 'model+tools'
-    })
-  })
-
-  it('has neither for a session that never connected', async () => {
-    const session = await createVoiceSession()
-
-    await expect(getResumptionHandle(session.id)).resolves.toEqual({ handle: null, fingerprint: null })
-  })
-
-  it('has neither for a session that does not exist', async () => {
-    await expect(getResumptionHandle('vs_nope')).resolves.toEqual({ handle: null, fingerprint: null })
-  })
-})
-
-describe('voice messages', () => {
-  it('appends in order and touches the conversation', async () => {
-    const session = await createVoiceSession()
-    await appendVoiceMessage({ sessionId: session.id, role: 'user', text: 'start an agent' })
-    await appendVoiceMessage({ sessionId: session.id, role: 'assistant', text: 'on it' })
-
-    const messages = await listVoiceMessages(session.id)
-
-    expect(messages.map(message => message.text)).toEqual(['start an agent', 'on it'])
-    expect(messages[0]!.seq).toBeLessThan(messages[1]!.seq)
-    await expect(listVoiceSessions().then(items => items[0]!.lastActivityAt)).resolves.toBeTruthy()
-  })
-
-  it('stores tool calls with their arguments', async () => {
-    const session = await createVoiceSession()
-    const message = await appendVoiceMessage({
-      sessionId: session.id,
-      role: 'tool',
-      text: '',
-      toolName: 'create_agent_session',
-      meta: { args: { title: 'Auth refactor' } }
-    })
-
-    expect(message).toMatchObject({ toolName: 'create_agent_session', meta: { args: { title: 'Auth refactor' } } })
-  })
-
-  it('publishes the message itself, so the runtime does not have to re-read it', async () => {
-    const session = await createVoiceSession()
-    seen.clear()
-    await appendVoiceMessage({ sessionId: session.id, role: 'user', text: 'hello' })
-
-    expect(seen.events).toEqual([
-      expect.objectContaining({ type: 'voice-message', sessionId: session.id })
-    ])
-  })
-
-  it('returns the newest messages when there are more than the limit', async () => {
-    const session = await createVoiceSession()
-    for (let index = 0; index < 5; index++) {
-      await appendVoiceMessage({ sessionId: session.id, role: 'user', text: `message ${index}` })
-    }
-
-    const messages = await listVoiceMessages(session.id, 2)
-
-    expect(messages.map(message => message.text)).toEqual(['message 3', 'message 4'])
-  })
-
-  it('goes away with its conversation', async () => {
-    const session = await createVoiceSession()
-    await appendVoiceMessage({ sessionId: session.id, role: 'user', text: 'hello' })
-
-    await deleteVoiceSession(session.id)
-
-    await expect(query('select 1 from voice_messages')).resolves.toEqual([])
-  })
-})
-
 describe('agent sessions', () => {
   it('takes a title from its first message only while it has none', async () => {
     const untitled = await agent({ adapter: 'claude-code', title: UNTITLED_AGENT_TITLE, cwd: '/srv/api' })
@@ -466,23 +318,6 @@ describe('agent sessions', () => {
     )
 
     await expect(listAgentSessions().then(items => items[0]!.adapter)).resolves.toBe('claude-code')
-  })
-
-  it('survives its voice conversation being deleted', async () => {
-    const conversation = await createVoiceSession()
-    const session = await agent({
-      adapter: 'codex',
-      title: 'Docs',
-      cwd: '/srv/api',
-      voiceSessionId: conversation.id
-    })
-
-    await deleteVoiceSession(conversation.id)
-
-    await expect(listAgentSessions().then(items => items[0])).resolves.toMatchObject({
-      id: session.id,
-      voiceSessionId: null
-    })
   })
 
   it('stores modes as json and touches activity only when asked', async () => {
@@ -586,7 +421,7 @@ describe('streamed message blocks', () => {
     expect(event!.payload).toEqual({ text: 'Looking at', streaming: true })
   })
 
-  it('publishes every rewrite, so the voice agent and the SSE channel keep up', async () => {
+  it('publishes every rewrite, so the voice bar and the subscribers keep up', async () => {
     const session = await agent()
     seen.clear()
     const block = await openAgentStream(session.id, 'agent_thought', 'hm')
@@ -646,11 +481,11 @@ describe('permissions', () => {
     const session = await agent()
     const permission = await pending(session.id)
 
-    await expect(resolvePermissionRow(permission.id, 'allow', 'voice-agent')).resolves.toMatchObject({
+    await expect(resolvePermissionRow(permission.id, 'allow', 'agent:ag_parent')).resolves.toMatchObject({
       resolvedOptionId: 'allow',
-      resolvedBy: 'voice-agent'
+      resolvedBy: 'agent:ag_parent'
     })
-    // The UI, the voice agent and auto-approve all race for the same row.
+    // The UI, a spawning agent and auto-approve all race for the same row.
     await expect(resolvePermissionRow(permission.id, 'deny', 'user')).resolves.toBeNull()
   })
 
@@ -828,10 +663,10 @@ describe('the latest thing an agent said', () => {
 })
 
 describe('mcp servers', () => {
-  it('defaults a new server to enabled, for both kinds of agent', async () => {
+  it('defaults a new server to enabled', async () => {
     const server = await createMcpServer({ name: 'linear', transport: 'http', url: 'https://mcp.linear.app' })
 
-    expect(server).toMatchObject({ enabled: true, scope: 'both', args: [], env: {}, headers: {} })
+    expect(server).toMatchObject({ enabled: true, args: [], env: {}, headers: {} })
     expect(seen.types()).toEqual(['mcp-changed'])
   })
 
@@ -841,14 +676,12 @@ describe('mcp servers', () => {
       transport: 'stdio',
       command: 'npx',
       args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv'],
-      env: { ROOT: '/srv' },
-      scope: 'coding'
+      env: { ROOT: '/srv' }
     })
 
     await expect(listMcpServers().then(items => items[0])).resolves.toMatchObject({
       args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv'],
-      env: { ROOT: '/srv' },
-      scope: 'coding'
+      env: { ROOT: '/srv' }
     })
     expect(server.command).toBe('npx')
   })

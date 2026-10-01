@@ -26,7 +26,7 @@ import { agentAdapterInfo } from '~~/shared/agent-adapters'
  *
  * Nothing here holds the chosen value: every column reads the session row, so
  * a change the adapter refuses reverts on its own, and a change made from the
- * voice agent or another browser arrives through Electric like any other.
+ * mesh tool or another browser arrives through Electric like any other.
  *
  * The panel stays open after a selection rather than closing like a menu,
  * because the options are per model — changing the model refreshes the effort

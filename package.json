@@ -1,7 +1,7 @@
 {
   "name": "domo",
   "version": "1.0.0",
-  "description": "A voice-first control room for coding agents — talk to a Gemini Live or OpenAI GPT-Live agent that spawns, monitors and directs Claude Code, Codex and OpenCode sessions over ACP.",
+  "description": "A voice-first control room for coding agents — talk out loud to Claude Code, Codex and OpenCode sessions over ACP, and have them spawn, monitor and direct each other.",
   "type": "module",
   "private": true,
   "license": "SEE LICENSE IN LICENSE.md",
@@ -19,7 +19,6 @@
     "test:electric": "vitest run --project electric",
     "test:docker": "vitest run --project unit --project docker-live test/docker",
     "test:agents": "vitest run --project agents-live",
-    "test:voice": "vitest run --project voice-live",
     "test:environments": "vitest run --project environments-live",
     "test:watch": "vitest --project unit --project nuxt"
   },

@@ -28,8 +28,7 @@ import type {
   AgentSession,
   AppSettings,
   PendingPermission,
-  Project,
-  VoiceSession
+  Project
 } from '~~/shared/types'
 
 /**
@@ -173,47 +172,6 @@ describe('projects', () => {
   })
 })
 
-describe('conversations', () => {
-  it('creates one that Domo is free to name', async () => {
-    const session = await $fetch<VoiceSession>('/api/voice-sessions', { method: 'POST', body: {} })
-
-    expect(session).toMatchObject({ title: 'New conversation', titleSource: 'auto', status: 'idle' })
-  })
-
-  it('hands naming to the user on a rename, and back again', async () => {
-    const session = await $fetch<VoiceSession>('/api/voice-sessions', { method: 'POST', body: {} })
-
-    await expect($fetch<VoiceSession>(`/api/voice-sessions/${session.id}`, {
-      method: 'PATCH',
-      body: { title: 'Payments' }
-    })).resolves.toMatchObject({ title: 'Payments', titleSource: 'user' })
-
-    await expect($fetch<VoiceSession>(`/api/voice-sessions/${session.id}`, {
-      method: 'PATCH',
-      body: { autoTitle: true }
-    })).resolves.toMatchObject({ title: 'Payments', titleSource: 'auto' })
-  })
-
-  it('404s on a conversation that does not exist', async () => {
-    const response = await fetch('/api/voice-sessions/vs_nope', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'x' })
-    })
-
-    expect(response.status).toBe(404)
-  })
-
-  it('archives instead of deleting from the list', async () => {
-    const session = await $fetch<VoiceSession>('/api/voice-sessions', { method: 'POST', body: {} })
-    await $fetch(`/api/voice-sessions/${session.id}`, { method: 'PATCH', body: { archived: true } })
-
-    await expect($fetch<VoiceSession[]>('/api/voice-sessions')).resolves.not.toContainEqual(
-      expect.objectContaining({ id: session.id })
-    )
-  })
-})
-
 describe('a coding agent as the UI sees it', () => {
   it('serves the event log and answers a permission over HTTP', async () => {
     // The adapter subprocess is the one thing that cannot run in a test, so the
@@ -302,7 +260,7 @@ describe('a coding agent as the UI sees it', () => {
 
   it('changes a stopped session\'s settings in one call, without starting an adapter', async () => {
     // The route hands the whole patch to `applyAgentSessionPatch`, the same
-    // function the voice and mesh tools call, and none of it starts a process.
+    // function the mesh tools call, and none of it starts a process.
     // The stub adapter is what makes that a real assertion rather than a
     // hopeful one: it exits as soon as it is spawned, so a boot anywhere in
     // this call would leave `status: error` and a `lastError` behind it.
@@ -449,17 +407,17 @@ describe('settings', () => {
   it('serves the defaults, and says which keys are configured', async () => {
     const settings = await $fetch<AppSettings & { hasGeminiKey: boolean }>('/api/settings')
 
-    expect(settings).toMatchObject({ voiceName: 'Puck', autoTitle: true, vscodeSshHost: '', hasGeminiKey: false })
-    expect(settings.systemInstruction).toContain('You are Domo')
+    expect(settings).toMatchObject({ autoApprovePermissions: false, vscodeSshHost: '', hasGeminiKey: false })
+    expect(settings.agentVoice.geminiVoice).toBe('Puck')
   })
 
   it('persists a patch and leaves the rest alone', async () => {
-    await $fetch('/api/settings', { method: 'PATCH', body: { voiceName: 'Charon', autoApprovePermissions: true } })
+    await $fetch('/api/settings', { method: 'PATCH', body: { vscodeSshHost: 'mac', autoApprovePermissions: true } })
 
     await expect($fetch<AppSettings>('/api/settings')).resolves.toMatchObject({
-      voiceName: 'Charon',
+      vscodeSshHost: 'mac',
       autoApprovePermissions: true,
-      autoTitle: true
+      browserTools: true
     })
   })
 
@@ -505,7 +463,7 @@ describe('mcp servers', () => {
     })
 
     await expect($fetch('/api/mcp-servers')).resolves.toContainEqual(
-      expect.objectContaining({ id: server.id, enabled: true, scope: 'both' })
+      expect.objectContaining({ id: server.id, enabled: true })
     )
   })
 

@@ -99,7 +99,6 @@ function collection(key: string, def: ShapeDef): any {
   return created
 }
 
-export const voiceSessionsCollection = () => collection('voice_sessions', { table: 'voice_sessions' })
 export const agentSessionsCollection = () => collection('agent_sessions', { table: 'agent_sessions' })
 export const mcpServersCollection = () => collection('mcp_servers', { table: 'mcp_servers' })
 export const permissionsCollection = () => collection('agent_permissions', { table: 'agent_permissions' })
@@ -136,13 +135,5 @@ export const agentInboxCollection = (agentSessionId: string) =>
     table: 'agent_inbox',
     where: 'agent_session_id = $1',
     params: [agentSessionId],
-    gcTime: SESSION_SHAPE_GC_MS
-  })
-
-export const voiceMessagesCollection = (voiceSessionId: string) =>
-  collection(`voice_messages:${voiceSessionId}`, {
-    table: 'voice_messages',
-    where: 'session_id = $1',
-    params: [voiceSessionId],
     gcTime: SESSION_SHAPE_GC_MS
   })

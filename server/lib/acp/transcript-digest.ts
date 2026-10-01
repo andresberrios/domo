@@ -8,9 +8,9 @@ export interface TranscriptDigestOptions {
   limit?: number
   include?: TranscriptDigestKind[]
   /**
-   * How much of a user or agent message to keep. The voice agent reads the
-   * digest out loud, so its default is a sentence or two; a coding agent
-   * reviewing a peer's report needs the report, and passes something larger.
+   * How much of a user or agent message to keep. The default is a sentence or
+   * two; a coding agent reviewing a peer's report needs the report, and passes
+   * something larger.
    */
   messageChars?: number
 }
@@ -211,13 +211,4 @@ export async function transcriptPage(
   const items = filtered.slice(-limit)
   const older = filtered.length > limit ? items[0]!.seq : edge ? (whole[0]?.seq ?? cursor) : undefined
   return { items, ...older !== undefined ? { olderBeforeSeq: older } : {} }
-}
-
-/** The newest items of the log, for the voice agent. */
-export async function transcriptDigest(
-  agentSessionId: string,
-  options: TranscriptDigestOptions = {}
-): Promise<TranscriptDigestItem[]> {
-  const page = await transcriptPage(agentSessionId, options)
-  return page.items.map(({ kind, text }) => ({ kind, text }))
 }

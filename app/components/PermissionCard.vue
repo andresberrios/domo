@@ -79,7 +79,7 @@ async function choose(optionId: string) {
         </div>
 
         <p class="text-xs text-dimmed">
-          You can also just say it out loud — the voice agent can answer this for you.
+          With a voice bar open, you can also say allow or deny.
         </p>
       </div>
     </div>

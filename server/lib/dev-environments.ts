@@ -74,7 +74,7 @@ function dockerReadyTimeout(): number {
 /**
  * Every lifecycle operation on one environment runs alone: create, start,
  * stop, ensure-running, retire and the boot-time proxy restore. They are
- * reachable at once — the HTTP API, the voice agent, the mesh and an agent
+ * reachable at once — the HTTP API, the mesh and an agent
  * session attaching — and interleaved they undo each other: a retire racing a
  * start removes the container the start is about to use, or stops the proxy
  * the start just brought up. Queued behind a retire, a start finds the row

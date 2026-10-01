@@ -1,82 +1,11 @@
 import { query } from './db'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
-import { AGENT_ADAPTERS, isAgentAdapter } from '../../shared/agent-adapters'
-import {
-  DEFAULT_OPENAI_LIVE_MODEL,
-  DEFAULT_OPENAI_VOICE,
-  DEFAULT_VOICE_DELEGATION,
-  isReasoningEffort,
-  isVoiceProvider
-} from '../../shared/voice-providers'
+import { AGENT_ADAPTERS } from '../../shared/agent-adapters'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector } from '../../shared/agent-voice'
-import type { AgentVoiceSettings, AppSettings, VoiceDelegationSettings } from '../../shared/types'
-
-export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code, Codex and OpenCode — for a developer,
-and you talk with them out loud while they do other things: pacing, cooking,
-away from the desk.
-
-Think of yourself as the engineer at the next desk who is keeping an eye on the
-builds. You know the work, you have opinions, and you talk like a colleague, not
-like a help desk.
-
-How you sound:
-- Talk the way people talk. Short sentences, contractions, plain words. Usually
-  one or two sentences; go longer only when they ask for detail.
-- Get straight to it. No greetings, no "Great question", no "I'd be happy to",
-  no "Is there anything else I can help you with?". Don't thank them for asking.
-- Keep the tone even. Don't hype results or cheer; "tests pass now" is enough.
-  Say plainly when something broke or you don't know.
-- Have a view. If a plan looks risky or an agent is going in circles, say so and
-  suggest what you'd do instead.
-- It's a back-and-forth. Ask one short question when you need something, then
-  stop and let them answer. Don't recap what they just said.
-- This is audio. Never read out code, file paths, stack traces or long logs.
-  Say what matters ("the auth test fails on a missing env var") and point to the
-  screen for the rest. Round numbers, name files by what they are, skip ids.
-
-How you work:
-- Check with your tools before saying anything about an agent. Don't guess its
-  status.
-- When you start an agent, say in one line what you asked it to do.
-- When an agent needs permission, say what it wants to do in plain terms, get a
-  yes or no, then answer it with the tool.
-- When an agent is blocked, errored, or its last turn didn't end clean, don't
-  just repeat the message it left — translate it and say what, if anything,
-  you need from them. Pull the plain cause out of the technical one: a
-  permission needs a yes or no now; a usage limit means waiting for a reset or
-  switching harness; an adapter crash or a container problem can usually be
-  retried by starting the agent again; a plan going in circles is worth
-  flagging even though nothing is technically broken. If nothing is needed
-  from them, say that too, so they're not left wondering. Never read the raw
-  error text, a stack trace, or an id — say what it means.
-- If an agent looks stalled or its status is unclear, check get_agent_status
-  for its lastError before guessing, and get_usage_limits if the timing lines
-  up with a plan limit.
-- For vague asks like "tell it to keep going", pick the most recently active
-  agent and mention which one you picked.
-- Several agents can run at once. Call them by their short titles.
-- Agents run in a project's development environment. Check list_dev_environments
-  before starting one and pick the environment that fits the work; ask for a
-  directory, or fall back to the default workspace, only when there is none.
-- Claude Code is the default agent. Start Codex or OpenCode when they ask for it.
-- If they want to start over, switch topics cleanly or "start a new
-  conversation", call start_new_conversation. Say a quick sign-off first, since
-  the new conversation starts with none of this context. The agents keep running.
-- If they want to call this conversation something, use rename_conversation.`
+import type { AgentVoiceSettings, AppSettings } from '../../shared/types'
 
 export const DEFAULTS: AppSettings = {
-  // Gemini, because that is what every install before this setting existed was
-  // running and a version bump must not move a conversation onto another
-  // vendor's model — and another vendor's bill — on its own.
-  voiceProvider: 'gemini',
-  liveModel: process.env.NUXT_GEMINI_LIVE_MODEL || 'gemini-3.8-live',
-  voiceName: 'Puck',
-  openaiLiveModel: process.env.NUXT_OPENAI_LIVE_MODEL || DEFAULT_OPENAI_LIVE_MODEL,
-  openaiVoiceName: DEFAULT_OPENAI_VOICE,
-  openaiDelegation: { ...DEFAULT_VOICE_DELEGATION },
-  systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
-  proactiveNotifications: true,
   autoApprovePermissions: false,
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
@@ -99,8 +28,6 @@ export const DEFAULTS: AppSettings = {
   // Environments permissive, the host as OpenCode has it. See
   // `AppSettings.openCodePermission` for why the two differ.
   openCodePermission: { host: 'ask', environment: 'allow' },
-  language: 'en-US',
-  autoTitle: true,
   vscodeSshHost: '',
   homeMounts: [...DEFAULT_HOME_MOUNTS],
   // On, because the gap it closes is one nobody can close from in here: an
@@ -117,43 +44,12 @@ export async function getSettings(): Promise<AppSettings> {
   return {
     ...DEFAULTS,
     ...stored,
-    voiceProvider: isVoiceProvider(stored.voiceProvider) ? stored.voiceProvider : DEFAULTS.voiceProvider,
-    openaiDelegation: storedVoiceDelegation(stored),
     defaultAgentModes: storedAgentModes(stored),
     defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored),
     openCodePermission: storedOpenCodePermission(stored),
     agentVoice: storedAgentVoice(stored)
   } as AppSettings
-}
-
-/**
- * Who thinks behind an OpenAI Live conversation, read the same defensive way
- * as the records below.
- *
- * Every field keeps its default rather than becoming undefined, and the two
- * enumerated ones are checked rather than trusted: `target` and
- * `reasoningEffort` are sent verbatim into a `session.start`, where a value
- * OpenAI does not recognise fails the whole connect rather than the one
- * setting. The ids (`agentSessionId`, `agentDevEnvironmentId`) are *not*
- * checked against the database here — a session that has since been deleted is
- * resolved at delegation time, where the answer can be "make a new one".
- */
-function storedVoiceDelegation(stored: Record<string, any>): VoiceDelegationSettings {
-  const delegation = { ...DEFAULT_VOICE_DELEGATION }
-  const current = stored.openaiDelegation
-  if (!current || typeof current !== 'object') return delegation
-  if (current.target === 'responses' || current.target === 'agent') delegation.target = current.target
-  if (typeof current.responsesModel === 'string' && current.responsesModel.trim()) {
-    delegation.responsesModel = current.responsesModel.trim()
-  }
-  if (isReasoningEffort(current.reasoningEffort)) delegation.reasoningEffort = current.reasoningEffort
-  if (typeof current.agentSessionId === 'string') delegation.agentSessionId = current.agentSessionId.trim()
-  if (isAgentAdapter(current.agentAdapter)) delegation.agentAdapter = current.agentAdapter
-  if (typeof current.agentDevEnvironmentId === 'string') {
-    delegation.agentDevEnvironmentId = current.agentDevEnvironmentId.trim()
-  }
-  return delegation
 }
 
 /**
@@ -269,25 +165,9 @@ function storedAgentModes(stored: Record<string, any>): AppSettings['defaultAgen
   return modes
 }
 
-/**
- * The settings page saves the whole form on every submit, including fields the
- * user never touched — `systemInstruction` arrives pre-filled with whatever
- * `getSettings()` last answered. A row is how a value stops tracking code: a
- * fresh install's system instruction has to keep following `DEFAULT_SYSTEM_INSTRUCTION`
- * across upgrades, or every save (changing the voice, toggling a switch) would
- * freeze it at whatever the default happened to be that day. So a submitted
- * value equal to the current default is never written — and if a row already
- * holds one (a customisation typed back to match a newer default), it is
- * deleted, which is the only way to make a customisation start tracking the
- * default again.
- */
 export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue
-    if (key === 'systemInstruction' && value === DEFAULT_SYSTEM_INSTRUCTION) {
-      await query('delete from settings where key = $1', [key])
-      continue
-    }
     // An empty key is a removal, not a stored empty string, so the row goes
     // rather than shadowing whatever `NUXT_OPENCODE_API_KEY` says. The page
     // never sends this field on an ordinary save — it cannot, since the key is

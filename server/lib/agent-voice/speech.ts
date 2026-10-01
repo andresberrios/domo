@@ -219,14 +219,13 @@ export async function synthesize(
   onChunk: (chunk: SpeechChunk) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const { agentVoice, voiceName } = await getSettings()
-  return synthesizeWith(agentVoice, voiceName, text, onChunk, signal)
+  const { agentVoice } = await getSettings()
+  return synthesizeWith(agentVoice, text, onChunk, signal)
 }
 
-/** Speak with the given settings; `voiceName` is the Gemini voice, shared with the live agent. */
+/** Speak with the given settings. */
 export async function synthesizeWith(
   settings: AgentVoiceSettings,
-  voiceName: string,
   text: string,
   onChunk: (chunk: SpeechChunk) => void,
   signal?: AbortSignal
@@ -250,7 +249,7 @@ export async function synthesizeWith(
     contents: [{ role: 'user', parts: [{ text }] }],
     config: {
       responseModalities: ['AUDIO' as any],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: settings.geminiVoice } } },
       abortSignal: signal
     }
   })

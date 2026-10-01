@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentUsage, UsageProviderId, VoiceUsage } from '~~/shared/types'
+import type { AgentUsage, UsageProviderId } from '~~/shared/types'
 
 /**
  * A session's context-window chip, with the account's limits behind it.
@@ -11,33 +11,17 @@ import type { AgentUsage, UsageProviderId, VoiceUsage } from '~~/shared/types'
  * than a gap.
  */
 const props = defineProps<{
-  usage: AgentUsage | VoiceUsage | null
-  /** Whose plan limits to show under the context bar. Omitted for a voice session. */
+  usage: AgentUsage | null
+  /** Whose plan limits to show under the context bar. */
   provider?: UsageProviderId
 }>()
 
 const context = computed(() => props.usage?.context ?? null)
-// A provider that reports occupancy directly wins over the arithmetic: the
-// OpenAI Live API answers a ratio and no token counts at all, so `used` there
-// is zero and means "not reported" rather than "empty". See `VoiceUsage`.
-const percent = computed(() => {
-  const current = context.value
-  if (!current) return null
-  return ('percent' in current ? current.percent : null) ?? percentOf(current.used, current.size)
-})
+const percent = computed(() => (context.value ? percentOf(context.value.used, context.value.size) : null))
 const tone = computed(() => usageTone(percent.value))
 
-/** Only a voice conversation has one, and only on a provider that bills by it. */
-const audioSeconds = computed(() => {
-  const usage = props.usage as VoiceUsage | null
-  return usage && 'audioSeconds' in usage ? usage.audioSeconds ?? null : null
-})
-
-/** The cost only exists on a coding session, and only once a turn has ended. */
-const cost = computed(() => {
-  const usage = props.usage as AgentUsage | null
-  return usage && 'cost' in usage && usage.cost ? usage.cost : null
-})
+/** Only once a turn has ended, and only from an adapter that reports one. */
+const cost = computed(() => props.usage?.cost ?? null)
 
 const label = computed(() => {
   if (!context.value) return ''
@@ -69,7 +53,6 @@ const label = computed(() => {
         :context="context"
         :cost="cost"
         :provider="provider"
-        :audio-seconds="audioSeconds"
       />
     </template>
   </UPopover>

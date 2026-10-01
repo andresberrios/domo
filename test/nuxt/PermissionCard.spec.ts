@@ -76,6 +76,6 @@ describe('PermissionCard', () => {
   it('says the request can also be answered out loud', async () => {
     const component = await mountSuspended(PermissionCard, { props: { permission: request } })
 
-    expect(component.text()).toContain('say it out loud')
+    expect(component.text()).toContain('say allow or deny')
   })
 })

@@ -3,8 +3,7 @@ import { environmentListRows } from '~~/shared/dev-environments'
 import type { Project } from '~~/shared/types'
 
 /**
- * The sidebar's management surface: projects → environments → agents, plus the
- * conversations below them.
+ * The sidebar's management surface: projects → environments → agents.
  *
  * Built from plain rows rather than `UCollapsible` wrapping a button. The
  * default shape makes a row *either* a link or a disclosure and leaves nowhere
@@ -13,7 +12,6 @@ import type { Project } from '~~/shared/types'
 const { projects } = useProjects()
 const { environments, showRetired } = useDevEnvironments()
 const { sessions: agentSessions, showArchived } = useAgentSessions()
-const { sessions: voiceSessions } = useVoiceSessions()
 const { pending } = usePermissions()
 
 /**
@@ -303,17 +301,6 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
       <ul class="flex flex-col gap-px rounded-lg bg-muted p-1 ring ring-default">
         <li v-for="agent in localAgents" :key="agent.id">
           <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
-        </li>
-      </ul>
-    </section>
-
-    <section v-if="voiceSessions.length">
-      <h2 class="ps-2 pb-1 text-xs font-medium text-muted">
-        Conversations
-      </h2>
-      <ul class="flex flex-col gap-px">
-        <li v-for="session in voiceSessions" :key="session.id">
-          <SidebarConversationRow :session="session" />
         </li>
       </ul>
     </section>

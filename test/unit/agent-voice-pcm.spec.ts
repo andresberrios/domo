@@ -1,18 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  base64FromPcm16,
-  pcm16FromBase64,
-  resampleBase64Pcm16,
-  resamplePcm16
-} from '../../server/lib/voice/audio'
+import { base64FromPcm16, pcm16FromBase64, resamplePcm16 } from '../../server/lib/agent-voice/pcm'
 
 /**
- * The one piece of signal processing in Domo, and the reason it exists: the
- * browser captures at 16 kHz and plays at 24 kHz, both fixed, while GPT-Live
- * takes a single rate for both directions. What is pinned here is arithmetic —
- * that the right number of samples comes out, that the ends are not invented,
- * and that a chunk survives the round trip through base64 unchanged.
+ * Arithmetic on the PCM the voice bar carries: that the right number of
+ * samples comes out, that the ends are not invented, and that a chunk
+ * survives the round trip through base64 unchanged.
  */
 
 function ramp(length: number): Int16Array {
@@ -74,16 +67,5 @@ describe('resampling', () => {
 
   it('downsamples as well, so the ratio is not assumed to be an upward one', () => {
     expect(resamplePcm16(ramp(2400), 24000, 16000)).toHaveLength(1600)
-  })
-
-  it('works on the base64 the socket actually carries', () => {
-    const chunk = base64FromPcm16(ramp(1024))
-
-    const out = resampleBase64Pcm16(chunk, 16000, 24000)
-
-    expect(pcm16FromBase64(out)).toHaveLength(1536)
-    // Every chunk on the wire has to be whole samples, so an even byte count.
-    expect(Buffer.from(out, 'base64').length % 2).toBe(0)
-    expect(resampleBase64Pcm16(chunk, 24000, 24000)).toBe(chunk)
   })
 })

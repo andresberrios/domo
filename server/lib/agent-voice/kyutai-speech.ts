@@ -1,6 +1,6 @@
 import { decode, encode } from '@msgpack/msgpack'
 import WebSocket from 'ws'
-import { base64FromPcm16, resamplePcm16 } from '../voice/audio'
+import { base64FromPcm16, resamplePcm16 } from './pcm'
 import type { SpeechChunk } from './speech'
 
 /**

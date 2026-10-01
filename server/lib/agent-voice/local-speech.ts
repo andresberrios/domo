@@ -1,4 +1,4 @@
-import { base64FromPcm16 } from '../voice/audio'
+import { base64FromPcm16 } from './pcm'
 import { EMPTY_SPEECH_CONTEXT, precedingTextPrompt, type SpeechContext } from './context'
 import { requestLocalModel } from './local-models'
 import type { SpeechChunk } from './speech'

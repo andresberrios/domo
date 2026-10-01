@@ -1,7 +1,6 @@
 /**
- * Raw audio the way the two voice channels carry it: mono PCM16 in base64,
- * captured by one AudioWorklet. Shared by `useVoiceChannel` (the live voice
- * agent) and `useAgentVoice` (talking to a coding agent).
+ * Raw audio the way the voice bar carries it: mono PCM16 in base64, captured
+ * by one AudioWorklet.
  */
 
 /**

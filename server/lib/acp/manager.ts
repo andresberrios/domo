@@ -152,11 +152,9 @@ function flushDelay(length: number): number {
 /**
  * How often a working agent refreshes `last_activity_at`.
  *
- * It is not decoration: `list_agent_sessions` reports it to the voice agent,
- * which is told to pick "the most recently active agent" for a vague
- * instruction. Left to status transitions alone, an agent streaming for twenty
- * minutes would look like the stalest one in the list and Domo would hand the
- * user's "keep going" to the wrong session.
+ * It is not decoration: the sidebar and `list_agents` order sessions by it.
+ * Left to status transitions alone, an agent streaming for twenty minutes
+ * would look like the stalest one in the list.
  */
 const ACTIVITY_TOUCH_MS = 30_000
 
@@ -844,7 +842,7 @@ class AgentRuntime {
    * write rather than writing them, so a start is one row update.
    *
    * Nothing here appends a `mode_changed` event. That event means "somebody
-   * changed the mode": the user or the voice agent through `setMode`, or the
+   * changed the mode": the user or the mesh through `setMode`, or the
    * agent itself through a `current_mode_update`, which is its own event. A
    * start is neither, and a line per restart would bury the turn it sits in.
    */
@@ -913,7 +911,7 @@ class AgentRuntime {
    * This used to throw, on the reasoning that running on a model nobody asked
    * for is worse than not running. Two things took that apart. A model can now
    * be recorded with no adapter to check it against (`setModel`), so a typo
-   * through the voice agent or the API would leave a session that could never
+   * through the mesh or the API would leave a session that could never
    * start again; and both remaining sources are visible and fixable in the UI,
    * where the environment pin this once protected was neither. A stale default
    * must not brick every new session on an adapter, and "silently" was the
@@ -1072,7 +1070,6 @@ class AgentRuntime {
     const out: any[] = []
     for (const server of servers) {
       if (!server.enabled) continue
-      if (server.scope !== 'coding' && server.scope !== 'both') continue
       if (server.transport === 'stdio' && server.command) {
         out.push({
           name: server.name,
@@ -1773,7 +1770,7 @@ function warnNoHttpMcp(adapter: AgentAdapter): void {
   console.warn(
     `[acp] the ${adapter} adapter does not advertise HTTP MCP support `
     + '(agentCapabilities.mcpCapabilities.http), so its sessions get no agent mesh: '
-    + 'they cannot list, message or spawn peers, or page the voice supervisor. '
+    + 'they cannot list, message or spawn peers, or notify the human. '
     + 'Upgrade the adapter to restore it.'
   )
 }
@@ -1794,7 +1791,6 @@ class AcpManager {
     adapter?: AgentAdapter
     title?: string
     cwd?: string
-    voiceSessionId?: string | null
     modeId?: string | null
     /** Model id for *this* session; omitted means the install default, then the adapter's. */
     model?: string | null
@@ -1818,7 +1814,6 @@ class AcpManager {
       adapter: input.adapter ?? 'claude-code',
       title,
       cwd,
-      voiceSessionId: input.voiceSessionId ?? null,
       modeId: input.modeId ?? settings.defaultAgentModes[input.adapter ?? 'claude-code'],
       model: input.model?.trim() || null,
       devEnvironmentId: environment?.id ?? null,
@@ -1845,7 +1840,7 @@ class AcpManager {
     await runtime.clearStaleError()
   }
 
-  /** Fire-and-forget turn: the UI and the voice agent follow it through events. */
+  /** Fire-and-forget turn: the UI and the voice bar follow it through events. */
   async promptInBackground(agentSessionId: string, content: any[]): Promise<void> {
     const runtime = this.runtime(agentSessionId)
     try {

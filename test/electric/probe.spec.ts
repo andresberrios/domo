@@ -23,7 +23,7 @@ describe('the Electric client under happy-dom', () => {
   it('streams an insert made over HTTP, with no refetch', async () => {
     const stream = new ShapeStream({
       url: new URL('/api/shape', TEST_SERVER_ORIGIN).href,
-      params: { table: 'voice_sessions' }
+      params: { table: 'mcp_servers' }
     })
 
     const seen = new Map<string, Record<string, unknown>>()
@@ -42,19 +42,22 @@ describe('the Electric client under happy-dom', () => {
       await expect.poll(() => stream.isUpToDate, { timeout: 30_000 }).toBe(true)
       expect(seen.size).toBe(0)
 
-      const created = await $fetch<{ id: string }>('/api/voice-sessions', { method: 'POST', body: {} })
+      const created = await $fetch<{ id: string }>('/api/mcp-servers', {
+        method: 'POST',
+        body: { name: 'linear', transport: 'http', url: 'https://mcp.linear.app/mcp' }
+      })
 
       await expect
-        .poll(() => seen.get(created.id)?.title, { timeout: 30_000, interval: 100 })
-        .toBe('New conversation')
+        .poll(() => seen.get(created.id)?.name, { timeout: 30_000, interval: 100 })
+        .toBe('linear')
 
-      await $fetch(`/api/voice-sessions/${created.id}`, { method: 'PATCH', body: { title: 'Renamed' } })
+      await $fetch(`/api/mcp-servers/${created.id}`, { method: 'PATCH', body: { name: 'Renamed' } })
 
       // An update, not an insert: this is the path `REPLICA IDENTITY FULL` governs.
       await expect
-        .poll(() => seen.get(created.id)?.title, { timeout: 30_000, interval: 100 })
+        .poll(() => seen.get(created.id)?.name, { timeout: 30_000, interval: 100 })
         .toBe('Renamed')
-      expect(seen.get(created.id)).toMatchObject({ title_source: 'user', status: 'idle' })
+      expect(seen.get(created.id)).toMatchObject({ transport: 'http', enabled: true })
     } finally {
       unsubscribe()
     }

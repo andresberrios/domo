@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings, AppSettingsView } from '~~/shared/types'
 import {
+  GEMINI_VOICES,
   KOKORO_VOICES,
   OPENAI_SPEECH_VOICES,
   SPEAKERS,
@@ -8,7 +9,6 @@ import {
   TOOL_SOUNDS,
   TRANSCRIBERS
 } from '~~/shared/agent-voice'
-import { GEMINI_VOICES } from '~~/shared/voice-providers'
 import type { AudioInputDevice } from '~/composables/useAgentVoice'
 
 /**
@@ -104,8 +104,7 @@ const voiceColumn = computed<Column | null>(() => {
     case 'openai':
       return { key: 'voice', label: 'Voice', items: list(OPENAI_SPEECH_VOICES), selected: current.openaiVoice, apply: value => setVoice({ openaiVoice: value }) }
     case 'gemini':
-      // Gemini's voice is the live agent's too: one voice for both.
-      return { key: 'voice', label: 'Voice', items: list(GEMINI_VOICES), selected: settings.value?.voiceName ?? '', apply: value => patch({ voiceName: value }) }
+      return { key: 'voice', label: 'Voice', items: list(GEMINI_VOICES), selected: current.geminiVoice, apply: value => setVoice({ geminiVoice: value }) }
     case 'pocket':
       return { key: 'voice', label: 'Voice', items: pocketVoiceItems(clones.value ?? [], current.pocketVoice), selected: current.pocketVoice, apply: value => setVoice({ pocketVoice: value }) }
     case 'mac':

@@ -113,7 +113,7 @@ export function findConfigOption(
  * Resolve a requested value against what the option actually offers.
  *
  * The same ladder as `resolveModel`, and for the same reason: the values are
- * ids like `high` but a person or a voice agent may say "High". Never a fuzzy
+ * ids like `high` but a person or an agent may say "High". Never a fuzzy
  * score — silently running on a setting nobody asked for is worse than saying
  * the value was not offered.
  */

@@ -16,7 +16,6 @@ const form = reactive({
   env: '',
   url: '',
   headers: '',
-  scope: 'both' as McpServer['scope'],
   enabled: true
 })
 
@@ -30,7 +29,6 @@ watch(open, (value) => {
   form.env = Object.entries(server?.env ?? {}).map(([key, val]) => `${key}=${val}`).join('\n')
   form.url = server?.url ?? ''
   form.headers = Object.entries(server?.headers ?? {}).map(([key, val]) => `${key}: ${val}`).join('\n')
-  form.scope = server?.scope ?? 'both'
   form.enabled = server?.enabled ?? true
 })
 
@@ -57,7 +55,6 @@ async function save() {
       env: parsePairs(form.env, '='),
       url: form.transport === 'stdio' ? null : form.url.trim(),
       headers: parsePairs(form.headers, ':'),
-      scope: form.scope,
       enabled: form.enabled
     }
 
@@ -125,19 +122,6 @@ async function save() {
 
         <UFormField label="Environment" hint="one per line, KEY=value">
           <UTextarea v-model="form.env" :rows="3" class="w-full font-mono text-xs" />
-        </UFormField>
-
-        <UFormField label="Available to">
-          <ChoiceMenu
-            v-model="form.scope"
-            :items="[
-              { label: 'Voice agent and coding agents', value: 'both' },
-              { label: 'Voice agent only', value: 'voice' },
-              { label: 'Coding agents only', value: 'coding' }
-            ]"
-            value-key="value"
-            class="w-full"
-          />
         </UFormField>
 
         <USwitch v-model="form.enabled" label="Enabled" />

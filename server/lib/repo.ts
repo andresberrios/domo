@@ -1,7 +1,6 @@
 import { getDb, newId, nowIso, query, queryOne } from './db'
 import { bus } from './bus'
 import { assertSessionStartable } from './acp/startable'
-import { getSettings } from './settings'
 import type {
   AgentEvent,
   AgentInboxMessage,
@@ -28,10 +27,7 @@ import type {
   UsageLimitSource,
   UsageProvider,
   UsageProviderId,
-  UsageProviderState,
-  VoiceMessage,
-  VoiceSession,
-  VoiceUsage
+  UsageProviderState
 } from '../../shared/types'
 import { isAgentAdapter } from '../../shared/agent-adapters'
 
@@ -39,44 +35,9 @@ import { isAgentAdapter } from '../../shared/agent-adapters'
 /* row mappers                                                         */
 /* ------------------------------------------------------------------ */
 
-function mapVoiceSession(r: any): VoiceSession {
-  return {
-    id: r.id,
-    title: r.title,
-    titleSource: r.title_source ?? 'auto',
-    status: r.status,
-    model: r.model,
-    voice: r.voice,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-    lastActivityAt: r.last_activity_at,
-    archived: r.archived,
-    summary: r.summary ?? null,
-    summaryThroughSeq: r.summary_through_seq === null || r.summary_through_seq === undefined
-      ? null
-      : Number(r.summary_through_seq),
-    summaryUpdatedAt: r.summary_updated_at ?? null,
-    usage: r.usage ?? null
-  }
-}
-
-function mapVoiceMessage(r: any): VoiceMessage {
-  return {
-    id: r.id,
-    sessionId: r.session_id,
-    seq: Number(r.seq),
-    role: r.role,
-    text: r.text,
-    toolName: r.tool_name,
-    meta: r.meta,
-    createdAt: r.created_at
-  }
-}
-
 function mapAgentSession(r: any): AgentSession {
   return {
     id: r.id,
-    voiceSessionId: r.voice_session_id,
     adapter: isAgentAdapter(r.adapter) ? r.adapter : 'claude-code',
     acpSessionId: r.acp_session_id,
     title: r.title,
@@ -232,7 +193,6 @@ function mapMcp(r: any): McpServer {
     url: r.url,
     headers: r.headers ?? {},
     enabled: r.enabled,
-    scope: r.scope,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -607,212 +567,6 @@ export async function pruneRetiredProjects(): Promise<number> {
 }
 
 /* ------------------------------------------------------------------ */
-/* voice sessions                                                      */
-/* ------------------------------------------------------------------ */
-
-export async function listVoiceSessions(includeArchived = false): Promise<VoiceSession[]> {
-  const rows = await query(
-    `select * from voice_sessions ${includeArchived ? '' : 'where archived = false'}
-     order by coalesce(last_activity_at, created_at) desc`
-  )
-  return rows.map(mapVoiceSession)
-}
-
-export async function getVoiceSession(id: string): Promise<VoiceSession | null> {
-  const row = await queryOne('select * from voice_sessions where id = $1', [id])
-  return row ? mapVoiceSession(row) : null
-}
-
-export async function createVoiceSession(input: { title?: string } = {}): Promise<VoiceSession> {
-  const settings = await getSettings()
-  const now = nowIso()
-  const id = newId('vs')
-  const title = input.title?.trim()
-  const row = await queryOne(
-    `insert into voice_sessions (id, title, title_source, status, model, voice, created_at, updated_at)
-     values ($1, $2, $3, 'idle', $4, $5, $6, $6) returning *`,
-    [id, title || 'New conversation', title ? 'user' : 'auto', settings.liveModel, settings.voiceName, now]
-  )
-  bus.publish({ type: 'voice-list-changed' })
-  return mapVoiceSession(row)
-}
-
-export async function updateVoiceSession(
-  id: string,
-  patch: Partial<Pick<VoiceSession, 'title' | 'titleSource' | 'status' | 'archived' | 'model' | 'voice'>> & {
-    lastActivityAt?: string
-    resumptionHandle?: string | null
-    resumptionFingerprint?: string | null
-  }
-): Promise<VoiceSession | null> {
-  const sets: string[] = ['updated_at = $2']
-  const params: any[] = [id, nowIso()]
-  const push = (col: string, value: any) => {
-    params.push(value)
-    sets.push(`${col} = $${params.length}`)
-  }
-  if (patch.title !== undefined) push('title', patch.title)
-  if (patch.titleSource !== undefined) push('title_source', patch.titleSource)
-  if (patch.status !== undefined) push('status', patch.status)
-  if (patch.archived !== undefined) push('archived', patch.archived)
-  if (patch.model !== undefined) push('model', patch.model)
-  if (patch.voice !== undefined) push('voice', patch.voice)
-  if (patch.lastActivityAt !== undefined) push('last_activity_at', patch.lastActivityAt)
-  if (patch.resumptionHandle !== undefined) push('resumption_handle', patch.resumptionHandle)
-  if (patch.resumptionFingerprint !== undefined) push('resumption_fingerprint', patch.resumptionFingerprint)
-
-  const row = await queryOne(
-    `update voice_sessions set ${sets.join(', ')} where id = $1 returning *`,
-    params
-  )
-  if (!row) return null
-  bus.publish({ type: 'voice-session-changed', sessionId: id })
-  bus.publish({ type: 'voice-list-changed' })
-  return mapVoiceSession(row)
-}
-
-/**
- * Store a generated title, unless the user named the conversation in the
- * meantime: a rename always wins over a title that was still being written.
- */
-export async function setAutoTitle(id: string, title: string): Promise<VoiceSession | null> {
-  const row = await queryOne(
-    `update voice_sessions set title = $2, updated_at = $3
-     where id = $1 and title_source = 'auto' returning *`,
-    [id, title, nowIso()]
-  )
-  if (!row) return null
-  bus.publish({ type: 'voice-session-changed', sessionId: id })
-  bus.publish({ type: 'voice-list-changed' })
-  return mapVoiceSession(row)
-}
-
-/**
- * Store a fold of the conversation's own history.
- *
- * Guarded on the seq it advances past, so a summary can only ever move
- * forward: two folds racing (a connect and the turn that triggered one) end
- * with the further of the two, and the other is dropped rather than rewinding
- * the row to cover fewer messages than it already did.
- *
- * Only `voice-session-changed` is published: a summary changes nothing about
- * where the conversation sits in the sidebar, and the row reaches the browser
- * through Electric either way.
- */
-export async function saveConversationSummary(
-  id: string,
-  input: { summary: string, throughSeq: number }
-): Promise<VoiceSession | null> {
-  const now = nowIso()
-  const row = await queryOne(
-    `update voice_sessions
-        set summary = $2, summary_through_seq = $3, summary_updated_at = $4, updated_at = $4
-      where id = $1 and coalesce(summary_through_seq, 0) < $3
-      returning *`,
-    [id, input.summary, input.throughSeq, now]
-  )
-  if (!row) return null
-  bus.publish({ type: 'voice-session-changed', sessionId: id })
-  return mapVoiceSession(row)
-}
-
-/** The handle to resume with, and the fingerprint of the setup that issued it. */
-export async function getResumptionHandle(id: string): Promise<{ handle: string | null, fingerprint: string | null }> {
-  const row = await queryOne<{ resumption_handle: string | null, resumption_fingerprint: string | null }>(
-    'select resumption_handle, resumption_fingerprint from voice_sessions where id = $1',
-    [id]
-  )
-  return { handle: row?.resumption_handle ?? null, fingerprint: row?.resumption_fingerprint ?? null }
-}
-
-export async function deleteVoiceSession(id: string): Promise<void> {
-  await query('delete from voice_sessions where id = $1', [id])
-  bus.publish({ type: 'voice-list-changed' })
-}
-
-export async function listVoiceMessages(sessionId: string, limit = 500): Promise<VoiceMessage[]> {
-  const rows = await query(
-    `select * from (
-       select * from voice_messages where session_id = $1 order by seq desc limit $2
-     ) t order by seq asc`,
-    [sessionId, limit]
-  )
-  return rows.map(mapVoiceMessage)
-}
-
-/**
- * The messages after a seq, oldest first — the fold's own query.
- *
- * `listVoiceMessages` answers with the *newest* rows, which is what a connect
- * wants and the opposite of what compaction does: a fold has to start exactly
- * at the boundary the last one left, or it would claim to cover messages it
- * never saw. With a backlog bigger than `limit` this simply folds the oldest
- * chunk and leaves the rest for the next fold.
- */
-export async function listVoiceMessagesAfter(
-  sessionId: string,
-  afterSeq: number,
-  limit = 200
-): Promise<VoiceMessage[]> {
-  const rows = await query(
-    `select * from voice_messages
-      where session_id = $1 and seq > $2
-      order by seq asc limit $3`,
-    [sessionId, afterSeq, limit]
-  )
-  return rows.map(mapVoiceMessage)
-}
-
-/** How many messages no summary covers — including ones outside a tail window. */
-export async function countVoiceMessagesAfter(sessionId: string, afterSeq: number): Promise<number> {
-  const row = await queryOne<{ count: number }>(
-    'select count(*)::int as count from voice_messages where session_id = $1 and seq > $2',
-    [sessionId, afterSeq]
-  )
-  return row?.count ?? 0
-}
-
-/** Whether the human said anything in a conversation after `since` (an ISO time, as rows store it). */
-export async function voiceUserSpokeSince(sessionId: string, since: string): Promise<boolean> {
-  const row = await queryOne<{ spoke: boolean }>(
-    `select exists(select 1 from voice_messages where session_id = $1 and role = 'user' and created_at > $2) as spoke`,
-    [sessionId, since]
-  )
-  return !!row?.spoke
-}
-
-export async function appendVoiceMessage(input: {
-  sessionId: string
-  role: VoiceMessage['role']
-  text: string
-  toolName?: string | null
-  meta?: Record<string, unknown> | null
-}): Promise<VoiceMessage> {
-  const now = nowIso()
-  const row = await queryOne(
-    `insert into voice_messages (id, session_id, role, text, tool_name, meta, created_at)
-     values ($1, $2, $3, $4, $5, $6::jsonb, $7)
-     returning *`,
-    [
-      newId('vm'),
-      input.sessionId,
-      input.role,
-      input.text,
-      input.toolName ?? null,
-      JSON.stringify(input.meta ?? null),
-      now
-    ]
-  )
-  const message = mapVoiceMessage(row)
-  await query('update voice_sessions set last_activity_at = $2, updated_at = $2 where id = $1', [
-    input.sessionId,
-    now
-  ])
-  bus.publish({ type: 'voice-message', sessionId: input.sessionId, message })
-  return message
-}
-
-/* ------------------------------------------------------------------ */
 /* agent sessions                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -911,7 +665,6 @@ export async function createAgentSession(input: {
   adapter: AgentAdapter
   title: string
   cwd: string
-  voiceSessionId?: string | null
   modeId?: string | null
   model?: string | null
   devEnvironmentId?: string | null
@@ -920,11 +673,11 @@ export async function createAgentSession(input: {
   const now = nowIso()
   const row = await queryOne(
     `insert into agent_sessions
-       (id, voice_session_id, adapter, title, cwd, dev_environment_id, status, mode_id, model, spawned_by,
+       (id, adapter, title, cwd, dev_environment_id, status, mode_id, model, spawned_by,
         created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, 'starting', $7, $8, $9, $10, $10) returning *`,
+     values ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $9) returning *`,
     [
-      newId('ag'), input.voiceSessionId ?? null, input.adapter, input.title, input.cwd,
+      newId('ag'), input.adapter, input.title, input.cwd,
       input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, input.spawnedBy ?? null, now
     ]
   )
@@ -1172,19 +925,13 @@ export async function latestAgentMessage(agentSessionId: string): Promise<string
  * Record how full a coding session's context window is.
  *
  * Deliberately narrow: it writes `usage` and nothing else. `last_activity_at`
- * is a correctness signal the voice agent picks agents by, and a reading is not
- * activity — an idle adapter still reports one. `updated_at` is left alone for
- * the same reason, and no `agent-changed` goes on the bus: the browser already
- * has the row through Electric, and the voice runtime treats that event as
- * "something happened worth mentioning".
+ * orders the sidebar, and a reading is not activity — an idle adapter still
+ * reports one. `updated_at` is left alone for the same reason, and no
+ * `agent-changed` goes on the bus: the browser already has the row through
+ * Electric.
  */
 export async function setAgentUsage(id: string, usage: AgentUsage): Promise<void> {
   await query('update agent_sessions set usage = $2::jsonb where id = $1', [id, JSON.stringify(usage)])
-}
-
-/** The same, for a voice conversation. Ordering in the sidebar is untouched. */
-export async function setVoiceUsage(id: string, usage: VoiceUsage): Promise<void> {
-  await query('update voice_sessions set usage = $2::jsonb where id = $1', [id, JSON.stringify(usage)])
 }
 
 export async function listUsageLimits(provider?: UsageProviderId): Promise<UsageLimit[]> {
@@ -1368,7 +1115,7 @@ export async function getCronJob(id: string): Promise<CronJob | null> {
 }
 
 /**
- * Guarded here rather than in each of the three callers (HTTP, voice, mesh),
+ * Guarded here rather than in each of the callers (HTTP, mesh),
  * for the same reason `enqueueInboxMessage` is: a schedule pointed at a session
  * that cannot start is a prompt that can never be delivered, and the check
  * belongs where every path already meets.
@@ -1794,8 +1541,8 @@ export async function listMcpServers(): Promise<McpServer[]> {
 export async function createMcpServer(input: Partial<McpServer> & { name: string, transport: McpServer['transport'] }): Promise<McpServer> {
   const now = nowIso()
   const row = await queryOne(
-    `insert into mcp_servers (id, name, transport, command, args, env, url, headers, enabled, scope, created_at, updated_at)
-     values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8::jsonb, $9, $10, $11, $11) returning *`,
+    `insert into mcp_servers (id, name, transport, command, args, env, url, headers, enabled, created_at, updated_at)
+     values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8::jsonb, $9, $10, $10) returning *`,
     [
       newId('mcp'),
       input.name,
@@ -1806,7 +1553,6 @@ export async function createMcpServer(input: Partial<McpServer> & { name: string
       input.url ?? null,
       JSON.stringify(input.headers ?? {}),
       input.enabled ?? true,
-      input.scope ?? 'both',
       now
     ]
   )
@@ -1829,7 +1575,6 @@ export async function updateMcpServer(id: string, patch: Partial<McpServer>): Pr
   if (patch.url !== undefined) push('url', patch.url)
   if (patch.headers !== undefined) push('headers', JSON.stringify(patch.headers), '::jsonb')
   if (patch.enabled !== undefined) push('enabled', patch.enabled)
-  if (patch.scope !== undefined) push('scope', patch.scope)
 
   const row = await queryOne(`update mcp_servers set ${sets.join(', ')} where id = $1 returning *`, params)
   if (!row) return null

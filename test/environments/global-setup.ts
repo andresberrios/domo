@@ -26,9 +26,9 @@ import { ENVIRONMENTS_PREFIX, ENVIRONMENTS_SERVER_ORIGIN, ENVIRONMENTS_SERVER_PO
  * new-environment dialog, creation, the branch an environment works on and
  * retirement are driven the way a person does it.
  *
- * It borrows `domo_e2e` and the `electric-e2e` Electric, like `voice-live`
- * and for the same reason: a page needs rows that really stream. The layers
- * reset it on entry and never run at once. Opt in with `pnpm test:environments`.
+ * It borrows `domo_e2e` and the `electric-e2e` Electric, because a page needs
+ * rows that really stream. It resets it on entry and never runs at once with
+ * the `electric` layer. Opt in with `pnpm test:environments`.
  *
  * The server never sees the developer's own anything: its own data directory,
  * home overlay and tool config directories under a scratch root, its own

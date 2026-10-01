@@ -96,7 +96,6 @@ function session(
 ): AgentSession {
   return {
     id: 'ag_1',
-    voiceSessionId: null,
     adapter: 'claude-code',
     acpSessionId: 'acp_1',
     title: 'Auth refactor',

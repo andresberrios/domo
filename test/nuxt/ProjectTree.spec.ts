@@ -5,7 +5,7 @@ import { computed, defineComponent, h, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ProjectTree from '~/components/ProjectTree.vue'
-import type { AgentSession, DevEnvironment, Project, VoiceSession } from '~~/shared/types'
+import type { AgentSession, DevEnvironment, Project } from '~~/shared/types'
 
 /**
  * The sidebar is the management surface now, so this is where "does the menu
@@ -49,7 +49,6 @@ const grouped: DevEnvironment[] = []
 
 const agent: AgentSession = {
   id: 'ag_1',
-  voiceSessionId: null,
   adapter: 'claude-code',
   acpSessionId: 'acp_1',
   title: 'Auth refactor',
@@ -72,27 +71,9 @@ const agent: AgentSession = {
   spawnedBy: null,
 }
 
-const conversation: VoiceSession = {
-  id: 'vs_1',
-  title: 'Morning standup',
-  titleSource: 'auto',
-  status: 'idle',
-  model: 'models/gemini-live',
-  voice: 'Puck',
-  createdAt: '2026-01-04T00:00:00.000Z',
-  updatedAt: '2026-01-04T00:00:00.000Z',
-  lastActivityAt: null,
-  summary: null,
-  summaryThroughSeq: null,
-  summaryUpdatedAt: null,
-  usage: null,
-  archived: false
-}
-
 mockNuxtImport('useProjects', () => () => ({ projects: computed(() => [project]), isReady: ref(true) }))
 mockNuxtImport('useDevEnvironments', () => () => ({ environments: computed(() => [environment, ...grouped]), isReady: ref(true) }))
 mockNuxtImport('useAgentSessions', () => () => ({ sessions: computed(() => [agent]), isReady: ref(true) }))
-mockNuxtImport('useVoiceSessions', () => () => ({ sessions: computed(() => [conversation]), isReady: ref(true) }))
 mockNuxtImport('usePermissions', () => () => ({
   permissions: computed(() => []),
   pending: computed(() => []),
@@ -126,7 +107,6 @@ registerEndpoint('/api/dev-environments/env_1/stop', { method: 'POST', handler: 
 registerEndpoint('/api/dev-environments/env_1/start', { method: 'POST', handler: record('/api/dev-environments/env_1/start', 'POST') })
 registerEndpoint('/api/agents/ag_1', { method: 'PATCH', handler: record('/api/agents/ag_1', 'PATCH') })
 registerEndpoint('/api/agents/ag_1/cancel', { method: 'POST', handler: record('/api/agents/ag_1/cancel', 'POST') })
-registerEndpoint('/api/voice-sessions/vs_1', { method: 'PATCH', handler: record('/api/voice-sessions/vs_1', 'PATCH') })
 
 const Harness = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(ProjectTree) })
@@ -403,17 +383,6 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
 
     await vi.waitFor(() => expect(calls).toContainEqual(
       expect.objectContaining({ method: 'PATCH', path: '/api/agents/ag_1', body: { title: 'Auth rewrite' } })
-    ))
-
-    wrapper.unmount()
-  })
-
-  it('archives a conversation from its row', async () => {
-    const wrapper = await mountTree()
-
-    await choose('Actions for Morning standup', 'Archive')
-    await vi.waitFor(() => expect(calls).toContainEqual(
-      expect.objectContaining({ method: 'PATCH', path: '/api/voice-sessions/vs_1', body: { archived: true } })
     ))
 
     wrapper.unmount()

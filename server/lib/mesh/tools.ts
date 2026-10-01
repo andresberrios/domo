@@ -19,7 +19,6 @@ import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPo
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
 import { notifyHuman } from '../notifications'
-import { isThinkingAgent } from '../voice/delegation'
 import {
   addAgentSubscription,
   appendAgentEvent,
@@ -49,8 +48,7 @@ import {
   removeAgentSubscription,
   startManualCronRun,
   updateDevEnvironment,
-  updateProject,
-  voiceUserSpokeSince
+  updateProject
 } from '../repo'
 import { sessionStartability } from '../../../shared/retention'
 import type {
@@ -73,7 +71,7 @@ const ADAPTERS = ['claude-code', 'codex', 'opencode'] as const
  * tool descriptions are the whole of their documentation.
  */
 export const MESH_INSTRUCTIONS = [
-  'Domo runs coding agents (Claude Code, Codex, OpenCode) for one human, who watches them in a web UI and may talk to a voice assistant.',
+  'Domo runs coding agents (Claude Code, Codex, OpenCode) for one human, who watches them in a web UI and may talk to one of them out loud.',
   'You are one of those agents. These tools are how you see and act on the rest of Domo.',
   'An agent session has an id (ag_…); most tools default to your own session when agentId is omitted.',
   'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own copy of it. Agents run either on the host or inside an environment.',
@@ -396,8 +394,7 @@ export const MESH_TOOLS = [
     name: 'answer_permission_request',
     description:
       'Answer a permission request an agent is blocked on (get_agent lists them, with option ids). Only for agents you '
-      + 'spawned; anything else is the human\'s decision. As the thinking agent of a voice conversation, only once the '
-      + 'human there has decided, and then for any agent.',
+      + 'spawned; anything else is the human\'s decision.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -759,7 +756,7 @@ export const MESH_TOOLS = [
     name: 'notify_supervisor',
     description:
       'Tell the human something: a result, a blocker, a question that needs their decision. It appears in Domo\'s '
-      + 'notifications panel and stays until they have seen it, and is spoken if they are in a voice conversation. '
+      + 'notifications panel and stays until they have seen it, and is read out if they are talking to an agent. '
       + 'Attach files (screenshots, logs, reports) by path.',
     inputSchema: {
       type: 'object',
@@ -962,26 +959,15 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'answer_permission_request': {
       const target = await requireAgent(args.agentId)
       if (target.id === caller.id) throw new Error('An agent cannot answer its own permission requests.')
-      // A conversation's thinking agent is the hands of a human who is listening
-      // and hears every request (the voice runtime says each one). It answers
-      // what they decided, for any agent, as the voice agent's own tool does;
-      // and only once they have spoken since the request, never on its own.
-      const voiceSessionId = caller.voiceSessionId && await isThinkingAgent(caller) ? caller.voiceSessionId : null
-      if (!voiceSessionId) await assertOwns(caller, target, 'answering its permission request')
+      await assertOwns(caller, target, 'answering its permission request')
       const permission = (await listPermissions(target.id, true)).find(entry => entry.id === args.permissionId)
       if (!permission) throw new Error(`No pending permission request ${args.permissionId} for that agent; it may already have been answered.`)
-      if (voiceSessionId && !(await voiceUserSpokeSince(voiceSessionId, permission.createdAt))) {
-        throw new Error(
-          'The human in your voice conversation has not answered this request yet. Put it in your answer (what the '
-          + 'agent wants to do, and the options) and answer it once they have decided.'
-        )
-      }
       const optionId = args.reject === true ? null : String(args.optionId ?? '')
       if (optionId === '') throw new Error('Pass optionId, or reject: true.')
       if (optionId !== null && !permission.options.some(option => option.optionId === optionId)) {
         throw new Error(`No option ${optionId}. Options: ${permission.options.map(option => `${option.optionId} (${option.name})`).join(', ')}.`)
       }
-      await acpManager.answerPermission(target.id, permission.id, optionId, voiceSessionId ? 'voice-agent' : `agent:${caller.id}`)
+      await acpManager.answerPermission(target.id, permission.id, optionId, `agent:${caller.id}`)
       await appendAgentEvent(caller.id, 'mesh_permission_answered', {
         agentId: target.id, title: target.title, permissionId: permission.id, request: permission.title, optionId
       })
@@ -1005,7 +991,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         title: args.title,
         cwd: devEnvironmentId ? undefined : (args.cwd ? normalizeCwd(args.cwd) : await hostCwdFor(caller)),
         devEnvironmentId,
-        voiceSessionId: caller.voiceSessionId ?? null,
         model: args.model ?? null,
         modeId: args.modeId ?? null,
         initialPrompt: args.prompt,

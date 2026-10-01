@@ -3,14 +3,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { query } from '../../server/lib/db'
 import {
   createAgentSession,
-  createVoiceSession,
   getAgentSession,
-  getVoiceSession,
   listUsageLimits,
   listUsageProviders,
   setAgentUsage,
   setUsageProviderState,
-  setVoiceUsage,
   writeUsageLimits
 } from '../../server/lib/repo'
 import { captureBus } from '../helpers/bus'
@@ -48,7 +45,6 @@ beforeEach(async () => {
   await query('truncate usage_limits')
   await query('truncate usage_providers')
   await query('truncate agent_sessions cascade')
-  await query('truncate voice_sessions cascade')
 })
 
 describe('session usage columns', () => {
@@ -69,33 +65,9 @@ describe('session usage columns', () => {
       updatedAt: '2026-09-21T12:00:00.000Z'
     })
     // A reading is not activity: an idle adapter still reports one, and the
-    // voice agent picks "the most recently active agent" off this column.
+    // sidebar orders sessions by this column.
     expect(after!.lastActivityAt).toBe(before!.lastActivityAt)
     expect(after!.updatedAt).toBe(before!.updatedAt)
-  })
-
-  it('records a conversation reading without moving it up the sidebar', async () => {
-    const voice = await createVoiceSession({ title: 'Morning' })
-    const before = await getVoiceSession(voice.id)
-
-    await setVoiceUsage(voice.id, {
-      context: { used: 12_345, size: 131_072 },
-      updatedAt: '2026-09-21T12:00:00.000Z'
-    })
-
-    const after = await getVoiceSession(voice.id)
-    expect(after!.usage).toMatchObject({ context: { used: 12_345, size: 131_072 } })
-    expect(after!.updatedAt).toBe(before!.updatedAt)
-    expect(after!.lastActivityAt).toBe(before!.lastActivityAt)
-    expect(after!.titleSource).toBe(before!.titleSource)
-  })
-
-  it('keeps a null size, for a Live model whose window is unknown', async () => {
-    const voice = await createVoiceSession({ title: 'Morning' })
-
-    await setVoiceUsage(voice.id, { context: { used: 900, size: null }, updatedAt: 'x' })
-
-    expect((await getVoiceSession(voice.id))!.usage).toMatchObject({ context: { size: null } })
   })
 })
 

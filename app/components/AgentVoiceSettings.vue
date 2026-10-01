@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
-import { GEMINI_VOICES } from '~~/shared/voice-providers'
+import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 
 /**
  * The cascade behind talking to a coding agent: who hears, who speaks, and
@@ -13,8 +12,6 @@ import { GEMINI_VOICES } from '~~/shared/voice-providers'
 const form = defineModel<AgentVoiceSettings>({ required: true })
 
 const props = defineProps<{
-  /** The live agent's Gemini voice, which the Gemini speaker shares. */
-  geminiVoice: string
   hasGeminiKey?: boolean
   hasOpenAiKey?: boolean
 }>()
@@ -231,9 +228,11 @@ const uses = computed(() => new Set([
           @create="(id: string) => { form.geminiTranscribeModel = id }"
         />
       </UFormField>
-      <UFormField v-if="form.speaker === 'gemini'" label="Gemini speech model" :hint="`Voice: ${geminiVoice}, the voice agent's, set on General`">
+      <UFormField v-if="form.speaker === 'gemini'" label="Gemini speech model">
         <UInput v-model="form.geminiSpeechModel" class="w-full font-mono text-xs" />
-        <p class="mt-1 text-xs text-muted">Voices: {{ GEMINI_VOICES.join(', ') }}.</p>
+      </UFormField>
+      <UFormField v-if="form.speaker === 'gemini'" label="Gemini voice">
+        <USelect v-model="form.geminiVoice" :items="GEMINI_VOICES" class="w-full" />
       </UFormField>
     </div>
 

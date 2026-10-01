@@ -30,7 +30,7 @@ export function contentSecurityPolicy(host: string | undefined, nonce: string): 
     // The SPA shell carries inline scripts Nuxt writes itself (the importmap,
     // the colour-mode preamble and `window.__NUXT__.config`); the nonce is what
     // lets those run without opening the door to injected ones.
-    // `blob:` is the microphone's AudioWorklet module, which `useVoiceChannel`
+    // `blob:` is the microphone's AudioWorklet module, which `useAgentVoice`
     // builds with `URL.createObjectURL`; a worklet module is checked against
     // `script-src`, not `worker-src` (measured in Chromium, not assumed).
     // `'wasm-unsafe-eval'` is Shiki's oniguruma engine: it permits WebAssembly
@@ -59,7 +59,7 @@ export function contentSecurityPolicy(host: string | undefined, nonce: string): 
     // @nuxt/fonts downloads the webfonts at build time; nothing is fetched from
     // a font CDN at runtime.
     `font-src 'self'`,
-    // `/api/shape` (Electric long-polls it) and `/api/voice/ws`.
+    // `/api/shape` (Electric long-polls it) and `/api/agent-voice/ws`.
     `connect-src ${['\'self\'', ...socketOrigins(host)].join(' ')}`,
     // Nothing spawns a worker. Naming `'self'` rather than letting this fall
     // back to `script-src` keeps the worklet's `blob:` exception from quietly

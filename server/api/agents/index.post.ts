@@ -6,7 +6,6 @@ export default defineEventHandler(async (event) => {
     title?: string
     adapter?: 'claude-code' | 'codex' | 'opencode'
     cwd?: string
-    voiceSessionId?: string | null
     modeId?: string | null
     model?: string | null
     devEnvironmentId?: string | null
@@ -17,7 +16,6 @@ export default defineEventHandler(async (event) => {
     adapter: isAgentAdapter(body?.adapter) ? body.adapter : 'claude-code',
     title: body?.title,
     cwd: body?.cwd,
-    voiceSessionId: body?.voiceSessionId ?? null,
     modeId: body?.modeId ?? null,
     model: body?.model ?? null,
     devEnvironmentId: body?.devEnvironmentId ?? null,

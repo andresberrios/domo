@@ -1,7 +1,7 @@
 import { chromium, type Browser, type Page } from 'playwright-core'
 
 /**
- * The one Chromium the voice-live layer drives, and where it comes from.
+ * The one Chromium the environments-live layer drives, and where it comes from.
  *
  * Playwright's own download is the default, so a developer who has run
  * `npx playwright install chromium` needs nothing here. `DOMO_TEST_CHROMIUM`
@@ -69,7 +69,7 @@ export async function launchBrowser(audioFile?: string): Promise<Browser> {
  *
  * Without this a failure in the app renders as a poll timing out on text that
  * never appeared, with the actual cause — an unhandled rejection in
- * `useVoiceChannel`, a CSP refusal, a failed dynamic import — visible only
+ * a composable, a CSP refusal, a failed dynamic import — visible only
  * inside the browser. These tests fail rarely and opaquely; the noise is worth
  * it.
  */

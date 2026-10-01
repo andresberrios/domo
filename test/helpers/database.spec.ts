@@ -56,14 +56,14 @@ describe('resetTestDatabase', () => {
     await getDb()
 
     const tables = await onTestDatabase(tablesInPublic)
-    expect(tables).toContain('voice_sessions')
+    expect(tables).toContain('agent_sessions')
     expect(tables).toContain('agent_events')
 
     // `REPLICA IDENTITY FULL` is a property of a table in `public`, and Electric
     // depends on it — a reset that broke the schema's shape would lose it.
     const identities = await onTestDatabase(async client => client.query<{ relreplident: string }>(
       `select relreplident from pg_class join pg_namespace on pg_namespace.oid = relnamespace
-        where nspname = 'public' and relname = 'voice_sessions'`
+        where nspname = 'public' and relname = 'agent_sessions'`
     ))
     expect(identities.rows[0]?.relreplident).toBe('f')
 

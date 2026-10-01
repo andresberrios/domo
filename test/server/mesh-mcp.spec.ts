@@ -7,12 +7,10 @@ import { query } from '../../server/lib/db'
 import {
   addAgentSubscription,
   appendAgentEvent,
-  appendVoiceMessage,
   createAgentSession,
   createDevEnvironmentRow,
   createPermission,
   createProject,
-  createVoiceSession,
   deleteAgentSession,
   enqueueInboxMessage,
   getCronJob,
@@ -1192,34 +1190,6 @@ describe('acting on another agent', () => {
     expect(resultOf(await answer(grandchild.id, grandchilds.id, { reject: true }))).toMatchObject({ optionId: null })
     expect(acp.answerPermission).toHaveBeenLastCalledWith(grandchild.id, grandchilds.id, null, `agent:${caller.id}`)
     expect(acp.answerPermission).toHaveBeenCalledTimes(2)
-  })
-
-  // The voice runtime says every request aloud; the thinking agent is how the
-  // human's answer gets back, since the GPT-Live model holds no tools.
-  it('lets a voice conversation\'s thinking agent answer any request, once the human has spoken since', async () => {
-    const conversation = await createVoiceSession()
-    await appendVoiceMessage({ sessionId: conversation.id, role: 'user', text: 'Start the migration work.' })
-    const thinking = await session('Voice thinking · standup', { voiceSessionId: conversation.id })
-    const stranger = await session('stranger')
-    const permission = await createPermission({
-      agentSessionId: stranger.id,
-      toolCallId: null,
-      title: 'Run the migration',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
-      toolCall: null
-    })
-    const answer = () => callTool(mintMeshToken(thinking.id), 'answer_permission_request', {
-      agentId: stranger.id, permissionId: permission.id, optionId: 'allow'
-    }).then(response => response.body)
-
-    // Words from before the request are not an answer to it.
-    expect(text(await answer())).toContain('has not answered this request yet')
-    expect(acp.answerPermission).not.toHaveBeenCalled()
-
-    await new Promise(resolve => setTimeout(resolve, 5))
-    await appendVoiceMessage({ sessionId: conversation.id, role: 'user', text: 'Yes, allow it.' })
-    expect(resultOf(await answer())).toMatchObject({ answered: true })
-    expect(acp.answerPermission).toHaveBeenCalledWith(stranger.id, permission.id, 'allow', 'voice-agent')
   })
 })
 

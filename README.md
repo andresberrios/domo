@@ -2,12 +2,12 @@
 
 **A voice-first control room for coding agents.**
 
-You talk to a live voice agent — Gemini Live or OpenAI GPT-Live, whichever you
-pick in Settings. It starts Claude Code, Codex and OpenCode
-sessions over [ACP](https://agentclientprotocol.com), watches them work,
-answers their permission prompts when you tell it to, and reports back out
-loud. You can also type to any agent directly. Every session is saved, and the
-UI updates in real time.
+You talk out loud to Claude Code, Codex and OpenCode sessions running over
+[ACP](https://agentclientprotocol.com). The agent you talk to can start other
+agents, watch them work and report back; whichever one you are talking to reads
+out the others' permission prompts and notes, and takes your answers. You can
+also type to any agent directly. Every session is saved, and the UI updates in
+real time.
 
 With Domo you can:
 
@@ -22,9 +22,9 @@ With Domo you can:
 - Schedule prompts to agents, once or on a cron schedule.
 - See context usage for each session, and your Claude, Codex and OpenCode Go
   plan limits.
-- Choose which live voice model runs conversations, and — on GPT-Live, which
-  delegates its thinking — whether an OpenAI model or one of your own coding
-  agents does it. See [Choosing a voice model](#choosing-a-voice-model).
+- Talk to any agent from its page. One engine hears you and one speaks the
+  replies, chosen in Settings: Gemini, OpenAI, open models on your CPU, or
+  your device's own dictation and voices.
 
 ## Requirements
 
@@ -32,23 +32,24 @@ With Domo you can:
 - Docker
 - [Caddy](https://caddyserver.com) on your `PATH` (`brew install caddy`).
   Browsers allow the microphone only on HTTPS.
-- A Gemini API key ([AI Studio](https://aistudio.google.com/apikey)) for
-  Gemini Live, or an OpenAI API key for GPT-Live
+- For the default speech engines, a Gemini API key
+  ([AI Studio](https://aistudio.google.com/apikey)). The local and on-device
+  engines need no key.
 - At least one coding agent account. See [Authentication](#authentication).
 
 ## Quick start
 
 ```bash
-cp .env.example .env     # add your Gemini or OpenAI key
+cp .env.example .env     # add your Gemini key
 docker compose up -d     # Postgres :54321, Electric :30000
 pnpm install
 caddy trust              # once, so the browser accepts Caddy's certificate
 pnpm dev                 # open https://localhost:3666
 ```
 
-Domo creates the database schema on first boot. Press **New conversation**,
-turn on the mic, and say *"start an agent in ~/code/my-project and have it fix
-the failing tests"*.
+Domo creates the database schema on first boot. Press **Talk**, turn on the
+mic, and say *"start an agent in ~/code/my-project and have it fix the failing
+tests"*.
 
 To use isolated environments, add a project from the sidebar, create a
 development environment for it, and choose that environment when you start an
@@ -228,19 +229,15 @@ the common variables.
 
 | Variable | Purpose |
 | --- | --- |
-| `NUXT_GEMINI_API_KEY` | Gemini key, for the Gemini voice provider |
+| `NUXT_GEMINI_API_KEY` | Gemini key, for the Gemini speech engines |
 | `NUXT_CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` |
 | `NUXT_ANTHROPIC_API_KEY` | Optional. Bills the API, not your subscription |
-| `NUXT_OPENAI_API_KEY` | OpenAI key: required for the GPT-Live voice provider, and a Codex credential |
+| `NUXT_OPENAI_API_KEY` | OpenAI key, for the OpenAI speech engines, and a Codex credential |
 | `NUXT_CODEX_API_KEY` | Optional Codex credential |
 | `NUXT_OPENCODE_API_KEY` | OpenCode console service-account key |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
 | `NUXT_GH_TOKEN` | GitHub token for environment sessions |
 | `DATABASE_URL`, `ELECTRIC_URL` | Default to the compose services |
-| `NUXT_GEMINI_LIVE_MODEL` | Default Live model id (also in Settings) |
-| `NUXT_GEMINI_SUMMARY_MODEL` | Model that summarizes long conversations (default `gemini-flash-lite-latest`) |
-| `NUXT_OPENAI_LIVE_MODEL` | Default GPT-Live model id (also in Settings) |
-| `NUXT_OPENAI_SUMMARY_MODEL` | Summarizer on the OpenAI provider (default `gpt-5.6-luna`) |
 | `NUXT_DEFAULT_CWD` | Default working directory for new agents |
 | `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
 | `NUXT_DEV_ENV_IMAGE` | Base image when a project has no `.domo.json` |
@@ -252,31 +249,6 @@ the common variables.
 | `NUXT_CLAUDE_CONFIG_DIR` | Where the Claude config copied into a new environment is read from (default `~/.claude`). Only `CLAUDE.md`, `settings.json`, `skills/`, `commands/` and `agents/` are copied |
 | `NUXT_CODEX_CONFIG_DIR` | Codex config mounted into environments (default `~/.codex`) |
 | `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts come from (default `$HOME`) |
-
-### Choosing a voice model
-
-**Settings → General → Voice model** picks which live model runs conversations.
-
-**Gemini Live** is one model that listens, thinks, calls Domo's tools and
-speaks. It takes a model id, a voice and a spoken language.
-
-**GPT-Live** runs the conversation and delegates the thinking — it holds no
-tools of its own. You choose who answers:
-
-- **An OpenAI model** (default `gpt-6-sol`) — OpenAI calls it with every one of
-  Domo's tools attached. Nothing else to set up.
-- **A coding agent session** — each request goes to a Claude Code, Codex or
-  OpenCode session, which answers with its own tools plus the whole agent mesh.
-  Pick an existing session or let Domo make one. It takes as long as a coding
-  agent takes, so the answer arrives as a spoken update. The
-  conversation-only tools (naming a conversation, starting a new one, answering
-  a permission out loud) belong to the live model's backend, and a coding agent
-  is not one, so those stay on screen in this mode.
-
-Typed messages are answered out loud too; the speaker button beside the text
-box turns that off when you would rather read the reply. Model ids change
-often on both providers — each dropdown is filled from your own key, and you
-can type any id by hand.
 
 ## Development
 

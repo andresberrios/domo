@@ -9,8 +9,7 @@ import type { AgentInboxMessage, MessageOrigin } from '../../../shared/types'
  */
 export function inboxDivider(origin: MessageOrigin): string {
   if (origin.startsWith('agent:')) return `[Message from agent ${origin.slice('agent:'.length)}]`
-  // The voice agent speaks for Domo, and so does a subscription note.
-  if (origin === 'voice' || origin === 'system') return '[From Domo]'
+  if (origin === 'system') return '[From Domo]'
   return '[From you]'
 }
 

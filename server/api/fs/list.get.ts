@@ -1,8 +1,16 @@
+import { readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { normalizeCwd } from '../../lib/acp/manager'
-import { listChildDirectories } from '../../lib/voice/tools'
 import { getSettings } from '../../lib/settings'
+
+async function listChildDirectories(path: string): Promise<Array<{ name: string, path: string }>> {
+  const entries = await readdir(path, { withFileTypes: true })
+  return entries
+    .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map(entry => ({ name: entry.name, path: join(path, entry.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
 
 export default defineEventHandler(async (event) => {
   const { path } = getQuery(event)

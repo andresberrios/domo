@@ -12,8 +12,6 @@ import { closeDb, getDb, newId, nowIso, query, queryOne } from '../../server/lib
 /** Every table the app writes to, and every one Electric syncs. */
 const TABLES = [
   'settings',
-  'voice_sessions',
-  'voice_messages',
   'projects',
   'dev_environments',
   'dev_environment_ports',
@@ -71,16 +69,6 @@ describe('schema bootstrap', () => {
 
     expect(rows).toHaveLength(SYNCED_TABLES.length)
     expect(rows.filter(row => row.relreplident !== 'f')).toEqual([])
-  })
-
-  it('defaults new conversations to an auto-generated title', async () => {
-    const column = await queryOne<{ column_default: string, is_nullable: string }>(
-      `select column_default, is_nullable from information_schema.columns
-        where table_name = 'voice_sessions' and column_name = 'title_source'`
-    )
-
-    expect(column).toMatchObject({ is_nullable: 'NO' })
-    expect(column!.column_default).toContain('auto')
   })
 })
 

@@ -16,7 +16,6 @@ before it acts. `vitest.config.ts` and `test/setup/` answer the rest.
 | `docker-live` | `test/docker/*.live.spec.ts` | a Docker daemon. Opt in: `pnpm test:docker`. The `dood-*.live.spec.ts` files drive the Docker proxy with the real CLI, compose and buildx. |
 | `environments-live` | `test/environments/*.live.spec.ts` | Postgres, the `electric-e2e` service, Docker and a Chromium. Opt in: `pnpm test:environments`. Creates and retires environments in the real app, in a real browser. Keeps its runtime volume (`domo-envlive-runtime-*`) between runs. |
 | `agents-live` | `test/agents/*.live.spec.ts` | Postgres, Docker, a Claude token, a Codex login and `NUXT_OPENCODE_API_KEY`. Opt in: `pnpm test:agents`. |
-| `voice-live` | `test/voice/*.live.spec.ts` | Postgres, the `electric-e2e` service, a Chromium and `NUXT_OPENAI_API_KEY`. Opt in: `pnpm test:voice`. A real browser with a WAV for a microphone, on a real GPT-Live session. It bills. |
 
 `pnpm test` runs the first four projects and needs `docker compose up -d`.
 Add a new project only when tests need a different runtime, setup file or
@@ -51,7 +50,7 @@ dependency.
   only. This database is shared by every checkout on the machine, and two runs
   at once corrupt each other with foreign-key errors that look like real bugs.
   Before a long run, check `pgrep -f vitest`.
-- **`voice-live` runs on `domo_e2e` with the real Electric.** The stub in
+- **`environments-live` runs on `domo_e2e` with the real Electric.** The stub in
   `test/helpers/electric-stub.ts` returns one hardcoded row, which is enough
   for `test/e2e` but leaves a browser with an empty app.
 - **Electric never replicates from `domo_test`.** The `electric` layer has its
@@ -93,10 +92,6 @@ dependency.
   `DEBUG=pw:browser` shows the real error. Inside an environment, point
   `DOMO_TEST_CHROMIUM` at `/opt/domo-browser/bin/chrome-headless-shell` and
   set no `LD_LIBRARY_PATH`.
-- **Chromium fixes the fake microphone at launch and loops the file.** Use one
-  browser per spoken fixture, and stop the microphone after it plays once.
-  Otherwise the user never stops talking and nothing is written to
-  `voice_messages`.
 
 ## The Docker proxy (`dood-*` specs)
 

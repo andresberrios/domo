@@ -138,6 +138,9 @@ export const KOKORO_VOICES = [
   'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis'
 ]
 
+/** Gemini's prebuilt voices. */
+export const GEMINI_VOICES = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr']
+
 /** The voices OpenAI's speech endpoint accepts. */
 export const OPENAI_SPEECH_VOICES = [
   'alloy', 'ash', 'ballad', 'cedar', 'coral', 'echo', 'fable', 'marin', 'nova', 'onyx', 'sage', 'shimmer', 'verse'
@@ -175,6 +178,7 @@ export const DEFAULT_AGENT_VOICE: AgentVoiceSettings = {
   silenceSeconds: 1.5,
   geminiTranscribeModel: 'gemini-3.5-flash',
   geminiSpeechModel: 'gemini-3.8-flash-lite-tts',
+  geminiVoice: 'Puck',
   openaiTranscribeModel: 'whisper-1',
   openaiSpeechModel: 'gpt-4o-mini-tts',
   openaiVoice: 'ash',

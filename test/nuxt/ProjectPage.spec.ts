@@ -47,7 +47,6 @@ const environment: DevEnvironment = {
 const agents: AgentSession[] = [
   {
     id: 'ag_1',
-    voiceSessionId: null,
     adapter: 'claude-code',
     acpSessionId: 'acp_1',
     title: 'Auth refactor',
@@ -71,7 +70,6 @@ const agents: AgentSession[] = [
   },
   {
     id: 'ag_local',
-    voiceSessionId: null,
     adapter: 'codex',
     acpSessionId: null,
     title: 'Docs sweep',

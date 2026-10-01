@@ -211,7 +211,7 @@ function fontsConf(): string {
  *
  * It exists so that the *path* is the whole contract: anything in the
  * container that execs it — Playwright through `executablePath`, the bundled
- * MCP server, a developer poking at it by hand, `pnpm test:voice` — gets a
+ * MCP server, a developer poking at it by hand, `pnpm test:environments` — gets a
  * working browser without having to know what Domo put in the volume.
  *
  * `LD_LIBRARY_PATH` is *replaced* rather than extended, and set here rather

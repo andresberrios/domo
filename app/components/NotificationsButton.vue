@@ -3,8 +3,7 @@ import type { DomoNotification } from '~~/shared/types'
 
 /**
  * What agents asked the human to see (`notify_supervisor`), kept until it has
- * been seen: a voice conversation may not be live when an agent reports, and a
- * line in one agent's transcript is somewhere nobody is looking.
+ * been seen: a line in one agent's transcript is somewhere nobody is looking.
  *
  * The sidebar button carries the unseen count; a new one also raises a toast,
  * but only one that arrives while the page is open — the backlog is the

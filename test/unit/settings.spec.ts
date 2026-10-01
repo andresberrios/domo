@@ -3,12 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const query = vi.fn()
 vi.mock('../../server/lib/db', () => ({ query }))
 
-const {
-  DEFAULTS,
-  DEFAULT_SYSTEM_INSTRUCTION,
-  getSettings,
-  patchSettings
-} = await import('../../server/lib/settings')
+const { DEFAULTS, getSettings } = await import('../../server/lib/settings')
 
 function stored(rows: Record<string, unknown>) {
   query.mockResolvedValue(Object.entries(rows).map(([key, value]) => ({ key, value: { v: value } })))
@@ -25,13 +20,13 @@ describe('getSettings', () => {
   })
 
   it('lets stored values win over the defaults', async () => {
-    stored({ voiceName: 'Charon', autoApprovePermissions: true })
+    stored({ vscodeSshHost: 'mac', autoApprovePermissions: true })
 
     const settings = await getSettings()
 
-    expect(settings.voiceName).toBe('Charon')
+    expect(settings.vscodeSshHost).toBe('mac')
     expect(settings.autoApprovePermissions).toBe(true)
-    expect(settings.liveModel).toBe(DEFAULTS.liveModel)
+    expect(settings.browserTools).toBe(DEFAULTS.browserTools)
   })
 
   it('defaults the VS Code SSH host to empty, meaning docker is local', async () => {
@@ -131,126 +126,9 @@ describe('getSettings', () => {
 
   it('reads values that were stored unwrapped', async () => {
     // Older rows hold the bare value instead of `{ v: … }`.
-    query.mockResolvedValue([{ key: 'voiceName', value: 'Kore' }])
+    query.mockResolvedValue([{ key: 'vscodeSshHost', value: 'mac' }])
 
-    await expect(getSettings()).resolves.toMatchObject({ voiceName: 'Kore' })
-  })
-
-  it('keeps a system instruction the user actually wrote', async () => {
-    stored({ systemInstruction: 'Be terse. Speak Spanish.' })
-
-    await expect(getSettings()).resolves.toMatchObject({ systemInstruction: 'Be terse. Speak Spanish.' })
-  })
-
-  it('keeps the current default when it is what is stored', async () => {
-    stored({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
-
-    await expect(getSettings()).resolves.toMatchObject({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
-  })
-
-  /**
-   * Which live voice model speaks, and who thinks behind it. The two
-   * enumerated fields are sent verbatim into a GPT-Live `session.start`, where
-   * a value OpenAI does not recognise fails the whole connect rather than the
-   * one setting — so they are checked on the way out of the row, not trusted.
-   */
-  describe('the voice provider', () => {
-    it('is Gemini on a fresh install, so a version bump moves nobody to another bill', async () => {
-      expect(DEFAULTS.voiceProvider).toBe('gemini')
-      await expect(getSettings()).resolves.toMatchObject({ voiceProvider: 'gemini' })
-    })
-
-    it('follows the stored choice', async () => {
-      stored({ voiceProvider: 'openai' })
-
-      await expect(getSettings()).resolves.toMatchObject({ voiceProvider: 'openai' })
-    })
-
-    it('ignores a stored value that is not a provider', async () => {
-      stored({ voiceProvider: 'whisper' })
-
-      await expect(getSettings()).resolves.toMatchObject({ voiceProvider: 'gemini' })
-    })
-
-    it('delegates to a managed OpenAI model by default, which needs nothing else set up', async () => {
-      await expect(getSettings()).resolves.toMatchObject({
-        openaiDelegation: { target: 'responses', responsesModel: 'gpt-6-sol', reasoningEffort: '' }
-      })
-    })
-
-    it('keeps the fields a stored delegation does not name', async () => {
-      stored({ openaiDelegation: { target: 'agent', agentAdapter: 'codex' } })
-
-      await expect(getSettings()).resolves.toMatchObject({
-        openaiDelegation: {
-          target: 'agent',
-          agentAdapter: 'codex',
-          responsesModel: DEFAULTS.openaiDelegation.responsesModel,
-          agentSessionId: ''
-        }
-      })
-    })
-
-    it('drops values the API would refuse, rather than failing a whole connect on one', async () => {
-      stored({
-        openaiDelegation: {
-          target: 'nobody',
-          reasoningEffort: 'maximum',
-          agentAdapter: 'emacs',
-          responsesModel: 42
-        }
-      })
-
-      await expect(getSettings()).resolves.toMatchObject({
-        openaiDelegation: DEFAULTS.openaiDelegation
-      })
-    })
-
-    it('reads an empty agent session as "make one when it is first needed"', async () => {
-      stored({ openaiDelegation: { target: 'agent', agentSessionId: '   ' } })
-
-      await expect(getSettings()).resolves.toMatchObject({
-        openaiDelegation: { agentSessionId: '' }
-      })
-    })
-  })
-})
-
-/**
- * The settings page saves the whole form on every submit, so a naive patch
- * would write `systemInstruction` back on every save — including ones where
- * the user never touched it — and freeze the row at whatever the default
- * happened to be that day. A value equal to the current default must never be
- * written, or a fresh install could never follow a change to
- * `DEFAULT_SYSTEM_INSTRUCTION` again.
- */
-describe('patchSettings systemInstruction', () => {
-  beforeEach(() => {
-    query.mockReset()
-    query.mockResolvedValue([])
-  })
-
-  function writes(key: string) {
-    return query.mock.calls.filter(([, params]) => params?.[0] === key)
-  }
-
-  it('never persists a system instruction equal to the current default', async () => {
-    await patchSettings({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION, voiceName: 'Kore' })
-
-    expect(writes('systemInstruction').some(([sql]) => /insert into settings/.test(sql))).toBe(false)
-    expect(writes('voiceName').some(([sql]) => /insert into settings/.test(sql))).toBe(true)
-  })
-
-  it('deletes a stored customisation edited back to match the current default', async () => {
-    await patchSettings({ systemInstruction: DEFAULT_SYSTEM_INSTRUCTION })
-
-    expect(writes('systemInstruction').some(([sql]) => /delete from settings/.test(sql))).toBe(true)
-  })
-
-  it('persists a system instruction that differs from the default', async () => {
-    await patchSettings({ systemInstruction: 'Be terse. Speak Spanish.' })
-
-    expect(writes('systemInstruction').some(([sql]) => /insert into settings/.test(sql))).toBe(true)
+    await expect(getSettings()).resolves.toMatchObject({ vscodeSshHost: 'mac' })
   })
 })
 

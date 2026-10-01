@@ -1,39 +1,12 @@
 <script setup lang="ts">
-const { sessions: voiceSessions } = useVoiceSessions()
 const { sessions: agents } = useAgentSessions()
 const { pending } = usePermissions()
 const { environments } = useDevEnvironments()
 
-const { data: settings } = useSettings()
-
-const { creating, startConversation } = useNewConversation()
+const { creating, talk } = useTalk()
 const newAgentOpen = ref(false)
 
 const working = computed(() => agents.value.filter(agent => agent.status === 'thinking').length)
-
-/**
- * The key the *configured* voice provider needs, if it is missing. Warning
- * about Gemini's while the install is running GPT-Live would nag about a
- * credential nothing reads and stay quiet about the one that is actually
- * stopping the voice agent from connecting.
- */
-const missingVoiceKey = computed(() => {
-  if (!settings.value) return null
-  if (settings.value.voiceProvider === 'openai') {
-    return settings.value.hasOpenAiKey
-      ? null
-      : {
-          title: 'No OpenAI API key yet',
-          description: 'Add NUXT_OPENAI_API_KEY to your .env and restart the dev server to enable the voice agent.'
-        }
-  }
-  return settings.value.hasGeminiKey
-    ? null
-    : {
-        title: 'No Gemini API key yet',
-        description: 'Add NUXT_GEMINI_API_KEY to your .env and restart the dev server to enable the voice agent.'
-      }
-})
 </script>
 
 <template>
@@ -48,7 +21,7 @@ const missingVoiceKey = computed(() => {
             variant="subtle"
             @click="newAgentOpen = true"
           />
-          <UButton label="Talk" icon="i-lucide-mic" :loading="creating" @click="startConversation" />
+          <UButton label="Talk" icon="i-lucide-mic" :loading="creating" @click="talk" />
         </template>
       </UDashboardNavbar>
     </template>
@@ -61,9 +34,9 @@ const missingVoiceKey = computed(() => {
             Your voice control room for coding agents
           </h1>
           <p class="mx-auto mt-2 max-w-xl text-sm text-muted">
-            Talk to a live voice agent. It spawns Claude Code, Codex or OpenCode sessions over ACP,
-            watches them, answers their permission prompts, and tells you what changed — while you
-            keep your hands free.
+            Talk to Claude Code, Codex or OpenCode out loud. Each one can start and watch others,
+            and whichever you are talking to reads out their permission prompts and notes, so you
+            can keep your hands free.
           </p>
           <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
             <UButton
@@ -71,7 +44,7 @@ const missingVoiceKey = computed(() => {
               icon="i-lucide-mic"
               size="lg"
               :loading="creating"
-              @click="startConversation"
+              @click="talk"
             />
             <UButton
               label="Start a coding agent"
@@ -84,16 +57,7 @@ const missingVoiceKey = computed(() => {
           </div>
         </section>
 
-        <UAlert
-          v-if="missingVoiceKey"
-          color="warning"
-          variant="subtle"
-          icon="i-lucide-key-round"
-          :title="missingVoiceKey.title"
-          :description="missingVoiceKey.description"
-        />
-
-        <UsageLimitsCard />
+<UsageLimitsCard />
 
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <UPageCard
@@ -162,29 +126,6 @@ const missingVoiceKey = computed(() => {
           </div>
         </section>
 
-        <section v-if="voiceSessions.length">
-          <h2 class="mb-2 text-sm font-semibold">
-            Recent conversations
-          </h2>
-          <div class="divide-y divide-default overflow-hidden rounded-lg border border-default">
-            <ULink
-              v-for="session in voiceSessions.slice(0, 6)"
-              :key="session.id"
-              :to="`/voice/${session.id}`"
-              class="flex items-center gap-3 p-3 hover:bg-elevated/50"
-            >
-              <UIcon
-                :name="session.status === 'live' ? 'i-lucide-radio' : 'i-lucide-message-circle'"
-                class="size-4 shrink-0"
-                :class="session.status === 'live' ? 'text-primary' : 'text-dimmed'"
-              />
-              <span class="min-w-0 flex-1 truncate text-sm">{{ session.title }}</span>
-              <span class="shrink-0 text-xs text-dimmed">
-                {{ relativeTime(session.lastActivityAt ?? session.createdAt) }}
-              </span>
-            </ULink>
-          </div>
-        </section>
       </div>
         <NewAgentModal v-model:open="newAgentOpen" />
     </template>

@@ -46,7 +46,6 @@ const environment = ref<DevEnvironment>({
 
 const agent: AgentSession = {
   id: 'ag_1',
-  voiceSessionId: null,
   adapter: 'claude-code',
   acpSessionId: 'acp_1',
   title: 'Auth refactor',

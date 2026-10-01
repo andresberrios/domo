@@ -1,37 +1,36 @@
 import { mockNuxtImport, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useNewConversation } from '~/composables/useNewConversation'
+import { useTalk } from '~/composables/useTalk'
 
-/**
- * "New conversation" is the only way to get fresh context — there is no context
- * reset — so it has to create a row and open it, or say why it could not.
- */
+/** Talk has to make a session and open it with the voice bar on, or say why it could not. */
 const toastAdd = vi.fn()
 let respond: () => unknown
 
 // The router is the real one: replacing it takes Nuxt's own plugins down with it.
 mockNuxtImport('useToast', () => () => ({ add: toastAdd }))
 
-registerEndpoint('/api/voice-sessions', { method: 'POST', handler: () => respond() })
+registerEndpoint('/api/agents', { method: 'POST', handler: () => respond() })
 
 let push: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
   vi.clearAllMocks()
-  respond = () => ({ id: 'vs_new' })
+  respond = () => ({ id: 'ag_new' })
   push = vi.spyOn(useRouter(), 'push').mockResolvedValue(undefined)
+  useAgentVoiceOpen().value = false
 })
 
-describe('useNewConversation', () => {
-  it('creates a conversation and opens it', async () => {
-    const { creating, startConversation } = useNewConversation()
+describe('useTalk', () => {
+  it('creates a session and opens it with the voice bar on', async () => {
+    const { creating, talk } = useTalk()
 
-    const pending = startConversation()
+    const pending = talk()
     expect(creating.value).toBe(true)
     await pending
 
-    expect(push).toHaveBeenCalledWith('/voice/vs_new')
+    expect(push).toHaveBeenCalledWith('/agents/ag_new')
+    expect(useAgentVoiceOpen().value).toBe(true)
     expect(creating.value).toBe(false)
   })
 
@@ -39,13 +38,14 @@ describe('useNewConversation', () => {
     respond = () => {
       throw createError({ statusCode: 503, statusMessage: 'Postgres is not reachable' })
     }
-    const { creating, startConversation } = useNewConversation()
+    const { creating, talk } = useTalk()
 
-    await startConversation()
+    await talk()
 
     expect(push).not.toHaveBeenCalled()
+    expect(useAgentVoiceOpen().value).toBe(false)
     expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({
-      title: 'Could not start a conversation',
+      title: 'Could not start a session',
       color: 'error'
     }))
     expect(creating.value).toBe(false)

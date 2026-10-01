@@ -4,8 +4,6 @@ const ELECTRIC_URL = process.env.ELECTRIC_URL || process.env.NUXT_ELECTRIC_URL |
 
 /** Only these tables may be synced to the browser. */
 const ALLOWED_TABLES = new Set([
-  'voice_sessions',
-  'voice_messages',
   'agent_sessions',
   'agent_events',
   'agent_permissions',

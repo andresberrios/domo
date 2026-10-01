@@ -3,8 +3,7 @@ import { DEFAULT_AGENT_VOICE } from '~~/shared/agent-voice'
 
 /**
  * Talking to a coding agent from its page: the voice bar's engines, voices,
- * language, turn detection and sounds. The live voice agent's settings stay
- * on General; the one they share is the Gemini voice, which is edited there.
+ * language, turn detection and sounds.
  */
 const toast = useToast()
 const { data: settings, refresh } = await useSettingsForm()
@@ -39,7 +38,6 @@ async function save() {
   >
     <AgentVoiceSettings
       v-model="form"
-      :gemini-voice="settings?.voiceName ?? 'Puck'"
       :has-gemini-key="settings?.hasGeminiKey"
       :has-open-ai-key="settings?.hasOpenAiKey"
     />

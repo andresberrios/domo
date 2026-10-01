@@ -23,49 +23,6 @@ create table if not exists settings (
   value jsonb not null
 );
 
-create table if not exists voice_sessions (
-  id text primary key,
-  title text not null,
-  status text not null default 'idle',
-  model text not null,
-  voice text not null,
-  created_at text not null,
-  updated_at text not null,
-  last_activity_at text,
-  archived boolean not null default false,
-  resumption_handle text
-);
-alter table voice_sessions add column if not exists title_source text;
-alter table voice_sessions add column if not exists resumption_fingerprint text;
--- The rolling summary of everything up to summary_through_seq: what a
--- reconnecting Live session is told instead of a transcript it cannot fit.
-alter table voice_sessions add column if not exists summary text;
-alter table voice_sessions add column if not exists summary_through_seq bigint;
-alter table voice_sessions add column if not exists summary_updated_at text;
--- How full the Live model's context is. State, not transcript: rewritten in
--- place, and \`used\` may go down when sliding-window compression drops old turns.
-alter table voice_sessions add column if not exists usage jsonb;
--- Rows from before auto-titling: anything but the placeholder was a rename.
-update voice_sessions
-   set title_source = case when title = 'New conversation' then 'auto' else 'user' end
- where title_source is null;
-alter table voice_sessions alter column title_source set default 'auto';
-alter table voice_sessions alter column title_source set not null;
-
-create table if not exists voice_messages (
-  id text primary key,
-  session_id text not null references voice_sessions(id) on delete cascade,
-  -- A global sequence, not a per-session counter: concurrent appends must never
-  -- collide, and ordering only ever matters within one session anyway.
-  seq bigserial not null,
-  role text not null,
-  text text not null default '',
-  tool_name text,
-  meta jsonb,
-  created_at text not null
-);
-create index if not exists voice_messages_session_seq on voice_messages(session_id, seq);
-
 create table if not exists projects (
   id text primary key,
   name text not null,
@@ -162,7 +119,6 @@ create unique index if not exists dev_environment_ports_identity
 
 create table if not exists agent_sessions (
   id text primary key,
-  voice_session_id text references voice_sessions(id) on delete set null,
   adapter text not null default 'claude-code',
   acp_session_id text,
   title text not null,
@@ -219,6 +175,23 @@ alter table agent_sessions drop column if exists retired_reason;
 -- edge that cross-agent powers (scheduling for it, answering its permission
 -- requests, withdrawing its queued messages) are tied to.
 alter table agent_sessions add column if not exists spawned_by text references agent_sessions(id) on delete set null;
+
+-- The live voice conversation is gone: talking happens in a coding session's
+-- voice bar. Its tables go, the link to them goes first, and the settings
+-- only it read go too. Its Gemini voice is the voice bar's now.
+alter table agent_sessions drop column if exists voice_session_id;
+drop table if exists voice_messages;
+drop table if exists voice_sessions;
+insert into settings (key, value)
+  select 'agentVoice', jsonb_build_object('v', jsonb_build_object('geminiVoice', value->'v'))
+    from settings where key = 'voiceName'
+  on conflict (key) do update
+    set value = jsonb_set(settings.value, '{v,geminiVoice}', excluded.value->'v'->'geminiVoice')
+    where not (settings.value->'v' ? 'geminiVoice');
+delete from settings where key in (
+  'voiceProvider', 'liveModel', 'voiceName', 'openaiLiveModel', 'openaiVoiceName', 'openaiDelegation',
+  'systemInstruction', 'proactiveNotifications', 'language', 'autoTitle'
+);
 
 -- Mostly append-only: discrete ACP updates are inserted once, while a block of
 -- streaming text is a single row rewritten in place until the block ends.
@@ -347,8 +320,7 @@ delete from agent_events e
 create table if not exists agent_inbox (
   id text primary key,
   agent_session_id text not null references agent_sessions(id) on delete cascade,
-  -- Global, not per session, for the same reason voice_messages.seq is: two
-  -- concurrent enqueues must never collide. Only the order within a session
+  -- Global, not per session: two concurrent enqueues must never collide. Only the order within a session
   -- is ever read.
   seq bigserial not null,
   content jsonb not null,
@@ -439,14 +411,15 @@ create table if not exists mcp_servers (
   url text,
   headers jsonb not null default '{}'::jsonb,
   enabled boolean not null default true,
-  scope text not null default 'both',
   created_at text not null,
   updated_at text not null
 );
+-- Every server goes to every coding agent; a voice-only one was meant for the
+-- voice agent, and coding sessions are where the talking happens now.
+alter table mcp_servers drop column if exists scope;
 
 -- What an agent wanted the human to see, kept until the human has seen it: a
--- voice session may not be live, and a line in one agent's transcript is
--- somewhere nobody is looking. Attachments are copied under the data
+-- line in one agent's transcript is somewhere nobody is looking. Attachments are copied under the data
 -- directory and listed here by name and path, never inlined.
 create table if not exists notifications (
   id text primary key,
@@ -502,8 +475,6 @@ create table if not exists usage_providers (
 
 -- Electric replays updates from the WAL: FULL replica identity makes sure a
 -- changed row arrives complete, not just its key + changed columns.
-alter table voice_sessions replica identity full;
-alter table voice_messages replica identity full;
 alter table agent_sessions replica identity full;
 alter table agent_events replica identity full;
 alter table agent_permissions replica identity full;

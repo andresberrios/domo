@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import UsageMeter from '~/components/UsageMeter.vue'
 import UsageMeterPanel from '~/components/UsageMeterPanel.vue'
-import type { AgentUsage, UsageProviderId, VoiceUsage } from '~~/shared/types'
+import type { AgentUsage, UsageProviderId } from '~~/shared/types'
 
 /**
  * The session chip.
@@ -18,7 +18,7 @@ import type { AgentUsage, UsageProviderId, VoiceUsage } from '~~/shared/types'
 
 const Harness = defineComponent({
   props: {
-    usage: { type: Object as () => AgentUsage | VoiceUsage | null, default: null },
+    usage: { type: Object as () => AgentUsage | null, default: null },
     provider: { type: String as () => UsageProviderId | undefined, default: undefined },
   },
   setup: props => () => h(UApp, null, {
@@ -60,8 +60,7 @@ describe('UsageMeter', () => {
   })
 
   it('shows a token count when the context size is unknown', async () => {
-    // A Live model Domo has no window for. A made-up denominator would put a
-    // meaningless percentage on screen instead.
+    // A made-up denominator would put a meaningless percentage on screen instead.
     const component = await mount({
       usage: { context: { used: 12_345, size: null }, updatedAt: '2026-09-21T12:00:00.000Z' }
     })
@@ -99,7 +98,7 @@ describe('UsageMeter', () => {
   })
 
   it('leaves out a section it has no data for', async () => {
-    // A voice conversation has no cost and no plan limits behind it.
+    // No cost reported, and no account to show the limits of.
     const component = await mountSuspended(PanelHarness, {
       props: { context: { used: 1000, size: 10_000 } }
     })

@@ -2,91 +2,6 @@
  * Domain types shared between the Nitro server and the Nuxt app.
  */
 
-export type VoiceSessionStatus = 'idle' | 'live' | 'error'
-
-/**
- * Which live voice model runs conversations.
- *
- * One install-wide setting rather than a column on the conversation: a running
- * conversation is rebuilt from `voice_messages` on every connect (see
- * `server/lib/voice/context.ts`), so switching provider and reconnecting
- * continues the same conversation with the other model. The row's `model` and
- * `voice` columns record what the last connect actually used.
- */
-export type VoiceProvider = 'gemini' | 'openai'
-
-/**
- * Who does the thinking behind an OpenAI Live conversation.
- *
- * The Live model itself holds no tools and does no reasoning — it runs the
- * spoken conversation and hands the work out (`session.delegation.created`).
- * `responses` is the managed path: OpenAI calls the text model named below,
- * with Domo's own voice tools registered on it, and returns the result to the
- * conversation. `agent` is client delegation: Domo builds the request from the
- * conversation and hands it to a coding agent session, whose answer comes back
- * as spoken commentary.
- */
-export type VoiceDelegationTarget = 'responses' | 'agent'
-
-/** How hard the delegated Responses model thinks. Empty means the model's own default. */
-export type VoiceReasoningEffort = '' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-
-export interface VoiceDelegationSettings {
-  target: VoiceDelegationTarget
-  /** The Responses backend model, for `target: 'responses'`. */
-  responsesModel: string
-  reasoningEffort: VoiceReasoningEffort
-  /**
-   * The coding agent session that thinks, for `target: 'agent'`. Empty means
-   * "make one on the first delegation and keep using it".
-   */
-  agentSessionId: string
-  /** Which adapter a session created that way runs. */
-  agentAdapter: AgentAdapter
-  /** Which development environment it runs in. Empty means the default workspace. */
-  agentDevEnvironmentId: string
-}
-
-/** Who set a conversation's title: auto-titling only ever replaces its own. */
-export type VoiceTitleSource = 'auto' | 'user'
-
-export interface VoiceSession {
-  id: string
-  title: string
-  titleSource: VoiceTitleSource
-  status: VoiceSessionStatus
-  model: string
-  voice: string
-  createdAt: string
-  updatedAt: string
-  lastActivityAt: string | null
-  archived: boolean
-  /**
-   * Rolling summary of everything up to `summaryThroughSeq`, folded in as the
-   * conversation grows so a reconnect never has to replay the whole log.
-   */
-  summary: string | null
-  /** The last `voice_messages.seq` the summary covers; null before the first fold. */
-  summaryThroughSeq: number | null
-  summaryUpdatedAt: string | null
-  /** How much of the Live model's context this conversation is using. */
-  usage: VoiceUsage | null
-}
-
-export type VoiceMessageRole = 'user' | 'assistant' | 'system' | 'tool'
-
-export interface VoiceMessage {
-  id: string
-  sessionId: string
-  seq: number
-  role: VoiceMessageRole
-  text: string
-  /** Set for role === 'tool': the function name that was called. */
-  toolName: string | null
-  meta: Record<string, unknown> | null
-  createdAt: string
-}
-
 export type AgentSessionStatus =
   | 'idle'
   | 'starting'
@@ -107,7 +22,6 @@ export type OpenCodePermission = 'ask' | 'allow'
 
 export interface AgentSession {
   id: string
-  voiceSessionId: string | null
   adapter: AgentAdapter
   acpSessionId: string | null
   title: string
@@ -150,11 +64,11 @@ export interface AgentSession {
    * every session in it unstartable and archives none of them.
    */
   archived: boolean
-  /** Rolling summary of the agent's most recent output, for the voice agent. */
+  /** The agent's most recent output, clipped, for lists. */
   summary: string | null
   /** Context-window occupancy and session cost, as the adapter last reported them. */
   usage: AgentUsage | null
-  /** The agent that spawned this one over the mesh; null for one a person or the voice agent started. */
+  /** The agent that spawned this one over the mesh; null for one a person started. */
   spawnedBy: string | null
 }
 
@@ -175,30 +89,6 @@ export interface AgentUsage {
   context: { used: number, size: number }
   /** The session's cumulative cost, when the adapter reports one (Claude only). */
   cost?: { amount: number, currency: string }
-  updatedAt: string
-}
-
-/**
- * How full a voice conversation's context window is.
- *
- * `size` is null for a Live model Domo has no window size for — the API never
- * reports one — and `used` may *decrease*: sliding-window compression drops old
- * turns, and a fresh session after a fingerprint mismatch starts again at zero.
- *
- * `percent` exists because the two providers count in different currencies.
- * Gemini reports tokens and Domo supplies the denominator; OpenAI's Live API
- * reports `context_window.usage_ratio` and **no token counts at all**, so a
- * reading from it fills `percent` and leaves `used` at zero. Anything drawing
- * a bar must prefer `percent` when it is there, and must not print `used` as a
- * token count beside it — that zero is "not reported", not "empty".
- */
-export interface VoiceUsage {
-  context: { used: number, size: number | null, percent?: number | null }
-  /**
-   * Cumulative audio seconds the provider has billed this conversation for,
-   * when it says. A total, never an increment to add up.
-   */
-  audioSeconds?: number | null
   updatedAt: string
 }
 
@@ -455,7 +345,7 @@ export interface PendingPermission {
    * `retired` is a request nobody ever answered, because its environment was
    * retired under it; `agent:<id>` is the agent that spawned the one asking.
    */
-  resolvedBy: 'user' | 'voice-agent' | 'auto' | 'retired' | `agent:${string}` | null
+  resolvedBy: 'user' | 'auto' | 'retired' | `agent:${string}` | null
 }
 
 /**
@@ -549,7 +439,7 @@ export interface CronJob {
   lastStatus: CronRunStatus | null
   lastError: string | null
   runCount: number
-  createdBy: 'user' | 'voice' | `agent:${string}`
+  createdBy: 'user' | `agent:${string}`
   createdAt: string
   updatedAt: string
 }
@@ -577,32 +467,12 @@ export interface McpServer {
   url: string | null
   headers: Record<string, string>
   enabled: boolean
-  /** Which agents get this server wired in. */
-  scope: 'voice' | 'coding' | 'both'
   createdAt: string
   updatedAt: string
 }
 
 export interface AppSettings {
-  /** Which live voice model new connects use. See `VoiceProvider`. */
-  voiceProvider: VoiceProvider
-  /** The Gemini Live model id. Only read when `voiceProvider` is `gemini`. */
-  liveModel: string
-  /** The Gemini prebuilt voice. Only read when `voiceProvider` is `gemini`. */
-  voiceName: string
-  /** The OpenAI Live model id. Only read when `voiceProvider` is `openai`. */
-  openaiLiveModel: string
-  /**
-   * The OpenAI Live voice. Immutable for the life of a Live socket, so a change
-   * applies at the next connect like everything else here.
-   */
-  openaiVoiceName: string
-  /** Who thinks behind an OpenAI Live conversation. See `VoiceDelegationSettings`. */
-  openaiDelegation: VoiceDelegationSettings
-  systemInstruction: string
   defaultCwd: string
-  /** Tell the voice agent out loud when a coding agent finishes / needs input. */
-  proactiveNotifications: boolean
   /** Auto-answer coding-agent permission prompts with the first "allow once" option. */
   autoApprovePermissions: boolean
   /**
@@ -667,9 +537,6 @@ export interface AppSettings {
    * `permission` block in the developer's own OpenCode config wins over both.
    */
   openCodePermission: { host: OpenCodePermission, environment: OpenCodePermission }
-  language: string
-  /** Let the voice agent name conversations, and rename them as the topic moves. */
-  autoTitle: boolean
   /** SSH target VS Code reaches Docker through; empty when it is the same machine. */
   vscodeSshHost: string
   /**
@@ -729,8 +596,8 @@ export interface ClonedVoice {
 /**
  * The cascade behind the voice bar on an agent's page: one engine hears, one
  * speaks, and they need not be the same. Each engine's own knobs sit beside
- * it so switching back finds the old setup intact. The Gemini voice is the
- * live agent's `voiceName`; the Kyutai key is `NUXT_KYUTAI_API_KEY`, because
+ * it so switching back finds the old setup intact. The Kyutai key is
+ * `NUXT_KYUTAI_API_KEY`, because
  * this table is streamed to the browser and holds no secrets.
  */
 export interface AgentVoiceSettings {
@@ -746,6 +613,7 @@ export interface AgentVoiceSettings {
   silenceSeconds: number
   geminiTranscribeModel: string
   geminiSpeechModel: string
+  geminiVoice: string
   openaiTranscribeModel: string
   openaiSpeechModel: string
   openaiVoice: string
@@ -788,9 +656,6 @@ export type StreamEvent =
   | { type: 'agent-event', agentSessionId: string, event: AgentEvent }
   | { type: 'agent-changed', agentSessionId: string }
   | { type: 'agent-list-changed' }
-  | { type: 'voice-message', sessionId: string, message: VoiceMessage }
-  | { type: 'voice-session-changed', sessionId: string }
-  | { type: 'voice-list-changed' }
   | { type: 'permission-changed', agentSessionId: string, permission: PendingPermission }
   | { type: 'agent-inbox-changed', agentSessionId: string, message: AgentInboxMessage }
   // TODO: published by writeUsageLimits/setUsageProviderState in repo.ts, but
@@ -804,20 +669,6 @@ export type StreamEvent =
   | { type: 'mcp-changed' }
   | { type: 'project-changed' }
   | { type: 'dev-environment-changed', devEnvironmentId: string }
-
-/** Browser -> server messages on the voice WebSocket. */
-export type VoiceClientMessage =
-  | { type: 'start' }
-  | { type: 'audio', data: string }
-  | { type: 'audio-stream-end' }
-  /**
-   * Something typed rather than said. `speak` asks for the reply out loud;
-   * false means "take this in, answer on screen". See `useSpokenReplies()` —
-   * GPT-Live stays silent on typed input unless it is asked not to.
-   */
-  | { type: 'text', text: string, speak?: boolean }
-  | { type: 'stop' }
-  | { type: 'ping' }
 
 /**
  * Browser -> server messages on the agent voice WebSocket
@@ -889,17 +740,4 @@ export type AgentVoiceServerMessage =
   | { type: 'tool', title: string }
   /** Drop whatever is still playing. */
   | { type: 'hushed' }
-  | { type: 'error', message: string }
-
-/** Server -> browser messages on the voice WebSocket. */
-export type VoiceServerMessage =
-  | { type: 'status', status: VoiceSessionStatus, detail?: string }
-  | { type: 'audio', data: string, sampleRate: number }
-  | { type: 'interrupted' }
-  | { type: 'turn-complete' }
-  | { type: 'transcript', role: 'user' | 'assistant', text: string, final: boolean }
-  | { type: 'tool', name: string, args: any, result?: any, phase: 'start' | 'end' }
-  | { type: 'message', message: VoiceMessage }
-  /** The conversation was handed over to a fresh one; follow it there. */
-  | { type: 'session-changed', sessionId: string }
   | { type: 'error', message: string }

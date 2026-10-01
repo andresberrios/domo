@@ -10,9 +10,7 @@ import {
   permissionsCollection,
   projectsCollection,
   usageLimitsCollection,
-  usageProvidersCollection,
-  voiceMessagesCollection,
-  voiceSessionsCollection
+  usageProvidersCollection
 } from '~/lib/collections'
 import type {
   AgentEvent,
@@ -26,9 +24,7 @@ import type {
   Project,
   UsageLimit,
   UsageProvider,
-  UsageProviderId,
-  VoiceMessage,
-  VoiceSession
+  UsageProviderId
 } from '~~/shared/types'
 import { sessionStartability, type Startability } from '~~/shared/retention'
 import { isAgentAdapter } from '~~/shared/agent-adapters'
@@ -44,38 +40,9 @@ function byRecency(a: { lastActivityAt: string | null, createdAt: string }, b: t
   return (b.lastActivityAt ?? b.createdAt).localeCompare(a.lastActivityAt ?? a.createdAt)
 }
 
-export function useVoiceSessions() {
-  const { data, isReady } = useLiveQuery(q => q.from({ session: voiceSessionsCollection() }))
-
-  const sessions = computed<VoiceSession[]>(() =>
-    (data.value ?? [])
-      .map((row: any) => ({
-        id: row.id,
-        title: row.title,
-        titleSource: row.title_source ?? 'auto',
-        status: row.status,
-        model: row.model,
-        voice: row.voice,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        lastActivityAt: row.last_activity_at ?? null,
-        archived: !!row.archived,
-        summary: row.summary ?? null,
-        summaryThroughSeq: row.summary_through_seq == null ? null : asNumber(row.summary_through_seq),
-        summaryUpdatedAt: row.summary_updated_at ?? null,
-        usage: row.usage ?? null
-      }))
-      .filter(session => !session.archived)
-      .sort(byRecency)
-  )
-
-  return { sessions, isReady }
-}
-
 function toAgentSession(row: any): AgentSession {
   return {
     id: row.id,
-    voiceSessionId: row.voice_session_id ?? null,
     adapter: isAgentAdapter(row.adapter) ? row.adapter : 'claude-code',
     acpSessionId: row.acp_session_id ?? null,
     title: row.title,
@@ -309,33 +276,6 @@ export function useAgentInbox(agentSessionId: MaybeRefOrGetter<string | null | u
   const queued = computed(() => messages.value.filter(message => !message.deliveredAt))
 
   return { messages, queued, isReady }
-}
-
-function toVoiceMessage(row: any): VoiceMessage {
-  return {
-    id: row.id,
-    sessionId: row.session_id,
-    seq: asNumber(row.seq),
-    role: row.role,
-    text: row.text ?? '',
-    toolName: row.tool_name ?? null,
-    meta: row.meta ?? null,
-    createdAt: row.created_at
-  }
-}
-
-/** One conversation's transcript, in order. A growing log, like `useAgentEvents`. */
-export function useVoiceMessages(voiceSessionId: MaybeRefOrGetter<string | null | undefined>) {
-  const { items: messages, isReady } = useSyncedLog<any, VoiceMessage>(
-    () => {
-      const id = toValue(voiceSessionId)
-      return id ? voiceMessagesCollection(id) : null
-    },
-    toVoiceMessage,
-    bySeq
-  )
-
-  return { messages, isReady }
 }
 
 export function usePermissions(agentSessionId?: MaybeRefOrGetter<string | null | undefined>) {

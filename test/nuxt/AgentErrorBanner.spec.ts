@@ -31,7 +31,6 @@ const Harness = defineComponent({
 function session(overrides: Partial<AgentSession> = {}): AgentSession {
   return {
     id: 'ag_1',
-    voiceSessionId: null,
     adapter: 'claude-code',
     acpSessionId: 'acp_1',
     title: 'Auth refactor',

@@ -36,7 +36,7 @@ Postgres. Only the first is somewhere to run Domo:
 | --- | --- | --- |
 | `domo` | `electric`, port 30000 | the user's own Domo. Real data. |
 | `domo_test` | none | the `integration` test layer, which drops its schema between runs |
-| `domo_e2e` | `electric-e2e`, port 30001 | the `electric` and `voice-live` test layers, which reset it |
+| `domo_e2e` | `electric-e2e`, port 30001 | the `electric` and `environments-live` test layers, which reset them |
 
 `pnpm test` resets both test databases. Neither is a place to run a dev server,
 and a second dev server never points at `domo`: its boot marks every session

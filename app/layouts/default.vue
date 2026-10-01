@@ -1,5 +1,5 @@
 <script setup lang="ts">
-const { creating, startConversation } = useNewConversation()
+const { creating, talk } = useTalk()
 
 const newAgentOpen = ref(false)
 </script>
@@ -34,7 +34,7 @@ const newAgentOpen = ref(false)
                 icon="i-lucide-mic"
                 block
                 :loading="creating"
-                @click="startConversation"
+                @click="talk"
               />
               <UButton
                 label="New agent"
@@ -63,7 +63,7 @@ const newAgentOpen = ref(false)
         </div>
 
         <div v-else class="flex flex-col items-center gap-2">
-          <UButton icon="i-lucide-mic" :loading="creating" aria-label="New conversation" @click="startConversation" />
+          <UButton icon="i-lucide-mic" :loading="creating" aria-label="Talk" @click="talk" />
           <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New coding agent" @click="newAgentOpen = true" />
           <UButton to="/schedules" icon="i-lucide-clock-3" color="neutral" variant="ghost" aria-label="Schedules" />
           <NotificationsButton collapsed />
