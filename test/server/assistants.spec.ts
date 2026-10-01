@@ -27,6 +27,7 @@ import {
   updateAssistantFields
 } from '../../server/lib/assistants'
 import { deliverCronJob } from '../../server/lib/cron/scheduler'
+import { applyAgentSessionPatch } from '../../server/lib/acp/session-settings'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
 import { mintMeshToken } from '../../server/lib/mesh/token'
 import { ASSISTANT_CONTEXT_OPEN, HANDOFF_CONTINUE_PREFIX, HANDOFF_REQUEST_PREFIX } from '../../shared/assistants'
@@ -45,6 +46,8 @@ const acp = vi.hoisted(() => ({
   drainInbox: vi.fn(),
   stop: vi.fn(),
   isBusy: vi.fn(() => false),
+  setMode: vi.fn(async () => {}),
+  setModel: vi.fn(async () => {}),
   onTurnEnd: vi.fn((listener: any) => {
     acp.listeners.push(listener)
     return () => { acp.listeners = acp.listeners.filter(entry => entry !== listener) }
@@ -140,6 +143,15 @@ describe('an assistant', () => {
     const result = await deliverToAssistant(assistant.id, { content: [{ type: 'text', text: 'hi' }] })
     expect(result.agentSessionId).toBe(assistant.currentSessionId)
     await expect(currentSessionFor(assistant.currentSessionId!)).resolves.toBe(assistant.currentSessionId)
+  })
+})
+
+describe('an assistant\'s settings', () => {
+  it('keeps a model chosen on its current session for the sessions after it', async () => {
+    const assistant = await pirate()
+    const session = (await getAgentSession(assistant.currentSessionId!))!
+    await applyAgentSessionPatch(session, { model: 'opencode-go/glm-5.3-flash', modeId: 'plan' })
+    expect(await getAssistant(assistant.id)).toMatchObject({ model: 'opencode-go/glm-5.3-flash', modeId: 'plan' })
   })
 })
 

@@ -1,6 +1,6 @@
 import { setAgentSessionArchived } from '../agent-sessions'
 import { acpManager } from './manager'
-import { updateAgentSession } from '../repo'
+import { getAssistant, updateAgentSession, updateAssistant } from '../repo'
 import type { AgentSession } from '../../../shared/types'
 
 /**
@@ -78,6 +78,18 @@ export async function applyAgentSessionPatch(target: AgentSession, patch: AgentS
   for (const [configId, value] of Object.entries(patch.config ?? {})) {
     await acpManager.setConfigOption(target.id, configId, value)
     result.config = { ...result.config, [configId]: value }
+  }
+  // On an assistant's current session the model and mode are the
+  // assistant's choice, not one session's: they would otherwise be undone by
+  // the next handoff, which starts on what the assistant is set to.
+  if ((patch.modeId || patch.model) && target.assistantId) {
+    const assistant = await getAssistant(target.assistantId)
+    if (assistant?.currentSessionId === target.id) {
+      await updateAssistant(assistant.id, {
+        ...patch.modeId ? { modeId: patch.modeId } : {},
+        ...patch.model ? { model: patch.model } : {}
+      })
+    }
   }
   if (patch.title) {
     await updateAgentSession(target.id, { title: patch.title })
