@@ -132,6 +132,10 @@ function serverEnv() {
   env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54321/domo'
   env.ELECTRIC_URL ||= 'http://localhost:30000'
   env.NODE_ENV = 'production'
+  // Nitro waits this long for open connections on SIGTERM. Electric's shape
+  // long-polls are always open, so the default thirty seconds is a restart
+  // that takes thirty seconds; the browser reconnects anyway.
+  env.NITRO_SHUTDOWN_TIMEOUT ||= '5000'
   return env
 }
 
@@ -270,7 +274,10 @@ async function run() {
       crashes = 0
       rolledBack = false
       log(`up at http://127.0.0.1:${env.PORT}`)
-      rmSync(P.updateFailed, { force: true })
+      // A later release that comes up clears the record; the one that was
+      // rolled back to must not, or the failure is never seen.
+      const failed = readJson(P.updateFailed)
+      if (failed && failed.release !== basename(release) && failed.rolledBackTo !== basename(release)) rmSync(P.updateFailed, { force: true })
     } else if (!stopping && candidate && !rolledBack && existsSync(P.previous)) {
       const previous = realpathSync(P.previous)
       if (previous !== release) {
