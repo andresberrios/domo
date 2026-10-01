@@ -580,12 +580,26 @@ function pruneReleases(keep) {
 /** Replace the launcher with the one in `dir` when it differs. Safe while running: Node has it in memory. */
 function refreshLauncher(dir) {
   const source = join(dir, 'bin', 'domo.mjs')
-  if (!existsSync(source)) return
-  if (existsSync(P.launcher) && readFileSync(source, 'utf8') === readFileSync(P.launcher, 'utf8')) return
+  if (!existsSync(source)) return false
+  if (existsSync(P.launcher) && readFileSync(source, 'utf8') === readFileSync(P.launcher, 'utf8')) return false
   const tmp = `${P.launcher}.new`
   cpSync(source, tmp)
   renameSync(tmp, P.launcher)
-  log('launcher updated; it is used from the next start of the service')
+  return true
+}
+
+/** Restart the whole service, supervisor included: what a new launcher needs. */
+function serviceRestart() {
+  const service = servicePaths()
+  if (!supervisorPid()) return serviceStart()
+  if (service.kind === 'launchd') {
+    const result = sh('launchctl', ['kickstart', '-k', `${service.domain}/${SERVICE_LABEL}`])
+    if (!result.ok) fail(`launchctl kickstart: ${result.err}`)
+  } else {
+    const result = sh('systemctl', ['--user', 'restart', 'domo'])
+    if (!result.ok) fail(`systemctl restart: ${result.err}`)
+  }
+  log('service restarted')
 }
 
 async function update(args) {
@@ -618,11 +632,14 @@ async function update(args) {
     relink(P.current, dir)
     writeState({ channel, lastAppliedAt: new Date().toISOString() })
     pruneReleases([dir, old].filter(Boolean))
-    refreshLauncher(dir)
+    const launcherChanged = refreshLauncher(dir)
     log(`current is now ${check.target.slice(0, 7)} (${Math.round((Date.now() - started) / 1000)}s)`)
     if (!args.includes('--no-restart')) {
-      if (supervisorPid()) restart()
-      else log('the service is not running; start it with `domo start`')
+      if (!supervisorPid()) log('the service is not running; start it with `domo start`')
+      // The supervisor runs the launcher it started with, so a new one needs
+      // the service restarted, Caddy and all; otherwise only the server.
+      else if (launcherChanged) serviceRestart()
+      else restart()
     }
   } finally {
     releaseLock()
