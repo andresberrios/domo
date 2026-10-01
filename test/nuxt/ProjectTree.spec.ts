@@ -297,12 +297,12 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('starts an agent in the project\'s own checkout from the local-checkout section', async () => {
+  it('starts an agent in the project\'s own checkout from the project\'s menu', async () => {
     const wrapper = await mountTree()
 
-    // The section is there whether or not anything runs in the checkout yet:
-    // its plus button is the only way to put the first agent in one.
-    buttonLabelled('New agent in the Domo checkout')!.click()
+    // Nothing runs in the checkout yet, so it has no row; the menu is the way in.
+    expect(document.body.textContent).not.toContain('Local checkout')
+    await choose('Actions for Domo', 'New agent in the local checkout')
 
     await vi.waitFor(() => {
       expect(selectTrigger('Domo')).toBeTruthy()
@@ -315,16 +315,22 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('starts an agent with no project at all from the no-project section', async () => {
+  it('says nothing of empty places: no placeholder rows, no empty sections', async () => {
     const wrapper = await mountTree()
 
-    buttonLabelled('New agent without a project')!.click()
-
-    await vi.waitFor(() => {
-      expect(selectTrigger('No project')).toBeTruthy()
-      // Nothing to scope an environment to, so the form asks for a path.
-      expect(selectTrigger('feature-auth')).toBeFalsy()
-    })
+    expect(document.body.textContent).not.toContain('No agents yet')
+    // Every agent here is in a project, so there is no section for the rest.
+    expect(document.body.textContent).not.toContain('Other directories')
+    // An environment with no agents has nothing to open.
+    grouped.push({ ...environment, id: 'env_empty', name: 'empty-one' })
+    try {
+      const again = await mountTree()
+      expect(buttonLabelled('Collapse empty-one')).toBeUndefined()
+      expect(buttonLabelled('Collapse feature-auth')).toBeTruthy()
+      again.unmount()
+    } finally {
+      grouped.length = 0
+    }
 
     wrapper.unmount()
   })

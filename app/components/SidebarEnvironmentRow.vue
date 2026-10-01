@@ -94,45 +94,36 @@ const items = computed(() => retired.value
 </script>
 
 <template>
-  <div class="group flex items-center gap-0.5 rounded-md pe-1 hover:bg-elevated has-[a.row-active]:bg-elevated has-[a.row-active]:font-medium">
-    <UButton
-      icon="i-lucide-chevron-right"
-      color="neutral"
-      variant="ghost"
-      size="xs"
-      class="shrink-0"
-      :ui="{ leadingIcon: ['transition-transform', expanded ? 'rotate-90' : ''] }"
-      :aria-expanded="expanded"
-      :aria-label="expanded ? `Collapse ${environment.name}` : `Expand ${environment.name}`"
-      @click="emit('toggle')"
+  <div :class="ROW_CLASS">
+    <SidebarDisclosure
+      :expanded="expanded"
+      :label="environment.name"
+      :empty="!agentCount"
+      @toggle="emit('toggle')"
     />
 
     <NuxtLink
       :to="`/environments/${environment.id}`"
-      class="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 text-sm"
+      class="flex min-w-0 flex-1 items-center gap-2 self-stretch rounded-md text-sm"
       active-class="row-active"
       :title="environment.name"
     >
       <EnvironmentIcon :status="environment.status" />
-      <span class="min-w-0 flex-1 truncate">{{ label ?? environment.name }}</span>
+      <span class="min-w-0 flex-1 truncate" :class="retired ? 'text-dimmed' : ''">{{ label ?? environment.name }}</span>
     </NuxtLink>
 
-    <UBadge
-      v-if="agentCount"
-      size="sm"
-      color="neutral"
-      variant="subtle"
-      :label="agentCount"
-      :class="ROW_BADGE_CLASS"
-    />
+    <span v-if="agentCount && !expanded" class="px-1 text-xs tabular-nums text-dimmed" :class="ROW_BADGE_CLASS">
+      {{ agentCount }}
+    </span>
 
     <UButton
+      v-if="!retired"
       icon="i-lucide-plus"
       color="neutral"
       variant="ghost"
       size="xs"
       :aria-label="`New agent in ${environment.name}`"
-      :class="ROW_ACTIONS_CLASS"
+      :class="ROW_QUICK_ACTION_CLASS"
       @click="emit('newAgent')"
     />
 
@@ -144,7 +135,7 @@ const items = computed(() => retired.value
         size="xs"
         :loading="busy"
         :aria-label="`Actions for ${environment.name}`"
-        :class="ROW_ACTIONS_CLASS"
+        :class="ROW_MENU_CLASS"
       />
     </UDropdownMenu>
 

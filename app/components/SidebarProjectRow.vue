@@ -2,8 +2,9 @@
 import type { Project } from '~~/shared/types'
 
 /**
- * One project in the tree. Same split as an environment row: the name links to
- * the project's page, the chevron only opens its environments.
+ * The heading of one project's group in the tree. Same split as an
+ * environment row: the name links to the project's page, the chevron only
+ * opens what is inside.
  */
 const props = defineProps<{
   project: Project
@@ -12,7 +13,7 @@ const props = defineProps<{
   environmentCount: number
 }>()
 
-const emit = defineEmits<{ toggle: [], newEnvironment: [] }>()
+const emit = defineEmits<{ toggle: [], newEnvironment: [], newAgent: [] }>()
 
 const toast = useToast()
 const busy = ref(false)
@@ -57,6 +58,7 @@ const cascade = computed(() => {
 const items = computed(() => [
   [
     { label: 'New environment', icon: 'i-lucide-monitor', onSelect: () => emit('newEnvironment') },
+    { label: 'New agent in the local checkout', icon: 'i-lucide-bot', onSelect: () => emit('newAgent') },
     { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }
   ],
   [
@@ -66,36 +68,22 @@ const items = computed(() => [
 </script>
 
 <template>
-  <div class="group flex items-center gap-0.5 rounded-md pe-1 font-medium hover:bg-elevated has-[a.row-active]:bg-elevated has-[a.row-active]:font-semibold">
-    <UButton
-      icon="i-lucide-chevron-right"
-      color="neutral"
-      variant="ghost"
-      size="xs"
-      class="shrink-0"
-      :ui="{ leadingIcon: ['transition-transform', expanded ? 'rotate-90' : ''] }"
-      :aria-expanded="expanded"
-      :aria-label="expanded ? `Collapse ${project.name}` : `Expand ${project.name}`"
-      @click="emit('toggle')"
-    />
+  <div :class="[ROW_CLASS, 'font-medium has-[a.row-active]:font-semibold']">
+    <SidebarDisclosure :expanded="expanded" :label="project.name" @toggle="emit('toggle')" />
 
     <NuxtLink
       :to="`/projects/${project.id}`"
-      class="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 text-sm"
+      class="flex min-w-0 flex-1 items-center gap-2 self-stretch rounded-md text-sm"
       active-class="row-active"
+      :title="project.repoPath"
     >
       <UIcon name="i-lucide-folder-git-2" class="size-4 shrink-0 text-primary" />
       <span class="min-w-0 flex-1 truncate">{{ project.name }}</span>
     </NuxtLink>
 
-    <UBadge
-      v-if="agentCount"
-      size="sm"
-      color="neutral"
-      variant="subtle"
-      :label="agentCount"
-      :class="ROW_BADGE_CLASS"
-    />
+    <span v-if="agentCount" class="px-1 text-xs tabular-nums text-dimmed" :class="ROW_BADGE_CLASS">
+      {{ agentCount }}
+    </span>
 
     <UButton
       icon="i-lucide-plus"
@@ -103,7 +91,7 @@ const items = computed(() => [
       variant="ghost"
       size="xs"
       :aria-label="`New environment in ${project.name}`"
-      :class="ROW_ACTIONS_CLASS"
+      :class="ROW_QUICK_ACTION_CLASS"
       @click="emit('newEnvironment')"
     />
 
@@ -115,7 +103,7 @@ const items = computed(() => [
         size="xs"
         :loading="busy"
         :aria-label="`Actions for ${project.name}`"
-        :class="ROW_ACTIONS_CLASS"
+        :class="ROW_MENU_CLASS"
       />
     </UDropdownMenu>
 

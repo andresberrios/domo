@@ -54,11 +54,12 @@ const items = computed(() => [[
 </script>
 
 <template>
-  <div class="group flex items-center gap-1 rounded-md pe-1 hover:bg-elevated has-[a.row-active]:bg-elevated has-[a.row-active]:font-medium">
+  <div :class="ROW_CLASS">
     <NuxtLink
       :to="`/agents/${agent.id}`"
-      class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm"
+      class="flex min-w-0 flex-1 items-center gap-2 self-stretch rounded-md ps-1.5 text-sm"
       active-class="row-active"
+      :title="agent.title"
     >
       <AgentStatusIcon :status="agent.status" />
       <span class="min-w-0 flex-1 truncate">{{ agent.title }}</span>
@@ -81,7 +82,7 @@ const items = computed(() => [[
         size="xs"
         :loading="busy"
         :aria-label="`Actions for ${agent.title}`"
-        :class="ROW_ACTIONS_CLASS"
+        :class="ROW_MENU_CLASS"
       />
     </UDropdownMenu>
 

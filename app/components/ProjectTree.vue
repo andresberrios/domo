@@ -67,6 +67,11 @@ function environmentRowsFor(projectId: string) {
   return environmentListRows(environmentsFor(projectId), path => !isExpanded(folderKey(projectId, path)))
 }
 
+/** Where the open state of a project's local checkout is remembered. */
+function localKey(projectId: string) {
+  return `local:${projectId}`
+}
+
 /** Where a folder's open state is remembered: the same name in two projects is two folders. */
 function folderKey(projectId: string, path: string) {
   return `folder:${projectId}:${path}`
@@ -135,13 +140,13 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
 </script>
 
 <template>
-  <div class="flex flex-col gap-4">
-    <div>
-      <div class="flex items-center justify-between gap-1 px-2 pb-1.5">
-        <p class="text-[11px] font-medium uppercase tracking-wide text-dimmed">
+  <div class="flex flex-col gap-5">
+    <section>
+      <div class="flex items-center justify-between gap-1 ps-2 pb-1">
+        <h2 class="text-xs font-medium text-muted">
           Projects
-        </p>
-        <div class="flex items-center gap-0.5">
+        </h2>
+        <div class="flex items-center">
           <!--
             Two switches, never one. Archiving is what the user put away;
             retiring an environment is a place whose container is gone. Every
@@ -174,12 +179,14 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
         </div>
       </div>
 
-      <p v-if="!projects.length" class="px-2 pb-1 text-xs text-dimmed">
-        No projects yet.
-      </p>
+      <div v-if="!projects.length" class="rounded-lg border border-dashed border-default px-3 py-3 text-xs text-muted">
+        A project is a git checkout on this machine. Each one gets environments of its own to run agents in.
+        <UButton label="Add a project" color="primary" variant="link" size="xs" class="px-0" @click="newProjectOpen = true" />
+      </div>
 
-      <ul class="space-y-0.5">
-        <li v-for="project in projects" :key="project.id">
+      <!-- One group per project: everything inside it reads as belonging to it. -->
+      <ul class="flex flex-col gap-2">
+        <li v-for="project in projects" :key="project.id" class="rounded-lg bg-muted p-1 ring ring-default">
           <SidebarProjectRow
             :project="project"
             :expanded="isExpanded(project.id)"
@@ -187,30 +194,38 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
             :environment-count="environmentsFor(project.id).length"
             @toggle="toggle(project.id)"
             @new-environment="openNewEnvironment(project)"
+            @new-agent="openNewAgent({ projectId: project.id })"
           />
 
-          <ul v-show="isExpanded(project.id)" class="mt-0.5 space-y-0.5 border-l border-default ps-3">
-            <li>
-              <div class="group flex items-center gap-1 rounded-md pe-1">
-                <p class="min-w-0 flex-1 truncate px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-dimmed">
-                  Local checkout
-                </p>
+          <ul v-show="isExpanded(project.id)" class="mt-0.5 flex flex-col gap-px ps-2">
+            <!-- The project's own checkout, only once something runs there; its menu starts one. -->
+            <li v-if="localAgentsFor(project).length">
+              <div :class="ROW_CLASS">
+                <SidebarDisclosure
+                  :expanded="isExpanded(localKey(project.id))"
+                  :label="`the ${project.name} checkout`"
+                  @toggle="toggle(localKey(project.id))"
+                />
+                <span class="flex min-w-0 flex-1 items-center gap-2" :title="project.repoPath">
+                  <UIcon name="i-lucide-laptop" class="size-4 shrink-0 text-muted" />
+                  <span class="min-w-0 flex-1 truncate">Local checkout</span>
+                </span>
+                <span v-if="!isExpanded(localKey(project.id))" class="px-1 text-xs tabular-nums text-dimmed" :class="ROW_BADGE_CLASS">
+                  {{ localAgentsFor(project).length }}
+                </span>
                 <UButton
                   icon="i-lucide-plus"
                   color="neutral"
                   variant="ghost"
                   size="xs"
                   :aria-label="`New agent in the ${project.name} checkout`"
-                  :class="ROW_ACTIONS_CLASS"
+                  :class="ROW_MENU_CLASS"
                   @click="openNewAgent({ projectId: project.id })"
                 />
               </div>
-              <ul class="space-y-0.5">
+              <ul v-show="isExpanded(localKey(project.id))" class="ms-3 flex flex-col gap-px border-s border-accented ps-3">
                 <li v-for="agent in localAgentsFor(project)" :key="agent.id">
                   <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
-                </li>
-                <li v-if="!localAgentsFor(project).length" class="px-2 py-1 text-xs text-dimmed">
-                  No agents yet
                 </li>
               </ul>
             </li>
@@ -218,27 +233,17 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
             <li
               v-for="row in environmentRowsFor(project.id)"
               :key="row.kind === 'folder' ? folderKey(project.id, row.path) : row.environment.id"
-              :style="{ paddingInlineStart: `${row.depth * 0.75}rem` }"
+              :style="{ paddingInlineStart: `${row.depth * 0.625}rem` }"
             >
-              <div
-                v-if="row.kind === 'folder'"
-                class="flex items-center gap-0.5 rounded-md pe-1 hover:bg-elevated"
-                :title="row.path"
-              >
-                <UButton
-                  icon="i-lucide-chevron-right"
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  class="shrink-0"
-                  :ui="{ leadingIcon: ['transition-transform', isExpanded(folderKey(project.id, row.path)) ? 'rotate-90' : ''] }"
-                  :aria-expanded="isExpanded(folderKey(project.id, row.path))"
-                  :aria-label="isExpanded(folderKey(project.id, row.path)) ? `Collapse ${row.path}` : `Expand ${row.path}`"
-                  @click="toggle(folderKey(project.id, row.path))"
+              <div v-if="row.kind === 'folder'" :class="ROW_CLASS" :title="row.path">
+                <SidebarDisclosure
+                  :expanded="isExpanded(folderKey(project.id, row.path))"
+                  :label="row.path"
+                  @toggle="toggle(folderKey(project.id, row.path))"
                 />
                 <button
                   type="button"
-                  class="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-start text-sm text-muted"
+                  class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-start text-muted"
                   @click="toggle(folderKey(project.id, row.path))"
                 >
                   <UIcon
@@ -247,7 +252,9 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
                   />
                   <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
                 </button>
-                <UBadge size="sm" color="neutral" variant="subtle" :label="row.count" />
+                <span v-if="!isExpanded(folderKey(project.id, row.path))" class="px-1 text-xs tabular-nums text-dimmed">
+                  {{ row.count }}
+                </span>
               </div>
 
               <template v-else>
@@ -259,63 +266,57 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
                   @toggle="toggle(row.environment.id)"
                   @new-agent="openNewAgent({ environmentId: row.environment.id })"
                 />
-
-                <ul v-show="isExpanded(row.environment.id)" class="mt-0.5 space-y-0.5 border-l border-default ps-3">
+                <ul
+                  v-if="agentsFor(row.environment.id).length"
+                  v-show="isExpanded(row.environment.id)"
+                  class="ms-3 flex flex-col gap-px border-s border-accented ps-3"
+                >
                   <li v-for="agent in agentsFor(row.environment.id)" :key="agent.id">
                     <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
-                  </li>
-                  <li v-if="!agentsFor(row.environment.id).length" class="px-2 py-1 text-xs text-dimmed">
-                    No agents yet
                   </li>
                 </ul>
               </template>
             </li>
 
-            <li v-if="!environmentsFor(project.id).length" class="px-2 py-1 text-xs text-dimmed">
-              No environments yet
+            <li v-if="!environmentsFor(project.id).length && !localAgentsFor(project).length">
+              <UButton
+                label="New environment"
+                icon="i-lucide-plus"
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                block
+                class="justify-start ps-6 text-muted"
+                @click="openNewEnvironment(project)"
+              />
             </li>
           </ul>
         </li>
       </ul>
-    </div>
+    </section>
 
-    <div class="group">
-      <div class="flex items-center justify-between gap-1 px-2 pb-1.5">
-        <p class="text-[11px] font-medium uppercase tracking-wide text-dimmed">
-          No project
-        </p>
-        <UButton
-          icon="i-lucide-plus"
-          color="neutral"
-          variant="ghost"
-          size="xs"
-          aria-label="New agent without a project"
-          :class="ROW_ACTIONS_CLASS"
-          @click="openNewAgent({ projectId: null })"
-        />
-      </div>
-
-      <p v-if="!localAgents.length" class="px-2 pb-1 text-xs text-dimmed">
-        For a directory outside every project.
-      </p>
-
-      <ul class="space-y-0.5">
+    <!-- Agents in a directory no project covers. Shown only when there are some: the plus above starts one. -->
+    <section v-if="localAgents.length">
+      <h2 class="ps-2 pb-1 text-xs font-medium text-muted">
+        Other directories
+      </h2>
+      <ul class="flex flex-col gap-px rounded-lg bg-muted p-1 ring ring-default">
         <li v-for="agent in localAgents" :key="agent.id">
           <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
         </li>
       </ul>
-    </div>
+    </section>
 
-    <div v-if="voiceSessions.length">
-      <p class="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-dimmed">
+    <section v-if="voiceSessions.length">
+      <h2 class="ps-2 pb-1 text-xs font-medium text-muted">
         Conversations
-      </p>
-      <ul class="space-y-0.5">
+      </h2>
+      <ul class="flex flex-col gap-px">
         <li v-for="session in voiceSessions" :key="session.id">
           <SidebarConversationRow :session="session" />
         </li>
       </ul>
-    </div>
+    </section>
 
     <NewProjectModal v-model:open="newProjectOpen" />
     <NewEnvironmentModal v-model:open="newEnvironmentOpen" :project="newEnvironmentProject" />

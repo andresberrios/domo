@@ -11,7 +11,7 @@ const newAgentOpen = ref(false)
       mode="slideover"
       resizable
       collapsible
-      :default-size="18"
+      :default-size="20"
       :min-size="14"
       :max-size="28"
       :ui="{ footer: 'border-t border-default' }"
@@ -27,32 +27,36 @@ const newAgentOpen = ref(false)
 
       <template #default="{ collapsed }">
         <div v-if="!collapsed" class="flex flex-col gap-4">
-          <div class="flex flex-col gap-1.5">
-            <UButton
-              label="New conversation"
-              icon="i-lucide-mic"
-              block
-              :loading="creating"
-              @click="startConversation"
-            />
-            <UButton
-              to="/schedules"
-              label="Schedules"
-              icon="i-lucide-clock-3"
-              color="neutral"
-              variant="ghost"
-              block
-              class="justify-start"
-            />
-            <NotificationsButton />
-            <UButton
-              label="New coding agent"
-              icon="i-lucide-plus"
-              color="neutral"
-              variant="subtle"
-              block
-              @click="newAgentOpen = true"
-            />
+          <div class="flex flex-col gap-3">
+            <div class="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-1.5">
+              <UButton
+                label="Talk"
+                icon="i-lucide-mic"
+                block
+                :loading="creating"
+                @click="startConversation"
+              />
+              <UButton
+                label="New agent"
+                icon="i-lucide-plus"
+                color="neutral"
+                variant="subtle"
+                block
+                @click="newAgentOpen = true"
+              />
+            </div>
+            <nav class="flex flex-col gap-px">
+              <UButton
+                to="/schedules"
+                label="Schedules"
+                icon="i-lucide-clock-3"
+                color="neutral"
+                variant="ghost"
+                block
+                class="justify-start"
+              />
+              <NotificationsButton />
+            </nav>
           </div>
 
           <ProjectTree />
