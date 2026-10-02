@@ -1,0 +1,48 @@
+# Backing services for an installed Domo: Postgres (source of truth) and
+# ElectricSQL (real-time sync to the browser), and nothing else. The supervisor
+# (`bin/domo.mjs run`) brings it up from the release it runs.
+#
+# Its own project name, volume and host ports, so it never meets the
+# development stack (`docker-compose.yml`) on a machine that runs both. All
+# three are parameters, so a scratch install can run beside the real one
+# (docs/install-and-updates.md, "Testing a change").
+name: domo-prod
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: domo
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - '${DOMO_PG_PORT:-54322}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command:
+      - -c
+      - listen_addresses=*
+      - -c
+      - wal_level=logical
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d domo']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  electric:
+    image: electricsql/electric:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/domo?sslmode=disable
+      # Only reachable on loopback; the Nuxt server proxies every shape request.
+      ELECTRIC_INSECURE: 'true'
+    ports:
+      - '${DOMO_ELECTRIC_PORT:-30002}:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

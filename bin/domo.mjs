@@ -136,8 +136,9 @@ function serverEnv() {
   env.DOMO_HTTPS_ADDRESS ||= 'localhost:3666'
   env.DOMO_HTTPS_PORT = env.DOMO_HTTPS_ADDRESS.split(':').pop() || '3666'
   env.NUXT_DATA_DIR ||= P.data
-  env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54321/domo'
-  env.ELECTRIC_URL ||= 'http://localhost:30000'
+  // The production stack's ports (docker-compose.prod.yml), not the development stack's.
+  env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54322/domo'
+  env.ELECTRIC_URL ||= 'http://localhost:30002'
   env.NODE_ENV = 'production'
   // What the installer was told to follow, which is the server's default
   // channel until Settings says otherwise.
@@ -328,33 +329,17 @@ async function run() {
 }
 
 /**
- * Postgres and Electric, from the release's compose file. Postgres holds the
- * data, so an existing container is only ever started: never stopped or
- * recreated, whatever compose would make of a changed file. Electric holds
- * none, and compose may recreate it. Failure is reported in the UI, not here.
+ * Postgres and Electric, from the release's production compose file: its own
+ * project, volume and ports, never the development stack's. Failure is
+ * reported in the UI, not here.
  */
 async function composeUp(env) {
   const release = currentRelease()
-  const file = join(release, 'docker-compose.yml')
+  const file = join(release, 'docker-compose.prod.yml')
   if (!existsSync(file)) return
-  const docker = (args, timeout = 120_000) => spawnSync('docker', args, { env, encoding: 'utf8', timeout })
-  const report = (result) => {
-    if (result.status !== 0) log(`failed: ${(result.stderr || result.error?.message || '').trim().split('\n').pop()}`)
-  }
-  const postgres = `${env.COMPOSE_PROJECT_NAME || 'domo'}-postgres-1`
-  if (docker(['container', 'inspect', postgres], 30_000).status === 0) {
-    log(`docker start ${postgres}`)
-    report(docker(['start', postgres]))
-  } else {
-    log('docker compose up -d --no-recreate postgres')
-    report(docker(['compose', '-f', file, 'up', '-d', '--no-recreate', 'postgres']))
-  }
-  for (let i = 0; i < 30; i++) {
-    if (docker(['inspect', '--format', '{{.State.Health.Status}}', postgres], 30_000).stdout?.trim() === 'healthy') break
-    await sleep(2000)
-  }
-  log('docker compose up -d --no-deps electric')
-  report(docker(['compose', '-f', file, 'up', '-d', '--no-deps', 'electric']))
+  log('docker compose -f docker-compose.prod.yml up -d')
+  const result = spawnSync('docker', ['compose', '-f', file, 'up', '-d'], { env, encoding: 'utf8', timeout: 120_000 })
+  if (result.status !== 0) log(`compose failed: ${(result.stderr || result.error?.message || '').trim().split('\n').pop()}`)
 }
 
 // --------------------------------------------------------------------------
@@ -452,7 +437,7 @@ function serviceUninstall() {
   if (service.kind === 'systemd') sh('systemctl', ['--user', 'disable', 'domo'])
   rmSync(service.file, { force: true })
   if (service.kind === 'systemd') sh('systemctl', ['--user', 'daemon-reload'])
-  console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p domo down\` stops them, add \`-v\` to delete the database.`)
+  console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p domo-prod down\` stops them, add \`-v\` to delete the database.`)
 }
 
 function supervisorPid() {

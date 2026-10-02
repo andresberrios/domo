@@ -73,11 +73,13 @@ Domo: Node, pnpm, Caddy, `uv` (for Pocket TTS), the ACP adapters and the
 coding-agent CLIs (already npm dependencies; Claude Code ships inside the
 Claude ACP adapter, Codex and OpenCode ship their binaries), the ONNX speech
 models (downloaded into `data/models` on first use, as today). Postgres and
-Electric keep running in Docker through the checked-in `docker-compose.yml`;
-the compose project name `domo` means the existing volume is reused. The
-supervisor only ever `docker start`s an existing Postgres container, never
-stops or recreates it, and leaves Electric alone to `compose up --no-deps`,
-which may recreate it: Electric holds no data.
+Electric run in Docker from the checked-in `docker-compose.prod.yml`: those
+two services only, project `domo-prod`, ports 54322 and 30002, a volume of
+its own. The development stack (`docker-compose.yml`: project `domo`, ports
+54321 and 30000, plus the test layer's database) is a different stack, so a
+machine that develops Domo runs both. They once shared a project name, and
+the installed Domo's `compose up` stopped the development stack and every
+environment's as surplus replicas of its own.
 
 A release is a worktree with a full `pnpm install`, not just the `.output`.
 Nitro's tracing carries the adapters' JavaScript but not the platform
@@ -248,20 +250,29 @@ GitHub URL, run as `curl -fsSL … | sh`:
 [--no-restart]`, `install`, `uninstall`. One plain `.mjs` file at
 `bin/domo.mjs`, so it needs no build step and runs on the bundled Node.
 
-## Moving this machine over
+## Moving a machine from `pnpm dev` to an install
 
-Today `pnpm dev` runs in the main checkout, so every merge restarts it and
-kills the agents. After this work:
+The installed Domo gets its own stack and a copy of the data. It never runs
+on the development stack, whose Postgres is the one `pnpm test` and the
+environments' checks use.
 
-1. Build and test the installer against a scratch stack first
-   (`docs/working-on-domo.md`, "A second dev server"), with `DOMO_HOME=/tmp/x`.
-2. Stop `pnpm dev`. Run the installer with the real compose stack and move
-   `.data` to `~/.domo/data`. Start the service. The `domo` database is reused
-   as it is.
-3. The checkout in `Projects/everynow/domo` becomes a development checkout
-   only: merge freely, run tests, work in environments. Deploy by pushing
-   `release`. For an in-browser check of unmerged work, use the scratch-stack
-   recipe, which already exists.
+1. Install (`scripts/install.sh`). The first start creates the schema in the
+   empty `domo-prod` database.
+2. `domo stop`, stop prod's Electric, and copy the data over:
+   ```sh
+   docker compose -f docker-compose.prod.yml rm -sf electric
+   docker exec domo-postgres-1 pg_dump -U postgres -Fc --no-publications --no-subscriptions domo \
+     | docker exec -i domo-prod-postgres-1 pg_restore -U postgres -d domo --clean --if-exists --no-owner
+   cp -R .data/ ~/.domo/data
+   ```
+   Electric is removed, not stopped, so it comes back with no shape cache from
+   before the copy. `--no-publications` leaves Electric's publication to the
+   Electric that owns the database.
+3. Point `NUXT_DATA_DIR` in `~/.domo/.env` at `~/.domo/data` (the launcher's
+   default), stop `pnpm dev` for good, and `domo start`. The checkout becomes a
+   development checkout only: merge freely, run tests, work in environments.
+   Deploy by pushing `release`. For an in-browser check of unmerged work, use
+   the scratch recipe below.
 
 ## Testing a change to any of this
 
@@ -270,7 +281,7 @@ Install the branch into a scratch home against a scratch stack, so the real
 
 ```sh
 COMPOSE_PROJECT_NAME=domo-inst DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
-  docker compose up -d postgres electric
+  docker compose -f docker-compose.prod.yml up -d
 mkdir -p /tmp/domo-home && printf '%s\n' \
   DATABASE_URL=postgresql://postgres:password@localhost:54331/domo \
   ELECTRIC_URL=http://localhost:30010 COMPOSE_PROJECT_NAME=domo-inst \
