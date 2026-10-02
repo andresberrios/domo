@@ -27,7 +27,8 @@ const TABLES = [
   'mcp_servers',
   'usage_limits',
   'usage_providers',
-  'notifications'
+  'notifications',
+  'app_update'
 ]
 
 /**
