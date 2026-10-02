@@ -46,7 +46,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 if [ -d "$DOMO_HOME/app/.git" ]; then
   say "Fetching Domo ($DOMO_CHANNEL)"
-  git -C "$DOMO_HOME/app" fetch --quiet --depth=200 origin "$DOMO_CHANNEL"
+  git -C "$DOMO_HOME/app" fetch --quiet origin "+refs/heads/$DOMO_CHANNEL:refs/remotes/origin/$DOMO_CHANNEL"
 else
   say "Cloning Domo into $DOMO_HOME/app"
   rm -rf "$DOMO_HOME/app"

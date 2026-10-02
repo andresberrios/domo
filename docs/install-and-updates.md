@@ -126,11 +126,14 @@ cron scheduler. It does nothing when Domo is not an installed instance
 
 - Every `checkIntervalMinutes` (default 60, minimum 5), twenty seconds after
   boot, and when settings change, the server runs
-  `domo update --check --json`. That is `git fetch --depth=200 origin <channel>`
-  in `app/`, then, when the installed commit is an ancestor of the tip within
-  the fetched window, `git rev-list --count` and `git log` for the changelog;
-  otherwise `behind` is `null`, meaning "an update, more than the window
-  deep". No GitHub compare API: an unknown count is shown as such.
+  `domo update --check --json`. That is a plain `git fetch` of the channel
+  (explicit refspec, so a channel other than the one cloned works) in the
+  shallow `app/` clone, which brings only the commits between the installed
+  one and the tip; then, when the installed commit is an ancestor of the tip,
+  `git rev-list --count` and `git log` for the changelog, otherwise `behind`
+  is `null`: "an update, count unknown". `--depth` on the fetch is avoided on
+  purpose; it re-measures from the tip and can pull the whole history. No
+  GitHub compare API: an unknown count is shown as such.
 - The result is one row of the synced table `app_update` (`REPLICA IDENTITY
   FULL`, written once per check or state change): see `AppUpdate` in
   `shared/types`. The UI renders only this row. A failed fetch leaves

@@ -46,8 +46,6 @@ const P = {
  * asks with the `restart-requested` file instead and stops normally.
  */
 export const RESTART_EXIT_CODE = 75
-/** How much history a fetch keeps: enough to count an ordinary gap exactly. */
-const FETCH_DEPTH = 200
 const SERVICE_LABEL = 'com.domo.app'
 const HEALTH_TIMEOUT_MS = 60_000
 
@@ -496,13 +494,16 @@ function takeUpdateLock() {
 }
 
 /**
- * The clone is shallow (`--depth 1` at install), so a fetch brings a window
- * of history behind the channel's tip rather than all of it. The window is
- * deep enough to count any ordinary gap exactly; beyond it the count is
- * unknown, which is reported as `null` rather than a made-up number.
+ * The clone is shallow (`--depth 1` at install) and stays so: a plain fetch
+ * brings only what is new between the installed commit and the channel's
+ * tip, which is exactly the history the count needs. (`--depth` on the fetch
+ * would be the wrong tool: it re-measures from the tip and, over some
+ * transports, pulls the whole history.) The refspec is explicit because a
+ * single-branch clone's default refspec names only the branch it was made
+ * from, and the channel is a setting that can change.
  */
 function fetchChannel(channel) {
-  git(['fetch', '--quiet', `--depth=${FETCH_DEPTH}`, 'origin', channel], { timeout: 120_000 })
+  git(['fetch', '--quiet', 'origin', `+refs/heads/${channel}:refs/remotes/origin/${channel}`], { timeout: 120_000 })
   return git(['rev-parse', `origin/${channel}`])
 }
 
@@ -511,6 +512,8 @@ function updateCheck(channel) {
   const installed = releaseInfo(currentRelease())?.commit ?? git(['rev-parse', 'HEAD'])
   if (installed === target) return { installed, target, behind: 0, commits: [] }
   const countable = git(['merge-base', '--is-ancestor', installed, target], { lenient: true }) !== null
+  // Not an ancestor: the branch was rewritten, or the installed commit is
+  // older than the clone's history. "An update, count unknown", never a number.
   if (!countable) return { installed, target, behind: null, commits: [] }
   const behind = Number(git(['rev-list', '--count', `${installed}..${target}`]))
   const commits = git(['log', '--format=%H%x1f%s%x1f%aI', `${installed}..${target}`])
@@ -643,7 +646,7 @@ async function update(args) {
   if (checkOnly) {
     if (json) console.log(JSON.stringify({ channel, ...check }))
     else if (check.behind === 0) console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
-    else if (check.behind === null) console.log(`behind ${channel} by more than ${FETCH_DEPTH} commits (${check.installed.slice(0, 7)} -> ${check.target.slice(0, 7)})`)
+    else if (check.behind === null) console.log(`${channel} has moved (${check.installed.slice(0, 7)} -> ${check.target.slice(0, 7)}); the commits between cannot be counted`)
     else console.log(`${check.behind} commit${check.behind === 1 ? '' : 's'} behind ${channel}:\n  ${check.commits.map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n  ')}`)
     return
   }
