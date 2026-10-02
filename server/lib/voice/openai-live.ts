@@ -181,7 +181,7 @@ export class LiveConnection {
     const apiKey = openAiApiKey()
     if (!apiKey) {
       return Promise.reject(new Error(
-        'No OpenAI API key. Put NUXT_OPENAI_API_KEY=... in .env and restart the server.'
+        'No OpenAI API key. Add one in Settings → General, or NUXT_OPENAI_API_KEY in .env.'
       ))
     }
 

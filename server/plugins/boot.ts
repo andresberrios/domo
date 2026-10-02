@@ -14,10 +14,13 @@ import { stopAllDoodProxies } from '../lib/dood/manager'
 import { stopPocket } from '../lib/agent-voice/pocket-speech'
 import { stopLocalModels } from '../lib/agent-voice/local-models'
 import { updater } from '../lib/updates'
+import { getSettings } from '../lib/settings'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
     await getDb()
+    // Fills the credentials mirror (`secret-settings.ts`) before anything reads a key.
+    await getSettings()
     // Nothing survives a restart: adapters were child processes of the old
     // server, so any "running" row is a lie until it is started again.
     await query(

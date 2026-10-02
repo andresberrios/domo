@@ -1,11 +1,11 @@
 /**
  * The OpenAI half of the voice stack: the key, and what a key can see.
  *
- * Like `gemini.ts` beside it, the key only ever comes from the environment and
- * never from the `settings` table — that table is streamed to the browser
- * through Electric, and a voice credential in it would be readable by anything
- * holding a shape.
+ * Like `gemini.ts` beside it, the key is read from the environment first and
+ * then from Settings (`secret-settings.ts`), which is never streamed to the
+ * browser.
  */
+import { storedSecret } from './secret-settings'
 
 /**
  * Where a Live socket connects. No query parameters: the model goes in
@@ -33,7 +33,7 @@ export function openAiApiKey(): string | null {
     || process.env.OPENAI_API_KEY
     || process.env.NUXT_CODEX_API_KEY
     || process.env.CODEX_API_KEY
-    || null
+    || storedSecret('openAiApiKey')
 }
 
 /**
@@ -63,7 +63,7 @@ export async function listOpenAiModels(
   options: { signal?: AbortSignal } = {}
 ): Promise<OpenAiModel[]> {
   const apiKey = openAiApiKey()
-  if (!apiKey) throw new Error('No OpenAI API key. Put NUXT_OPENAI_API_KEY=... in .env and restart the server.')
+  if (!apiKey) throw new Error('No OpenAI API key. Add one in Settings → General, or NUXT_OPENAI_API_KEY in .env.')
 
   const response = await fetch(`${openAiApiBase()}/models`, {
     headers: { authorization: `Bearer ${apiKey}` },

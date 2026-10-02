@@ -153,7 +153,7 @@ const environmentChoice = computed({
       variant="subtle"
       icon="i-lucide-key-round"
       title="No Gemini API key"
-      description="Set NUXT_GEMINI_API_KEY in .env and restart the server, or switch to GPT-Live."
+      description="Add one under Credentials above, or switch to GPT-Live."
     />
     <UAlert
       v-if="form.voiceProvider === 'openai' && hasOpenAiKey === false"
@@ -161,7 +161,7 @@ const environmentChoice = computed({
       variant="subtle"
       icon="i-lucide-key-round"
       title="No OpenAI API key"
-      description="Set NUXT_OPENAI_API_KEY in .env and restart the server, or switch to Gemini Live."
+      description="Add one under Credentials above, or switch to Gemini Live."
     />
 
     <template v-if="form.voiceProvider === 'gemini'">

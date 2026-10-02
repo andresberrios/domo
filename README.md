@@ -93,8 +93,8 @@ To change the addresses, set `DOMO_HTTPS_ADDRESS` (default `localhost:3766`) or
 
 ## Authentication
 
-**Claude Code.** Run `claude setup-token` once and put the token in `.env` as
-`NUXT_CLAUDE_CODE_OAUTH_TOKEN`. Claude Code needs it to run inside development
+**Claude Code.** Run `claude setup-token` once and put the token in Settings →
+General (or in `.env` as `NUXT_CLAUDE_CODE_OAUTH_TOKEN`). Claude Code needs it to run inside development
 environments, and Domo needs it to show your Claude plan limits. Host sessions
 can also use your local Claude login.
 
@@ -257,8 +257,9 @@ is `.ssh`, `.gitconfig`, `.config/gh`, `.config/gcloud`, `.aws` and `.kube`.
 
 ## Configuration
 
-Secrets go in `.env`. Everything else is in **Settings**. `.env.example` lists
-the common variables.
+Keys go in **Settings → General**, or in `.env`, which wins over Settings and
+is read when the server starts. Everything else is in Settings. `.env.example`
+lists the common variables.
 
 | Variable | Purpose |
 | --- | --- |

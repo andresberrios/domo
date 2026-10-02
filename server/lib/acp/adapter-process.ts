@@ -6,7 +6,8 @@ import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
-import { claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
+import { anthropicApiKey, claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
+import { storedSecret } from '../secret-settings'
 import {
   loadOpenCodeSettings,
   resolveOpenCodeApiKey,
@@ -252,12 +253,12 @@ export async function adapterEnv(
   }
   if (adapter === 'claude-code') {
     const oauthToken = claudeOauthToken()
-    const apiKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
+    const apiKey = anthropicApiKey()
     if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
     else if (apiKey && (inContainer || !await hasClaudeSubscriptionLogin())) env.ANTHROPIC_API_KEY = apiKey
   } else if (adapter === 'codex') {
     const codexKey = process.env.NUXT_CODEX_API_KEY || process.env.CODEX_API_KEY
-    const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
+    const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || storedSecret('openAiApiKey')
     if (codexKey) env.CODEX_API_KEY = codexKey
     if (openAiKey) env.OPENAI_API_KEY = openAiKey
     if (codexKey || openAiKey) {
@@ -272,8 +273,8 @@ export async function adapterEnv(
     // out of `$HOME` unaided; there is no longer any way to hand it over, since
     // OpenCode 2 keeps it in sqlite and dropped `OPENCODE_AUTH_CONTENT`. A
     // container therefore has the console key or nothing.
-    const anthropicKey = process.env.NUXT_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
-    const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY
+    const anthropicKey = anthropicApiKey()
+    const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || storedSecret('openAiApiKey')
     const settings = await openCode()
     const consoleKey = await resolveOpenCodeApiKey(process.env, async () => settings.apiKey)
     const configContent = sessionConfigContent(

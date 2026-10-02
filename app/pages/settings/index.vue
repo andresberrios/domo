@@ -77,38 +77,17 @@ async function save() {
     <section class="space-y-3">
       <div>
         <h2 class="text-sm font-semibold">Credentials</h2>
-        <p class="text-xs text-muted">Keys come from your <code class="rounded bg-elevated px-1">.env</code> file, never the database.</p>
+        <p class="text-xs text-muted">Stored on the server and never sent to the browser. A variable in <code class="rounded bg-elevated px-1">.env</code> wins over a value saved here.</p>
       </div>
-      <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <UAlert
-          :color="settings?.hasGeminiKey ? 'success' : 'warning'"
-          variant="subtle"
-          :icon="settings?.hasGeminiKey ? 'i-lucide-check' : 'i-lucide-key-round'"
-          title="Gemini"
-          :description="settings?.hasGeminiKey ? 'Voice key configured' : 'Set NUXT_GEMINI_API_KEY'"
-        />
-        <UAlert
-          :color="settings?.hasAnthropicKey ? 'success' : 'neutral'"
-          variant="subtle"
-          icon="i-lucide-sparkles"
-          title="Anthropic"
-          :description="settings?.hasAnthropicKey ? 'API key configured' : 'Local login or setup token'"
-        />
-        <UAlert
-          :color="settings?.hasOpenAiKey ? 'success' : 'neutral'"
-          variant="subtle"
-          icon="i-lucide-terminal"
-          title="OpenAI"
-          :description="settings?.hasOpenAiKey ? 'API key configured' : 'Local login may be used'"
-        />
-        <UAlert
-          :color="settings?.hasOpenCodeKey || settings?.hasOpenCodeAuth ? 'success' : 'neutral'"
-          variant="subtle"
-          icon="i-lucide-code-xml"
-          title="OpenCode"
-          :description="openCodeAuthSummary"
-        />
-      </div>
+      <CredentialSettings :settings="settings ?? null" @saved="refresh" />
+      <UAlert
+        :color="settings?.hasOpenCodeKey || settings?.hasOpenCodeAuth ? 'success' : 'neutral'"
+        variant="subtle"
+        icon="i-lucide-code-xml"
+        title="OpenCode"
+        :description="openCodeAuthSummary"
+        :actions="[{ label: 'OpenCode settings', color: 'neutral', variant: 'subtle', to: '/settings/adapters/opencode' }]"
+      />
     </section>
 
     <USeparator />

@@ -9,7 +9,8 @@ import {
   isVoiceProvider
 } from '../../shared/voice-providers'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector } from '../../shared/agent-voice'
-import type { AgentVoiceSettings, AppSettings, UpdateSettings, VoiceDelegationSettings } from '../../shared/types'
+import { rememberSecretSettings } from './secret-settings'
+import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type UpdateSettings, type VoiceDelegationSettings } from '../../shared/types'
 
 /**
  * Follow `release`, look every hour, and never switch by itself: an unasked
@@ -108,6 +109,12 @@ export const DEFAULTS: AppSettings = {
   // the row by the first save, and the operator's variable would stop being the
   // thing in charge.
   openCodeApiKey: '',
+  // The same for the rest: empty, with the environment read ahead of the row.
+  geminiApiKey: '',
+  openAiApiKey: '',
+  anthropicApiKey: '',
+  claudeCodeOauthToken: '',
+  huggingFaceToken: '',
   // Environments permissive, the host as OpenCode has it. See
   // `AppSettings.openCodePermission` for why the two differ.
   openCodePermission: { host: 'ask', environment: 'allow' },
@@ -127,7 +134,7 @@ export async function getSettings(): Promise<AppSettings> {
   const rows = await query<{ key: string, value: any }>('select key, value from settings')
   const stored: Record<string, any> = {}
   for (const row of rows) stored[row.key] = row.value?.v ?? row.value
-  return {
+  const settings = {
     ...DEFAULTS,
     ...stored,
     voiceProvider: isVoiceProvider(stored.voiceProvider) ? stored.voiceProvider : DEFAULTS.voiceProvider,
@@ -139,7 +146,12 @@ export async function getSettings(): Promise<AppSettings> {
     agentVoice: storedAgentVoice(stored),
     updates: storedUpdates(stored)
   } as AppSettings
+  // The synchronous key readers (`secret-settings.ts`) see what was just read.
+  rememberSecretSettings(settings)
+  return settings
 }
+
+const isSecretKey = (key: string): key is SecretSettingKey => (SECRET_SETTING_KEYS as readonly string[]).includes(key)
 
 /** The update settings, each field kept in a range the updater can act on. */
 function storedUpdates(stored: Record<string, any>): UpdateSettings {
@@ -314,18 +326,18 @@ export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSet
       await query('delete from settings where key = $1', [key])
       continue
     }
-    // An empty key is a removal, not a stored empty string, so the row goes
-    // rather than shadowing whatever `NUXT_OPENCODE_API_KEY` says. The page
-    // never sends this field on an ordinary save — it cannot, since the key is
-    // never sent *to* it — so an empty value here is always deliberate.
-    if (key === 'openCodeApiKey' && typeof value === 'string' && !value.trim()) {
+    // An empty credential is a removal, not a stored empty string, so the row
+    // goes rather than shadowing whatever the environment says. A page never
+    // sends these fields on an ordinary save — it cannot, since a key is never
+    // sent *to* it — so an empty value here is always deliberate.
+    if (isSecretKey(key) && typeof value === 'string' && !value.trim()) {
       await query('delete from settings where key = $1', [key])
       continue
     }
     await query(
       `insert into settings (key, value) values ($1, $2::jsonb)
        on conflict (key) do update set value = excluded.value`,
-      [key, JSON.stringify({ v: value })]
+      [key, JSON.stringify({ v: isSecretKey(key) && typeof value === 'string' ? value.trim() : value })]
     )
   }
   return getSettings()

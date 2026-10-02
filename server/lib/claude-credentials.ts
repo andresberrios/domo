@@ -3,11 +3,14 @@ import { access } from 'node:fs/promises'
 import { userInfo } from 'node:os'
 import { join } from 'node:path'
 
+import { storedSecret } from './secret-settings'
+
 /** The Keychain item Claude Code keeps its login in on macOS. */
 const KEYCHAIN_SERVICE = 'Claude Code-credentials'
 
 /**
- * The long-lived OAuth token from `claude setup-token`, if the operator set one.
+ * The long-lived OAuth token from `claude setup-token`, if the operator set
+ * one: in the environment, else in Settings.
  *
  * The one place this is read, so the ACP adapter and the usage poller cannot
  * drift apart about which variable wins. It is deliberately *not* a fallback to
@@ -16,7 +19,12 @@ const KEYCHAIN_SERVICE = 'Claude Code-credentials'
  * use — the same hazard `home-overlay.ts` refuses to mount `~/.claude` for.
  */
 export function claudeOauthToken(env: NodeJS.ProcessEnv = process.env): string | null {
-  return env.NUXT_CLAUDE_CODE_OAUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN || null
+  return env.NUXT_CLAUDE_CODE_OAUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN || storedSecret('claudeCodeOauthToken')
+}
+
+/** The Anthropic API key, read the same way. Which credential wins is `adapterEnv`'s decision. */
+export function anthropicApiKey(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.NUXT_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY || storedSecret('anthropicApiKey')
 }
 
 /** The file Claude Code itself reads on a non-macOS host. */

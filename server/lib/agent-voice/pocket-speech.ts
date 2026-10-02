@@ -6,6 +6,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { clonedVoiceId } from '../../../shared/agent-voice'
 import { dataDir } from '../paths'
+import { storedSecret } from '../secret-settings'
 import type { SpeechChunk } from './speech'
 import { clonedVoiceSamplePath, isClonedVoiceId } from './voice-store'
 
@@ -114,8 +115,13 @@ async function startServer(): Promise<string> {
   // it could not tell. fd 3 carries the pipe past the backgrounded reader,
   // whose own stdin a non-interactive shell points at /dev/null.
   const watchdog = 'exec 3<&0; (cat <&3 >/dev/null; kill -TERM 0) & exec "$@" </dev/null 3<&-'
+  const huggingFaceToken = process.env.HF_TOKEN || storedSecret('huggingFaceToken')
   const child = spawn('sh', ['-c', watchdog, 'pocket', 'uvx', '--from', `pocket-tts==${POCKET_VERSION}`, 'pocket-tts', 'serve', '--host', '127.0.0.1', '--port', String(port)], {
-    env: { ...process.env, HF_HOME: process.env.HF_HOME ?? join(dataDir(), 'models', 'hf') },
+    env: {
+      ...process.env,
+      ...(huggingFaceToken && { HF_TOKEN: huggingFaceToken }),
+      HF_HOME: process.env.HF_HOME ?? join(dataDir(), 'models', 'hf')
+    },
     stdio: ['pipe', 'ignore', 'pipe'],
     detached: true
   })

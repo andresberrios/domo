@@ -106,8 +106,9 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   `uvx pocket-tts serve` on a free port, started on first use (a few minutes
   the first time) and kept running, or a server at `pocketUrl`. Voice
   cloning needs Kyutai's gated weights, so only the built-in voices work
-  until a Hugging Face token that accepted their terms is in `HF_TOKEN`
-  (read when Domo starts). Pocket fails a clone with a bare 500; the reason
+  until a Hugging Face token that accepted their terms is set, in Settings →
+  General or `HF_TOKEN` (read when Pocket starts). Pocket fails a clone with a
+  bare 500; the reason
   is only in its log, which Domo reads for its own server.
 - **Cloned voices are files, never rows** (`agent-voice/voice-store.ts`,
   `<data>/voices`): a synced table would stream the user's voice to every
@@ -174,8 +175,8 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   under `pnpm dev`, so a Nitro reload keeps them loaded.
 - **The Kyutai engine was written from the reference clients and has not run
   against a server.** A moshi-server needs a GPU. Its key is
-  `NUXT_KYUTAI_API_KEY`, the one environment variable here, because the
-  settings table is streamed to the browser.
+  `NUXT_KYUTAI_API_KEY`, an environment variable only: an engine that has
+  never run has earned no Settings field.
 - **No open full-duplex model takes an external brain** (researched September
   2026: Moshi, PersonaPlex, MiniCPM-o, NemotronLabs VoiceChat all own their
   LLM). Kyutai Unmute is the open path to a Realtime-style socket around an

@@ -4,6 +4,9 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { adapterEnv, adapterLaunch, opencodeConfigContent } from '../../server/lib/acp/adapter-process'
+import { forgetSecretSettings, rememberSecretSettings } from '../../server/lib/secret-settings'
+
+const NO_SECRETS = { geminiApiKey: '', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', huggingFaceToken: '', openCodeApiKey: '' }
 
 /** `gh` must never be spawned from a test, so the lookup is always injected. */
 const noGh = async () => null
@@ -255,5 +258,36 @@ describe('the GitHub token for an environment', () => {
     const env = await adapterEnv('codex', true, async () => 'gho-from-gh')
 
     expect(env.GH_TOKEN).toBe('gho-from-gh')
+  })
+})
+
+describe('adapterEnv — credentials stored in Settings', () => {
+  afterEach(() => forgetSecretSettings())
+
+  it('hands an environment session the stored Claude token when the environment has none', async () => {
+    delete process.env.NUXT_CLAUDE_CODE_OAUTH_TOKEN
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+    rememberSecretSettings({ ...NO_SECRETS, claudeCodeOauthToken: 'sk-ant-oat-stored' })
+
+    const env = await adapterEnv('claude-code', true, noGh)
+
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat-stored')
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+  })
+
+  it('gives Codex and OpenCode the stored OpenAI key, and the token still wins for Claude', async () => {
+    rememberSecretSettings({ ...NO_SECRETS, openAiApiKey: 'sk-stored', anthropicApiKey: 'sk-ant-stored' })
+
+    const codex = await adapterEnv('codex', true, noGh)
+    expect(codex.OPENAI_API_KEY).toBe('sk-stored')
+    expect(codex.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: 'api-key' }))
+
+    const opencode = await adapterEnv('opencode', true, noGh, noKey)
+    expect(opencode.OPENAI_API_KEY).toBe('sk-stored')
+    expect(opencode.ANTHROPIC_API_KEY).toBe('sk-ant-stored')
+
+    const claude = await adapterEnv('claude-code', true, noGh)
+    expect(claude.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat-test')
+    expect(claude.ANTHROPIC_API_KEY).toBeUndefined()
   })
 })

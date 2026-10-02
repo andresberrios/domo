@@ -453,6 +453,19 @@ describe('settings', () => {
     expect(settings.systemInstruction).toContain('You are Domo')
   })
 
+  it('keeps a credential, reports it as configured, and never answers it', async () => {
+    await $fetch('/api/settings', { method: 'PATCH', body: { geminiApiKey: ' AIza-test ' } })
+    const configured = await $fetch<Record<string, unknown>>('/api/settings')
+    expect(configured.hasGeminiKey).toBe(true)
+    expect(configured).not.toHaveProperty('geminiApiKey')
+    expect(JSON.stringify(configured)).not.toContain('AIza-test')
+
+    // Empty removes the row; anything but a string is refused.
+    await $fetch('/api/settings', { method: 'PATCH', body: { geminiApiKey: '' } })
+    await expect($fetch<{ hasGeminiKey: boolean }>('/api/settings')).resolves.toMatchObject({ hasGeminiKey: false })
+    await expect($fetch('/api/settings', { method: 'PATCH', body: { claudeCodeOauthToken: 42 } })).rejects.toMatchObject({ statusCode: 400 })
+  })
+
   it('persists a patch and leaves the rest alone', async () => {
     await $fetch('/api/settings', { method: 'PATCH', body: { voiceName: 'Charon', autoApprovePermissions: true } })
 

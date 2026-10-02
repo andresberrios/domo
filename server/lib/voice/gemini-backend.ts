@@ -47,7 +47,7 @@ export class GeminiBackend implements VoiceBackend {
   async connect(): Promise<void> {
     const apiKey = geminiApiKey()
     if (!apiKey) {
-      throw new Error('No Gemini API key. Put NUXT_GEMINI_API_KEY=... in .env and restart the server.')
+      throw new Error('No Gemini API key. Add one in Settings → General, or NUXT_GEMINI_API_KEY in .env.')
     }
     const settings = await getSettings()
     this.ai = new GoogleGenAI({ apiKey })

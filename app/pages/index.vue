@@ -24,14 +24,14 @@ const missingVoiceKey = computed(() => {
       ? null
       : {
           title: 'No OpenAI API key yet',
-          description: 'Add NUXT_OPENAI_API_KEY to your .env and restart the dev server to enable the voice agent.'
+          description: 'Add one under Settings → General to enable the voice agent.'
         }
   }
   return settings.value.hasGeminiKey
     ? null
     : {
         title: 'No Gemini API key yet',
-        description: 'Add NUXT_GEMINI_API_KEY to your .env and restart the dev server to enable the voice agent.'
+        description: 'Add one under Settings → General to enable the voice agent.'
       }
 })
 </script>
