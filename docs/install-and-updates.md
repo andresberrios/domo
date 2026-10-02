@@ -283,3 +283,19 @@ Updates. Afterwards `DOMO_HOME=/tmp/domo-home /tmp/domo-home/bin/domo uninstall`
 `docker compose -p domo-inst down -v`, and remove `/tmp/domo-home`. The
 launchd label is `com.domo.app` whichever home is used, so the scratch
 service and a real one cannot run at the same time.
+
+For Linux, `test/helpers/install-linux.sh` runs the same install with
+`--no-service` and `domo run` in a Debian container with the host's Docker
+socket, cloning from a bare copy of the branch (a worktree's `.git` is a
+pointer the container cannot follow):
+
+```sh
+git clone --bare . /tmp/domo-src.git
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/src:ro \
+  -v /tmp/domo-src.git:/repo.git:ro -v $PWD/test/helpers/install-linux.sh:/test.sh:ro \
+  --add-host host.docker.internal:host-gateway debian:bookworm-slim sh /test.sh <branch>
+```
+
+It proves the downloads, the build, the supervisor and the update check on
+Linux; the systemd unit itself is not exercised, since a container has no
+systemd.
