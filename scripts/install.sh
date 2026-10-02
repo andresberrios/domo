@@ -46,11 +46,13 @@ trap 'rm -rf "$tmp"' EXIT
 
 if [ -d "$DOMO_HOME/app/.git" ]; then
   say "Fetching Domo ($DOMO_CHANNEL)"
-  git -C "$DOMO_HOME/app" fetch --quiet origin "$DOMO_CHANNEL"
+  git -C "$DOMO_HOME/app" fetch --quiet --depth=200 origin "$DOMO_CHANNEL"
 else
   say "Cloning Domo into $DOMO_HOME/app"
   rm -rf "$DOMO_HOME/app"
-  git clone --quiet --branch "$DOMO_CHANNEL" "$DOMO_REPO" "$DOMO_HOME/app"
+  # Shallow: the launcher fetches a window of history behind the channel's tip
+  # and counts against that; nobody needs the whole history to run Domo.
+  git clone --quiet --depth 1 --branch "$DOMO_CHANNEL" "$DOMO_REPO" "$DOMO_HOME/app"
 fi
 git -C "$DOMO_HOME/app" checkout --quiet --detach "origin/$DOMO_CHANNEL"
 

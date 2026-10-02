@@ -9,7 +9,18 @@ import {
   isVoiceProvider
 } from '../../shared/voice-providers'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector } from '../../shared/agent-voice'
-import type { AgentVoiceSettings, AppSettings, VoiceDelegationSettings } from '../../shared/types'
+import type { AgentVoiceSettings, AppSettings, UpdateSettings, VoiceDelegationSettings } from '../../shared/types'
+
+/**
+ * Follow `release`, look every hour, and never switch by itself: an unasked
+ * restart is the one thing an update must not do until the operator says so.
+ */
+export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
+  channel: 'release',
+  checkIntervalMinutes: 60,
+  autoApply: false,
+  minHoursBetweenApplies: 1
+}
 
 export const DEFAULT_SYSTEM_INSTRUCTION = `You are Domo. You run coding agents — Claude Code, Codex and OpenCode — for a developer,
 and you talk with them out loud while they do other things: pacing, cooking,
@@ -107,7 +118,8 @@ export const DEFAULTS: AppSettings = {
   // agent that cannot open a page can only say a change "should" render. The
   // cost is one several-hundred-megabyte volume per machine, built once.
   browserTools: true,
-  agentVoice: { ...DEFAULT_AGENT_VOICE }
+  agentVoice: { ...DEFAULT_AGENT_VOICE },
+  updates: { ...DEFAULT_UPDATE_SETTINGS }
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -123,8 +135,21 @@ export async function getSettings(): Promise<AppSettings> {
     defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored),
     openCodePermission: storedOpenCodePermission(stored),
-    agentVoice: storedAgentVoice(stored)
+    agentVoice: storedAgentVoice(stored),
+    updates: storedUpdates(stored)
   } as AppSettings
+}
+
+/** The update settings, each field kept in a range the updater can act on. */
+function storedUpdates(stored: Record<string, any>): UpdateSettings {
+  const updates = { ...DEFAULT_UPDATE_SETTINGS }
+  const current = stored.updates
+  if (!current || typeof current !== 'object') return updates
+  if (typeof current.channel === 'string' && /^[\w./-]+$/.test(current.channel.trim())) updates.channel = current.channel.trim()
+  if (Number.isFinite(current.checkIntervalMinutes)) updates.checkIntervalMinutes = Math.max(5, Math.round(current.checkIntervalMinutes))
+  if (typeof current.autoApply === 'boolean') updates.autoApply = current.autoApply
+  if (Number.isFinite(current.minHoursBetweenApplies)) updates.minHoursBetweenApplies = Math.max(0, current.minHoursBetweenApplies)
+  return updates
 }
 
 /**

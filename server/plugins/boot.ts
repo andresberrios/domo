@@ -13,6 +13,7 @@ import { sweepEnvironmentResources } from '../lib/dev-env/reconcile'
 import { stopAllDoodProxies } from '../lib/dood/manager'
 import { stopPocket } from '../lib/agent-voice/pocket-speech'
 import { stopLocalModels } from '../lib/agent-voice/local-models'
+import { updater } from '../lib/updates'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
@@ -63,8 +64,12 @@ export default defineNitroPlugin(async (nitro) => {
   // half, and it arrives without this.
   usagePoller.start()
 
+  // An installed Domo looks for new versions; a development server has none.
+  await updater.start().catch(error => console.error('[domo] updater', error))
+
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()
+    updater.stop()
     cronScheduler.stop()
     await voiceManager.shutdown().catch(() => {})
     await acpManager.shutdown().catch(() => {})

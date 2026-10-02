@@ -34,11 +34,20 @@ const P = {
   supervisorPid: join(HOME, 'supervisor.pid'),
   updateLock: join(HOME, 'update.lock'),
   updateFailed: join(HOME, 'update-failed.json'),
+  // The server writes this before it stops when it wants to come back on
+  // `current`; the supervisor reads and removes it. See RESTART_EXIT_CODE.
+  restartRequested: join(HOME, 'restart-requested'),
   state: join(HOME, 'state.json')
 }
 
-/** The server exits with this when it wants the supervisor to start it again from `current`. */
+/**
+ * The server exits with this when it wants the supervisor to start it again
+ * from `current`. Nitro's own shutdown always exits 0, so the server usually
+ * asks with the `restart-requested` file instead and stops normally.
+ */
 export const RESTART_EXIT_CODE = 75
+/** How much history a fetch keeps: enough to count an ordinary gap exactly. */
+const FETCH_DEPTH = 200
 const SERVICE_LABEL = 'com.domo.app'
 const HEALTH_TIMEOUT_MS = 60_000
 
@@ -297,6 +306,10 @@ async function run() {
     const result = await exit
     server = null
     if (stopping) break
+    if (existsSync(P.restartRequested)) {
+      rmSync(P.restartRequested, { force: true })
+      restartRequested = true
+    }
     if (result.code === RESTART_EXIT_CODE || restartRequested) {
       restartRequested = true
       log(`server asked for a restart (${result.signal || result.code})`)
@@ -479,18 +492,30 @@ function takeUpdateLock() {
   return release
 }
 
+/**
+ * The clone is shallow (`--depth 1` at install), so a fetch brings a window
+ * of history behind the channel's tip rather than all of it. The window is
+ * deep enough to count any ordinary gap exactly; beyond it the count is
+ * unknown, which is reported as `null` rather than a made-up number.
+ */
 function fetchChannel(channel) {
-  git(['fetch', '--quiet', 'origin', channel], { timeout: 120_000 })
+  git(['fetch', '--quiet', `--depth=${FETCH_DEPTH}`, 'origin', channel], { timeout: 120_000 })
   return git(['rev-parse', `origin/${channel}`])
 }
 
 function updateCheck(channel) {
   const target = fetchChannel(channel)
   const installed = releaseInfo(currentRelease())?.commit ?? git(['rev-parse', 'HEAD'])
-  const behind = installed === target ? 0 : Number(git(['rev-list', '--count', `${installed}..${target}`]))
-  const commits = behind
-    ? git(['log', '--format=%h %s', `${installed}..${target}`]).split('\n')
-    : []
+  if (installed === target) return { installed, target, behind: 0, commits: [] }
+  const countable = git(['merge-base', '--is-ancestor', installed, target], { lenient: true }) !== null
+  if (!countable) return { installed, target, behind: null, commits: [] }
+  const behind = Number(git(['rev-list', '--count', `${installed}..${target}`]))
+  const commits = git(['log', '--format=%H%x1f%s%x1f%aI', `${installed}..${target}`])
+    .split('\n').filter(Boolean)
+    .map((line) => {
+      const [sha, subject, date] = line.split('\x1f')
+      return { sha, subject, date }
+    })
   return { installed, target, behind, commits }
 }
 
@@ -610,13 +635,16 @@ async function update(args) {
   if (!existsSync(join(P.app, '.git'))) fail(`${P.app} is not a git checkout; run the installer`)
   if (channelFlag >= 0) writeState({ channel })
 
+  const json = args.includes('--json')
   const check = updateCheck(channel)
   if (checkOnly) {
-    if (!check.behind) console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
-    else console.log(`${check.behind} commit${check.behind === 1 ? '' : 's'} behind ${channel}:\n  ${check.commits.join('\n  ')}`)
+    if (json) console.log(JSON.stringify({ channel, ...check }))
+    else if (check.behind === 0) console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
+    else if (check.behind === null) console.log(`behind ${channel} by more than ${FETCH_DEPTH} commits (${check.installed.slice(0, 7)} -> ${check.target.slice(0, 7)})`)
+    else console.log(`${check.behind} commit${check.behind === 1 ? '' : 's'} behind ${channel}:\n  ${check.commits.map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n  ')}`)
     return
   }
-  if (!check.behind && !args.includes('--force') && currentRelease()) {
+  if (check.behind === 0 && !args.includes('--force') && currentRelease()) {
     console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
     return
   }
@@ -625,6 +653,7 @@ async function update(args) {
   const env = serverEnv()
   const started = Date.now()
   try {
+    rmSync(P.updateFailed, { force: true })
     const dir = await buildRelease(check.target, env)
     await smokeTest(dir, env)
     const old = currentRelease()
@@ -666,6 +695,10 @@ async function install(args) {
   if (!existsSync(P.launcher)) cpSync(fileURLToPath(import.meta.url), P.launcher)
 
   await update(['--no-restart', '--force', ...(channel ? ['--channel', channel] : [])])
+  if (args.includes('--no-service')) {
+    console.log(`\n  Built. Start Domo with \`${P.bin}/domo run\` (no login service was installed).\n`)
+    return
+  }
 
   if (!args.includes('--skip-trust')) {
     log('caddy trust (so the browser accepts the local certificate; this may ask for your password)')
@@ -691,9 +724,10 @@ const HELP = `domo <command>
   restart             restart the server onto the current release
   status              what is installed and whether it answers
   logs                follow the log
-  update [--check] [--channel <branch>] [--force] [--no-restart]
+  update [--check] [--json] [--channel <branch>] [--force] [--no-restart]
                       fetch, build and switch to the newest commit of the channel
-  install             finish an installation (used by scripts/install.sh)
+  install [--no-service] [--skip-trust] [--no-open]
+                      finish an installation (used by scripts/install.sh)
   uninstall           remove the login service (keeps ${HOME})
 
 Environment: DOMO_HOME (${HOME}). Settings live in ${P.env}.`

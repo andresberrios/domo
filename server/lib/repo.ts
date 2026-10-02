@@ -31,7 +31,8 @@ import type {
   UsageProviderState,
   VoiceMessage,
   VoiceSession,
-  VoiceUsage
+  VoiceUsage,
+  AppUpdate
 } from '../../shared/types'
 import { isAgentAdapter } from '../../shared/agent-adapters'
 
@@ -115,6 +116,72 @@ function mapUsageLimit(r: any): UsageLimit {
     source: r.source,
     updatedAt: r.updated_at
   }
+}
+
+function mapAppUpdate(r: any): AppUpdate {
+  return {
+    installedCommit: r.installed_commit,
+    installedAt: r.installed_at,
+    channel: r.channel,
+    targetCommit: r.target_commit ?? null,
+    behind: r.behind === null || r.behind === undefined ? null : Number(r.behind),
+    commits: Array.isArray(r.commits) ? r.commits : [],
+    checkedAt: r.checked_at ?? null,
+    state: r.state,
+    blockers: Array.isArray(r.blockers) ? r.blockers : [],
+    lastError: r.last_error ?? null,
+    lastAppliedAt: r.last_applied_at ?? null,
+    updatedAt: r.updated_at
+  }
+}
+
+const APP_UPDATE_ID = 'domo'
+
+export async function getAppUpdate(): Promise<AppUpdate | null> {
+  const row = await queryOne('select * from app_update where id = $1', [APP_UPDATE_ID])
+  return row ? mapAppUpdate(row) : null
+}
+
+/** Write the whole row: it is one row, and `REPLICA IDENTITY FULL` sends all of it anyway. */
+export async function saveAppUpdate(update: Omit<AppUpdate, 'updatedAt'>): Promise<AppUpdate> {
+  const row = await queryOne(
+    `insert into app_update (id, installed_commit, installed_at, channel, target_commit, behind, commits,
+       checked_at, state, blockers, last_error, last_applied_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, $11, $12, $13)
+     on conflict (id) do update set
+       installed_commit = excluded.installed_commit, installed_at = excluded.installed_at,
+       channel = excluded.channel, target_commit = excluded.target_commit, behind = excluded.behind,
+       commits = excluded.commits, checked_at = excluded.checked_at, state = excluded.state,
+       blockers = excluded.blockers, last_error = excluded.last_error,
+       last_applied_at = excluded.last_applied_at, updated_at = excluded.updated_at
+     returning *`,
+    [APP_UPDATE_ID, update.installedCommit, update.installedAt, update.channel, update.targetCommit, update.behind,
+      JSON.stringify(update.commits), update.checkedAt, update.state, JSON.stringify(update.blockers),
+      update.lastError, update.lastAppliedAt, nowIso()]
+  )
+  return mapAppUpdate(row)
+}
+
+/**
+ * What a server restart would interrupt right now, as short phrases for the
+ * UI; empty when nothing would be. A schedule about to fire counts: the
+ * restart would make it late, or make it fire twice.
+ */
+export async function restartBlockers(now = new Date()): Promise<string[]> {
+  const soon = new Date(now.getTime() + 2 * 60_000).toISOString()
+  const [agents, voice, environments, cron] = await Promise.all([
+    queryOne<{ n: number }>(`select count(*)::int as n from agent_sessions where status in ('starting', 'thinking', 'awaiting-permission')`),
+    queryOne<{ n: number }>(`select count(*)::int as n from voice_sessions where status <> 'idle'`),
+    queryOne<{ n: number }>(`select count(*)::int as n from dev_environments where status = 'creating' and retired_at is null`),
+    queryOne<{ n: number }>(`select count(*)::int as n from cron_jobs where enabled = true and next_run_at is not null and next_run_at <= $1`, [soon])
+  ])
+  const blockers: string[] = []
+  const plural = (n: number, one: string, many: string) => (n === 1 ? one : many.replace('%', String(n)))
+  if (agents?.n) blockers.push(plural(agents.n, 'an agent is working', '% agents are working'))
+  if (voice?.n) blockers.push(plural(voice.n, 'a conversation is live', '% conversations are live'))
+  if (environments?.n) blockers.push(plural(environments.n, 'an environment is being created', '% environments are being created'))
+  if (cron?.n) blockers.push(plural(cron.n, 'a schedule fires within two minutes', '% schedules fire within two minutes'))
+  return blockers
 }
 
 function mapUsageProvider(r: any): UsageProvider {

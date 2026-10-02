@@ -500,6 +500,24 @@ create table if not exists usage_providers (
   checked_at text not null
 );
 
+-- Where an installed Domo stands against its update channel: one row, written
+-- by the updater in the server (server/lib/updates.ts). Absent under pnpm dev.
+create table if not exists app_update (
+  id text primary key,
+  installed_commit text not null,
+  installed_at text not null,
+  channel text not null,
+  target_commit text,
+  behind integer,
+  commits jsonb not null default '[]'::jsonb,
+  checked_at text,
+  state text not null,
+  blockers jsonb not null default '[]'::jsonb,
+  last_error text,
+  last_applied_at text,
+  updated_at text not null
+);
+
 -- Electric replays updates from the WAL: FULL replica identity makes sure a
 -- changed row arrives complete, not just its key + changed columns.
 alter table voice_sessions replica identity full;
@@ -517,6 +535,7 @@ alter table dev_environment_ports replica identity full;
 alter table usage_limits replica identity full;
 alter table usage_providers replica identity full;
 alter table notifications replica identity full;
+alter table app_update replica identity full;
 `
 
 let pool: pg.Pool | null = null

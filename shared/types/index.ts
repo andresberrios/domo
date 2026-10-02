@@ -685,6 +685,64 @@ export interface AppSettings {
   browserTools: boolean
   /** Who hears and who speaks when talking to a coding agent. See `AgentVoiceSettings`. */
   agentVoice: AgentVoiceSettings
+  /** How an installed Domo looks for and applies new versions. See `UpdateSettings`. */
+  updates: UpdateSettings
+}
+
+/**
+ * Updates of an installed Domo (`docs/install-and-updates.md`). Ignored under
+ * `pnpm dev`, which has no release to update.
+ */
+export interface UpdateSettings {
+  /** The branch the install follows. */
+  channel: string
+  /** How often to look, in minutes. */
+  checkIntervalMinutes: number
+  /** Build and switch to a new version by itself, when no agent is working. */
+  autoApply: boolean
+  /** The least time between two automatic switches, in hours. */
+  minHoursBetweenApplies: number
+}
+
+/**
+ * Where an installed Domo stands against its channel, and what the updater
+ * is doing. One row, written by the server, which is the only process that
+ * knows whether a restart would interrupt anything.
+ *
+ * - `idle`: nothing in progress; `behind` says whether there is anything new.
+ * - `checking`: fetching the channel.
+ * - `building`: the updater is building the new release beside this one.
+ * - `ready`: the new release is built and `current` points at it; this
+ *   server restarts onto it at the first quiet moment (`blockers` says what
+ *   it is waiting for).
+ * - `restarting`: stopping now.
+ * - `failed`: the last attempt did not work; `lastError` says why.
+ */
+export type AppUpdateState = 'idle' | 'checking' | 'building' | 'ready' | 'restarting' | 'failed'
+
+export interface AppUpdateCommit {
+  sha: string
+  subject: string
+  date: string
+}
+
+export interface AppUpdate {
+  installedCommit: string
+  installedAt: string
+  channel: string
+  /** The channel's tip the last time it was fetched; null before the first check. */
+  targetCommit: string | null
+  /** Commits behind the channel. Null when a fetch has not succeeded yet, or the gap is deeper than the fetched history. */
+  behind: number | null
+  /** The commits between installed and target, newest first, when they could be listed. */
+  commits: AppUpdateCommit[]
+  checkedAt: string | null
+  state: AppUpdateState
+  /** What a pending restart is waiting for: "2 agents working", "a conversation is live". */
+  blockers: string[]
+  lastError: string | null
+  lastAppliedAt: string | null
+  updatedAt: string
 }
 
 /** An engine that can transcribe speech and synthesise it. */

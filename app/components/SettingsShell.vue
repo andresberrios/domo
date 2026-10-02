@@ -16,7 +16,8 @@ const sections = [
 
 const afterAdapters = [
   { label: 'Development environments', to: '/settings/environments', icon: 'i-lucide-container' },
-  { label: 'MCP servers', to: '/settings/mcp', icon: 'i-lucide-blocks' }
+  { label: 'MCP servers', to: '/settings/mcp', icon: 'i-lucide-blocks' },
+  { label: 'Updates', to: '/settings/updates', icon: 'i-lucide-download' }
 ]
 
 /**

@@ -73,6 +73,7 @@ const newAgentOpen = ref(false)
       <template #footer="{ collapsed }">
         <div class="flex w-full flex-col gap-1">
           <UsageSidebarSummary v-if="!collapsed" />
+          <UpdateBadge :collapsed="collapsed" />
           <div class="flex w-full items-center justify-between gap-2">
             <UButton
               to="/settings"
