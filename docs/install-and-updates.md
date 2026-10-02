@@ -286,13 +286,13 @@ mkdir -p /tmp/domo-home && printf '%s\n' \
   DATABASE_URL=postgresql://postgres:password@localhost:54331/domo \
   ELECTRIC_URL=http://localhost:30010 COMPOSE_PROJECT_NAME=domo-inst \
   DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
-  DOMO_PORT=3767 DOMO_HTTPS_ADDRESS=localhost:3766 \
+  DOMO_PORT=3867 DOMO_HTTPS_ADDRESS=localhost:3866 \
   NUXT_DEV_ENV_RESOURCE_PREFIX=domo-inst- > /tmp/domo-home/.env
 DOMO_HOME=/tmp/domo-home DOMO_REPO=file://$PWD DOMO_CHANNEL=<branch> \
   DOMO_INSTALL_ARGS="--skip-trust --no-open" sh scripts/install.sh
 ```
 
-Then open `https://localhost:3766`, commit to the branch, and watch Settings →
+Then open `https://localhost:3866`, commit to the branch, and watch Settings →
 Updates. Afterwards `DOMO_HOME=/tmp/domo-home /tmp/domo-home/bin/domo uninstall`,
 `docker compose -p domo-inst down -v`, and remove `/tmp/domo-home`. The
 launchd label is `com.domo.app` whichever home is used, so the scratch

@@ -3,7 +3,8 @@
 #
 # Caddy issues the certificate from its local CA; run `caddy trust` once so the
 # browser accepts it. Override the address with DOMO_HTTPS_ADDRESS, e.g.
-# `DOMO_HTTPS_ADDRESS=my-mac.local:3666 pnpm dev`.
+# `DOMO_HTTPS_ADDRESS=my-mac.local:3766 pnpm dev`. The defaults below are
+# `pnpm dev`'s; an installed Domo's supervisor sets all three (3666, 3667).
 {
 	admin off
 	skip_install_trust
@@ -17,7 +18,7 @@
 # long-polls exhaust HTTP/1.1's six connections per origin: the first tab
 # renders and every later one comes back blank. The container does not trust
 # Caddy's local CA and does not need to; the browser is told to ignore that.
-{$DOMO_HTTPS_ADDRESS:localhost:3666}, host.docker.internal:{$DOMO_HTTPS_PORT:3666} {
+{$DOMO_HTTPS_ADDRESS:localhost:3766}, host.docker.internal:{$DOMO_HTTPS_PORT:3766} {
 	tls internal
-	reverse_proxy 127.0.0.1:{$DOMO_DEV_PORT:3667}
+	reverse_proxy 127.0.0.1:{$DOMO_DEV_PORT:3767}
 }

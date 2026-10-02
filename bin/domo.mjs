@@ -136,6 +136,9 @@ function serverEnv() {
   env.DOMO_HTTPS_ADDRESS ||= 'localhost:3666'
   env.DOMO_HTTPS_PORT = env.DOMO_HTTPS_ADDRESS.split(':').pop() || '3666'
   env.NUXT_DATA_DIR ||= P.data
+  // Not `domo-dev-`, which `pnpm dev` uses, nor a prefix of it: the leftover
+  // report attributes by prefix, and both may run on one daemon.
+  env.NUXT_DEV_ENV_RESOURCE_PREFIX ||= 'domo-prod-'
   // The production stack's ports (docker-compose.prod.yml), not the development stack's.
   env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54322/domo'
   env.ELECTRIC_URL ||= 'http://localhost:30002'

@@ -32,10 +32,12 @@ not in the UI.
 - **Never run a second dev server against the `domo` database.** When it
   boots, it marks every session stopped while the user's agents are still
   running. For an in-app check from a worktree, see `docs/working-on-domo.md`.
-- **Open the app only at `https://localhost:3666`** (Caddy). From inside a dev
-  environment, use `https://host.docker.internal:3666` and ignore certificate
-  errors. Port 3667 is plain HTTP. On it, Electric's long-polls use up the
-  browser's connection limit, and every extra tab renders blank with no error.
+- **Open the app only at its HTTPS address** (Caddy): `https://localhost:3666`
+  is the installed Domo, `https://localhost:3766` is `pnpm dev`. From inside a
+  dev environment, use `https://host.docker.internal:<that port>` and ignore
+  certificate errors. The port one up is plain HTTP. On it, Electric's
+  long-polls use up the browser's connection limit, and every extra tab
+  renders blank with no error.
 - **Operate Domo through Domo's own tools** (the `domo` MCP tools) when you
   manage agents, environments, schedules, messages or permissions. Do not use
   the HTTP API, SQL or `docker` for this. Agents in other projects have only

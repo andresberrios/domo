@@ -55,7 +55,7 @@ COMPOSE_PROJECT_NAME=domo-<x> DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
 
 DATABASE_URL=postgresql://postgres:password@localhost:54331/domo \
 ELECTRIC_URL=http://localhost:30010 \
-DOMO_DEV_PORT=3767 DOMO_HTTPS_ADDRESS=localhost:3766 \
+DOMO_DEV_PORT=3867 DOMO_HTTPS_ADDRESS=localhost:3866 \
 NUXT_DATA_DIR=/tmp/<x> NUXT_DEV_ENV_RESOURCE_PREFIX=domo-<x>- \
 NUXT_CLAUDE_CODE_OAUTH_TOKEN= NUXT_ANTHROPIC_API_BASE=http://127.0.0.1:1 \
 NUXT_CODEX_ENTRY=$PWD/test/helpers/dead-adapter.mjs \
@@ -63,7 +63,7 @@ NUXT_CLAUDE_ACP_ENTRY=$PWD/test/helpers/dead-adapter.mjs \
 pnpm dev
 ```
 
-Then open `https://localhost:3766`, or add `--tunnel` to `pnpm dev` for a
+Then open `https://localhost:3866`, or add `--tunnel` to `pnpm dev` for a
 public URL to open from a phone — public and unauthenticated, so only while you
 are using it. The last four variables stop the usage poller and Claude Code
 sessions from contacting real accounts. Remove them if the check needs a real
