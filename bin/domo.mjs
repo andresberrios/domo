@@ -141,6 +141,9 @@ function serverEnv() {
   env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54321/domo'
   env.ELECTRIC_URL ||= 'http://localhost:30000'
   env.NODE_ENV = 'production'
+  // What the installer was told to follow, which is the server's default
+  // channel until Settings says otherwise.
+  env.DOMO_CHANNEL ||= readState().channel
   // Nitro waits this long for open connections on SIGTERM. Electric's shape
   // long-polls are always open, so the default thirty seconds is a restart
   // that takes thirty seconds; the browser reconnects anyway.

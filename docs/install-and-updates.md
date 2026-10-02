@@ -1,9 +1,8 @@
 # Installing Domo and keeping it updated
 
-Design (October 2026). The install, the supervisor and `domo update` exist
-(`bin/domo.mjs`, `scripts/install.sh`); the in-app check, the Updates card,
-the quiet-moment gate and auto-apply do not yet. Read it before you work on
-any of them, and delete it once the code and `README.md` say the same thing.
+How an installed Domo is laid out, run and updated, and why. The code is
+`bin/domo.mjs`, `scripts/install.sh` and `server/lib/updates.ts`. Read this
+before you change any of them.
 
 ## What Hermes does, and what to copy
 
@@ -57,7 +56,7 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
 
 ```
 ~/.domo/
-  app/          full git clone of andresberrios/domo; only fetched, never run
+  app/          shallow clone (--depth 1) of andresberrios/domo; only fetched, never run
   releases/     one git worktree per commit, with its own node_modules and .output
   current  ->   releases/<sha>      the release the server runs from
   previous ->   releases/<sha>      the one before it, kept for rollback
@@ -65,7 +64,8 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
   bin/          caddy, uv, pnpm, domo.mjs (the launcher) and `domo`, a shim for it
   data/         uploads, models, voices, pocket-tts.pid (NUXT_DATA_DIR)
   .env          keys and overrides, read by the launcher at every server start
-  state.json    channel, last apply; logs/domo.log; supervisor.pid; update.lock
+  state.json    channel, last apply; logs/domo.log, logs/update.log
+  supervisor.pid, update.lock (a live pid), restart-requested, update-failed.json
 ```
 
 Docker, git and a browser come from the machine. Everything else comes with
@@ -92,11 +92,12 @@ Three processes, and no more:
    with no dependencies, started at login by launchd (macOS,
    `~/Library/LaunchAgents/com.domo.app.plist`, `KeepAlive`) or a systemd user
    unit (Linux). It loads `.env`, starts Caddy and the server from `current`,
-   restarts either if it dies, and handles two exit codes from the server:
-   `75` means "restart me onto `current`", anything else is a crash. After a
-   restart it waits for `/api/health` to answer; if the new release does not
-   answer within sixty seconds it swaps `current` and `previous` back,
-   restarts, and writes the failure where the server can show it.
+   restarts either if it dies, and treats a server exit as a restart request
+   when the server left a `restart-requested` file (or exited `75`); anything
+   else is a crash with backoff. After a restart it waits for the app shell
+   to answer; if the new release does not within sixty seconds it swaps
+   `current` and `previous` back, restarts, and writes `update-failed.json`,
+   which the server shows as a failed update.
    The launcher is copied from the release on every update when it differs;
    the running supervisor keeps the code it started with, so an update that
    changed the launcher restarts the whole service (`launchctl kickstart -k`
@@ -123,24 +124,23 @@ A module `server/lib/updates/` in the server, started by `boot.ts` like the
 cron scheduler. It does nothing when Domo is not an installed instance
 (`DOMO_HOME` unset, which is every `pnpm dev`).
 
-- Every `checkIntervalMinutes` (default 60, minimum 5) and on boot:
-  `git -C ~/.domo/app fetch origin <channel> --quiet` with a 15 s timeout,
-  then `git rev-list --count HEAD..origin/<channel>` and
-  `git log --format=%H%x1f%s%x1f%aI HEAD..origin/<channel>` for the changelog.
-  The clone is always full, so the count is exact; no shallow-clone or
-  compare-API paths.
-- The result is written to one row of a new synced table, `app_update`
-  (single row, `REPLICA IDENTITY FULL`, written at most once per check or
-  state change): `installedCommit`, `installedAt`, `channel`, `behind`,
-  `commits` (the changelog), `checkedAt`, `state`
-  (`idle | checking | downloading | building | ready | restarting | failed`),
-  `lastError`, `lastAppliedAt`. The UI renders only this row, as everywhere
-  else in Domo. A failed fetch leaves `behind` as it was and records the
-  error; it never writes zero.
+- Every `checkIntervalMinutes` (default 60, minimum 5), twenty seconds after
+  boot, and when settings change, the server runs
+  `domo update --check --json`. That is `git fetch --depth=200 origin <channel>`
+  in `app/`, then, when the installed commit is an ancestor of the tip within
+  the fetched window, `git rev-list --count` and `git log` for the changelog;
+  otherwise `behind` is `null`, meaning "an update, more than the window
+  deep". No GitHub compare API: an unknown count is shown as such.
+- The result is one row of the synced table `app_update` (`REPLICA IDENTITY
+  FULL`, written once per check or state change): see `AppUpdate` in
+  `shared/types`. The UI renders only this row. A failed fetch leaves
+  `behind` as it was and records the error; it never writes zero.
 - **Channel** is a branch name, default `release`. Deploying from the dev
   checkout is then `git push origin main:release`, and the installed Domo
   picks it up within the hour. Anyone else installs on `release` and gets
-  what was pushed there; `main` is available for the brave.
+  what was pushed there; `main` is available for the brave. The channel is
+  a setting whose default is what the installer was given (`DOMO_CHANNEL`,
+  kept in `state.json` and passed to the server by the launcher).
 
 Settings, in `AppSettings.updates`, with a card at Settings → Updates:
 
@@ -153,19 +153,21 @@ updates: {
 }
 ```
 
-The card shows the installed commit and date, the badge count, the changelog,
-"Check now", "Update now", the auto-apply toggle and the two intervals, and
-the last error. The sidebar footer shows the badge ("3 commits behind") and
-links to the card, which is the Hermes behaviour the user asked for.
+`app/pages/settings/updates.vue` shows the installed commit and date, the
+state, the changelog, "Check now", "Update now" (or "Restart now" once a
+build is waiting), the auto-apply switch and the two intervals, and the last
+error. `UpdateBadge.vue` in the sidebar footer shows "3 commits behind" and
+links there. Both read `useAppUpdate()`.
 
 ## Applying an update
 
-Applying is a job run by **a detached updater process**, `domo update`, the
-same file as the supervisor with a different subcommand. The server spawns it
-detached and watches the `app_update` row the updater writes to (the updater
-is given `DATABASE_URL` and writes through a small copy of the row writer, or
-writes a JSON status file that the server mirrors into the row; the file is
-simpler and keeps the updater free of `pg`). Steps:
+Applying is a job run by **a detached updater process**,
+`domo update --no-restart`, the same file as the supervisor with a different
+subcommand. The server spawns it detached with its output appended to
+`logs/update.log`, keeps the row at `building`, and reads the result from the
+exit code and from where `current` points. If the server is restarted under
+it, the build goes on; the next server finds the live `update.lock` and
+watches it. Steps:
 
 1. Take `~/.domo/update.lock` holding the updater's pid. A lock whose pid is
    dead is stale and taken over. No expiry by time.
@@ -182,12 +184,13 @@ simpler and keeps the updater free of `pg`). Steps:
    require `GET /` to answer within thirty seconds. This proves the bundle
    loads and serves without ever touching the real database (a real boot
    marks every session stopped).
-5. Wait for a quiet moment (see below), then point `previous` at the old
-   `current`, `current` at the new release, and ask the server to exit with
-   code `75`. The supervisor does the rest, including rollback.
-6. Delete every release that is neither `current` nor `previous`. Release the
-   lock. On any failure before step 5, delete the `.building` directory,
-   write the error, and leave the running release untouched.
+5. Point `previous` at the old `current` and `current` at the new release,
+   delete every other release, and exit. The server, seeing `current` differ
+   from its own commit, marks the row `ready` and waits for a quiet moment
+   (see below); then it writes `restart-requested`, marks `restarting`, and
+   sends itself SIGTERM, which runs Nitro's close hooks. The supervisor does
+   the rest, including rollback. On any failure before step 5 the unfinished
+   worktree is removed and the running release is untouched.
 
 **A quiet moment** means all of these, checked by the server, which is the
 only process that knows:
@@ -198,47 +201,46 @@ only process that knows:
 - no `dev_environments` row in `creating`;
 - no cron job due in the next two minutes.
 
-The server exposes this as `canRestartNow()`. When the updater is ready and
-the moment is not quiet, the server marks the row `ready` and re-checks every
-thirty seconds for as long as it takes; a turn that is started in that window
-is allowed, because refusing work the way Hermes's drain does is worse for the
-user than a later restart. "Update now" from the UI forces the restart after
-the running turns end, and says so.
+`restartBlockers()` in `repo.ts` answers this, as phrases the row carries
+in `blockers` so the card can say what it is waiting for. The server
+re-checks every thirty seconds for as long as it takes; a turn started in
+that window is allowed, because refusing work the way Hermes's drain does
+is worse for the user than a later restart. "Restart now" in the UI forces
+it, and says that it interrupts whatever is running.
 
-**Auto-apply** runs the same path when `autoApply` is on, `behind > 0`, the
-last apply was more than `minHoursBetweenApplies` ago, no update is in
-progress, and the moment is quiet at the time the check finishes. The
-building (steps 1 to 4) may run while agents work, since it touches nothing
-they use; only step 5 waits.
+**Auto-apply** (`shouldAutoApply()`, pure and unit-tested) starts the same
+path when the check finds the setting on, something new that is not the
+target that just failed, no build or restart in progress, and the last
+switch more than `minHoursBetweenApplies` ago. Building runs while agents
+work, since it touches nothing they use; only the restart waits.
 
-**Rollback** is the supervisor's: a release that does not answer health within
-sixty seconds of starting is swapped back for `previous`. The updater also
-refuses to apply a release whose `build.json` names a different major Node
-than the bundled one.
+**Rollback** is the supervisor's: a release that does not come up within
+sixty seconds of starting is swapped back for `previous`.
 
 ## Installing
 
 `scripts/install.sh` in the repo, served as `https://domo.sh` or the raw
 GitHub URL, run as `curl -fsSL … | sh`:
 
-1. Check for `docker` (running), `git`, and a supported platform
-   (macOS arm64/x64, Linux x64/arm64). Stop with one line saying what is
-   missing.
-2. `git clone` (full) into `~/.domo/app`, checkout `origin/release`.
-3. Download the Node LTS tarball named in `app/.node-version` into
-   `~/.domo/node`; `corepack enable --install-directory ~/.domo/bin` for pnpm;
-   download the Caddy and `uv` binaries for the platform into `~/.domo/bin`.
-4. `pnpm install --frozen-lockfile && pnpm build`, place the release, point
-   `current` at it, copy the launcher to `~/.domo/bin/domo`.
-5. Write `~/.domo/.env` from `.env.example` if absent. Keys can be added later
-   in Settings; the first screen says what is missing.
-6. `docker compose up -d` from `app/`, `caddy trust`, install the launchd or
-   systemd unit, start it, open `https://localhost:3666`.
+1. Check for `docker` (running), `git`, `curl`, `tar` and a supported
+   platform (macOS arm64/x64, Linux x64/arm64). Stop with one line saying
+   what is missing.
+2. `git clone --depth 1 --branch release` into `~/.domo/app`. (git ignores
+   `--depth` for a plain local path, so a test against a local checkout
+   names it as `file:///…`.)
+3. Download the Node LTS tarball named in `.node-version` into `~/.domo/node`,
+   and the pnpm, Caddy and `uv` binaries for the platform into `~/.domo/bin`
+   (versions pinned in the script).
+4. Hand over to `domo install`, which writes `.env` from `.env.example` if
+   absent, runs `domo update --force --no-restart` to build and place the
+   first release, runs `caddy trust`, installs the launchd or systemd unit,
+   starts it and opens the browser. `--no-service` stops after the build,
+   for running `domo run` under a supervisor of one's own.
 
 `domo` subcommands: `run` (the supervisor), `start`, `stop`, `restart`,
-`status`, `update [--check]`, `logs`, `uninstall`. The CLI is one plain `.mjs`
-file at `bin/domo.mjs` in the repo, so it needs no build step and runs on the
-bundled Node.
+`status`, `logs`, `update [--check] [--json] [--channel …] [--force]
+[--no-restart]`, `install`, `uninstall`. One plain `.mjs` file at
+`bin/domo.mjs`, so it needs no build step and runs on the bundled Node.
 
 ## Moving this machine over
 
@@ -255,20 +257,26 @@ kills the agents. After this work:
    `release`. For an in-browser check of unmerged work, use the scratch-stack
    recipe, which already exists.
 
-## Order of work
+## Testing a change to any of this
 
-1. Done: `bin/domo.mjs` (supervisor, start/stop/restart/status/logs, update,
-   install, uninstall), launchd and systemd units, `scripts/install.sh`,
-   `.node-version`. Verified by installing into `/tmp` against a scratch
-   stack (`DOMO_HOME=/tmp/x DOMO_REPO=<local path> DOMO_CHANNEL=<branch>
-   DOMO_INSTALL_ARGS="--skip-trust --no-open" sh scripts/install.sh`, with a
-   `.env` naming the scratch ports and `COMPOSE_PROJECT_NAME`), running one
-   agent per adapter, updating to a new commit, and rolling back a release
-   whose server throws on start. Not yet verified on Linux.
-2. The check: `server/lib/updates/`, the `app_update` table, settings, the
-   Updates card and the sidebar badge.
-3. Applying: `domo update`, the quiet-moment gate, exit code `75`, rollback,
-   auto-apply.
-4. Switch this machine; update `README.md` (Quick start becomes the one-line
-   installer, `pnpm dev` moves under a Development heading) and delete this
-   file.
+Install the branch into a scratch home against a scratch stack, so the real
+`domo` database and the real service are never touched:
+
+```sh
+COMPOSE_PROJECT_NAME=domo-inst DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
+  docker compose up -d postgres electric
+mkdir -p /tmp/domo-home && printf '%s\n' \
+  DATABASE_URL=postgresql://postgres:password@localhost:54331/domo \
+  ELECTRIC_URL=http://localhost:30010 COMPOSE_PROJECT_NAME=domo-inst \
+  DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
+  DOMO_PORT=3767 DOMO_HTTPS_ADDRESS=localhost:3766 \
+  NUXT_DEV_ENV_RESOURCE_PREFIX=domo-inst- > /tmp/domo-home/.env
+DOMO_HOME=/tmp/domo-home DOMO_REPO=file://$PWD DOMO_CHANNEL=<branch> \
+  DOMO_INSTALL_ARGS="--skip-trust --no-open" sh scripts/install.sh
+```
+
+Then open `https://localhost:3766`, commit to the branch, and watch Settings →
+Updates. Afterwards `DOMO_HOME=/tmp/domo-home /tmp/domo-home/bin/domo uninstall`,
+`docker compose -p domo-inst down -v`, and remove `/tmp/domo-home`. The
+launchd label is `com.domo.app` whichever home is used, so the scratch
+service and a real one cannot run at the same time.

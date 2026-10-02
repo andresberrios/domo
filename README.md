@@ -53,9 +53,14 @@ starts it as a login service (launchd on macOS, systemd on Linux) and opens
 
 `DOMO_HOME` moves the directory. `DOMO_CHANNEL` picks the branch to follow
 (default `release`). `DOMO_PORT` and `DOMO_HTTPS_ADDRESS` in `.env` change the
-addresses. An update builds the new version beside the running one and
-switches only once it starts, and a version that does not come up is rolled
-back.
+addresses.
+
+Domo looks at its branch every hour and says in the sidebar how many commits
+behind it is. **Settings → Updates** shows what is new, updates on request,
+and can update by itself: it builds the new version beside the running one
+and restarts onto it when no agent is working, no conversation is live and no
+schedule is about to fire, no more often than you choose. A version that does
+not start is rolled back.
 
 ## Quick start (development)
 

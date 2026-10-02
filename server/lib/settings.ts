@@ -16,7 +16,8 @@ import type { AgentVoiceSettings, AppSettings, UpdateSettings, VoiceDelegationSe
  * restart is the one thing an update must not do until the operator says so.
  */
 export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
-  channel: 'release',
+  // The launcher passes the channel the installer was given.
+  channel: process.env.DOMO_CHANNEL || 'release',
   checkIntervalMinutes: 60,
   autoApply: false,
   minHoursBetweenApplies: 1
