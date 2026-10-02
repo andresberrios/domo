@@ -40,10 +40,14 @@ export type LocalModelRequest =
   | { op: 'transcribe', model: string, audio: Float32Array, prompt: string, language: string }
   /** Kokoro's own sentence splitter. */
   | { op: 'sentences', text: string }
+  /** Loads Kokoro, for a warm-up. */
+  | { op: 'speaker' }
   /** Kokoro, answered with `audio` messages piece by piece, then a result. */
   | { op: 'speak', pieces: string[], voice: string, styleTokens: number | null, pauseSeconds: number }
   /** Smart Turn's p(complete) for 16 kHz PCM16, or `null` when the model cannot be had. */
   | { op: 'turn', samples: Int16Array }
+  /** Fetches the turn model, for a warm-up. */
+  | { op: 'turn-model' }
 
 export type ToWorker =
   | { kind: 'request', id: string, request: LocalModelRequest }

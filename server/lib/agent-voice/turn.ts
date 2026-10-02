@@ -188,7 +188,8 @@ export function logMelFeatures(waveform: Float32Array): Float32Array {
 
 /* ------------------------------- model ------------------------------- */
 
-async function ensureModel(modelsDir: string): Promise<string> {
+/** The model file, fetched if it is not there yet. Exported for the warm-up. */
+export async function ensureModel(modelsDir: string): Promise<string> {
   const path = process.env.NUXT_SMART_TURN_MODEL || join(modelsDir, MODEL_FILE)
   if (await access(path).then(() => true, () => false)) return path
   await mkdir(dirname(path), { recursive: true })

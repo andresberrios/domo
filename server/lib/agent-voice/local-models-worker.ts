@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { FromWorker, LocalModelRequest, ToWorker } from './local-models-host'
-import { turnProbability } from './turn'
+import { ensureModel, turnProbability } from './turn'
 
 /**
  * The open speech models, in a process of their own (see
@@ -249,10 +249,15 @@ async function run(id: string, request: LocalModelRequest): Promise<unknown> {
       return transcribe(request.model, request.audio, request.prompt, request.language)
     case 'sentences':
       return sentencesOf(request.text)
+    case 'speaker':
+      await ensureSpeaker()
+      return null
     case 'speak':
       return speak(id, request.pieces, request.voice, request.styleTokens, request.pauseSeconds)
     case 'turn':
       return turnProbability(request.samples, modelsDir)
+    case 'turn-model':
+      return ensureModel(modelsDir)
   }
 }
 
