@@ -73,9 +73,10 @@ unexpected way.
   fails on Docker Desktop.
 - **Docker Desktop forwards a socket only if its host path is at most 88
   bytes, and fails silently past that.** The mount succeeds and every
-  connection is refused. Sockets live at `~/.domo/s/…` for this reason
-  (`doodSocketPath`). Changing how the path is derived breaks every existing
-  environment until it is recreated, because the path is fixed into its mounts.
+  connection is refused. Sockets live at `~/.domo/s/<install id>/…` for this
+  reason (`doodSocketPath`); the id is made once into `<data>/install-id`.
+  Changing how the path is derived breaks every existing environment until it
+  is recreated, because the path is fixed into its mounts.
 - **Docker Desktop cannot `docker restart` a container that mounts a host
   socket.** Stop and start it instead, as Domo does (`restartAsStop`).
 

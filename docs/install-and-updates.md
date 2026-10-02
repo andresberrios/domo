@@ -62,7 +62,7 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
   previous ->   releases/<sha>      the one before it, kept for rollback
   node/         the official Node LTS tarball for this platform (.node-version)
   bin/          caddy, uv, pnpm, domo.mjs (the launcher) and `domo`, a shim for it
-  data/         uploads, models, voices, pocket-tts.pid (NUXT_DATA_DIR)
+  data/         uploads, models, voices, install-id, pocket-tts.pid (NUXT_DATA_DIR)
   .env          keys and overrides, read by the launcher at every server start
   state.json    channel, last apply; logs/domo.log, logs/update.log
   supervisor.pid, update.lock (a live pid), restart-requested, update-failed.json
