@@ -6,7 +6,10 @@
 # `DOMO_HTTPS_ADDRESS=my-mac.local:3766 pnpm dev`. The defaults below are
 # `pnpm dev`'s; an installed Domo's supervisor sets all three (3666, 3667).
 {
-	admin off
+	# The admin API on a unix socket, never TCP 2019: a container reaches the host
+	# by `host.docker.internal`, and the API reconfigures the server. `caddy trust`
+	# needs it: it asks the running server for the root certificate to install.
+	admin {$DOMO_CADDY_ADMIN:off}
 	skip_install_trust
 }
 

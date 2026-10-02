@@ -25,6 +25,7 @@ const P = {
   node: join(HOME, 'node', 'bin', 'node'),
   pnpm: join(HOME, 'bin', 'pnpm'),
   caddy: join(HOME, 'bin', 'caddy'),
+  caddySocket: join(HOME, 'caddy.sock'),
   bin: join(HOME, 'bin'),
   launcher: join(HOME, 'bin', 'domo.mjs'),
   data: join(HOME, 'data'),
@@ -135,6 +136,9 @@ function serverEnv() {
   env.HOST = '0.0.0.0'
   env.DOMO_HTTPS_ADDRESS ||= 'localhost:3666'
   env.DOMO_HTTPS_PORT = env.DOMO_HTTPS_ADDRESS.split(':').pop() || '3666'
+  // Caddy's admin API, on a socket of this install's own: what `domo trust` asks
+  // for the root certificate.
+  env.DOMO_CADDY_ADMIN ||= `unix/${P.caddySocket}`
   env.NUXT_DATA_DIR ||= P.data
   // Not `domo-dev-`, which `pnpm dev` uses, nor a prefix of it: the leftover
   // report attributes by prefix, and both may run on one daemon.
@@ -714,19 +718,28 @@ async function install(args) {
     return
   }
 
-  if (!args.includes('--skip-trust')) {
-    log('caddy trust (so the browser accepts the local certificate; this may ask for your password)')
-    const trust = sh(P.caddy, ['trust'], { stdio: 'inherit' })
-    if (!trust.ok) log('caddy trust failed; the browser will warn about the certificate until you run `caddy trust`')
-  }
-
   serviceStart()
   const env = serverEnv()
   const ok = await healthy(env, HEALTH_TIMEOUT_MS)
   const url = `https://${env.DOMO_HTTPS_ADDRESS}`
   if (!ok) fail(`Domo did not come up within a minute; see ${P.log}`)
+  // After the start: the certificate is made by the running server, and it is
+  // the running server `caddy trust` asks for it.
+  if (!args.includes('--skip-trust')) trust()
   console.log(`\n  Domo is running at ${url}\n`)
   if (!args.includes('--no-open')) sh(platform() === 'darwin' ? 'open' : 'xdg-open', [url])
+}
+
+/**
+ * Install Caddy's root certificate into the system trust stores, so the browser
+ * accepts `https://localhost`. Asks for the password: macOS and Linux both
+ * guard their stores. Needs the service running, which holds the certificate.
+ */
+function trust() {
+  if (!supervisorPid()) fail('the service is not running; start it with `domo start`, then run `domo trust`')
+  log('caddy trust (so the browser accepts the local certificate; this may ask for your password)')
+  const result = sh(P.caddy, ['trust', '--address', serverEnv().DOMO_CADDY_ADMIN], { stdio: 'inherit' })
+  if (!result.ok) log('caddy trust failed; the browser will warn about the certificate until `domo trust` succeeds')
 }
 
 // --------------------------------------------------------------------------
@@ -737,6 +750,7 @@ const HELP = `domo <command>
   start | stop        start or stop the login service
   restart             restart the server onto the current release
   status              what is installed and whether it answers
+  trust               make the browser accept the local certificate (asks for your password)
   logs                follow the log
   update [--check] [--json] [--channel <branch>] [--force] [--no-restart]
                       fetch, build and switch to the newest commit of the channel
@@ -754,6 +768,7 @@ try {
     case 'stop': serviceStop(); break
     case 'restart': restart(); break
     case 'status': await status(); break
+    case 'trust': trust(); break
     case 'logs': logs(); break
     case 'update': await update(args); break
     case 'install': await install(args); break

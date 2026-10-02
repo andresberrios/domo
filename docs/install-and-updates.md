@@ -241,12 +241,14 @@ GitHub URL, run as `curl -fsSL … | sh`:
    (versions pinned in the script).
 4. Hand over to `domo install`, which writes `.env` from `.env.example` if
    absent, runs `domo update --force --no-restart` to build and place the
-   first release, runs `caddy trust`, installs the launchd or systemd unit,
-   starts it and opens the browser. `--no-service` stops after the build,
-   for running `domo run` under a supervisor of one's own.
+   first release, installs the launchd or systemd unit, starts it, runs
+   `caddy trust` against the running server's admin socket (`~/.domo/caddy.sock`;
+   `caddy trust` asks a running server for its root certificate, so it cannot
+   go before the start) and opens the browser. `--no-service` stops after the
+   build, for running `domo run` under a supervisor of one's own.
 
 `domo` subcommands: `run` (the supervisor), `start`, `stop`, `restart`,
-`status`, `logs`, `update [--check] [--json] [--channel …] [--force]
+`status`, `trust`, `logs`, `update [--check] [--json] [--channel …] [--force]
 [--no-restart]`, `install`, `uninstall`. One plain `.mjs` file at
 `bin/domo.mjs`, so it needs no build step and runs on the bundled Node.
 

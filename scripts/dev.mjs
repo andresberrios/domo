@@ -21,6 +21,11 @@ process.env.DOMO_HTTPS_PORT = address.split(':').pop() || '3766'
 // leaves PORT unset, so agents dialled 3000 whatever the flag said.
 process.env.PORT = port
 
+// Caddy's admin API, which `caddy trust --address unix//tmp/domo-dev-caddy.sock`
+// asks for the root certificate (once, while this runs). A second dev server
+// sets its own, or `off`.
+process.env.DOMO_CADDY_ADMIN ??= 'unix//tmp/domo-dev-caddy.sock'
+
 if (spawnSync('caddy', ['version']).error) {
   console.error('caddy not found on PATH — install it (e.g. `brew install caddy`).')
   process.exit(1)

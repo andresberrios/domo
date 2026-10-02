@@ -47,6 +47,7 @@ starts it as a login service (launchd on macOS, systemd on Linux) and opens
 ~/.domo/bin/domo status    # what is installed, and is it answering
 ~/.domo/bin/domo update    # build and switch to the newest commit; --check only looks
 ~/.domo/bin/domo restart   # after editing .env
+~/.domo/bin/domo trust     # if the browser warns about the certificate; asks for your password
 ~/.domo/bin/domo logs
 ~/.domo/bin/domo uninstall # stop starting at login; keeps ~/.domo
 ```
@@ -71,8 +72,8 @@ Needs Node 22+, pnpm 10+ and [Caddy](https://caddyserver.com) on your `PATH`
 cp .env.example .env     # add your Gemini or OpenAI key
 docker compose up -d     # Postgres :54321, Electric :30000
 pnpm install
-caddy trust              # once, so the browser accepts Caddy's certificate
 pnpm dev                 # open https://localhost:3766
+caddy trust --address unix//tmp/domo-dev-caddy.sock   # once, while it runs: the browser accepts Caddy's certificate
 ```
 
 An installed Domo and `pnpm dev` run side by side: the install is at `:3666`
