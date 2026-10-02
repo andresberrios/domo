@@ -1,12 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createReadStream, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { clonedVoiceId } from '../../../shared/agent-voice'
 import { dataDir } from '../paths'
-import { storedSecret } from '../secret-settings'
 import type { SpeechChunk } from './speech'
 import { clonedVoiceSamplePath, isClonedVoiceId } from './voice-store'
 
@@ -20,9 +19,12 @@ import { clonedVoiceSamplePath, isClonedVoiceId } from './voice-store'
  * started through `uvx` on first use and kept running, which holds the model
  * in memory; or it talks to one already running at `pocketUrl`. The server
  * answers `POST /tts` (form: `text`, and `voice_url` for a built-in voice)
- * with WAV streamed as it is made. Cloning a voice from a sample needs
- * Kyutai's gated weights (a Hugging Face token that has accepted their
- * terms, `HF_TOKEN`); without them only the built-in voices work.
+ * with WAV streamed as it is made. Cloning a voice from a sample needs the
+ * weights Kyutai gates behind its terms; Domo's own model config
+ * (`POCKET_CONFIG`) fetches them from a mirror on Domo's GitHub releases (CC
+ * BY 4.0, attributed there), so nobody needs a Hugging Face account. If that
+ * download fails Pocket falls back to the open weights, and only the built-in
+ * voices work.
  *
  * A cloned voice goes to Pocket as a URL rather than an upload, because
  * Pocket keeps the state it computes from a sample per URL: an upload is
@@ -38,9 +40,85 @@ const POCKET_VERSION = '3.3.0'
 const START_TIMEOUT_MS = 10 * 60_000
 
 /** How Pocket fails a request for a clone when it has only the weights without cloning. */
-export const CLONING_UNAVAILABLE = 'Pocket TTS has no voice-cloning weights, so it cannot speak with a cloned voice. '
-  + 'Accept Kyutai\'s terms on huggingface.co/kyutai/pocket-tts, set HF_TOKEN to a token of that account '
-  + 'in Domo\'s environment, and restart Domo.'
+export const CLONING_UNAVAILABLE = 'Pocket TTS could not fetch the voice-cloning weights from github.com when it started, '
+  + 'so it cannot speak with a cloned voice. Check the connection and restart Domo.'
+
+/** Kyutai's English weights with voice cloning, mirrored (see the release page for the licence and terms). */
+const CLONING_WEIGHTS_URL = 'https://github.com/andresberrios/domo/releases/download/pocket-tts-weights-2026-09/english-model.safetensors'
+
+/**
+ * Pocket's own `english.yaml` for this version, with the cloning weights
+ * taken from the mirror instead of the gated Hugging Face repository; the
+ * open weights and the tokenizer stay where Pocket keeps them. Tied to
+ * `POCKET_VERSION`: a new Pocket may change the architecture below.
+ */
+const POCKET_CONFIG = `weights_path: ${CLONING_WEIGHTS_URL}
+weights_path_without_voice_cloning: hf://kyutai/pocket-tts-without-voice-cloning/languages/english/model.safetensors@e7205b6ee50e654a5ea19f0e9df2b0813b05e921
+default_temperature: 0.3
+
+flow_lm:
+  insert_bos_before_voice: true
+  dtype: float32
+  flow:
+    depth: 6
+    dim: 512
+  transformer:
+    d_model: 1024
+    hidden_scale: 4
+    max_period: 10000
+    num_heads: 16
+    num_layers: 6
+  lookup_table:
+    dim: 1024
+    n_bins: 4000
+    tokenizer: tokenizers
+    tokenizer_path: hf://kyutai/pocket-tts-without-voice-cloning/languages/english/tokenizer.json@00eac05ed3d16bdc3f6b5d598874019c34a89214
+
+mimi:
+  dtype: float32
+  sample_rate: 24000
+  inner_dim: 32
+  outer_dim: 512
+  channels: 1
+  frame_rate: 12.5
+  seanet:
+    dimension: 512
+    channels: 1
+    n_filters: 64
+    n_residual_layers: 1
+    ratios:
+    - 6
+    - 5
+    - 4
+    kernel_size: 7
+    residual_kernel_size: 3
+    last_kernel_size: 3
+    dilation_base: 2
+    pad_mode: constant
+    compress: 2
+  transformer:
+    d_model: 512
+    num_heads: 8
+    num_layers: 2
+    layer_scale: 0.01
+    context: 250
+    dim_feedforward: 2048
+    input_dimension: 512
+    output_dimensions:
+    - 512
+  quantizer:
+    dimension: 32
+    output_dimension: 512
+`
+
+/** The config file Pocket is started with, written fresh each start so an upgrade never reads an old one. */
+function pocketConfigPath(): string {
+  const dir = join(dataDir(), 'models')
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, `pocket-tts-${POCKET_VERSION}.yaml`)
+  writeFileSync(path, POCKET_CONFIG)
+  return path
+}
 
 interface PocketLog {
   /** Characters written so far, to find what a request added. */
@@ -115,13 +193,8 @@ async function startServer(): Promise<string> {
   // it could not tell. fd 3 carries the pipe past the backgrounded reader,
   // whose own stdin a non-interactive shell points at /dev/null.
   const watchdog = 'exec 3<&0; (cat <&3 >/dev/null; kill -TERM 0) & exec "$@" </dev/null 3<&-'
-  const huggingFaceToken = process.env.HF_TOKEN || storedSecret('huggingFaceToken')
-  const child = spawn('sh', ['-c', watchdog, 'pocket', 'uvx', '--from', `pocket-tts==${POCKET_VERSION}`, 'pocket-tts', 'serve', '--host', '127.0.0.1', '--port', String(port)], {
-    env: {
-      ...process.env,
-      ...(huggingFaceToken && { HF_TOKEN: huggingFaceToken }),
-      HF_HOME: process.env.HF_HOME ?? join(dataDir(), 'models', 'hf')
-    },
+  const child = spawn('sh', ['-c', watchdog, 'pocket', 'uvx', '--from', `pocket-tts==${POCKET_VERSION}`, 'pocket-tts', 'serve', '--host', '127.0.0.1', '--port', String(port), '--config', pocketConfigPath()], {
+    env: { ...process.env, HF_HOME: process.env.HF_HOME ?? join(dataDir(), 'models', 'hf') },
     stdio: ['pipe', 'ignore', 'pipe'],
     detached: true
   })
@@ -161,6 +234,11 @@ async function startServer(): Promise<string> {
   }
   if (child.pid) killGroup(child.pid)
   throw new Error('Pocket TTS did not start within ten minutes')
+}
+
+/** Start Domo's own server ahead of the first request, which downloads it and the model. */
+export function warmPocket(configured: string): Promise<string> {
+  return pocketServer(configured)
 }
 
 /** The server to speak through: the one in Settings, or Domo's own, started once. */
@@ -218,10 +296,20 @@ function onLoopback(url: string): boolean {
  * sample on this machine's loopback, or as the sample itself for a Pocket
  * server that cannot reach the loopback.
  */
+/**
+ * A built-in voice as the state Pocket precomputed for it, by path. A bare
+ * name resolves only under Pocket's own language configs, and Domo starts
+ * Pocket on a config of its own (`POCKET_CONFIG`); the path and revision are
+ * the ones Pocket 3.3.0 resolves a name to, in the open repository.
+ */
+export function builtInVoiceUrl(name: string): string {
+  return `hf://kyutai/pocket-tts-without-voice-cloning/languages/english/embeddings/${name}.safetensors@4e1e0a3e611c51c0b4ed8174fc10f32a54644303`
+}
+
 export async function appendPocketVoice(form: FormData, voice: string, url: string): Promise<void> {
   const id = clonedVoiceId(voice)
   if (id === null) {
-    form.append('voice_url', voice || 'alba')
+    form.append('voice_url', builtInVoiceUrl(voice || 'alba'))
     return
   }
   const path = clonedVoiceSamplePath(id)
@@ -245,7 +333,7 @@ async function failure(response: Response, cloned: boolean, mark: number | null)
   if (cloned && response.status >= 500) {
     if (mark === null) {
       return new Error(`Pocket TTS could not use the cloned voice (${response.status}). If that server has no voice-cloning weights, `
-        + 'accept Kyutai\'s terms on huggingface.co/kyutai/pocket-tts and give it HF_TOKEN.')
+        + 'leave the server field empty and let Domo run its own.')
     }
     // The traceback reaches the log just after the 500 goes out.
     const log = server?.log

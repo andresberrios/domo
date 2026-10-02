@@ -663,8 +663,6 @@ export interface AppSettings {
   anthropicApiKey: string
   /** From `claude setup-token`: how Claude Code authenticates in an environment (`NUXT_CLAUDE_CODE_OAUTH_TOKEN`). */
   claudeCodeOauthToken: string
-  /** A Hugging Face token that accepted Kyutai's terms, for Pocket TTS voice cloning (`HF_TOKEN`). */
-  huggingFaceToken: string
   /**
    * Whether OpenCode asks before touching a path outside the session's working
    * directory, per surface. `ask` is OpenCode's own behaviour and Domo then
@@ -840,7 +838,7 @@ export interface AgentVoiceSettings {
 
 /** The credentials in `AppSettings`: stored, never answered, each reported as a boolean in `AppSettingsView`. */
 export const SECRET_SETTING_KEYS = [
-  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'huggingFaceToken', 'openCodeApiKey'
+  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey'
 ] as const
 export type SecretSettingKey = typeof SECRET_SETTING_KEYS[number]
 
@@ -858,7 +856,6 @@ export interface AppSettingsView extends Omit<AppSettings, SecretSettingKey> {
   hasOpenAiKey: boolean
   /** A `claude setup-token` token, which is what an environment session and the plan-limit poll use. */
   hasClaudeCodeToken: boolean
-  hasHuggingFaceToken: boolean
   /** A console key, which is what a container session and the usage poll use. */
   hasOpenCodeKey: boolean
   /** A login on this machine, which is all a host session needs and all Domo can see. */

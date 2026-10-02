@@ -48,13 +48,6 @@ const credentials: Credential[] = [
     help: 'Optional. Bills the API, not your subscription, so it is used only when there is no Claude login or token.',
     placeholder: 'sk-ant-api…',
     configured: settings => settings.hasAnthropicKey
-  },
-  {
-    key: 'huggingFaceToken',
-    label: 'Hugging Face token',
-    help: 'Optional. For cloning voices with Pocket TTS: a token of an account that accepted Kyutai\'s terms on huggingface.co/kyutai/pocket-tts.',
-    placeholder: 'hf_…',
-    configured: settings => settings.hasHuggingFaceToken
   }
 ]
 

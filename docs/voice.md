@@ -105,11 +105,13 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
 - **Pocket TTS is Kyutai's CPU voice model, run by Domo** (`pocket-speech.ts`):
   `uvx pocket-tts serve` on a free port, started on first use (a few minutes
   the first time) and kept running, or a server at `pocketUrl`. Voice
-  cloning needs Kyutai's gated weights, so only the built-in voices work
-  until a Hugging Face token that accepted their terms is set, in Settings →
-  General or `HF_TOKEN` (read when Pocket starts). Pocket fails a clone with a
-  bare 500; the reason
-  is only in its log, which Domo reads for its own server.
+  cloning needs the weights Kyutai gates behind its terms on Hugging Face;
+  Domo starts Pocket with a config of its own that fetches them from a
+  mirror on Domo's GitHub releases (`pocket-tts-weights-…`, CC BY 4.0,
+  attributed there), so no user needs a Hugging Face account. A failed
+  download falls back to the open weights and the built-in voices. Pocket
+  fails a clone with a bare 500; the reason is only in its log, which Domo
+  reads for its own server.
 - **Cloned voices are files, never rows** (`agent-voice/voice-store.ts`,
   `<data>/voices`): a synced table would stream the user's voice to every
   tab. Pocket gets a clone as a `voice_url` on a loopback server of Domo's

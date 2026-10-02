@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { adapterEnv, adapterLaunch, opencodeConfigContent } from '../../server/lib/acp/adapter-process'
 import { forgetSecretSettings, rememberSecretSettings } from '../../server/lib/secret-settings'
 
-const NO_SECRETS = { geminiApiKey: '', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', huggingFaceToken: '', openCodeApiKey: '' }
+const NO_SECRETS = { geminiApiKey: '', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', openCodeApiKey: '' }
 
 /** `gh` must never be spawned from a test, so the lookup is always injected. */
 const noGh = async () => null

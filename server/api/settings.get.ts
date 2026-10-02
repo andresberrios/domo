@@ -2,7 +2,6 @@ import { geminiApiKey } from '../lib/gemini'
 import { openAiApiKey } from '../lib/openai'
 import { anthropicApiKey, claudeOauthToken } from '../lib/claude-credentials'
 import { getSettings } from '../lib/settings'
-import { storedSecret } from '../lib/secret-settings'
 import { openCodeCredentialState } from '../lib/opencode-credentials'
 import { SECRET_SETTING_KEYS, type AppSettings, type AppSettingsView, type SecretSettingKey } from '../../shared/types'
 
@@ -21,7 +20,6 @@ export default defineEventHandler(async (): Promise<AppSettingsView> => {
     hasAnthropicKey: !!anthropicApiKey(),
     hasOpenAiKey: !!openAiApiKey(),
     hasClaudeCodeToken: !!claudeOauthToken(),
-    hasHuggingFaceToken: !!(process.env.HF_TOKEN || storedSecret('huggingFaceToken')),
     /** A console key, which is what a container session and the usage poll use. */
     hasOpenCodeKey: openCode.key,
     /** A login on this machine, which is all a host session needs and all Domo can see. */

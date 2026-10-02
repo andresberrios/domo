@@ -18,7 +18,6 @@ const stored = {
   openAiApiKey: 'sk-stored',
   anthropicApiKey: 'sk-ant-stored',
   claudeCodeOauthToken: 'sk-ant-oat-stored',
-  huggingFaceToken: 'hf_stored',
   openCodeApiKey: ''
 }
 
@@ -40,7 +39,6 @@ describe('credentials stored in Settings', () => {
     expect(openAiApiKey()).toBe('sk-stored')
     expect(anthropicApiKey()).toBe('sk-ant-stored')
     expect(claudeOauthToken()).toBe('sk-ant-oat-stored')
-    expect(storedSecret('huggingFaceToken')).toBe('hf_stored')
     expect(storedSecret('openCodeApiKey')).toBeNull()
   })
 

@@ -114,7 +114,6 @@ export const DEFAULTS: AppSettings = {
   openAiApiKey: '',
   anthropicApiKey: '',
   claudeCodeOauthToken: '',
-  huggingFaceToken: '',
   // Environments permissive, the host as OpenCode has it. See
   // `AppSettings.openCodePermission` for why the two differ.
   openCodePermission: { host: 'ask', environment: 'allow' },
