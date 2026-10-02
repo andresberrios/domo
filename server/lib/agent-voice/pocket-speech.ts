@@ -43,7 +43,16 @@ const START_TIMEOUT_MS = 10 * 60_000
 export const CLONING_UNAVAILABLE = 'Pocket TTS could not fetch the voice-cloning weights from github.com when it started, '
   + 'so it cannot speak with a cloned voice. Check the connection and restart Domo.'
 
-/** Kyutai's English weights with voice cloning, mirrored (see the release page for the licence and terms). */
+/**
+ * Kyutai's English weights with voice cloning, mirrored (see the release page
+ * for the licence and terms).
+ *
+ * TODO: English only. Pocket has French, German, Spanish, Portuguese, Italian
+ * and Dutch models (`pocket-tts serve --language`), each its own
+ * `languages/<lang>/model.safetensors` in the gated repository; speaking a
+ * cloned voice in another language means mirroring that file on the same
+ * release, a config per language, and choosing by `agentVoice.language`.
+ */
 const CLONING_WEIGHTS_URL = 'https://github.com/andresberrios/domo/releases/download/pocket-tts-weights-2026-09/english-model.safetensors'
 
 /**
