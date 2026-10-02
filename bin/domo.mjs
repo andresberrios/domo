@@ -9,10 +9,10 @@
 // and never this file.
 import { spawn, spawnSync } from 'node:child_process'
 import {
-  cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync,
+  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
   renameSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs'
-import { homedir, platform, userInfo } from 'node:os'
+import { arch, homedir, platform, tmpdir, userInfo } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -22,9 +22,11 @@ const P = {
   releases: join(HOME, 'releases'),
   current: join(HOME, 'current'),
   previous: join(HOME, 'previous'),
+  nodeDir: join(HOME, 'node'),
   node: join(HOME, 'node', 'bin', 'node'),
   pnpm: join(HOME, 'bin', 'pnpm'),
   caddy: join(HOME, 'bin', 'caddy'),
+  uv: join(HOME, 'bin', 'uv'),
   caddySocket: join(HOME, 'caddy.sock'),
   bin: join(HOME, 'bin'),
   launcher: join(HOME, 'bin', 'domo.mjs'),
@@ -213,6 +215,99 @@ async function healthy(env, timeoutMs, abort = () => false) {
     await sleep(500)
   }
   return false
+}
+
+// --------------------------------------------------------------------------
+// The bundled tools: Node, pnpm, Caddy and uv at the versions a checkout's
+// `.tool-versions` names, so a release can move any of them.
+// --------------------------------------------------------------------------
+
+function toolVersions(dir) {
+  const out = {}
+  for (const line of readFileSync(join(dir, '.tool-versions'), 'utf8').split('\n')) {
+    const [tool, version] = line.trim().split(/\s+/)
+    if (tool && version && !tool.startsWith('#')) out[tool] = version
+  }
+  return out
+}
+
+function installedVersion(file, args, pattern) {
+  if (!existsSync(file)) return null
+  const result = spawnSync(file, args, { encoding: 'utf8', timeout: 20_000 })
+  return result.status === 0 ? (result.stdout.match(pattern)?.[1] ?? null) : null
+}
+
+async function download(url, file) {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`${url}: ${response.status}`)
+  writeFileSync(file, Buffer.from(await response.arrayBuffer()))
+}
+
+function untar(file, dir, ...args) {
+  const result = spawnSync('tar', ['-xzf', file, '-C', dir, ...args], { encoding: 'utf8' })
+  if (result.status !== 0) throw new Error(`tar ${file}: ${(result.stderr || '').trim()}`)
+}
+
+/**
+ * Each tool fetched only when its version differs from the pin. Node is
+ * replaced as a directory swap: the launcher that runs on the old one keeps
+ * its binary's inode until it exits, and the next server starts on the new.
+ * uv is optional (Pocket TTS), so its failure is a line, not an error.
+ */
+async function ensureTools(dir) {
+  const wanted = toolVersions(dir)
+  const os = platform() === 'darwin' ? 'darwin' : 'linux'
+  const cpu = arch() === 'arm64' ? 'arm64' : 'x64'
+  const tmp = mkdtempSync(join(tmpdir(), 'domo-tools-'))
+  mkdirSync(P.bin, { recursive: true })
+  try {
+    if (wanted.nodejs && installedVersion(P.node, ['-v'], /v(\S+)/) !== wanted.nodejs) {
+      log(`downloading Node ${wanted.nodejs}`)
+      const tgz = join(tmp, 'node.tgz')
+      await download(`https://nodejs.org/dist/v${wanted.nodejs}/node-v${wanted.nodejs}-${os}-${cpu}.tar.gz`, tgz)
+      const fresh = `${P.nodeDir}.new`
+      rmSync(fresh, { recursive: true, force: true })
+      mkdirSync(fresh, { recursive: true })
+      untar(tgz, fresh, '--strip-components=1')
+      const old = `${P.nodeDir}.old`
+      rmSync(old, { recursive: true, force: true })
+      if (existsSync(P.nodeDir)) renameSync(P.nodeDir, old)
+      renameSync(fresh, P.nodeDir)
+      rmSync(old, { recursive: true, force: true })
+    }
+    if (wanted.pnpm && installedVersion(P.pnpm, ['-v'], /(\S+)/) !== wanted.pnpm) {
+      log(`downloading pnpm ${wanted.pnpm}`)
+      const tgz = join(tmp, 'pnpm.tgz')
+      await download(`https://github.com/pnpm/pnpm/releases/download/v${wanted.pnpm}/pnpm-${os}-${cpu}.tar.gz`, tgz)
+      const into = join(tmp, 'pnpm')
+      mkdirSync(into)
+      untar(tgz, into)
+      const binary = readdirSync(into).find(name => name.startsWith('pnpm'))
+      if (!binary) throw new Error('the pnpm archive holds no pnpm binary')
+      cpSync(join(into, binary), P.pnpm)
+    }
+    if (wanted.caddy && installedVersion(P.caddy, ['version'], /v?(\d+\.\d+\.\d+)/) !== wanted.caddy) {
+      log(`downloading Caddy ${wanted.caddy}`)
+      const tgz = join(tmp, 'caddy.tgz')
+      await download(`https://github.com/caddyserver/caddy/releases/download/v${wanted.caddy}/caddy_${wanted.caddy}_${os === 'darwin' ? 'mac' : 'linux'}_${cpu === 'arm64' ? 'arm64' : 'amd64'}.tar.gz`, tgz)
+      untar(tgz, tmp, 'caddy')
+      cpSync(join(tmp, 'caddy'), P.caddy)
+    }
+    if (wanted.uv && installedVersion(P.uv, ['--version'], /uv (\S+)/) !== wanted.uv) {
+      try {
+        log(`downloading uv ${wanted.uv} (for the Pocket TTS voice; optional)`)
+        const triple = `${cpu === 'arm64' ? 'aarch64' : 'x86_64'}-${os === 'darwin' ? 'apple-darwin' : 'unknown-linux-gnu'}`
+        const tgz = join(tmp, 'uv.tgz')
+        await download(`https://github.com/astral-sh/uv/releases/download/${wanted.uv}/uv-${triple}.tar.gz`, tgz)
+        untar(tgz, tmp)
+        for (const name of ['uv', 'uvx']) cpSync(join(tmp, `uv-${triple}`, name), join(P.bin, name))
+      } catch (error) {
+        log(`uv could not be installed (${error.message}); Pocket TTS will say so if you pick it`)
+      }
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -557,6 +652,7 @@ async function buildRelease(commit, env) {
 
   log(`checking out ${commit.slice(0, 7)}`)
   git(['worktree', 'add', '--quiet', '--detach', dir, commit])
+  await ensureTools(dir)
   const buildEnv = { ...env, CI: '1', COREPACK_ENABLE_STRICT: '0' }
   delete buildEnv.NODE_ENV
   log('pnpm install --frozen-lockfile')
@@ -700,10 +796,10 @@ async function update(args) {
 async function install(args) {
   const channel = (args.indexOf('--channel') >= 0 ? args[args.indexOf('--channel') + 1] : null) || readState().channel
   writeState({ channel })
-  for (const [what, file] of [['Node', P.node], ['pnpm', P.pnpm], ['Caddy', P.caddy], ['the checkout', join(P.app, '.git')]]) {
-    if (!existsSync(file)) fail(`${what} is missing at ${file}; run scripts/install.sh`)
-  }
+  if (!existsSync(join(P.app, '.git'))) fail(`there is no checkout at ${P.app}; run scripts/install.sh`)
   mkdirSync(P.bin, { recursive: true })
+  // The installer brought Node, which this runs on; the rest come here, as they do on every update.
+  await ensureTools(P.app)
   mkdirSync(P.data, { recursive: true })
   mkdirSync(P.logs, { recursive: true })
   if (!existsSync(P.env)) {

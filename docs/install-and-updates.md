@@ -60,7 +60,7 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
   releases/     one git worktree per commit, with its own node_modules and .output
   current  ->   releases/<sha>      the release the server runs from
   previous ->   releases/<sha>      the one before it, kept for rollback
-  node/         the official Node LTS tarball for this platform (.node-version)
+  node/         the official Node tarball for this platform (.tool-versions)
   bin/          caddy, uv, pnpm, domo.mjs (the launcher) and `domo`, a shim for it
   data/         uploads, models, voices, install-id, pocket-tts.pid (NUXT_DATA_DIR)
   .env          keys and overrides, read by the launcher at every server start
@@ -236,9 +236,11 @@ GitHub URL, run as `curl -fsSL … | sh`:
 2. `git clone --depth 1 --branch release` into `~/.domo/app`. (git ignores
    `--depth` for a plain local path, so a test against a local checkout
    names it as `file:///…`.)
-3. Download the Node LTS tarball named in `.node-version` into `~/.domo/node`,
-   and the pnpm, Caddy and `uv` binaries for the platform into `~/.domo/bin`
-   (versions pinned in the script).
+3. Download the Node named in the checkout's `.tool-versions` into
+   `~/.domo/node`: the launcher runs on it. The launcher then brings pnpm,
+   Caddy and `uv` at the versions the same file names (`ensureTools`), on
+   install and before every build, so a release moves any of them — Node
+   included, by swapping the directory — by editing that one file.
 4. Hand over to `domo install`, which writes `.env` from `.env.example` if
    absent, runs `domo update --force --no-restart` to build and place the
    first release, installs the launchd or systemd unit, starts it, runs
