@@ -26,8 +26,9 @@ const scope = {
 }
 const LABEL: [string, string] = ['domo.env', 'env_abc']
 
+// The compose project is stored with the environment's prefix (`labels.ts`) and shown without it.
 const labels = {
-  'com.docker.compose.project': 'stack',
+  'com.docker.compose.project': 'env_abc-stack',
   'domo.env': 'env_abc',
   'domo.ports': '[{"containerPort":80,"protocol":"tcp","hostPort":8080}]',
   'domo.binds': JSON.stringify({ Binds: ['data:/data', '/workspaces/domo/site:/site:ro'] }),
@@ -239,8 +240,8 @@ describe('eventForAgent', () => {
     ({ Type: 'container', Action: action, Actor: { ID: id, Attributes: attributes }, id, status: action })
 
   it('keeps the environment\'s container events, renamed, with Domo\'s labels hidden', () => {
-    const out = eventForAgent(container('c2', 'create', { 'name': 'env_abc-db', 'domo.env': 'env_abc', 'image': 'pg' }), eventScope()) as any
-    expect(out.Actor.Attributes).toEqual({ name: 'db', image: 'pg' })
+    const out = eventForAgent(container('c2', 'create', { 'name': 'env_abc-db', 'domo.env': 'env_abc', 'image': 'pg', 'com.docker.compose.project': 'env_abc-stack' }), eventScope()) as any
+    expect(out.Actor.Attributes).toEqual({ 'name': 'db', 'image': 'pg', 'com.docker.compose.project': 'stack' })
     const nested = eventForAgent(container('c3', 'create', { 'name': 'env_abc-x', 'domo.env': 'env_abc', 'domo.nested.env': 'env_inner' }), eventScope()) as any
     expect(nested.Actor.Attributes).toEqual({ 'name': 'x', 'domo.env': 'env_inner' })
   })

@@ -327,14 +327,34 @@ async function run() {
   log('stopped')
 }
 
-/** Postgres and Electric, from the release's compose file. Failure is reported in the UI, not here. */
+/**
+ * Postgres and Electric, from the release's compose file. Postgres holds the
+ * data, so an existing container is only ever started: never stopped or
+ * recreated, whatever compose would make of a changed file. Electric holds
+ * none, and compose may recreate it. Failure is reported in the UI, not here.
+ */
 async function composeUp(env) {
   const release = currentRelease()
   const file = join(release, 'docker-compose.yml')
   if (!existsSync(file)) return
-  log('docker compose up -d postgres electric')
-  const result = spawnSync('docker', ['compose', '-f', file, 'up', '-d', 'postgres', 'electric'], { env, encoding: 'utf8', timeout: 120_000 })
-  if (result.status !== 0) log(`compose failed: ${(result.stderr || result.error?.message || '').trim().split('\n').pop()}`)
+  const docker = (args, timeout = 120_000) => spawnSync('docker', args, { env, encoding: 'utf8', timeout })
+  const report = (result) => {
+    if (result.status !== 0) log(`failed: ${(result.stderr || result.error?.message || '').trim().split('\n').pop()}`)
+  }
+  const postgres = `${env.COMPOSE_PROJECT_NAME || 'domo'}-postgres-1`
+  if (docker(['container', 'inspect', postgres], 30_000).status === 0) {
+    log(`docker start ${postgres}`)
+    report(docker(['start', postgres]))
+  } else {
+    log('docker compose up -d --no-recreate postgres')
+    report(docker(['compose', '-f', file, 'up', '-d', '--no-recreate', 'postgres']))
+  }
+  for (let i = 0; i < 30; i++) {
+    if (docker(['inspect', '--format', '{{.State.Health.Status}}', postgres], 30_000).stdout?.trim() === 'healthy') break
+    await sleep(2000)
+  }
+  log('docker compose up -d --no-deps electric')
+  report(docker(['compose', '-f', file, 'up', '-d', '--no-deps', 'electric']))
 }
 
 // --------------------------------------------------------------------------

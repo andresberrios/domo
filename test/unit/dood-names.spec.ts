@@ -90,7 +90,7 @@ describe('filters', () => {
   it('adds the environment label to whatever the client asked for', () => {
     const scoped = scopeFilters({ label: ['com.docker.compose.project=api'], name: ['^web$'] }, ns,
       { label: 'domo.env=env_0123456789abcdef0123', kind: 'container' })
-    expect(scoped.label).toEqual(['com.docker.compose.project=api', 'domo.env=env_0123456789abcdef0123'])
+    expect(scoped.label).toEqual(['com.docker.compose.project=env_0123456789abcdef0123-api', 'domo.env=env_0123456789abcdef0123'])
     expect(scoped.name).toEqual(['^/?(?:env_0123456789abcdef0123-)?web$'])
   })
 })

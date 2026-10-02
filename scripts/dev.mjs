@@ -48,8 +48,11 @@ if (taken.length) {
   process.exit(1)
 }
 
+// Each child leads its own process group, so stopping kills the group: `nuxt
+// dev` runs Nitro in a worker of its own, which outlived its parent and kept
+// the port.
 const children = [
-  spawn('caddy', ['run', '--config', 'Caddyfile', '--adapter', 'caddyfile'], { stdio: 'inherit' }),
+  spawn('caddy', ['run', '--config', 'Caddyfile', '--adapter', 'caddyfile'], { stdio: 'inherit', detached: true }),
   // All interfaces, explicitly. Left to `localhost`, Nuxt binds `[::1]` only, and
   // Docker Desktop forwards `host.docker.internal` to 127.0.0.1: every agent in a
   // dev environment then gets `connection refused` from the mesh. (On a Linux
@@ -57,7 +60,7 @@ const children = [
   // answers on either.)
   // Anything else on the command line is Nuxt's: `pnpm dev --tunnel` is the
   // one that gets used, which puts the dev server behind a public URL.
-  spawn('nuxt', ['dev', '--port', port, '--public', ...process.argv.slice(2)], { stdio: 'inherit' })
+  spawn('nuxt', ['dev', '--port', port, '--public', ...process.argv.slice(2)], { stdio: 'inherit', detached: true })
 ]
 
 console.log(`\n  ➜ HTTPS: https://${address}/\n`)
@@ -69,7 +72,12 @@ function stop(code) {
   stopping = true
   exitCode = code
   for (const child of children) {
-    if (child.exitCode === null) child.kill('SIGTERM')
+    if (child.exitCode !== null) continue
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+    } catch {
+      child.kill('SIGTERM')
+    }
   }
 }
 

@@ -122,6 +122,11 @@ describe('rewriteContainerCreate — identity and networks', () => {
     expect(result.spec.Labels).toEqual({ 'com.docker.compose.project': 'api', 'domo.env': 'env_abc' })
   })
 
+  it('puts the compose project in the environment\'s namespace, like a name', () => {
+    const result = rewriteContainerCreate({ Labels: { 'com.docker.compose.project': 'api', 'com.docker.compose.service': 'web' } }, { ...scope, prefix: 'env_abc-' })
+    expect(result.spec.Labels).toEqual({ 'com.docker.compose.project': 'env_abc-api', 'com.docker.compose.service': 'web', 'domo.env': 'env_abc' })
+  })
+
   it('collects networks from both EndpointsConfig and NetworkMode', () => {
     const result = rewriteContainerCreate(
       {
@@ -166,6 +171,11 @@ describe('labelCreate — names', () => {
   it('puts a named network or volume in the environment\'s namespace', () => {
     expect(labelCreate({ Name: 'data' }, { labels: { 'domo.env': 'env_1' } }, 'env_1-'))
       .toEqual({ Name: 'env_1-data', Labels: { 'domo.env': 'env_1' } })
+  })
+
+  it('puts a compose stack\'s network in the namespace by its project label too', () => {
+    expect(labelCreate({ Name: 'stack_default', Labels: { 'com.docker.compose.project': 'stack', 'com.docker.compose.network': 'default' } }, { labels: { 'domo.env': 'env_1' } }, 'env_1-'))
+      .toEqual({ Name: 'env_1-stack_default', Labels: { 'com.docker.compose.project': 'env_1-stack', 'com.docker.compose.network': 'default', 'domo.env': 'env_1' } })
   })
 
   it('leaves a volume with no name to the daemon\'s random one', () => {

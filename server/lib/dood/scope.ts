@@ -158,7 +158,7 @@ export function scopeFilters(
   options: { label: string | null, kind: ObjectKind }
 ): Filters {
   const scoped: Filters = { ...filters }
-  const asked = (filters.label ?? []).map(escapeLabelFilter)
+  const asked = (filters.label ?? []).map(filter => escapeLabelFilter(filter, ns.prefix))
   if (asked.length || options.label) scoped.label = [...asked, ...(options.label ? [options.label] : [])]
   if (filters.name) scoped.name = filters.name.map(value => nameFilter(ns, value, options.kind === 'container'))
   return scoped

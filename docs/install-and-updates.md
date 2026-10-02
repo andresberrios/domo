@@ -74,7 +74,10 @@ coding-agent CLIs (already npm dependencies; Claude Code ships inside the
 Claude ACP adapter, Codex and OpenCode ship their binaries), the ONNX speech
 models (downloaded into `data/models` on first use, as today). Postgres and
 Electric keep running in Docker through the checked-in `docker-compose.yml`;
-the compose project name `domo` means the existing volume is reused.
+the compose project name `domo` means the existing volume is reused. The
+supervisor only ever `docker start`s an existing Postgres container, never
+stops or recreates it, and leaves Electric alone to `compose up --no-deps`,
+which may recreate it: Electric holds no data.
 
 A release is a worktree with a full `pnpm install`, not just the `.output`.
 Nitro's tracing carries the adapters' JavaScript but not the platform

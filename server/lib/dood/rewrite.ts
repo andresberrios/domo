@@ -37,6 +37,8 @@ export interface DoodScope {
   workspaceAlias?: WorkspaceAlias
   /** Stamped on every container so retiring the environment can sweep by label. */
   labels: Record<string, string>
+  /** `<envId>-`, what a compose project label is prefixed with (`labels.ts`). The scope layer prefixes the names. */
+  prefix?: string
   /**
    * The environment container's own mount table (`binds.ts`), which every
    * bind source is resolved against, read from `docker inspect`. The checkout
@@ -505,7 +507,7 @@ export function rewriteContainerCreate(input: unknown, scope: DoodScope, names?:
   }
 
   spec.Labels = {
-    ...escapeLabels(spec.Labels),
+    ...escapeLabels(spec.Labels, scope.prefix),
     ...scope.labels,
     ...(droppedPorts.length && { [REQUESTED_PORTS_LABEL]: JSON.stringify(droppedPorts) }),
     ...(Object.keys(originalBinds).length && { [REQUESTED_BINDS_LABEL]: JSON.stringify(originalBinds) }),
@@ -530,7 +532,7 @@ export function labelCreate(
   prefix = ''
 ): Record<string, unknown> {
   const spec = (input && typeof input === 'object' ? { ...input } : {}) as Record<string, unknown>
-  spec.Labels = { ...escapeLabels(spec.Labels), ...scope.labels }
+  spec.Labels = { ...escapeLabels(spec.Labels, prefix), ...scope.labels }
   if (prefix && typeof spec.Name === 'string' && spec.Name) spec.Name = `${prefix}${spec.Name}`
   return spec
 }

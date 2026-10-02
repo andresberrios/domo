@@ -18,8 +18,10 @@ unexpected way.
 - **Each environment sees the daemon as its own.** Names it gives are created
   as `<envId>-<name>` and shown back without the prefix everywhere, including
   error messages. Everything it makes carries `domo.env=<id>`, and lists,
-  events and prunes are narrowed to that label. What cannot be translated is
-  refused as `{"message":"Domo: …"}`.
+  events and prunes are narrowed to that label. Compose's project label gets
+  the same prefix, so a stack in an environment is never part of the host's
+  project of the same name. What cannot be translated is refused as
+  `{"message":"Domo: …"}`.
 - **The proxy is a byte splice, not an HTTP server.** Docker clients reuse one
   connection, and `POST /containers/{id}/wait` is a long poll. An in-order
   HTTP server queues the `start` behind the wait, and every `docker run`

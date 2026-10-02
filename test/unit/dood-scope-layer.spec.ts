@@ -185,7 +185,7 @@ describe('scope layer — lists and prunes', () => {
     const { send } = setup()
     const list = forwarded(await send(`GET /containers/json?all=1&filters=${encodeURIComponent('{"label":{"com.docker.compose.project=s":true}}')}`))
     expect(JSON.parse(list.query.get('filters')!)).toEqual({
-      label: { 'com.docker.compose.project=s': true, [`domo.env=${ENV}`]: true }
+      label: { [`com.docker.compose.project=${ENV}-s`]: true, [`domo.env=${ENV}`]: true }
     })
     const prune = forwarded(await send('POST /volumes/prune'))
     expect(JSON.parse(prune.query.get('filters')!)).toEqual({ label: { [`domo.env=${ENV}`]: true } })
