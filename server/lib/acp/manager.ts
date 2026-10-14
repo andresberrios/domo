@@ -69,7 +69,8 @@ import type {
   MessageDelivery,
   MessageOrigin,
   PendingPermission,
-  SessionConfigOptionInfo
+  SessionConfigOptionInfo,
+  SessionModeInfo
 } from '../../../shared/types'
 
 interface PendingPermissionWaiter {
@@ -185,6 +186,12 @@ const USAGE_WRITE_MS = 5_000
  * "as of X ago" caption lies about when it last looked.
  */
 const PLAN_LIMIT_WRITE_MS = 5_000
+
+/** A mode's name for its `mode_changed` event, when the session knows it. */
+function modeName(modes: SessionModeInfo[] | null | undefined, modeId: string): { name?: string } {
+  const name = modes?.find(mode => mode.id === modeId)?.name
+  return name ? { name } : {}
+}
 
 /**
  * What a `mode_changed` / `model_changed` / `config_changed` event says about
@@ -1587,6 +1594,8 @@ class AgentRuntime {
     await updateAgentSession(this.agentSessionId, { modeId: effective })
     await appendAgentEvent(this.agentSessionId, 'mode_changed', {
       modeId: effective,
+      // What the transcript shows; the id alone is the adapter's ("bypassPermissions").
+      ...modeName(session?.modes, effective),
       ...pendingMark(!!connection)
     })
   }

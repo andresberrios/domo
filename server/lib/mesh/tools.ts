@@ -1283,7 +1283,12 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       }
       await acpManager.answerPermission(target.id, permission.id, optionId, `agent:${caller.id}`)
       await appendAgentEvent(caller.id, 'mesh_permission_answered', {
-        agentId: target.id, title: target.title, permissionId: permission.id, request: permission.title, optionId
+        agentId: target.id,
+        title: target.title,
+        permissionId: permission.id,
+        request: permission.title,
+        optionId,
+        optionName: permission.options.find(option => option.optionId === optionId)?.name ?? null
       })
       return { agentId: target.id, permissionId: permission.id, answered: true, optionId }
     }

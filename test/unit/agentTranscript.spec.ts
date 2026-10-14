@@ -273,6 +273,24 @@ describe('buildTranscript', () => {
       ])
     })
 
+    it('names a mode and a permission answer in words, and falls back to the id for older events', () => {
+      const items = buildTranscript([
+        agentEvent('mode_changed', { modeId: 'bypassPermissions', name: 'Bypass Permissions' }),
+        agentEvent('mode_changed', { modeId: 'plan' }),
+        agentEvent('mesh_permission_answered', { title: 'docs', optionId: 'allow_always', optionName: 'Always allow' }),
+        agentEvent('mesh_permission_answered', { title: 'docs', optionId: 'allow' }),
+        agentEvent('mesh_permission_answered', { title: 'docs', optionId: null })
+      ])
+
+      expect(items.map(item => (item as any).text)).toEqual([
+        'Mode set to Bypass Permissions',
+        'Mode set to plan',
+        'Answered a permission request from agent "docs": Always allow',
+        'Answered a permission request from agent "docs": allow',
+        'Answered a permission request from agent "docs": rejected'
+      ])
+    })
+
     it('ignores event types with nothing to say', () => {
       expect(buildTranscript([agentEvent('available_commands_update', { commands: [] })])).toEqual([])
     })

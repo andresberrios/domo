@@ -54,7 +54,8 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
       ? `Turn ended: ${String(payload.stopReason).replace(/_/g, ' ')}`
       : null,
   cancelled: () => 'Turn cancelled',
-  mode_changed: payload => `Mode set to ${payload?.modeId}${whenPending(payload)}`,
+  // Events from before the name was recorded fall back to the adapter's id.
+  mode_changed: payload => `Mode set to ${payload?.name || payload?.modeId}${whenPending(payload)}`,
   model_changed: payload => `Model: ${payload?.name || payload?.modelId}${whenPending(payload)}`,
   // The adapter's own settings, whose names are the adapter's too:
   // "Effort: High" on Claude Code, "Reasoning effort: High" on Codex.
@@ -67,7 +68,7 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   mesh_message: payload => `Told you: ${payload?.message}${
     payload?.attachments?.length ? ` (attached ${payload.attachments.join(', ')})` : ''}`,
   mesh_permission_answered: payload =>
-    `Answered a permission request from agent "${payload?.title}": ${payload?.optionId ?? 'rejected'}`,
+    `Answered a permission request from agent "${payload?.title}": ${payload?.optionName || payload?.optionId || 'rejected'}`,
   cron_triggered: payload => `Scheduled task "${payload?.name}" ${CRON_OUTCOMES[payload?.outcome] ?? 'ran'}`,
   handed_off: () => 'Handed off to a new session',
   environment_retired: () =>
