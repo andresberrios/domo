@@ -21,17 +21,16 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
   current  ->   releases/<sha>      the release the server runs from
   previous ->   releases/<sha>      the one before it, kept for rollback
   node/         the official Node tarball for this platform (.tool-versions)
-  bin/          caddy, uv, pnpm, domo.mjs (the launcher) and `domo`, a shim for it;
-                `git`, a wrapper for git/, when there is one
-  git/          Domo's own git, only on a machine that had none that runs (below)
+  bin/          caddy, uv, pnpm, domo.mjs (the launcher) and `domo`, a shim for it
   data/         uploads, models, voices, install-id, pocket-tts.pid (NUXT_DATA_DIR)
   .env          keys and overrides, read by the launcher at every server start
   state.json    channel, last apply; logs/domo.log, logs/update.log
   supervisor.pid, update.lock (a live pid), restart-requested, update-failed.json
 ```
 
-Docker and a browser come from the machine, and git when it has one that
-runs. Everything else comes with Domo: Node, pnpm, Caddy, `uv` (for Pocket TTS), the ACP adapters and the
+Docker, git and a browser come from the machine; the installer installs git
+when it is missing (below). Everything else comes with Domo: Node, pnpm,
+Caddy, `uv` (for Pocket TTS), the ACP adapters and the
 coding-agent CLIs (already npm dependencies; Claude Code ships inside the
 Claude ACP adapter, Codex and OpenCode ship their binaries), the ONNX speech
 models (fetched into `data/models` at boot, see `docs/voice.md`). Postgres and
@@ -206,32 +205,18 @@ sixty seconds of starting is swapped back for `previous`.
 
 The installer needs git before anything else (it clones Domo), and so do the
 server (worktrees, project creation) and all three coding agents, which run
-`git` from the PATH (OpenCode's snapshots, Codex's baseline commits). None of
-them needs a compiler or anything else from the Xcode Command Line Tools.
+`git` from the PATH.
 
 - **macOS**: `/usr/bin/git` always exists, but without the Command Line Tools
-  it is a stub that opens their installer and fails; `xcode-select -p` tells
-  the two apart without the popup. The Command Line Tools are an admin-
-  confirmed GUI install of several minutes and more than a gigabyte, and
-  Homebrew and MacPorts both require them. So Domo downloads GitHub Desktop's
-  relocatable build, `desktop/dugite-native` (pinned with checksums as
-  `GIT_RELEASE` in `install.sh` and `BUNDLED_GIT` in `bin/domo.mjs`): 62 MB
-  download, about 39 MB on disk once its Git Credential Manager and .NET
-  runtime are removed. Every binary is ad-hoc signed and links only system
-  libraries, and a file curl or Node downloads carries no quarantine
-  attribute, so Gatekeeper never sees it. No osxkeychain helper: HTTPS
-  pushes need SSH or a credential helper the user sets up.
+  it is a stub that opens their installer and fails, so the check is
+  `xcode-select -p`, which never opens it. When git is missing the script
+  runs `xcode-select --install`, says that Apple's dialog wants a click, and
+  polls until git runs. The dialog's process (`Install Command Line Developer
+  Tools`) going away before that means it was cancelled; the script stops
+  with what to do, and gives up after an hour either way. Homebrew and
+  MacPorts need the Command Line Tools themselves, so they are no shortcut.
 - **Linux**: the distribution's package (apt, dnf, yum, zypper, pacman, apk),
-  through sudo when not root. dugite's Linux build needs glibc 2.34 and a
-  system libcurl for HTTPS, which slim images lack, so it is only used with
-  `DOMO_BUNDLE_GIT=1`.
-
-Domo's git sits in `git/` with a wrapper at `bin/git` that sets
-`GIT_EXEC_PATH` and `GIT_TEMPLATE_DIR` (the build does not find its helpers
-from its own location). The wrapper, not the variables, is what agents get:
-`bin/` is first on the server's PATH and the server passes agents an
-allow-list of variables. Once Domo has its own git it keeps it, and the
-launcher moves it to the pinned version on update.
+  through sudo when not root.
 
 `domo` subcommands: `run` (the supervisor), `start`, `stop`, `restart`,
 `status`, `trust`, `logs`, `update [--check] [--json] [--channel …] [--force]
@@ -299,6 +284,5 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/src:ro \
 
 It proves the downloads, the build, the supervisor, the update check and
 creating a project on Linux; the systemd unit itself is not exercised, since
-a container has no systemd. The image has no git, so the installer installs
-Debian's; pass `bundle` after the branch to run on Domo's own git instead,
-with no other git on the machine.
+a container has no systemd. The image has no git, so it also proves the
+installer installs Debian's.

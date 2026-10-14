@@ -8,7 +8,6 @@
 // docs/install-and-updates.md for the layout. Development uses `pnpm dev`
 // and never this file.
 import { spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import {
   cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
   renameSync, rmSync, symlinkSync, writeFileSync
@@ -28,9 +27,6 @@ const P = {
   pnpm: join(HOME, 'bin', 'pnpm'),
   caddy: join(HOME, 'bin', 'caddy'),
   uv: join(HOME, 'bin', 'uv'),
-  // Domo's own git, only on a machine that had none that runs (scripts/install.sh).
-  gitDir: join(HOME, 'git'),
-  git: join(HOME, 'bin', 'git'),
   caddySocket: join(HOME, 'caddy.sock'),
   bin: join(HOME, 'bin'),
   launcher: join(HOME, 'bin', 'domo.mjs'),
@@ -53,29 +49,8 @@ const P = {
  * asks with the `restart-requested` file instead and stops normally.
  */
 export const RESTART_EXIT_CODE = 75
-/**
- * GitHub Desktop's relocatable git (dugite-native), which the installer puts
- * in `git/` when the machine has no git that runs. Keep in step with
- * GIT_RELEASE in scripts/install.sh; the launcher moves an existing one here.
- */
-export const BUNDLED_GIT = {
-  release: 'v2.53.0-4',
-  build: '4098283',
-  assets: {
-    'darwin-arm64': ['macOS-arm64', 'f9dc64635a5b62fbd7ad95db73268bbb8912255ac516d65d37bf7af22fcb8ffe'],
-    'darwin-x64': ['macOS-x64', 'ae6686718aa34f4140424db16b92a47dcffd6d1f312eb8b5f3b267f7404e2680'],
-    'linux-arm64': ['ubuntu-arm64', 'a161f45af4626bb7e0c688854bd4a9aee47cc514bca404cff0a5e3536ef1c0af'],
-    'linux-x64': ['ubuntu-x64', 'cca76aa31ad9e835e771ee7f55b73934777fbd8d16757a10d307ba06de860901']
-  }
-}
 const SERVICE_LABEL = 'com.domo.app'
 const HEALTH_TIMEOUT_MS = 60_000
-
-// The launcher's own `git` (cloning, fetching, release worktrees) is Domo's
-// when there is one: under launchd the PATH is /usr/bin first, and on a Mac
-// without the Command Line Tools /usr/bin/git is a stub that opens their
-// installer.
-process.env.PATH = [P.bin, process.env.PATH].filter(Boolean).join(':')
 
 // --------------------------------------------------------------------------
 // Small helpers
@@ -318,7 +293,6 @@ async function ensureTools(dir) {
       untar(tgz, tmp, 'caddy')
       cpSync(join(tmp, 'caddy'), P.caddy)
     }
-    if (existsSync(P.gitDir)) await ensureBundledGit(tmp, `${os}-${cpu}`)
     if (wanted.uv && installedVersion(P.uv, ['--version'], /uv (\S+)/) !== wanted.uv) {
       try {
         log(`downloading uv ${wanted.uv} (for the Pocket TTS voice; optional)`)
@@ -334,55 +308,6 @@ async function ensureTools(dir) {
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
-}
-
-/**
- * Moves Domo's own git, when it has one, to BUNDLED_GIT: the same download,
- * checksum and trimming as `bundle_git` in scripts/install.sh. Git Credential
- * Manager and its .NET runtime go, since nothing turns them on. The wrapper in
- * `bin/` is written every time, as the installer writes it.
- */
-async function ensureBundledGit(tmp, platformKey) {
-  const asset = BUNDLED_GIT.assets[platformKey]
-  if (!asset) return
-  const versionFile = join(P.gitDir, 'VERSION')
-  const installed = existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : null
-  if (installed !== BUNDLED_GIT.release) {
-    log(`downloading git ${BUNDLED_GIT.release.slice(1)}`)
-    const tgz = join(tmp, 'git.tgz')
-    await download(`https://github.com/desktop/dugite-native/releases/download/${BUNDLED_GIT.release}/dugite-native-${BUNDLED_GIT.release.replace(/-[^-]*$/, '')}-${BUNDLED_GIT.build}-${asset[0]}.tar.gz`, tgz)
-    if (createHash('sha256').update(readFileSync(tgz)).digest('hex') !== asset[1]) throw new Error('the git download does not match its checksum')
-    const fresh = `${P.gitDir}.new`
-    rmSync(fresh, { recursive: true, force: true })
-    mkdirSync(fresh, { recursive: true })
-    untar(tgz, fresh)
-    const core = join(fresh, 'libexec', 'git-core')
-    for (const entry of readdirSync(core, { withFileTypes: true })) {
-      const unused = entry.isDirectory()
-        ? entry.name !== 'mergetools'
-        : /\.(dll|dylib|json)$/.test(entry.name) || entry.name.startsWith('git-credential-manager') || ['createdump', 'uninstall.sh'].includes(entry.name)
-      if (unused) rmSync(join(core, entry.name), { recursive: true, force: true })
-    }
-    writeFileSync(join(fresh, 'VERSION'), `${BUNDLED_GIT.release}\n`)
-    const old = `${P.gitDir}.old`
-    rmSync(old, { recursive: true, force: true })
-    renameSync(P.gitDir, old)
-    renameSync(fresh, P.gitDir)
-    rmSync(old, { recursive: true, force: true })
-  }
-  writeFileSync(P.git, [
-    '#!/bin/sh',
-    `# Domo's own git (${P.gitDir}), because this machine had none that runs.`,
-    `GIT_EXEC_PATH="${P.gitDir}/libexec/git-core"`,
-    `GIT_TEMPLATE_DIR="${P.gitDir}/share/git-core/templates"`,
-    'export GIT_EXEC_PATH GIT_TEMPLATE_DIR',
-    `if [ -z "\${GIT_SSL_CAINFO:-}" ] && [ -f "${P.gitDir}/ssl/cacert.pem" ]; then`,
-    `  GIT_SSL_CAINFO="${P.gitDir}/ssl/cacert.pem"`,
-    '  export GIT_SSL_CAINFO',
-    'fi',
-    `exec "${P.gitDir}/bin/git" "$@"`,
-    ''
-  ].join('\n'), { mode: 0o755 })
 }
 
 // --------------------------------------------------------------------------
