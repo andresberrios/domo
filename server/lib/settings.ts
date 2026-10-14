@@ -1,7 +1,7 @@
 import { query } from './db'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
 import { AGENT_ADAPTERS } from '../../shared/agent-adapters'
-import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector } from '../../shared/agent-voice'
+import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector, normalizeVolumes } from '../../shared/agent-voice'
 import { rememberSecretSettings } from './secret-settings'
 import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type UpdateSettings } from '../../shared/types'
 
@@ -96,8 +96,13 @@ function storedUpdates(stored: Record<string, any>): UpdateSettings {
  * when the stored one is not a non-empty string.
  */
 function storedAgentVoice(stored: Record<string, any>): AgentVoiceSettings {
+  return normalizeAgentVoice(stored.agentVoice)
+}
+
+/** Voice bar settings from anywhere (the row, or a form not yet saved), checked the same way. */
+export function normalizeAgentVoice(current: any): AgentVoiceSettings {
   const voice = { ...DEFAULT_AGENT_VOICE }
-  const current = stored.agentVoice
+  voice.volumes = normalizeVolumes(current?.volumes)
   if (!current || typeof current !== 'object') return voice
   if (isTranscriber(current.transcriber)) voice.transcriber = current.transcriber
   if (isSpeaker(current.speaker)) voice.speaker = current.speaker
@@ -109,9 +114,10 @@ function storedAgentVoice(stored: Record<string, any>): AgentVoiceSettings {
   if (typeof current.language === 'string' && /^(?:[a-z]{2,3})?$/.test(current.language)) voice.language = current.language
   const seconds = Number(current.silenceSeconds)
   if (Number.isFinite(seconds) && seconds >= 0.3 && seconds <= 30) voice.silenceSeconds = seconds
+  type Named = Exclude<keyof AgentVoiceSettings, 'transcriber' | 'speaker' | 'turnDetector' | 'silenceSeconds' | 'language' | 'macVoice' | 'toolSound' | 'pocketUrl' | 'volumes'>
   for (const key of Object.keys(voice) as Array<keyof AgentVoiceSettings>) {
-    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds' || key === 'language' || key === 'macVoice' || key === 'toolSound' || key === 'pocketUrl') continue
-    if (typeof current[key] === 'string' && current[key].trim()) voice[key] = current[key].trim()
+    if (key === 'transcriber' || key === 'speaker' || key === 'turnDetector' || key === 'silenceSeconds' || key === 'language' || key === 'macVoice' || key === 'toolSound' || key === 'pocketUrl' || key === 'volumes') continue
+    if (typeof current[key] === 'string' && current[key].trim()) voice[key as Named] = current[key].trim()
   }
   return voice
 }

@@ -9,7 +9,6 @@ import {
   TOOL_SOUNDS,
   TRANSCRIBERS
 } from '~~/shared/agent-voice'
-import type { AudioInputDevice } from '~/composables/useAgentVoice'
 
 /**
  * The voice bar's own settings, a tap away: who hears, who speaks and in
@@ -21,13 +20,10 @@ import type { AudioInputDevice } from '~/composables/useAgentVoice'
  * every device; the microphone and a device voice belong to this browser.
  * The model ids and each engine's finer knobs stay on the Settings page.
  */
-const props = defineProps<{
-  inputDevices: AudioInputDevice[]
-  inputDeviceId: string
-}>()
-const emit = defineEmits<{ 'update:inputDeviceId': [deviceId: string] }>()
-
 const toast = useToast()
+const inputs = useAudioInputs()
+/** The microphone column's last item while the browser keeps its devices' names to itself. */
+const NAME_DEVICES = 'name-devices'
 const open = ref(false)
 const { data: settings, refresh } = useSettings()
 const voice = computed(() => settings.value?.agentVoice)
@@ -90,6 +86,7 @@ async function loadMacVoices() {
 }
 watch([open, () => voice.value?.speaker], () => {
   if (!open.value) return
+  void inputs.refresh()
   if (voice.value?.speaker === 'browser') loadDeviceVoices()
   if (voice.value?.speaker === 'mac') void loadMacVoices()
 }, { immediate: true })
@@ -149,15 +146,20 @@ const columns = computed<Column[]>(() => {
       selected: current.language,
       apply: value => setVoice({ language: value })
     },
-    ...(props.inputDevices.length > 1
-      ? [{
-          key: 'microphone',
-          label: 'Microphone',
-          items: props.inputDevices.map(device => ({ value: device.deviceId, label: device.label })),
-          selected: props.inputDeviceId || props.inputDevices[0]!.deviceId,
-          apply: (value: string) => emit('update:inputDeviceId', value)
-        }]
-      : []),
+    {
+      key: 'microphone',
+      label: 'Microphone',
+      items: [
+        ...inputs.options.value.map(device => ({ value: device.deviceId, label: device.label })),
+        ...inputs.named.value ? [] : [{ value: NAME_DEVICES, label: 'Show their names', description: 'Asks for the microphone, which is when the browser names its devices.', icon: 'i-lucide-list' }]
+      ],
+      selected: inputs.selected.value,
+      apply: async (value: string) => {
+        if (value !== NAME_DEVICES) return inputs.select(value)
+        const problem = await inputs.allow()
+        if (problem) throw new Error(problem)
+      }
+    },
     { key: 'tool', label: 'Tool call sound', items: described(TOOL_SOUNDS), selected: current.toolSound, apply: value => setVoice({ toolSound: value as AgentVoiceSettings['toolSound'] }) }
   ]
 })

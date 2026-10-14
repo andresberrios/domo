@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentAdapter, Assistant, SessionModeInfo } from '~~/shared/types'
+import type { AgentAdapter, Assistant, AssistantVoice, SessionModeInfo } from '~~/shared/types'
 import { AGENT_ADAPTERS, agentAdapterInfo } from '~~/shared/agent-adapters'
 import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS } from '~~/shared/agent-voice'
 import {
@@ -68,6 +68,19 @@ const form = reactive({
   voiceSpeaker: BAR_VOICE as string,
   voice: ''
 })
+
+/**
+ * Why an engine cannot speak here (a missing key, not a Mac), so a voice
+ * that would quietly fall back to the bar's says so before it is chosen.
+ */
+const { data: engines, refresh: refreshEngines } = useFetch<Record<string, string | null>>('/api/agent-voice/engines', { lazy: true, immediate: false })
+const voiceUnavailable = computed(() => form.voiceSpeaker === BAR_VOICE ? null : engines.value?.[form.voiceSpeaker] ?? null)
+const preview = useVoicePreview()
+function hearVoice() {
+  void preview.play({ voice: { speaker: form.voiceSpeaker as AssistantVoice['speaker'], voice: form.voice } }, settings.value?.agentVoice?.volumes?.speech ?? 1)
+}
+watch(() => [form.voiceSpeaker, form.voice], () => { preview.error.value = null })
+
 const submitting = ref(false)
 const typedModels = ref<string[]>([])
 
@@ -165,6 +178,7 @@ watch(open, async (value) => {
   if (!value) return
   resetting = true
   reset()
+  void refreshEngines()
   await nextTick()
   resetting = false
   refreshModels()
@@ -178,8 +192,10 @@ watch(() => form.adapter, (adapter) => {
 })
 
 // A new engine starts on its first voice; the old engine's voice means nothing to it.
+// macOS and Kyutai have no list here, only the voice typed in, so they start empty.
 watch(() => form.voiceSpeaker, () => {
   if (resetting) return
+  form.voice = ''
   form.voice = voiceItems.value.find(item => !item.value.startsWith('clone:'))?.value ?? ''
 })
 
@@ -383,6 +399,22 @@ async function save() {
               @create="(id: string) => { form.voice = id }"
             />
           </UFormField>
+        </div>
+        <div v-if="form.voiceSpeaker !== BAR_VOICE" class="-mt-2 space-y-1">
+          <UButton
+            icon="i-lucide-play"
+            label="Hear this voice"
+            size="xs"
+            color="neutral"
+            variant="subtle"
+            :loading="preview.loading.value"
+            :disabled="!form.voice || !!voiceUnavailable"
+            @click="hearVoice"
+          />
+          <p v-if="voiceUnavailable" class="text-xs text-warning">
+            This voice cannot speak here, so the voice bar's own voice will read this assistant's replies. {{ voiceUnavailable }}
+          </p>
+          <p v-else-if="preview.error.value" class="text-xs text-error">{{ preview.error.value }}</p>
         </div>
         <p class="-mt-2 text-xs text-muted">
           How the voice bar sounds when it is this assistant talking, and when its notes are read out. If that engine

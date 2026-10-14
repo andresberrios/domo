@@ -168,4 +168,14 @@ describe('agentVoice', () => {
       silenceSeconds: DEFAULTS.agentVoice.silenceSeconds
     })
   })
+
+  it('keeps each sound\'s volume within 0..1, and the defaults for the rest', async () => {
+    stored({ agentVoice: { volumes: { sent: 0.4, speech: 0, turn: 3, nothing: 'loud' } } })
+    const { volumes } = (await getSettings()).agentVoice
+    expect(volumes).toMatchObject({ sent: 0.4, speech: 0, turn: DEFAULTS.agentVoice.volumes.turn, nothing: DEFAULTS.agentVoice.volumes.nothing })
+    expect(DEFAULTS.agentVoice.volumes.sent).toBe(0.1)
+    // Read into a copy: an edit to one read never reaches the defaults.
+    volumes.record = 1
+    expect(DEFAULTS.agentVoice.volumes.record).toBe(0.1)
+  })
 })

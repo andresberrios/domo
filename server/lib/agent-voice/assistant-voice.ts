@@ -65,21 +65,22 @@ export async function normalizeAssistantVoice(value: unknown): Promise<Assistant
 }
 
 /**
- * Whether this engine can speak here at all. A key that is missing, a
- * machine that is not a Mac, or a Kyutai server nobody chose would fail the
- * first sentence; better to fall back before trying.
+ * Why this engine cannot speak here, or null when it can. A key that is
+ * missing, a machine that is not a Mac, or a Kyutai server nobody chose would
+ * fail the first sentence; better to fall back before trying, and to say so
+ * in the assistant form. Pocket clones need nothing more than Pocket: Domo
+ * fetches the cloning weights itself, and a clone that still fails falls back
+ * when it is spoken.
  */
-export function speakerUsable(speaker: AssistantVoice['speaker'], base: AgentVoiceSettings, voice?: string): boolean {
+export function speakerUnavailable(speaker: AssistantVoice['speaker'], base: AgentVoiceSettings): string | null {
   switch (speaker) {
-    case 'gemini': return !!geminiApiKey()
-    case 'openai': return !!openAiApiKey()
-    case 'local': return true
-    case 'mac': return process.platform === 'darwin'
+    case 'gemini': return geminiApiKey() ? null : 'No Gemini key is set (Settings, Keys).'
+    case 'openai': return openAiApiKey() ? null : 'No OpenAI key is set (Settings, Keys).'
+    case 'local': return null
+    case 'mac': return process.platform === 'darwin' ? null : 'Domo is not running on a Mac.'
     // A server the human runs; only when Settings already point the bar at it.
-    case 'kyutai': return base.speaker === 'kyutai'
-    // Domo runs Pocket itself; a clone also needs Kyutai's gated weights,
-    // unless Settings name a Pocket server of the human's own.
-    case 'pocket': return !clonedVoiceId(voice ?? '') || !!process.env.HF_TOKEN || !!base.pocketUrl
+    case 'kyutai': return base.speaker === 'kyutai' ? null : 'Kyutai speaks only when the voice bar\'s own speaker in Settings is Kyutai.'
+    case 'pocket': return null
   }
 }
 
@@ -93,11 +94,13 @@ export async function speechSettingsFor(
   base: AgentVoiceSettings
 ): Promise<{ settings: AgentVoiceSettings, fallback: AgentVoiceSettings | null }> {
   const voice = (await getAssistantOfSession(agentSessionId).catch(() => null))?.voice
-  if (!voice || !speakerUsable(voice.speaker, base, voice.voice)) return { settings: base, fallback: null }
-  return {
-    settings: { ...base, speaker: voice.speaker, [VOICE_FIELD[voice.speaker]]: voice.voice },
-    fallback: base
-  }
+  if (!voice || speakerUnavailable(voice.speaker, base)) return { settings: base, fallback: null }
+  return { settings: withVoice(base, voice), fallback: base }
+}
+
+/** The bar's settings, speaking in this voice instead. */
+export function withVoice(base: AgentVoiceSettings, voice: AssistantVoice): AgentVoiceSettings {
+  return { ...base, speaker: voice.speaker, [VOICE_FIELD[voice.speaker]]: voice.voice }
 }
 
 /** Every voice an assistant could have here, for list_voices. */
@@ -108,7 +111,8 @@ export async function voiceCatalog(base: AgentVoiceSettings) {
     .map(speaker => ({
       engine: speaker.id,
       label: speaker.label,
-      usableHere: speakerUsable(speaker.id, base),
+      usableHere: !speakerUnavailable(speaker.id, base),
+      ...speakerUnavailable(speaker.id, base) ? { unavailable: speakerUnavailable(speaker.id, base) } : {},
       ...speaker.id === base.speaker ? { barDefault: base[VOICE_FIELD[speaker.id]] } : {},
       voices: speaker.id === 'pocket'
         ? [...POCKET_VOICES, ...clones.map(clone => `${CLONED_VOICE_PREFIX}${clone.id}`)]
