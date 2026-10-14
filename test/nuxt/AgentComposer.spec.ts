@@ -756,6 +756,24 @@ describe('AgentComposer on a draft', () => {
     ]))
   })
 
+  it('drops a remembered choice the adapter no longer offers, and keeps the rest', async () => {
+    const { draft } = await mountDraft(async () => true, {
+      ...blank,
+      adapter: 'codex',
+      model: 'gpt-retired',
+      modeId: 'read-only',
+      config: { reasoning_effort: 'high', gone: 'x' }
+    })
+
+    await vi.waitFor(() => expect(draft.value).toMatchObject({
+      adapter: 'codex',
+      model: '',
+      modeId: 'read-only',
+      config: { reasoning_effort: 'high' }
+    }))
+    expect(draft.value?.config).not.toHaveProperty('gone')
+  })
+
   it('offers the harness as a choice, and keeps every choice in the draft', async () => {
     const { component, draft } = await mountDraft(async () => true)
     // A draft has no row to read its modes from, so it asks at once.

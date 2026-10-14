@@ -58,7 +58,7 @@ const cascade = computed(() => {
 const items = computed(() => [
   [
     { label: 'New environment', icon: 'i-lucide-monitor', onSelect: () => emit('newEnvironment') },
-    { label: 'New agent in the local checkout', icon: 'i-lucide-bot', onSelect: () => emit('newAgent') },
+    { label: 'New session in the local checkout', icon: 'i-lucide-bot', onSelect: () => emit('newAgent') },
     { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }
   ],
   [

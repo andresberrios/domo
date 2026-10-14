@@ -2,6 +2,7 @@
 import type { AgentDraft, AgentEvent, AgentSession } from '~~/shared/types'
 import { agentAdapterInfo } from '~~/shared/agent-adapters'
 import { agentPageKey, draftRequest, freshDraftPage, initialDraft, promoteDraftPage } from '~/utils/agentDraft'
+import { rememberDraftSettings, rememberedDraftSettings } from '~/composables/rememberedDraft'
 
 /**
  * One session — or, at `/agents/new`, one that does not exist yet.
@@ -68,7 +69,8 @@ watch([isDraft, projectsReady, environmentsReady], () => {
     { project: route.query.project as string | undefined, environment: route.query.environment as string | undefined },
     projects.value,
     environments.value,
-    settings.value?.defaultCwd
+    settings.value?.defaultCwd,
+    rememberedDraftSettings()
   )
 }, { immediate: true })
 
@@ -140,6 +142,8 @@ async function startFromDraft(content: any[]): Promise<boolean> {
       method: 'POST',
       body: draftRequest(draft.value, content)
     })
+    // The next draft starts from these; see `rememberedDraftSettings`.
+    rememberDraftSettings(draft.value)
     await rowArrives(created.id)
     // Somebody who went elsewhere meanwhile is not pulled back; the session is
     // in the sidebar.
@@ -263,7 +267,7 @@ const menuItems = computed(() => [
     <template #header>
       <UDashboardNavbar icon="i-lucide-bot">
         <template #title>
-          <span class="truncate">{{ session?.title ?? (isDraft ? 'New agent' : 'Agent') }}</span>
+          <span class="truncate">{{ session?.title ?? (isDraft ? 'New session' : 'Agent') }}</span>
         </template>
 
         <template #trailing>
@@ -386,7 +390,7 @@ const menuItems = computed(() => [
           <div class="max-w-sm text-center">
             <UIcon name="i-lucide-bot" class="mx-auto size-8 text-dimmed" />
             <p class="mt-3 text-sm font-medium">
-              A new coding agent
+              A new session
             </p>
             <p class="mt-1 text-sm text-muted">
               Choose where it works and which agent and model below, then send it its first task.
@@ -454,7 +458,7 @@ const menuItems = computed(() => [
             color="error"
             variant="subtle"
             icon="i-lucide-circle-alert"
-            title="Could not start the agent"
+            title="Could not start the session"
             :description="createError"
             class="mx-auto max-w-3xl"
             :close="{ color: 'neutral', variant: 'link' }"

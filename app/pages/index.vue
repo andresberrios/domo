@@ -14,7 +14,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
       <UDashboardNavbar title="Domo" icon="i-lucide-audio-lines">
         <template #right>
           <UButton
-            label="New agent"
+            label="New session"
             icon="i-lucide-plus"
             color="neutral"
             variant="subtle"
@@ -46,7 +46,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
               @click="talk"
             />
             <UButton
-              label="Start a coding agent"
+              label="Start a session"
               icon="i-lucide-bot"
               color="neutral"
               variant="subtle"

@@ -265,7 +265,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     const push = vi.spyOn(useRouter(), 'push').mockResolvedValue(undefined)
     const wrapper = await mountTree()
 
-    buttonLabelled('New agent in feature-auth')!.click()
+    buttonLabelled('New session in feature-auth')!.click()
 
     // The environment decides the project above it, so naming it is enough.
     await vi.waitFor(() => expect(push).toHaveBeenCalledWith('/agents/new?environment=env_1'))
@@ -280,7 +280,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
 
     // Nothing runs in the checkout yet, so it has no row; the menu is the way in.
     expect(document.body.textContent).not.toContain('Local checkout')
-    await choose('Actions for Domo', 'New agent in the local checkout')
+    await choose('Actions for Domo', 'New session in the local checkout')
 
     await vi.waitFor(() => expect(push).toHaveBeenCalledWith('/agents/new?project=p1'))
 

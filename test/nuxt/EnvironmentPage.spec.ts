@@ -243,7 +243,7 @@ describe('environment details page', { timeout: 30_000 }, () => {
     expect(document.body.textContent).toContain('can no longer be started')
     expect(document.body.textContent).not.toContain('This environment no longer exists.')
     expect(buttonWithText('Stop')).toBeFalsy()
-    expect(buttonWithText('New agent')).toBeFalsy()
+    expect(buttonWithText('New session')).toBeFalsy()
 
     environment.value = { ...environment.value, retiredAt: null }
     wrapper.unmount()

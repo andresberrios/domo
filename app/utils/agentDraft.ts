@@ -1,5 +1,8 @@
 import type { AgentDraft, DevEnvironment, Project } from '~~/shared/types'
 
+/** What a new session was last started with, in this browser: the draft's starting point. */
+export type DraftAgentSettings = Pick<AgentDraft, 'adapter' | 'model' | 'modeId' | 'config'>
+
 /**
  * Where to start a new session, as the page that offers it knows it. The draft
  * page reads these back; `project=none` asks for an arbitrary directory.
@@ -23,12 +26,15 @@ export function defaultDraftCwd(projects: Project[], projectId: string | null, d
  * A project runs in its own checkout. `project=none` is a choice — an
  * arbitrary directory — while no target at all leaves it to this: any running
  * environment, then the first project's checkout, then the default directory.
+ * The harness and its settings are the ones the last session was started
+ * with, when there was one.
  */
 export function initialDraft(
   query: { project?: string | null, environment?: string | null },
   projects: Project[],
   environments: DevEnvironment[],
-  defaultCwd: string | undefined
+  defaultCwd: string | undefined,
+  remembered: DraftAgentSettings | null = null
 ): AgentDraft {
   const target = initialTarget(query, projects, environments)
   return {
@@ -36,6 +42,7 @@ export function initialDraft(
     model: '',
     modeId: '',
     config: {},
+    ...remembered,
     ...target,
     cwd: defaultDraftCwd(projects, target.projectId, defaultCwd),
     title: ''

@@ -103,7 +103,7 @@ const busy = computed(() => props.session?.status === 'thinking' || props.sessio
 const status = computed(() => (busy.value ? ('streaming' as const) : ('ready' as const)))
 
 const placeholder = computed(() => {
-  if (!props.session) return 'What should it do? Sending this starts the agent…'
+  if (!props.session) return 'What should it do? Sending this starts the session…'
   if (!busy.value) return 'Message this agent…'
   if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
   if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'

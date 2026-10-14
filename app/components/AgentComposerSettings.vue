@@ -114,6 +114,27 @@ watch(() => draft.value && adapter.value, (draftAdapter) => {
   void refreshModels()
 }, { immediate: true })
 
+/**
+ * A draft starts from what the last session was started with, and the
+ * adapter may no longer offer all of it — a model retired, a plan changed. What
+ * the probe does not list goes back to the default rather than starting a
+ * session on something that is not there. A failed probe proves nothing, so
+ * it changes nothing.
+ */
+watch(modelData, (offered) => {
+  const current = draft.value
+  if (!offered || props.session || !current) return
+  const model = current.model && !offered.models.some(entry => entry.id === current.model) ? '' : current.model
+  const modes = offered.modes ?? []
+  const modeId = current.modeId && modes.length && !modes.some(mode => mode.id === current.modeId) ? '' : current.modeId
+  const options = offered.configOptions ?? []
+  const config = Object.fromEntries(Object.entries(current.config).filter(([id, value]) =>
+    options.find(option => option.id === id)?.options.some(entry => entry.value === value)))
+  if (model !== current.model || modeId !== current.modeId || Object.keys(config).length !== Object.keys(current.config).length) {
+    draft.value = { ...current, model, modeId, config }
+  }
+})
+
 /* ---------------------------- the columns ---------------------------- */
 
 interface ColumnItem {

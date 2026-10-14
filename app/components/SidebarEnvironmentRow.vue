@@ -77,7 +77,7 @@ const items = computed(() => retired.value
   ? [[{ label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } }]]
   : [
       [
-        { label: 'New agent here', icon: 'i-lucide-plus', onSelect: () => emit('newAgent') }
+        { label: 'New session here', icon: 'i-lucide-plus', onSelect: () => emit('newAgent') }
       ],
       [
         running.value
@@ -122,7 +122,7 @@ const items = computed(() => retired.value
       color="neutral"
       variant="ghost"
       size="xs"
-      :aria-label="`New agent in ${environment.name}`"
+      :aria-label="`New session in ${environment.name}`"
       :class="ROW_QUICK_ACTION_CLASS"
       @click="emit('newAgent')"
     />
