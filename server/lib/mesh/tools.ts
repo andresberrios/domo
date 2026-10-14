@@ -22,7 +22,6 @@ import { notifyHuman } from '../notifications'
 import { isThinkingAgent } from '../voice/delegation'
 import {
   addAgentSubscription,
-  appendAgentEvent,
   createCronJob,
   deleteCronJob,
   deleteInboxMessage,
@@ -1328,9 +1327,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           content: [{ type: 'text', text: `[Scheduled task "${job.name}" (${job.id})]\n\n${job.prompt}` }],
           delivery: job.delivery,
           origin: `cron:${job.id}`
-        })
-        await appendAgentEvent(job.agentSessionId, 'cron_triggered', {
-          cronJobId: job.id, name: job.name, scheduledFor: run.scheduledFor, delivery: result.delivery, outcome: result.outcome, manual: true
         })
         await finishCronRun(run.id, 'delivered', result.outcome)
         return { jobId: job.id, agentId: job.agentSessionId, delivered: true, outcome: result.outcome }

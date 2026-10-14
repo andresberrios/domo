@@ -224,4 +224,38 @@ describe('AgentTranscript', () => {
       expect(component.find('[data-testid="activity-current"]').text()).toBe('Bash')
     })
   })
+
+  describe('times', () => {
+    const at = (iso: string) => ({ createdAt: iso })
+    const said = (text: string, iso: string) => agentEvent('user_message', { content: [{ type: 'text', text }] }, at(iso))
+    const day1 = '2026-03-02T10:00:00.000Z'
+    const day1Later = '2026-03-02T10:05:00.000Z'
+    const day2 = '2026-03-04T10:00:00.000Z'
+
+    it('puts a time on every row, with the whole instant on hover', async () => {
+      const component = await render([
+        said('fix the build', day1),
+        agentEvent('agent_message', { text: 'On it.', streaming: false }, at(day1Later)),
+        agentEvent('error', { message: 'adapter crashed' }, at(day1Later))
+      ])
+
+      const times = component.findAll('[data-testid="row-time"]')
+      expect(times).toHaveLength(3)
+      expect(times.map(time => time.attributes('datetime'))).toEqual([day1, day1Later, day1Later])
+      expect(times.every(time => time.text() !== '' && !!time.attributes('title'))).toBe(true)
+    })
+
+    it('names the day above the first row of each day, and only there', async () => {
+      const component = await render([
+        said('first', day1),
+        agentEvent('agent_message', { text: 'one', streaming: false }, at(day1Later)),
+        said('next', day2),
+        agentEvent('agent_message', { text: 'two', streaming: false }, at(day2))
+      ])
+
+      const days = component.findAll('[data-testid="day-separator"]')
+      expect(days).toHaveLength(2)
+      expect(days.map(day => day.find('time').attributes('datetime'))).toEqual([day1, day2])
+    })
+  })
 })

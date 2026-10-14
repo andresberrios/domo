@@ -23,6 +23,7 @@ const heading = computed(() => {
   if (via === 'notify') return 'To you'
   if (via === 'domo') return 'From Domo'
   if (via === 'update') return peerTitle.value
+  if (via === 'schedule') return `Scheduled task "${props.item.peer.title ?? props.item.peer.id}"`
   if (via === 'spawn') return direction === 'out' ? `Started ${peerTitle.value}` : `Task from ${peerTitle.value}`
   return direction === 'out' ? `To ${peerTitle.value}` : `From ${peerTitle.value}`
 })
@@ -32,6 +33,7 @@ const icon = computed(() => {
     case 'spawn': return 'i-lucide-bot'
     case 'notify': return 'i-lucide-bell-ring'
     case 'update': return 'i-lucide-bell'
+    case 'schedule': return 'i-lucide-calendar-clock'
     case 'domo': return 'i-lucide-info'
     default: return props.item.direction === 'out' ? 'i-lucide-send' : 'i-lucide-message-square'
   }
@@ -93,7 +95,15 @@ const outcome = computed(() => {
       <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span v-if="outcome">{{ outcome }}</span>
         <NuxtLink
-          v-if="item.peer.id"
+          v-if="item.via === 'schedule'"
+          to="/schedules"
+          class="inline-flex items-center gap-1 text-primary hover:underline"
+        >
+          Open schedules
+          <UIcon name="i-lucide-arrow-up-right" class="size-3" />
+        </NuxtLink>
+        <NuxtLink
+          v-else-if="item.peer.id"
           :to="`/agents/${item.peer.id}`"
           class="inline-flex items-center gap-1 text-primary hover:underline"
         >

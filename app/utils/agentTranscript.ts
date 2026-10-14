@@ -30,9 +30,10 @@ export type TranscriptItem =
  * - `spawn`: the task `spawn_agent` handed a new agent;
  * - `notify`: `notify_supervisor`, which goes to the person;
  * - `update`: Domo telling a subscriber what an agent it follows did;
+ * - `schedule`: a scheduled task firing; its peer is the task, not an agent;
  * - `domo`: any other note from Domo itself.
  */
-export type MeshVia = 'message' | 'spawn' | 'notify' | 'update' | 'domo'
+export type MeshVia = 'message' | 'spawn' | 'notify' | 'update' | 'schedule' | 'domo'
 
 /**
  * Traffic between agents, as one item at each end: the sender's tool call and
@@ -46,7 +47,10 @@ export interface MeshItem {
   kind: 'mesh'
   direction: 'in' | 'out'
   via: MeshVia
-  /** The other end. Both null is the person (`notify`) or Domo (`domo`). */
+  /**
+   * The other end: an agent, or for `schedule` the task. Both null is the
+   * person (`notify`) or Domo (`domo`).
+   */
   peer: { id: string | null, title: string | null }
   text: string
   /** The sender's tool call, for its status and result. */
@@ -76,7 +80,6 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   config_changed: payload => `${payload?.name || payload?.configId}: ${payload?.value}${whenPending(payload)}`,
   'adapter-exit': payload =>
     `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
-  cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
   environment_retired: () =>
     'Its development environment was retired — this session can no longer be started'
 }
@@ -273,7 +276,21 @@ export function buildTranscript(
   const resolved = new Set(permissions.filter(p => p.resolvedAt).map(p => p.id))
   return items
     .filter(item => item.kind !== 'permission' || !resolved.has(item.permissionId))
+    .filter(item => item.kind !== 'tool' || !isRoutineReview(item.tool))
     .map(item => (item.kind === 'tool' ? sentMessage(item) ?? item : item))
+}
+
+/**
+ * Codex's own reviewer passing a call it was about to make: a second row for
+ * every call, saying only that it may go ahead. One that is still deciding is
+ * left out too, so a review that passes never draws a row and takes it away
+ * again; one that refused is the news, and stays.
+ */
+function isRoutineReview(tool: ToolCallView): boolean {
+  const review = tool.rawOutput?.review ?? tool.rawInput?.review
+  if (!review || !(tool.rawOutput?.action ?? tool.rawInput?.action)) return false
+  if (tool.status === 'failed') return false
+  return tool.status !== 'completed' || review.status === 'approved'
 }
 
 /* -------------------------------------------------------------------------
@@ -284,6 +301,8 @@ export function buildTranscript(
 const DIVIDER = /^\n?\[(?:Message from agent (\S+)|From Domo|From you)\]\n?$/
 /** What `message_agent` puts before the message it delivers. */
 const FROM_AGENT = /^\[Message from agent "([\s\S]*?)" \((ag_\w+)\)\]\n*/
+/** What the scheduler puts before the prompt it delivers. */
+const FROM_SCHEDULE = /^\[Scheduled task "([\s\S]*?)" \((\w+)\)\]\n*/
 /** How Domo's notes about an agent begin. */
 const ABOUT_AGENT = /^Agent (.+?) \((ag_\w+)\) /
 /**
@@ -325,6 +344,8 @@ function promptItem(base: { id: string, seq: number, at: string }, part: PromptP
 
   const fromAgent = FROM_AGENT.exec(text)
   if (fromAgent) return mesh('message', { id: fromAgent[2]!, title: fromAgent[1]! }, text.slice(fromAgent[0].length))
+  const fromSchedule = FROM_SCHEDULE.exec(text)
+  if (fromSchedule) return mesh('schedule', { id: fromSchedule[2]!, title: fromSchedule[1]! }, text.slice(fromSchedule[0].length))
   if (part.origin?.startsWith('agent:')) {
     // From an agent, without `message_agent`'s heading: the task it was
     // started with.

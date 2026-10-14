@@ -14,6 +14,38 @@ export function relativeTime(value?: string | null): string {
   return new Date(value).toLocaleDateString()
 }
 
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+const FULL = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'medium' })
+const WEEKDAY = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
+const DATED = new Intl.DateTimeFormat(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })
+
+/** "14:05", or "2:05 PM": when, within its day. */
+export function clockTime(value?: string | null): string {
+  const date = value ? new Date(value) : null
+  return date && !Number.isNaN(date.getTime()) ? CLOCK.format(date) : ''
+}
+
+/** The whole instant, for a tooltip. */
+export function fullTime(value?: string | null): string {
+  const date = value ? new Date(value) : null
+  return date && !Number.isNaN(date.getTime()) ? FULL.format(date) : ''
+}
+
+/** The local calendar day an instant falls on, as a comparable key. */
+export function dayKey(value: string | number | Date): string {
+  const date = new Date(value)
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`
+}
+
+/** "Today", "Yesterday", "Monday, Oct 12" — or with the year, once it is not this one. */
+export function dayLabel(value: string, today: string = dayKey(Date.now())): string {
+  const date = new Date(value)
+  if (dayKey(date) === today) return 'Today'
+  const [year, month, day] = today.split('-').map(Number) as [number, number, number]
+  if (dayKey(date) === dayKey(new Date(year, month - 1, day - 1))) return 'Yesterday'
+  return (date.getFullYear() === year ? WEEKDAY : DATED).format(date)
+}
+
 export function shortPath(path?: string | null, segments = 2): string {
   if (!path) return ''
   const trimmed = path.replace(/\/+$/, '')

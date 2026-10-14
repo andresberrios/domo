@@ -28,7 +28,7 @@ const current = computed(() => {
   const item = props.group.items[props.group.items.length - 1]!
   if (item.kind === 'thought') {
     const line = item.text.trim().split('\n').pop() ?? ''
-    return { icon: 'i-lucide-loader-circle', spin: true, text: line ? `Thinking: ${line}` : 'Thinking' }
+    return { icon: 'i-lucide-loader-circle', spin: true, text: line ? `Thinking: ${line}` : 'Thinking', detail: null }
   }
   if (item.kind !== 'tool') return null
   const { tool } = item
@@ -39,9 +39,9 @@ const current = computed(() => {
   return {
     icon: running ? 'i-lucide-loader-circle' : (described?.icon ?? TOOL_KIND_ICONS[tool.kind] ?? TOOL_KIND_ICONS.other!),
     spin: running,
-    text: described
-      ? [described.label, described.subject].filter(Boolean).join(' ')
-      : command ? `${tool.title} · ${command}` : tool.title
+    text: described ? [described.label, described.subject].filter(Boolean).join(' ') : tool.title,
+    // Left off on a phone, where the line has room for the title and no more.
+    detail: !described && command ? String(command) : null
   }
 })
 </script>
@@ -64,7 +64,7 @@ const current = computed(() => {
           class="flex min-w-0 items-center gap-1.5 text-xs font-normal text-muted"
         >
           <UIcon :name="current.icon" class="size-3.5 shrink-0" :class="current.spin ? 'animate-spin text-primary' : ''" />
-          <span class="min-w-0 truncate">{{ current.text }}</span>
+          <span class="min-w-0 truncate">{{ current.text }}<span v-if="current.detail" class="hidden sm:inline"> · {{ current.detail }}</span></span>
         </span>
         <span v-else-if="breakdown" class="min-w-0 truncate text-xs font-normal text-dimmed">{{ breakdown }}</span>
       </span>
@@ -78,12 +78,22 @@ const current = computed(() => {
     </UButton>
 
     <template #content>
+      <!-- Each item's time in a narrow column of its own, level with its first line. -->
       <div class="mt-2 space-y-2 border-s-2 border-accented ps-3">
-        <TranscriptItemView
+        <div
           v-for="item in group.items"
           :key="item.id"
-          :item="item"
-        />
+          class="flex items-start gap-2"
+        >
+          <time
+            :datetime="item.at"
+            :title="fullTime(item.at)"
+            class="w-12 shrink-0 text-end text-[10px] leading-none text-dimmed tabular-nums"
+            :class="item.kind === 'thought' ? 'pt-2' : 'pt-3.5'"
+            data-testid="item-time"
+          >{{ clockTime(item.at) }}</time>
+          <TranscriptItemView class="min-w-0 flex-1" :item="item" />
+        </div>
       </div>
     </template>
   </UCollapsible>

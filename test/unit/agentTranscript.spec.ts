@@ -571,4 +571,39 @@ describe('messages between agents', () => {
 
     expect(items.map(item => item.kind)).toEqual(['activity', 'mesh', 'activity'])
   })
+
+  describe('scheduled tasks', () => {
+    it('reads a task firing as one item, named after the task', () => {
+      const items = buildTranscript([
+        prompt('[Scheduled task "nightly check" (cj_1)]\n\nRun the nightly check.', 'cron:cj_1'),
+        // Written beside the prompt by older installs; the prompt is the record.
+        agentEvent('cron_triggered', { cronJobId: 'cj_1', name: 'nightly check', outcome: 'queued' })
+      ])
+
+      expect(items).toEqual([expect.objectContaining({
+        kind: 'mesh', direction: 'in', via: 'schedule', peer: { id: 'cj_1', title: 'nightly check' }, text: 'Run the nightly check.'
+      })])
+    })
+  })
+
+  describe('Codex reviewing its own calls', () => {
+    const review = (status: string, verdict: string) => agentEvent('tool_call', {
+      toolCallId: `r_${verdict}`,
+      title: 'Guardian Review',
+      kind: 'think',
+      status,
+      rawInput: { action: { type: 'mcpToolCall', server: 'domo', toolName: 'list_agents' }, review: { status: 'inProgress' } },
+      ...status === 'completed' ? { rawOutput: { action: { type: 'mcpToolCall' }, review: { status: verdict } } } : {}
+    })
+
+    it('leaves out a review that passed, or is still deciding', () => {
+      expect(buildTranscript([review('completed', 'approved')])).toEqual([])
+      expect(buildTranscript([review('in_progress', 'pending')])).toEqual([])
+    })
+
+    it('keeps a review that refused', () => {
+      expect(kinds(buildTranscript([review('completed', 'denied')]))).toEqual(['tool'])
+      expect(kinds(buildTranscript([review('failed', 'pending')]))).toEqual(['tool'])
+    })
+  })
 })

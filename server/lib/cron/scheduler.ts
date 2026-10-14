@@ -2,7 +2,6 @@ import { acpManager } from '../acp/manager'
 import { sessionStartability } from '../../../shared/retention'
 import { nextCronOccurrence } from './expression'
 import {
-  appendAgentEvent,
   claimCronJob,
   disableCronJobsForAgent,
   failCronJobSchedule,
@@ -83,13 +82,6 @@ export class CronScheduler {
         }],
         delivery: job.delivery,
         origin: `cron:${job.id}`
-      })
-      await appendAgentEvent(job.agentSessionId, 'cron_triggered', {
-        cronJobId: job.id,
-        name: job.name,
-        scheduledFor: run.scheduledFor,
-        delivery: result.delivery,
-        outcome: result.outcome
       })
       await finishCronRun(run.id, 'delivered', result.outcome)
     } catch (error) {
