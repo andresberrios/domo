@@ -1,7 +1,18 @@
 <script setup lang="ts">
-import type { AgentSession, MessageDelivery } from '~~/shared/types'
+import type { AgentDraft, AgentSession, MessageDelivery } from '~~/shared/types'
 
-const props = defineProps<{ session: AgentSession }>()
+const props = defineProps<{
+  /** `null` on the new-session page, where there is no session until this sends. */
+  session: AgentSession | null
+  /**
+   * What sending does on a draft: create the session with this as its first
+   * message. Resolves false when that failed, and the message comes back into
+   * the box to be sent again.
+   */
+  start?: (content: any[]) => Promise<boolean>
+}>()
+/** The draft's settings, for the card beside the attach button; see AgentComposerSettings. */
+const draft = defineModel<AgentDraft | null>('draft', { default: null })
 
 const toast = useToast()
 const text = ref('')
@@ -30,7 +41,7 @@ const isTouch = useIsTouch()
  * adapter. `null` means nothing has ever attached, and an unmeasured session is
  * not claimed to be either one.
  */
-const steers = computed(() => props.session.steering !== false)
+const steers = computed(() => props.session?.steering !== false)
 
 /**
  * What happens to a message sent while the agent is mid-turn.
@@ -88,10 +99,11 @@ const uploads = ref(0)
 const uploading = computed(() => uploads.value > 0)
 let inflight: Promise<void> = Promise.resolve()
 
-const busy = computed(() => props.session.status === 'thinking' || props.session.status === 'starting')
+const busy = computed(() => props.session?.status === 'thinking' || props.session?.status === 'starting')
 const status = computed(() => (busy.value ? ('streaming' as const) : ('ready' as const)))
 
 const placeholder = computed(() => {
+  if (!props.session) return 'What should it do? Sending this starts the agent…'
   if (!busy.value) return 'Message this agent…'
   if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
   if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'
@@ -186,6 +198,7 @@ function onKeydownCapture(event: KeyboardEvent) {
 async function submit() {
   const body = text.value.trim()
   if (!body && !attachments.value.length && !uploading.value) return
+  if (!props.session) return startSession()
 
   sending.value = true
   // Enter right after a paste is the normal way to send a screenshot, so the
@@ -196,17 +209,7 @@ async function submit() {
     return
   }
   try {
-    const content: any[] = []
-    for (const attachment of attachments.value) {
-      content.push({
-        type: 'resource_link',
-        uri: `file://${attachment.path}`,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        size: attachment.size
-      })
-    }
-    if (body) content.push({ type: 'text', text: body })
+    const content = messageContent(body, attachments.value)
 
     await $fetch(`/api/agents/${props.session.id}/prompt`, {
       method: 'POST',
@@ -225,7 +228,46 @@ async function submit() {
   }
 }
 
+/**
+ * The first message of a session that does not exist yet. It leaves the box at
+ * once, as any sent message does — the page shows it in the transcript while
+ * the session is made — and comes back if that failed, so nothing typed is
+ * lost. One at a time: a second Enter while the first is still out would make
+ * a second session.
+ */
+async function startSession() {
+  if (sending.value || !props.start) return
+  sending.value = true
+  try {
+    if (uploading.value) await inflight
+    const body = text.value.trim()
+    const sent = { text: text.value, attachments: attachments.value }
+    if (!body && !sent.attachments.length) return
+    text.value = ''
+    attachments.value = []
+    if (!await props.start(messageContent(body, sent.attachments))) {
+      text.value = sent.text
+      attachments.value = sent.attachments
+    }
+  } finally {
+    sending.value = false
+  }
+}
+
+function messageContent(body: string, files: typeof attachments.value): any[] {
+  const content: any[] = files.map(attachment => ({
+    type: 'resource_link',
+    uri: `file://${attachment.path}`,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    size: attachment.size
+  }))
+  if (body) content.push({ type: 'text', text: body })
+  return content
+}
+
 async function stop() {
+  if (!props.session) return
   try {
     await $fetch(`/api/agents/${props.session.id}/cancel`, { method: 'POST' })
   } catch (error: any) {
@@ -302,9 +344,9 @@ async function stop() {
               The mode, the model and the adapter's own settings, as one card
               that opens a panel; see AgentComposerSettings.
             -->
-            <AgentComposerSettings :session="session" />
+            <AgentComposerSettings v-model:draft="draft" :session="session" />
 
-            <span class="hidden min-w-0 truncate text-xs text-dimmed lg:inline">
+            <span v-if="session" class="hidden min-w-0 truncate text-xs text-dimmed lg:inline">
               {{ shortPath(session.cwd, 3) }}
             </span>
           </div>

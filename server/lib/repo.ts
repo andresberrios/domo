@@ -774,17 +774,19 @@ export async function createAgentSession(input: {
   devEnvironmentId?: string | null
   spawnedBy?: string | null
   assistantId?: string | null
+  /** The adapter's own settings asked for up front; applied at attach like any later choice. */
+  config?: Record<string, string> | null
 }): Promise<AgentSession> {
   const now = nowIso()
   const row = await queryOne(
     `insert into agent_sessions
        (id, adapter, title, cwd, dev_environment_id, status, mode_id, model, spawned_by, assistant_id,
-        created_at, updated_at)
-     values ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $10, $10) returning *`,
+        config, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $10::jsonb, $11, $11) returning *`,
     [
       newId('ag'), input.adapter, input.title, input.cwd,
       input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, input.spawnedBy ?? null,
-      input.assistantId ?? null, now
+      input.assistantId ?? null, input.config && Object.keys(input.config).length ? JSON.stringify(input.config) : null, now
     ]
   )
   bus.publish({ type: 'agent-list-changed' })

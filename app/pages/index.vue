@@ -4,7 +4,6 @@ const { pending } = usePermissions()
 const { environments } = useDevEnvironments()
 
 const { creating, talk } = useTalk()
-const newAgentOpen = ref(false)
 
 const working = computed(() => agents.value.filter(agent => agent.status === 'thinking').length)
 </script>
@@ -19,7 +18,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
             icon="i-lucide-plus"
             color="neutral"
             variant="subtle"
-            @click="newAgentOpen = true"
+            to="/agents/new"
           />
           <UButton label="Talk" icon="i-lucide-mic" :loading="creating" @click="talk" />
         </template>
@@ -52,7 +51,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
               color="neutral"
               variant="subtle"
               size="lg"
-              @click="newAgentOpen = true"
+              to="/agents/new"
             />
           </div>
         </section>
@@ -127,7 +126,6 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
         </section>
 
       </div>
-        <NewAgentModal v-model:open="newAgentOpen" />
     </template>
   </UDashboardPanel>
 </template>

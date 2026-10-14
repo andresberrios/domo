@@ -58,7 +58,6 @@ const status = computed(() => ENVIRONMENT_STATUS_META[environment.value?.status 
 const running = computed(() => environment.value?.status === 'running')
 
 const busy = ref(false)
-const newAgentOpen = ref(false)
 const renaming = ref(false)
 const confirmingRetire = ref(false)
 
@@ -157,7 +156,7 @@ async function retryCleanup() {
             icon="i-lucide-plus"
             size="sm"
             :ui="{ label: 'hidden sm:inline' }"
-            @click="newAgentOpen = true"
+            :to="newAgentPath({ environmentId: environment.id })"
           />
           <UButton
             v-if="environment && !retired"
@@ -274,7 +273,7 @@ async function retryCleanup() {
         <section v-if="!retired" class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold">Agents</h2>
-            <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" @click="newAgentOpen = true" />
+            <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" :to="newAgentPath({ environmentId })" />
           </div>
 
           <ul v-if="agents.length" class="divide-y divide-default overflow-hidden rounded-lg border border-default">
@@ -311,7 +310,6 @@ async function retryCleanup() {
         </section>
       </div>
 
-      <NewAgentModal v-if="environment" v-model:open="newAgentOpen" :environment-id="environment.id" />
 
       <RenameModal
         v-if="environment"

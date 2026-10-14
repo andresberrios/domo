@@ -3,7 +3,7 @@ import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 /**
  * The models *and permission modes* an adapter offers, for the pickers in the
- * new-agent modal and in Settings. One probe answers both: they come out of the
+ * new-session page and in Settings. One probe answers both: they come out of the
  * same `session/new` response, so asking separately would cost a second spawn
  * for nothing. The route keeps its name — `/api/adapters/models` — because a
  * rename would cost every caller for a word.
@@ -15,7 +15,7 @@ import { isAgentAdapter } from '../../../shared/agent-adapters'
  *
  * A 502 rather than an empty list when the probe fails: "this adapter is not
  * logged in" and "this adapter offers no choice of model" are different answers,
- * and the modal says so.
+ * and the page says so.
  */
 export default defineEventHandler(async (event) => {
   const asked = getQuery(event).adapter

@@ -58,8 +58,7 @@ const modeItems = computed(() => {
 /**
  * "Leave it to the adapter" is stored as an empty string, and a Reka select
  * item may not have `value: ''` — it throws when the menu opens. So the menu
- * carries a named sentinel and the empty string never reaches it, the same way
- * `NewAgentModal` does it.
+ * carries a named sentinel and the empty string never reaches it.
  */
 const ADAPTER_DEFAULT = 'adapter-default'
 

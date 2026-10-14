@@ -1,11 +1,11 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { UApp, UDropdownMenu, UPopover } from '#components'
 import { getQuery, readBody } from 'h3'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AgentComposer from '~/components/AgentComposer.vue'
-import type { AgentSession } from '~~/shared/types'
+import type { AgentDraft, AgentSession } from '~~/shared/types'
 
 /**
  * The composer is where a person decides what happens to a message sent at an
@@ -77,6 +77,23 @@ registerEndpoint('/api/adapters/models', {
           { id: 'opencode/gpt-5.4', name: 'opencode/GPT-5.4' }
         ],
         current: 'opencode-go/kimi-k3'
+      }
+    }
+    // A draft has no row, so it reads the modes and settings off the probe too.
+    if (getQuery(event).adapter === 'codex') {
+      return {
+        models: [{ id: 'gpt-5.6', name: 'GPT-5.6' }, { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
+        current: 'gpt-5.6',
+        modes: [{ id: 'agent', name: 'Approve for me', description: null }, { id: 'read-only', name: 'Read only', description: null }],
+        currentMode: 'agent',
+        configOptions: [{
+          id: 'reasoning_effort',
+          name: 'Reasoning effort',
+          description: null,
+          category: 'thought_level',
+          currentValue: 'medium',
+          options: [{ value: 'medium', name: 'Medium', description: null }, { value: 'high', name: 'High', description: null }]
+        }]
       }
     }
     return { models: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'opus', name: 'Opus' }], current: 'sonnet' }
@@ -662,5 +679,113 @@ describe('AgentComposer settings', () => {
 
     await openSettings(component)
     await vi.waitFor(() => expect(probed).toHaveBeenCalled())
+  })
+})
+
+/**
+ * The new-session page: the same composer with no session behind it. Sending
+ * hands the message to the page, which makes the session; the settings card
+ * keeps its choices in the draft, since there is no row to PATCH yet.
+ */
+describe('AgentComposer on a draft', () => {
+  const blank: AgentDraft = {
+    adapter: 'claude-code',
+    model: '',
+    modeId: '',
+    config: {},
+    projectId: null,
+    devEnvironmentId: null,
+    cwd: '/tmp/scratch',
+    title: ''
+  }
+
+  function mountDraft(start: (content: any[]) => Promise<boolean>, initial: AgentDraft = blank) {
+    const draft = ref<AgentDraft | null>({ ...initial })
+    const Draft = defineComponent({
+      setup: () => () => h(UApp, null, {
+        default: () => h(AgentComposer, {
+          'session': null,
+          'start': start,
+          'draft': draft.value,
+          'onUpdate:draft': (value: AgentDraft | null) => { draft.value = value }
+        })
+      })
+    })
+    return mountSuspended(Draft).then(component => ({ component, draft }))
+  }
+
+  it('hands the first message to the page and empties the box at once', async () => {
+    let finish!: (ok: boolean) => void
+    const start = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))
+    const { component } = await mountDraft(start)
+
+    await type(component, 'set up the repo')
+
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith([{ type: 'text', text: 'set up the repo' }]))
+    expect((component.find('textarea').element as HTMLTextAreaElement).value).toBe('')
+    // Nothing went to a session's prompt endpoint: there is no session.
+    expect(sent).not.toHaveBeenCalled()
+
+    // A second Enter while the first is out would make a second session.
+    await type(component, 'again')
+    expect(start).toHaveBeenCalledTimes(1)
+    finish(true)
+  })
+
+  it('puts the message back when the session could not be made', async () => {
+    const start = vi.fn(async () => false)
+    const { component } = await mountDraft(start)
+
+    await type(component, 'keep this')
+
+    await vi.waitFor(() => expect(start).toHaveBeenCalled())
+    await vi.waitFor(() => expect((component.find('textarea').element as HTMLTextAreaElement).value).toBe('keep this'))
+  })
+
+  it('sends an attachment with the first message', async () => {
+    const start = vi.fn(async () => true)
+    const { component } = await mountDraft(start)
+
+    paste(component, [image('shot.png')])
+    await vi.waitFor(() => expect(component.text()).toContain('shot.png'))
+    await type(component, 'what is wrong here')
+
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith([
+      { type: 'resource_link', uri: 'file:///data/uploads/up_1.png', name: 'shot.png', mimeType: 'image/png', size: 12 },
+      { type: 'text', text: 'what is wrong here' }
+    ]))
+  })
+
+  it('offers the harness as a choice, and keeps every choice in the draft', async () => {
+    const { component, draft } = await mountDraft(async () => true)
+    // A draft has no row to read its modes from, so it asks at once.
+    await vi.waitFor(() => expect(probed).toHaveBeenCalled())
+    await vi.waitFor(() => expect(component.text()).toContain('Claude Code · Sonnet'))
+
+    await openSettings(component)
+    option('Agent', 'Codex').click()
+    await vi.waitFor(() => expect(draft.value?.adapter).toBe('codex'))
+    await vi.waitFor(() => expect(component.text()).toContain('Codex · GPT-5.6'))
+
+    // The harness's own modes and settings, preselected to its defaults.
+    await vi.waitFor(() => expect(option('Permission mode', 'Approve for me').getAttribute('aria-selected')).toBe('true'))
+    // One at a time, as a person clicks: each lands before the next.
+    option('Model', 'GPT-5.6 Luna').click()
+    await vi.waitFor(() => expect(draft.value?.model).toBe('gpt-5.6-luna'))
+    option('Reasoning effort', 'High').click()
+    await vi.waitFor(() => expect(draft.value?.config).toEqual({ reasoning_effort: 'high' }))
+    option('Permission mode', 'Read only').click()
+
+    await vi.waitFor(() => expect(draft.value).toMatchObject({
+      adapter: 'codex',
+      model: 'gpt-5.6-luna',
+      config: { reasoning_effort: 'high' },
+      modeId: 'read-only'
+    }))
+    expect(patched).not.toHaveBeenCalled()
+
+    // Another harness starts the rest over: its models and modes are its own.
+    option('Agent', 'Claude Code').click()
+    await vi.waitFor(() => expect(draft.value).toMatchObject({ adapter: 'claude-code', model: '', modeId: '', config: {} }))
   })
 })

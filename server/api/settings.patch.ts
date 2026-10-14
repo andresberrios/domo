@@ -13,6 +13,10 @@ export default defineEventHandler(async (event) => {
     }
   }
 
+  if (patch.defaultAssistantId !== undefined && typeof patch.defaultAssistantId !== 'string') {
+    throw createError({ statusCode: 400, message: 'defaultAssistantId must be an assistant id; empty means the most recent.' })
+  }
+
   if (patch.homeMounts !== undefined) {
     if (!Array.isArray(patch.homeMounts) || patch.homeMounts.some(entry => typeof entry !== 'string')) {
       throw createError({ statusCode: 400, message: 'Home mounts must be a list of paths, one per line.' })

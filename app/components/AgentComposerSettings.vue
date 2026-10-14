@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { AgentSession } from '~~/shared/types'
-import { agentAdapterInfo } from '~~/shared/agent-adapters'
+import type { AgentAdapter, AgentDraft, AgentSession, SessionConfigOptionInfo, SessionModeInfo } from '~~/shared/types'
+import { AGENT_ADAPTERS, agentAdapterInfo } from '~~/shared/agent-adapters'
 
 /**
  * The model, the adapter's own settings and the session mode, behind one card
@@ -14,30 +14,36 @@ import { agentAdapterInfo } from '~~/shared/agent-adapters'
  * session (model, reasoning effort, collaboration mode, permission mode), and
  * four selects do not fit beside the attach button on a phone.
  *
- * The adapter is not among the columns: it is fixed when the session is
- * created, so the panel names it as a header rather than offering it as a
- * choice.
+ * On a session the adapter is not among the columns: it is fixed when the
+ * session is created, so the panel names it as a header rather than offering
+ * it as a choice. On a draft — the new-session page, before the first message
+ * creates the row — it is the first column, and every choice is kept in the
+ * draft rather than sent anywhere.
  *
- * Every column goes through the one `PATCH /api/agents/[id]`, which reaches
- * the adapter when one is running and records the choice on the row when none
- * is — picking a model here never starts a session, which matters most for the
- * environment-backed ones, where starting a session means starting work in a
- * container.
+ * Every column of a session goes through the one `PATCH /api/agents/[id]`,
+ * which reaches the adapter when one is running and records the choice on the
+ * row when none is — picking a model here never starts a session, which
+ * matters most for the environment-backed ones, where starting a session means
+ * starting work in a container.
  *
- * Nothing here holds the chosen value: every column reads the session row, so
- * a change the adapter refuses reverts on its own, and a change made from the
- * mesh tool or another browser arrives through Electric like any other.
+ * Nothing here holds the chosen value: every column reads the session row (or
+ * the draft), so a change the adapter refuses reverts on its own, and a change
+ * made from the mesh tool or another browser arrives through Electric like any
+ * other.
  *
  * The panel stays open after a selection rather than closing like a menu,
  * because the options are per model — changing the model refreshes the effort
  * levels under it, and picking both is one errand, not two.
  */
 
-const props = defineProps<{ session: AgentSession }>()
+const props = defineProps<{ session: AgentSession | null }>()
+const draft = defineModel<AgentDraft | null>('draft', { default: null })
 
 const toast = useToast()
 const open = ref(false)
-const adapterInfo = computed(() => agentAdapterInfo(props.session.adapter))
+const adapter = computed<AgentAdapter>(() => props.session?.adapter ?? draft.value?.adapter ?? 'claude-code')
+const adapterInfo = computed(() => agentAdapterInfo(adapter.value))
+const { data: settings } = useSettings()
 
 /**
  * The change in flight, as the column and the value that was clicked. The
@@ -47,6 +53,10 @@ const adapterInfo = computed(() => agentAdapterInfo(props.session.adapter))
 const applying = ref<{ key: string, value: string } | null>(null)
 
 async function apply(column: Column, value: string) {
+  if (!props.session) {
+    if (draft.value) draft.value = { ...draft.value, ...column.patch(value) } as AgentDraft
+    return
+  }
   applying.value = { key: column.key, value }
   try {
     await $fetch(`/api/agents/${props.session.id}`, { method: 'PATCH', body: column.patch(value) })
@@ -66,14 +76,23 @@ async function apply(column: Column, value: string) {
  * only reports it in a `session/new` response, so the server answers this by
  * spawning a throwaway probe (cached an hour). Hence `immediate: false` and a
  * fetch on first open — opening an agent page must not cost an adapter spawn.
+ * A draft has no row to read the modes and settings from either, so it asks
+ * at once, and again when its adapter changes: the same probe answers all
+ * three.
  */
 const {
   data: modelData,
   status: modelStatus,
   error: modelError,
   refresh: refreshModels
-} = await useFetch<{ models: Array<{ id: string, name: string }> }>('/api/adapters/models', {
-  query: computed(() => ({ adapter: props.session.adapter })),
+} = await useFetch<{
+  models: Array<{ id: string, name: string }>
+  current: string | null
+  modes?: SessionModeInfo[]
+  currentMode?: string | null
+  configOptions?: SessionConfigOptionInfo[]
+}>('/api/adapters/models', {
+  query: computed(() => ({ adapter: adapter.value })),
   immediate: false,
   lazy: true,
   watch: false
@@ -89,6 +108,11 @@ watch(open, (value) => {
   probed = true
   void refreshModels()
 })
+watch(() => draft.value && adapter.value, (draftAdapter) => {
+  if (!draftAdapter || props.session) return
+  probed = true
+  void refreshModels()
+}, { immediate: true })
 
 /* ---------------------------- the columns ---------------------------- */
 
@@ -134,16 +158,28 @@ function splitModel(id: string, name: string): { label: string, hint: string | n
   return { label: carried ? name.slice(prefix.length + 1) : name, hint: prefix }
 }
 
+/** What a draft gets when it asks for no model: the install's default, then the adapter's. */
+const defaultModel = computed(() => settings.value?.defaultAgentModels?.[adapter.value] || modelData.value?.current || null)
+
+function modelName(id: string): string {
+  return modelData.value?.models.find(entry => entry.id === id)?.name ?? id
+}
+
 const modelColumn = computed<Column>(() => {
-  const items = (modelData.value?.models ?? []).map(entry => ({
+  const items: ColumnItem[] = (modelData.value?.models ?? []).map(entry => ({
     value: entry.id,
     ...splitModel(entry.id, entry.name)
   }))
   // Whatever the session is actually on goes in even before the probe answers,
   // so the column always has a selected row to show.
-  const current = props.session.model
+  const current = props.session ? props.session.model : draft.value?.model
   if (current && !items.some(item => item.value === current)) {
     items.unshift({ value: current, ...splitModel(current, current) })
+  }
+  // A draft that names no model follows the default, which can change under
+  // it, so "Default" is a choice of its own rather than whichever id it is now.
+  if (!props.session) {
+    items.unshift({ value: '', label: 'Default', hint: defaultModel.value ? modelName(defaultModel.value) : null })
   }
   return {
     key: 'model',
@@ -168,35 +204,70 @@ const modelColumn = computed<Column>(() => {
  * of, and both publish these *per model*, so the list changes when the model
  * beside it does. The row is rewritten from the adapter's own answer on every
  * change, so this follows along on its own.
+ *
+ * A draft has no row yet, so it shows what the probe offered on the default
+ * model; one the chosen model turns out not to offer is skipped at the start,
+ * as the install defaults are.
  */
-const configColumns = computed<Column[]>(() =>
-  (props.session.configOptions ?? []).map(option => ({
+const configColumns = computed<Column[]>(() => {
+  if (props.session) {
+    return (props.session.configOptions ?? []).map(option => ({
+      key: option.id,
+      label: option.name,
+      items: option.options.map(entry => ({
+        value: entry.value,
+        label: entry.name,
+        description: entry.description
+      })),
+      selected: props.session!.config?.[option.id] ?? option.currentValue ?? '',
+      patch: (value: string) => ({ config: { [option.id]: value } })
+    }))
+  }
+  const chosen = draft.value?.config ?? {}
+  const defaults = settings.value?.defaultAgentConfig?.[adapter.value] ?? {}
+  return (modelData.value?.configOptions ?? []).map(option => ({
     key: option.id,
     label: option.name,
-    items: option.options.map(entry => ({
-      value: entry.value,
-      label: entry.name,
-      description: entry.description
-    })),
-    selected: props.session.config?.[option.id] ?? option.currentValue ?? '',
-    patch: (value: string) => ({ config: { [option.id]: value } })
+    items: option.options.map(entry => ({ value: entry.value, label: entry.name, description: entry.description })),
+    selected: chosen[option.id] ?? defaults[option.id] ?? option.currentValue ?? '',
+    patch: (value: string) => ({ config: { ...chosen, [option.id]: value } })
   }))
-)
+})
 
 const modeColumn = computed<Column | null>(() => {
-  const modes = props.session.modes ?? []
+  const modes = props.session ? (props.session.modes ?? []) : (modelData.value?.modes ?? [])
   if (!modes.length) return null
+  const selected = props.session
+    ? props.session.modeId ?? ''
+    : draft.value?.modeId || settings.value?.defaultAgentModes?.[adapter.value] || modelData.value?.currentMode || ''
   return {
     key: 'mode',
     label: adapterInfo.value.modeLabel,
     items: modes.map(mode => ({ value: mode.id, label: mode.name, description: mode.description })),
-    selected: props.session.modeId ?? '',
+    selected,
     patch: (value: string) => ({ modeId: value })
   }
 })
 
+/**
+ * A draft's harness, which a session's panel names as a fact instead. Changing
+ * it starts the rest over: models, modes and settings are each adapter's own.
+ */
+const adapterColumn = computed<Column | null>(() => props.session
+  ? null
+  : {
+      key: 'adapter',
+      label: 'Agent',
+      items: AGENT_ADAPTERS.map(entry => ({ value: entry.id, label: entry.label })),
+      selected: adapter.value,
+      patch: (value: string) => value === adapter.value
+        ? {}
+        : { adapter: value as AgentAdapter, model: '', modeId: '', config: {} }
+    })
+
 /** Model, then whatever the adapter offers, then what it is allowed to do. */
 const columns = computed<Column[]>(() => [
+  ...(adapterColumn.value ? [adapterColumn.value] : []),
   modelColumn.value,
   ...configColumns.value,
   ...(modeColumn.value ? [modeColumn.value] : [])
@@ -286,9 +357,9 @@ function summaryPart(column: Column): string | null {
  * prefix is the half that says which account is about to be spent.
  */
 const modelLabel = computed(() => {
-  const current = props.session.model
+  const current = props.session ? props.session.model : (draft.value?.model || defaultModel.value)
   if (!current) return null
-  return modelData.value?.models.find(entry => entry.id === current)?.name ?? current
+  return modelName(current)
 })
 
 /**
@@ -339,7 +410,7 @@ const summary = computed(() => {
           swaps one out from under a transcript — so it heads the panel as a
           fact rather than appearing below as a column of one.
         -->
-        <div class="flex items-center gap-2 border-b border-default px-3 py-2">
+        <div v-if="session" class="flex items-center gap-2 border-b border-default px-3 py-2">
           <UIcon :name="adapterInfo.icon" class="size-4 shrink-0 text-primary" />
           <span class="text-sm font-semibold">{{ adapterInfo.label }}</span>
           <span class="ms-auto ps-3 text-xs text-dimmed">Fixed for this session</span>

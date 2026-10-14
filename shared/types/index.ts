@@ -74,6 +74,25 @@ export interface AgentSession {
   assistantId: string | null
 }
 
+/**
+ * A session that does not exist yet: what the new-session page holds until
+ * its first message creates the row. An empty string means "the default" —
+ * the install's setting, then the adapter's own.
+ */
+export interface AgentDraft {
+  adapter: AgentAdapter
+  model: string
+  modeId: string
+  /** The adapter's own settings, by option id; only the ones changed from the default. */
+  config: Record<string, string>
+  /** `null` is "no project": an arbitrary directory. */
+  projectId: string | null
+  /** `null` runs on the host, in `cwd`. */
+  devEnvironmentId: string | null
+  cwd: string
+  title: string
+}
+
 /* ------------------------------------------------------------------ */
 /* assistants                                                          */
 /* ------------------------------------------------------------------ */
@@ -546,6 +565,12 @@ export interface McpServer {
 
 export interface AppSettings {
   defaultCwd: string
+  /**
+   * The assistant Talk opens. Empty means the one talked to most recently;
+   * with no assistant at all, Talk starts a fresh session as it always did.
+   * An id that names an archived or deleted assistant reads as empty.
+   */
+  defaultAssistantId: string
   /** Auto-answer coding-agent permission prompts with the first "allow once" option. */
   autoApprovePermissions: boolean
   /**

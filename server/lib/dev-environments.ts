@@ -99,7 +99,7 @@ function containerReference(environment: DevEnvironment): string {
  * there is no container, no volume and no image behind it. Every lifecycle call
  * has to say so rather than fail somewhere inside `docker`.
  */
-function assertNotRetired(environment: DevEnvironment): void {
+export function assertNotRetired(environment: DevEnvironment): void {
   if (!environment.retiredAt) return
   throw new Error(
     `Development environment "${environment.name}" was retired; its container and checkout no longer exist.`

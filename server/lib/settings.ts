@@ -19,6 +19,7 @@ export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
 
 export const DEFAULTS: AppSettings = {
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
+  defaultAssistantId: '',
   autoApprovePermissions: false,
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
