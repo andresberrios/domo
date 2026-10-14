@@ -191,6 +191,20 @@ function stopLeftover() {
   rmSync(pidFile(), { force: true })
 }
 
+/**
+ * What `uvx` runs Pocket with. On Linux, PyPI's torch is the CUDA build, and
+ * its `nvidia-*` wheels are more than 5 GB (measured on arm64) for a model
+ * made for the CPU; the CPU build is 152 MB. A `UV_TORCH_BACKEND` of the
+ * user's own stands.
+ */
+export function pocketEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, data: string): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    HF_HOME: env.HF_HOME ?? join(data, 'models', 'hf'),
+    ...(platform === 'linux' && !env.UV_TORCH_BACKEND ? { UV_TORCH_BACKEND: 'cpu' } : {})
+  }
+}
+
 async function startServer(): Promise<string> {
   stopLeftover()
   const port = await freePort()
@@ -203,7 +217,7 @@ async function startServer(): Promise<string> {
   // whose own stdin a non-interactive shell points at /dev/null.
   const watchdog = 'exec 3<&0; (cat <&3 >/dev/null; kill -TERM 0) & exec "$@" </dev/null 3<&-'
   const child = spawn('sh', ['-c', watchdog, 'pocket', 'uvx', '--from', `pocket-tts==${POCKET_VERSION}`, 'pocket-tts', 'serve', '--host', '127.0.0.1', '--port', String(port), '--config', pocketConfigPath()], {
-    env: { ...process.env, HF_HOME: process.env.HF_HOME ?? join(dataDir(), 'models', 'hf') },
+    env: pocketEnv(process.env, process.platform, dataDir()),
     stdio: ['pipe', 'ignore', 'pipe'],
     detached: true
   })

@@ -18,7 +18,10 @@ import { resourcePrefix, run } from './docker'
  * (measured: 1.3 GB for a Nuxt app, per environment). So each environment's
  * virtual store (`node_modules/.pnpm`) lives on the cache volume beside the
  * store (`virtualStoreDir`), where pnpm hardlinks, and the checkout's
- * `node_modules` holds only symlinks into it. That directory also gets a
+ * `node_modules` holds only symlinks into it. Except a package that declares
+ * a lifecycle script: pnpm 12.7 and later copy it into every virtual store,
+ * whether or not its build is allowed (measured to 12.13; `onnxruntime-node`
+ * is 208 MB per environment). That directory also gets a
  * `node_modules` symlink back to the checkout's: tools that resolve an
  * undeclared package by walking up from a package's real path (Nuxt's kit
  * does, for module dependencies and `vue-i18n`) then pass the hidden hoist
@@ -49,10 +52,24 @@ export const BUILTIN_CACHES: Record<string, Record<string, string>> = {
   npm: { npm_config_cache: `${CACHES_ROOT}/npm` },
   yarn: { YARN_CACHE_FOLDER: `${CACHES_ROOT}/yarn`, YARN_GLOBAL_FOLDER: `${CACHES_ROOT}/yarn-berry` },
   pip: { PIP_CACHE_DIR: `${CACHES_ROOT}/pip` },
-  // A `.venv` is on the checkout's mount and the cache is not, so uv could
-  // only warn and fall back to copying anyway.
-  uv: { UV_CACHE_DIR: `${CACHES_ROOT}/uv`, UV_LINK_MODE: 'copy' },
+  // No `UV_LINK_MODE=copy`: a `.venv` on the checkout's mount falls back to a
+  // copy by itself, and `uvx`'s environments, which live in this cache, then
+  // hardlink. Copy mode made each of those a second copy of every wheel
+  // (measured: Pocket TTS's 971 MB became 1.8 GB).
+  uv: { UV_CACHE_DIR: `${CACHES_ROOT}/uv` },
   go: { GOMODCACHE: `${CACHES_ROOT}/go/mod`, GOCACHE: `${CACHES_ROOT}/go/build` }
+}
+
+/**
+ * Set in every environment, before the project's own `containerEnv`, which
+ * wins. No environment is given a GPU, so a download for one only fills the
+ * disk: PyPI's torch on Linux is the CUDA build, which pulls more than 5 GB
+ * of `nvidia-*` wheels (measured on arm64; the CPU build is 152 MB), and
+ * `onnxruntime-node` fetches CUDA providers in its postinstall on Linux x64.
+ */
+export const CPU_ONLY_ENV: Record<string, string> = {
+  UV_TORCH_BACKEND: 'cpu',
+  ONNXRUNTIME_NODE_INSTALL_CUDA: 'skip'
 }
 
 /** What `.domo.json` may say: `false` for none of the built-ins, or per name a container path (custom) or `false` (off). */

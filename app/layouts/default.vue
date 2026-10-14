@@ -77,6 +77,7 @@ const talkLabel = computed(() => assistant.value ? `Talk to ${assistant.value.na
       <template #footer="{ collapsed }">
         <div class="flex w-full flex-col gap-1">
           <UsageSidebarSummary v-if="!collapsed" />
+          <DockerDiskBadge :collapsed="collapsed" />
           <UpdateBadge :collapsed="collapsed" />
           <div class="flex w-full items-center justify-between gap-2">
             <UButton

@@ -129,7 +129,14 @@ Every environment gets a locked git worktree in
   cannot do that, and Nuxt modules fail on it. Domo never hoists for a
   project. Everything pnpm keeps there is under `pnpm/`, made by the
   environment's user with mode 755: pnpm 12.8 silently copies from a store in
-  a world-writable directory.
+  a world-writable directory. pnpm 12.7 and later also copy every package that
+  declares a lifecycle script, allowed to build or not.
+- **Measure the cache volume by inode, never with `du` per directory.** `du`
+  charges a hardlink to whichever directory it reads first.
+  `dev-env/cache-maintenance.ts` measures it this way, prunes it once a day and
+  when the disk runs low, and shows the disk in Settings. Every tool runs as
+  its directory's owner: a file pnpm writes as root locks every environment
+  out of the store.
 - **An image-based definition is built once**, kept as `<prefix>image-<hash>`
   (the generated config plus the base image's id), and tagged for each later
   environment (`image.ts`). A Dockerfile (`build`) is always built. A cached
@@ -153,7 +160,8 @@ Every environment gets a locked git worktree in
   and one that never existed, and an unreachable daemon lists nothing. So
   removal is one sweep (`dev-env/reconcile.ts`): observe, remove what a row
   claims, and record what survived in `dev_environments.leftovers`. It runs
-  after retirement or a failed creation, once at boot, and on request. There
+  after retirement or a failed creation, once at boot, on request, and when
+  the cache cleanup finds a retired environment's virtual store. There
   is **no retry timer**, on purpose. What survives one attempt does not go
   away by itself.
 - **A resource is removed only when a row claims it** (`dev-env/leftovers.ts`),

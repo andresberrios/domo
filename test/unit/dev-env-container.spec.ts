@@ -255,6 +255,17 @@ describe('containerRunArgs', () => {
     expect(env.lastIndexOf('npm_config_cache=/project/cache')).toBeGreaterThan(env.indexOf('npm_config_cache=/opt/domo-caches/npm'))
   })
 
+  it('installs for the CPU an environment has, unless the project says otherwise', () => {
+    const env = values(runArgs({ caches: resolveCaches(false) }), '--env')
+    expect(env).toContain('UV_TORCH_BACKEND=cpu')
+    expect(env).toContain('ONNXRUNTIME_NODE_INSTALL_CUDA=skip')
+    // uvx's environments live in the cache: copy mode doubled each of them.
+    expect(env.some(entry => entry.startsWith('UV_LINK_MODE='))).toBe(false)
+
+    const overridden = values(runArgs({ config: { containerEnv: { UV_TORCH_BACKEND: 'cu128' } } }), '--env')
+    expect(overridden.lastIndexOf('UV_TORCH_BACKEND=cu128')).toBeGreaterThan(overridden.indexOf('UV_TORCH_BACKEND=cpu'))
+  })
+
   it('mounts the shared browser read-only when the install has one', () => {
     const args = runArgs({ browserVolume: 'domo-dev-browser-abc123' })
 
@@ -318,6 +329,8 @@ describe('containerRunArgs', () => {
 
     expect(values(args, '--env')).toEqual([
       'DOMO_DEV_ENVIRONMENT_ID=env_1',
+      'UV_TORCH_BACKEND=cpu',
+      'ONNXRUNTIME_NODE_INSTALL_CUDA=skip',
       'SHARED=project',
       'FROM_FEATURE=yes',
       'OWN=yes'
@@ -385,7 +398,7 @@ describe('containerRunArgs', () => {
   it('mounts nothing of the home when the overlay is empty', () => {
     // The worktree, its `.git` override, the base `.git` and the runtime.
     expect(values(runArgs(), '--mount')).toHaveLength(4)
-    expect(values(runArgs(), '--env')).toEqual(['DOMO_DEV_ENVIRONMENT_ID=env_1'])
+    expect(values(runArgs(), '--env')).toEqual(['DOMO_DEV_ENVIRONMENT_ID=env_1', 'UV_TORCH_BACKEND=cpu', 'ONNXRUNTIME_NODE_INSTALL_CUDA=skip'])
   })
 
   it('never mounts the host\'s Claude config, at any path', () => {

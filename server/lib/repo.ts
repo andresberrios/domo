@@ -31,7 +31,8 @@ import type {
   UsageProvider,
   UsageProviderId,
   UsageProviderState,
-  AppUpdate
+  AppUpdate,
+  DockerDisk
 } from '../../shared/types'
 import { isAgentAdapter } from '../../shared/agent-adapters'
 import { isAssistantContext } from '../../shared/assistants'
@@ -168,6 +169,67 @@ export async function restartBlockers(now = new Date()): Promise<string[]> {
   if (environments?.n) blockers.push(plural(environments.n, 'an environment is being created', '% environments are being created'))
   if (cron?.n) blockers.push(plural(cron.n, 'a schedule fires within two minutes', '% schedules fire within two minutes'))
   return blockers
+}
+
+function mapDockerDisk(r: any): DockerDisk {
+  const number = (value: unknown) => (value === null || value === undefined ? null : Number(value))
+  return {
+    totalBytes: Number(r.total_bytes),
+    freeBytes: Number(r.free_bytes),
+    level: r.level,
+    caches: Array.isArray(r.caches) ? r.caches : [],
+    docker: Array.isArray(r.docker) ? r.docker : [],
+    reclaimableBytes: Number(r.reclaimable_bytes),
+    measuredAt: r.measured_at ?? null,
+    checkedAt: r.checked_at,
+    cleaning: !!r.cleaning,
+    lastCleanupAt: r.last_cleanup_at ?? null,
+    lastCleanupLevel: r.last_cleanup_level ?? null,
+    lastFreedBytes: number(r.last_freed_bytes),
+    lastError: r.last_error ?? null,
+    updatedAt: r.updated_at
+  }
+}
+
+const DOCKER_DISK_ID = 'docker'
+
+export async function getDockerDisk(): Promise<DockerDisk | null> {
+  const row = await queryOne('select * from docker_disk where id = $1', [DOCKER_DISK_ID])
+  return row ? mapDockerDisk(row) : null
+}
+
+/** Write the whole row, as `saveAppUpdate` does. */
+export async function saveDockerDisk(disk: Omit<DockerDisk, 'updatedAt'>): Promise<DockerDisk> {
+  const row = await queryOne(
+    `insert into docker_disk (id, total_bytes, free_bytes, level, caches, docker, reclaimable_bytes, measured_at,
+       checked_at, cleaning, last_cleanup_at, last_cleanup_level, last_freed_bytes, last_error, updated_at)
+     values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     on conflict (id) do update set
+       total_bytes = excluded.total_bytes, free_bytes = excluded.free_bytes, level = excluded.level,
+       caches = excluded.caches, docker = excluded.docker, reclaimable_bytes = excluded.reclaimable_bytes,
+       measured_at = excluded.measured_at, checked_at = excluded.checked_at, cleaning = excluded.cleaning,
+       last_cleanup_at = excluded.last_cleanup_at, last_cleanup_level = excluded.last_cleanup_level,
+       last_freed_bytes = excluded.last_freed_bytes, last_error = excluded.last_error, updated_at = excluded.updated_at
+     returning *`,
+    [DOCKER_DISK_ID, disk.totalBytes, disk.freeBytes, disk.level, JSON.stringify(disk.caches), JSON.stringify(disk.docker),
+      disk.reclaimableBytes, disk.measuredAt, disk.checkedAt, disk.cleaning, disk.lastCleanupAt, disk.lastCleanupLevel,
+      disk.lastFreedBytes, disk.lastError, nowIso()]
+  )
+  return mapDockerDisk(row)
+}
+
+/**
+ * Whether something in an environment may be installing right now: an agent
+ * in one is mid-turn, or one is being created. A store prune then could take
+ * a file an install has just added and not linked yet.
+ */
+export async function environmentInstallsMayRun(): Promise<boolean> {
+  const row = await queryOne<{ n: number }>(
+    `select (select count(*) from agent_sessions
+              where dev_environment_id is not null and status in ('starting', 'thinking', 'awaiting-permission'))
+          + (select count(*) from dev_environments where status = 'creating' and retired_at is null) as n`
+  )
+  return Number(row?.n ?? 0) > 0
 }
 
 function mapUsageProvider(r: any): UsageProvider {

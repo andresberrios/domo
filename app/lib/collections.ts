@@ -121,6 +121,7 @@ export const usageProvidersCollection = () => collection('usage_providers', {
 
 /** One row: where an installed Domo stands against its update channel. Empty under `pnpm dev`. */
 export const appUpdateCollection = () => collection('app_update', { table: 'app_update' })
+export const dockerDiskCollection = () => collection('docker_disk', { table: 'docker_disk' })
 
 /**
  * Per-session shapes: only the session on screen is synced, and only for as

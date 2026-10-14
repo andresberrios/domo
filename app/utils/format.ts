@@ -57,6 +57,15 @@ export function shortPath(path?: string | null, segments = 2): string {
   return `…/${parts.slice(-segments).join('/')}`
 }
 
+/** Bytes as people read a disk: `7.8 GB`, `420 MB`. Binary units, as `df -h` and Docker Desktop show them. */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes < 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const power = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
+  const value = bytes / 1024 ** power
+  return `${value >= 100 || power === 0 ? Math.round(value) : value.toFixed(1)} ${units[power]}`
+}
+
 export function truncate(value: string, max = 140): string {
   const clean = (value ?? '').replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max)}…` : clean
