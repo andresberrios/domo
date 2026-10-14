@@ -357,6 +357,8 @@ describe('a streamed turn', () => {
     expect(textOf(events)).toEqual(['Looking at the build.', 'Found it.'])
     expect(events.map(event => event.seq)).toEqual([...events.map(event => event.seq)].sort((a, b) => a - b))
     expect(events.every(event => event.type !== 'agent_message' || event.payload.streaming === false)).toBe(true)
+    // The summary keeps the two messages apart, not "build.Found it."
+    expect((await getAgentSession(agent.id))!.summary).toBe('Looking at the build.\n\nFound it.')
   })
 
   /**
@@ -395,6 +397,7 @@ describe('a streamed turn', () => {
     const call = events.find(event => event.type === 'tool_call')!
     expect(message.seq).toBeLessThan(call.seq)
     expect(message.payload.streaming).toBe(false)
+    expect((await getAgentSession(agent.id))!.summary).toBe('Now let me look at the OpenCode normalizer:')
   })
 
   /**

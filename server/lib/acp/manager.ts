@@ -1131,7 +1131,12 @@ class AgentRuntime {
     if (streamType) {
       const text = update.content?.type === 'text' ? String(update.content.text ?? '') : ''
       if (!text) return
-      if (streamType === 'agent_message') this.textBuffer += text
+      if (streamType === 'agent_message') {
+        // A new block is a new message: without a break, the summary of a turn
+        // with a tool call in it read "…once their branch lands.Nothing clashes".
+        if (this.stream?.type !== streamType && this.textBuffer) this.textBuffer += '\n\n'
+        this.textBuffer += text
+      }
       this.appendStream(streamType, text)
       await this.setStatus('thinking')
       return
