@@ -199,8 +199,8 @@ describe('an npm project with no commits yet', () => {
 
   it('deletes the branch it made when nothing on it would be lost', async () => {
     await openNewEnvironment(project)
-    await createFromDialog('Scratch Idea')
-    const environment = await environmentNamed('Scratch Idea')
+    await createFromDialog('scratch-idea')
+    const environment = await environmentNamed('scratch-idea')
 
     const { toast } = await retireFromPage(environment)
 
