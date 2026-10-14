@@ -141,4 +141,15 @@ describe('ActivityGroup', () => {
     expect(detail.text()).toContain('pnpm test')
     expect(detail.classes()).toContain('sm:inline')
   })
+
+  it('names the call itself when it is the only one, not "Bash ×1"', async () => {
+    const component = await render([
+      tool('c1', 'Bash', 'completed', { title: 'Run the tests', rawInput: { command: 'pnpm test' } }),
+      agentEvent('agent_message', { text: 'done', streaming: false })
+    ])
+
+    expect(component.find('[data-testid="activity-current"]').text()).toBe('Run the tests · pnpm test')
+    expect(component.find('[data-testid="activity-current"] .animate-spin').exists()).toBe(false)
+    expect(component.text()).not.toContain('Bash ×1')
+  })
 })

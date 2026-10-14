@@ -56,19 +56,11 @@ describe('condenseTranscript', () => {
     expect(group(items).items).toHaveLength(3)
   })
 
-  it('leaves a run of one alone — a single card is not clutter', () => {
+  it('groups a run of one as well, so that a run never changes what it is drawn as', () => {
     const items = condenseTranscript(transcript([textChunk('one moment'), tool('c1'), textChunk('done')]))
 
-    expect(kinds(items)).toEqual(['assistant', 'tool', 'assistant'])
-  })
-
-  it('honours a different minimum run length', () => {
-    const events = [tool('c1'), tool('c2'), textChunk('done')]
-
-    expect(kinds(condenseTranscript(transcript(events), { minRun: 3 })))
-      .toEqual(['tool', 'tool', 'assistant'])
-    expect(kinds(condenseTranscript(transcript(events), { minRun: 2 })))
-      .toEqual(['activity', 'assistant'])
+    expect(kinds(items)).toEqual(['assistant', 'activity', 'assistant'])
+    expect(group(items).toolCalls).toBe(1)
   })
 
   it('counts thoughts separately and absorbs them into the run', () => {
@@ -225,12 +217,17 @@ describe('condenseTranscript', () => {
       expect(group(items).live).toBe(false)
     })
 
-    it('leaves a closed run of one alone, even if it was a live group', () => {
-      const live = condenseTranscript(transcript([textChunk('hi'), tool('c1', 'Bash', 'in_progress')]), { live: true })
-      const closed = condenseTranscript(transcript([textChunk('hi'), tool('c1'), textChunk('done')]), { live: true })
+    it('draws a run of one call as the same row while it runs and once it is over', () => {
+      // A group while live and a plain card once closed swapped one element for
+      // another of a different height when the answer arrived.
+      const events = [textChunk('hi'), tool('c1', 'Bash', 'in_progress')]
+      const live = condenseTranscript(transcript(events), { live: true })
+      events.push(agentEvent('tool_call_update', { toolCallId: 'c1', status: 'completed' }), textChunk('done'))
+      const closed = condenseTranscript(transcript(events), { live: true })
 
       expect(kinds(live)).toEqual(['assistant', 'activity'])
-      expect(kinds(closed)).toEqual(['assistant', 'tool', 'assistant'])
+      expect(kinds(closed)).toEqual(['assistant', 'activity', 'assistant'])
+      expect(group(closed).id).toBe(group(live).id)
     })
 
     it('takes a trailing thought into the open group', () => {
@@ -240,10 +237,15 @@ describe('condenseTranscript', () => {
       expect(group(items)).toMatchObject({ toolCalls: 2, thoughts: 1, live: true })
     })
 
-    it('leaves a lone streaming thought on its own, so it can be read', () => {
-      const items = condenseTranscript(transcript([userMessage('hi'), thoughtChunk('let me see')]), { live: true })
+    it('opens a group for a lone streaming thought, which the next call joins', () => {
+      const events = [userMessage('hi'), thoughtChunk('let me see')]
+      const thinking = condenseTranscript(transcript(events), { live: true })
+      events.push(tool('c1', 'Bash', 'in_progress'))
+      const calling = condenseTranscript(transcript(events), { live: true })
 
-      expect(kinds(items)).toEqual(['user', 'thought'])
+      expect(kinds(thinking)).toEqual(['user', 'activity'])
+      expect(group(thinking)).toMatchObject({ thoughts: 1, live: true })
+      expect(group(calling).id).toBe(group(thinking).id)
     })
 
     it('does not treat a live tail in the middle of the log as one', () => {

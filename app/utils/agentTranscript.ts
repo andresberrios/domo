@@ -447,8 +447,6 @@ export interface ActivityGroup {
 export type CondensedItem = TranscriptItem | ActivityGroup
 
 export interface CondenseOptions {
-  /** Runs shorter than this are left alone: one card is not clutter. */
-  minRun?: number
   /** The session is still working, so the trailing run is still open. */
   live?: boolean
 }
@@ -502,20 +500,22 @@ const isRunning = (item: TranscriptItem) =>
 /**
  * The second pass over `buildTranscript()`'s output: what happened is already
  * decided, this only decides what to *draw*. Every maximal run of `tool` /
- * `thought` items becomes one `activity` row; everything else is passed
- * through untouched, so a pending permission is never swallowed by a group.
+ * `thought` items becomes one `activity` row, however short; everything else
+ * is passed through untouched, so a pending permission is never swallowed by
+ * a group.
  *
- * The run at the end of a working session is open, and it is a group from its
- * first tool call on, whatever its length, with the call that is running as
- * its last item. A call joins the row it will end up in when it starts, so
- * finishing it changes that row's contents and moves nothing around it. A
- * lone thought is still drawn as itself while it streams, so it can be read.
+ * However short, because a row must be the same row from its first item to
+ * its last. A run drawn as a plain card until a second call made it a group —
+ * or a group until the run ended and it fell back to a card — swapped one
+ * element for another of a different height, and moved everything around it.
+ *
+ * The run at the end of a working session is open: the call that is running
+ * is its last item, and the group's header says so.
  */
 export function condenseTranscript(
   items: TranscriptItem[],
   options: CondenseOptions = {}
 ): CondensedItem[] {
-  const minRun = options.minRun ?? 2
   const last = items[items.length - 1]
   const open = !!last && (isRunning(last) || (!!options.live && (last.kind === 'tool' || last.kind === 'thought')))
 
@@ -523,8 +523,7 @@ export function condenseTranscript(
   let run: TranscriptItem[] = []
 
   const flush = (live = false) => {
-    if (run.length >= minRun || (live && run.some(item => item.kind === 'tool'))) out.push(groupOf(run, live))
-    else out.push(...run)
+    if (run.length) out.push(groupOf(run, live))
     run = []
   }
 
