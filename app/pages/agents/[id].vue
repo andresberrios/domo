@@ -56,7 +56,7 @@ const { all: allSessions } = useAgentSessions()
 
 /* ------------------------------ the draft ------------------------------ */
 
-const { projects, isReady: projectsReady } = useProjects()
+const { projects, all: allProjects, isReady: projectsReady } = useProjects()
 const { data: settings } = useSettings()
 const draft = ref<AgentDraft | null>(null)
 
@@ -168,6 +168,15 @@ const spawner = computed(() => {
 /** The assistant this session is one chapter of, and whether it has since handed off. */
 const { assistant } = useAssistant(() => session.value?.assistantId)
 const handedOff = computed(() => !!assistant.value && assistant.value.currentSessionId !== session.value?.id)
+
+const { all: allAssistants } = useAssistants()
+provideDomoNames({
+  // An agent may write to an assistant (`as_…`) as well as to a session.
+  agent: id => allSessions.value.find(item => item.id === id)?.title
+    ?? allAssistants.value.find(item => item.id === id)?.name ?? null,
+  environment: id => allEnvironments.value.find(item => item.id === id)?.name ?? null,
+  project: id => allProjects.value.find(item => item.id === id)?.name ?? null
+})
 const startability = useSessionStartability(session)
 /**
  * Set only when the session cannot run; the sentence to show for it. A

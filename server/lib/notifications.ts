@@ -6,7 +6,7 @@ import { run } from './dev-env/docker'
 import { writeEnvironmentFile } from './dev-environments'
 import { RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { dataDir } from './paths'
-import { appendAgentEvent, createNotification, getDevEnvironment } from './repo'
+import { createNotification, getDevEnvironment } from './repo'
 import { agentVoiceManager } from './agent-voice/runtime'
 import type { AgentSession, DomoNotification, NotificationAttachment } from '../../shared/types'
 
@@ -107,8 +107,8 @@ export async function writeAgentFile(caller: AgentSession, path: string, bytes: 
  *
  * A row in `notifications` is what makes it durable: the browser shows it
  * until it is marked seen, whether or not anyone was looking when it arrived.
- * An open voice bar also reads it out at once. The `mesh_message` event
- * keeps the line in the agent's own transcript.
+ * An open voice bar also reads it out at once. The agent's own transcript
+ * has the line already: it is the tool call that sent it.
  */
 export async function notifyHuman(input: {
   caller: AgentSession
@@ -140,14 +140,6 @@ export async function notifyHuman(input: {
     message,
     urgent: !!input.urgent,
     attachments
-  })
-  await appendAgentEvent(input.caller.id, 'mesh_message', {
-    from: input.caller.title,
-    agentId: input.caller.id,
-    message,
-    urgent: !!input.urgent,
-    notificationId: id,
-    attachments: attachments.map(attachment => attachment.name)
   })
 
   return { notification, spoken: agentVoiceManager.announce(notification) }

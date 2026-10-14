@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildTranscript, type TranscriptItem } from '~/utils/agentTranscript'
+import { buildTranscript, condenseTranscript, type MeshItem, type TranscriptItem } from '~/utils/agentTranscript'
 import { agentEvent, permission, textChunk, thoughtChunk, userMessage } from '../helpers/events'
 import { ASSISTANT_CONTEXT_OPEN, HANDOFF_CONTINUE_PREFIX, HANDOFF_REQUEST_PREFIX } from '../../shared/assistants'
 
@@ -259,18 +259,19 @@ describe('buildTranscript', () => {
       expect(items[0]).toMatchObject({ kind: 'notice', tone: 'info', text: 'Turn ended: max tokens' })
     })
 
-    it('labels the mesh events agents use to talk to each other', () => {
+    it('draws nothing for the notices that used to double every message between agents', () => {
+      // An older install wrote one of these beside the tool call that sent the
+      // message and the prompt that delivered it; those two are the record.
       const items = buildTranscript([
         agentEvent('mesh_inbound', { from: 'ag_1', fromTitle: 'auth', message: 'take over' }),
+        agentEvent('mesh_outbound', { to: 'ag_1', toTitle: 'auth', message: 'take over' }),
         agentEvent('mesh_spawned', { title: 'docs' }),
+        agentEvent('mesh_message', { message: 'done' }),
+        agentEvent('mesh_permission_answered', { title: 'docs', optionId: 'allow' }),
         agentEvent('adapter-exit', { code: 1 })
       ])
 
-      expect(items.map(item => (item as any).text)).toEqual([
-        'Message from agent "auth": take over',
-        'Spawned agent "docs"',
-        'ACP adapter exited (code 1)'
-      ])
+      expect(items.map(item => (item as any).text)).toEqual(['ACP adapter exited (code 1)'])
     })
 
     it('ignores event types with nothing to say', () => {
@@ -432,5 +433,186 @@ describe('buildTranscript, for an assistant', () => {
     expect(kinds(items)).toEqual(['notice', 'handoff', 'notice'])
     expect(items[1]).toMatchObject({ reason: 'context', note: 'The boat is the Salty Gull.' })
     expect(items[2]).toMatchObject({ text: 'Carrying on: Finish the refactor.' })
+  })
+})
+
+/**
+ * One message between agents is one item at each end: the sender's tool call
+ * and the receiver's prompt. The payloads below are the shapes the three
+ * adapters really produce.
+ */
+describe('messages between agents', () => {
+  const prompt = (text: string, origin?: string) =>
+    agentEvent('user_message', { content: [{ type: 'text', text }], ...origin ? { origin } : {} })
+
+  function mesh(items: TranscriptItem[], index = 0): MeshItem {
+    const found = items.filter(item => item.kind === 'mesh')[index]
+    if (!found) throw new Error('no mesh item at that index')
+    return found as MeshItem
+  }
+
+  describe('at the receiving end', () => {
+    it('reads a message from another agent, without its heading', () => {
+      const items = buildTranscript([
+        prompt('[Message from agent "auth" (ag_auth1)]\n\ntake over the migration', 'agent:ag_auth1')
+      ])
+
+      expect(items).toEqual([expect.objectContaining({
+        kind: 'mesh', direction: 'in', via: 'message', peer: { id: 'ag_auth1', title: 'auth' }, text: 'take over the migration', tool: null
+      })])
+    })
+
+    it('reads a task from the agent that started this one', () => {
+      const items = buildTranscript([prompt('Write the README', 'agent:ag_parent')])
+
+      expect(mesh(items)).toMatchObject({ direction: 'in', via: 'spawn', peer: { id: 'ag_parent', title: null }, text: 'Write the README' })
+    })
+
+    it('reads a subscription note as news about the agent it is about', () => {
+      const items = buildTranscript([
+        prompt('Agent Builder (ag_build1) finished its turn (end_turn). Latest output: green', 'system')
+      ])
+
+      expect(mesh(items)).toMatchObject({
+        via: 'update', peer: { id: 'ag_build1', title: 'Builder' }, text: 'finished its turn (end_turn). Latest output: green'
+      })
+    })
+
+    it('reads any other note from Domo as from Domo', () => {
+      const items = buildTranscript([prompt('Development environment "x" (env_1) is running at /w.', 'system')])
+
+      expect(mesh(items)).toMatchObject({ via: 'domo', peer: { id: null, title: null } })
+    })
+
+    it('leaves a person\'s message alone', () => {
+      expect(kinds(buildTranscript([prompt('fix the build', 'user')]))).toEqual(['user'])
+      expect(kinds(buildTranscript([prompt('fix the build', 'voice')]))).toEqual(['user'])
+      expect(kinds(buildTranscript([prompt('fix the build')]))).toEqual(['user'])
+    })
+
+    it('recognises messages written before prompts said who sent them', () => {
+      const items = buildTranscript([
+        prompt('[Message from agent "auth" (ag_auth1)]\n\ntake over'),
+        prompt('Agent Builder (ag_build1) stopped with an error: boom.')
+      ])
+
+      expect(items.map(item => (item as MeshItem).via)).toEqual(['message', 'update'])
+    })
+
+    it('does not take a person writing "Agent …" for a note from Domo', () => {
+      expect(kinds(buildTranscript([prompt('Agent Smith (ag_x) is my favourite character')]))).toEqual(['user'])
+    })
+
+    it('splits a turn that delivered several queued messages into each one', () => {
+      const event = agentEvent('user_message', {
+        content: [
+          { type: 'text', text: '[From Domo]\n' },
+          { type: 'text', text: 'Agent Builder (ag_build1) finished its turn (end_turn).' },
+          { type: 'text', text: '\n[Message from agent ag_auth1]\n' },
+          { type: 'text', text: '[Message from agent "auth" (ag_auth1)]\n\nlook at this' },
+          { type: 'text', text: '\n[From you]\n' },
+          { type: 'text', text: 'and push it' }
+        ]
+      })
+      const items = buildTranscript([event])
+
+      expect(kinds(items)).toEqual(['mesh', 'mesh', 'user'])
+      expect(items.map(item => item.id)).toEqual([event.id, `${event.id}:1`, `${event.id}:2`])
+      expect(mesh(items, 0)).toMatchObject({ via: 'update', peer: { title: 'Builder' } })
+      expect(mesh(items, 1)).toMatchObject({ via: 'message', peer: { title: 'auth' }, text: 'look at this' })
+      expect(items[2]).toMatchObject({ kind: 'user', text: 'and push it' })
+    })
+
+    it('splits at the dividers Domo writes now, and keeps the human and a scheduled task as messages', () => {
+      // `inboxDivider`: "[From the human]" and "[From a scheduled task]" replaced "[From you]".
+      const event = agentEvent('user_message', {
+        content: [
+          { type: 'text', text: '[From the human]\n' },
+          { type: 'text', text: 'and push it' },
+          { type: 'text', text: '\n[From a scheduled task]\n' },
+          { type: 'text', text: 'Run the nightly report' },
+          { type: 'text', text: '\n[From Domo]\n' },
+          { type: 'text', text: 'Development environment "x" (env_1) is running at /w.' }
+        ]
+      })
+      const items = buildTranscript([event])
+
+      expect(kinds(items)).toEqual(['user', 'user', 'mesh'])
+      expect(items[0]).toMatchObject({ text: 'and push it' })
+      expect(items[1]).toMatchObject({ text: 'Run the nightly report' })
+      expect(mesh(items, 0)).toMatchObject({ via: 'domo' })
+    })
+  })
+
+  describe('at the sending end', () => {
+    const result = (value: object) => [{ type: 'text', text: JSON.stringify(value) }]
+
+    it('turns Claude Code\'s message_agent call into the message it sent', () => {
+      const items = buildTranscript([
+        agentEvent('tool_call', { toolCallId: 't1', name: 'mcp__domo__message_agent', title: 'mcp__domo__message_agent', kind: 'other', status: 'pending', rawInput: {} }),
+        agentEvent('tool_call_update', { toolCallId: 't1', rawInput: { agentId: 'ag_peer1', message: 'Hello\nthere' } }),
+        agentEvent('tool_call_update', { toolCallId: 't1', status: 'completed', rawOutput: result({ delivered: true, agentId: 'ag_peer1', title: 'peer', outcome: 'queued' }) })
+      ])
+
+      expect(items).toHaveLength(1)
+      expect(mesh(items)).toMatchObject({
+        direction: 'out', via: 'message', peer: { id: 'ag_peer1', title: 'peer' }, text: 'Hello\nthere', tool: { status: 'completed' }
+      })
+    })
+
+    it('is a message from the moment the call starts, before its arguments arrive', () => {
+      const items = buildTranscript([
+        agentEvent('tool_call', { toolCallId: 't1', name: 'mcp__domo__message_agent', title: 'mcp__domo__message_agent', kind: 'other', status: 'pending', rawInput: {} })
+      ])
+
+      expect(mesh(items)).toMatchObject({ via: 'message', peer: { id: null }, text: '', tool: { status: 'pending' } })
+    })
+
+    it('reads Codex\'s spawn_agent call', () => {
+      const items = buildTranscript([
+        agentEvent('tool_call', {
+          toolCallId: 'x1',
+          title: 'mcp.domo.spawn_agent',
+          kind: 'execute',
+          status: 'completed',
+          rawInput: { server: 'domo', tool: 'spawn_agent', arguments: { title: 'docs', prompt: 'Write the README' } },
+          rawOutput: { result: { content: result({ id: 'ag_docs1', title: 'docs' }) } }
+        })
+      ])
+
+      expect(mesh(items)).toMatchObject({ via: 'spawn', peer: { id: 'ag_docs1', title: 'docs' }, text: 'Write the README' })
+    })
+
+    it('reads OpenCode\'s notify_supervisor, which it runs as code', () => {
+      const items = buildTranscript([
+        agentEvent('tool_call', { toolCallId: 'o1', title: 'execute', kind: 'other', status: 'pending', rawInput: {} }),
+        agentEvent('tool_call_update', {
+          toolCallId: 'o1',
+          status: 'in_progress',
+          rawInput: { code: 'await tools.domo.notify_supervisor({ message: "Tests pass, ready to merge", urgent: false })' }
+        })
+      ])
+
+      expect(mesh(items)).toMatchObject({ via: 'notify', peer: { id: null, title: null }, text: 'Tests pass, ready to merge' })
+    })
+
+    it('leaves Domo\'s other tools as tool calls', () => {
+      const items = buildTranscript([
+        agentEvent('tool_call', { toolCallId: 't1', name: 'mcp__domo__list_agents', title: 'mcp__domo__list_agents', kind: 'other', status: 'completed', rawInput: {} })
+      ])
+
+      expect(kinds(items)).toEqual(['tool'])
+    })
+  })
+
+  it('is never folded into a run of tool activity', () => {
+    const tool = (id: string) => agentEvent('tool_call', { toolCallId: id, title: 'Read', name: 'Read', kind: 'read', status: 'completed' })
+    const items = condenseTranscript(buildTranscript([
+      tool('c1'), tool('c2'),
+      agentEvent('tool_call', { toolCallId: 'm1', name: 'mcp__domo__message_agent', title: 'mcp__domo__message_agent', kind: 'other', status: 'completed', rawInput: { agentId: 'ag_p', message: 'hi' } }),
+      tool('c3'), tool('c4')
+    ]))
+
+    expect(items.map(item => item.kind)).toEqual(['activity', 'mesh', 'activity'])
   })
 })

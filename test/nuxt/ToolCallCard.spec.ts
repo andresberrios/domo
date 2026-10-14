@@ -1,4 +1,5 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
+import { defineComponent, h } from 'vue'
 import { describe, expect, it } from 'vitest'
 
 import ToolCallCard from '~/components/ToolCallCard.vue'
@@ -103,5 +104,48 @@ describe('ToolCallCard', () => {
     await component.find('button').trigger('click')
 
     expect(component.text()).toContain('Ran in terminal term_1')
+  })
+})
+
+describe('ToolCallCard for one of Domo\'s own tools', () => {
+  const getAgent = (overrides: Partial<ToolCallView> = {}) => tool({
+    name: 'mcp__domo__get_agent',
+    title: 'mcp__domo__get_agent',
+    kind: 'other',
+    rawInput: { agentId: 'ag_peer1' },
+    ...overrides
+  })
+
+  /** As on the agent page, which knows every agent by its title. */
+  function renderNamed(view: ToolCallView) {
+    const Page = defineComponent({
+      setup() {
+        provideDomoNames({ agent: id => (id === 'ag_peer1' ? 'Builder' : null), environment: () => null, project: () => null })
+        return () => h(ToolCallCard, { tool: view })
+      }
+    })
+    return mountSuspended(Page)
+  }
+
+  it('says what it did and to whom, not the tool\'s id', async () => {
+    const component = await renderNamed(getAgent())
+
+    expect(component.find('[data-testid="domo-tool"]').text()).toBe('Check agent Builder')
+    expect(component.text()).not.toContain('mcp__domo__get_agent')
+  })
+
+  it('adds the result in a few words', async () => {
+    const component = await renderNamed(getAgent({
+      rawOutput: [{ type: 'text', text: '{"id":"ag_peer1","title":"Builder","status":"thinking"}' }]
+    }))
+
+    // The gap before the outcome is a margin, not a space.
+    expect(component.find('[data-testid="domo-tool"]').text()).toMatch(/^Check agent Builder\s*· thinking$/)
+  })
+
+  it('shows the id where the page does not know the agent', async () => {
+    const component = await mountSuspended(ToolCallCard, { props: { tool: getAgent() } })
+
+    expect(component.find('[data-testid="domo-tool"]').text()).toBe('Check agent ag_peer1')
   })
 })

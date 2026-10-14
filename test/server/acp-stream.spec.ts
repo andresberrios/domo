@@ -1473,6 +1473,7 @@ describe('a reattach that restores the adapter’s transcript', () => {
       expect(added.map(event => event.type))
         .toEqual(['user_message', 'agent_message', 'turn_end'])
       expect(added[0]!.payload.content[0].text).toContain('and ship it')
+      expect(added[0]!.payload.origin).toBe('agent:ag_peer')
     })
   })
 })
@@ -1574,6 +1575,8 @@ describe('delivering a message to an agent that is already working', () => {
     const user = (await listAgentEvents(agent.id)).filter(event => event.type === 'user_message')
     expect(user.map(event => event.payload.content[0].text)).toEqual(['fix the build', 'do the tests first'])
     expect(user[1]!.payload.delivery).toBe('steer')
+    // Who sent it, so the transcript can tell a person from another agent.
+    expect(user[1]!.payload.origin).toBe('user')
   })
 
   it('queues a message as a row, and delivers it when the turn ends', async () => {
@@ -1605,6 +1608,9 @@ describe('delivering a message to an agent that is already working', () => {
     await expect(listInboxMessages(agent.id, false)).resolves.toMatchObject([
       { deliveredAt: expect.any(String) }
     ])
+    // The sender survives the queue.
+    const user = (await listAgentEvents(agent.id)).filter(event => event.type === 'user_message')
+    expect(user[1]!.payload.origin).toBe('voice')
   })
 
   /**
@@ -1644,6 +1650,8 @@ describe('delivering a message to an agent that is already working', () => {
     const user = (await listAgentEvents(agent.id)).filter(event => event.type === 'user_message')
     expect(user).toHaveLength(2)
     expect(user[1]!.payload.content).toEqual(prompts[1]!.prompt)
+    // Two senders: the dividers name each, so the row names neither.
+    expect(user[1]!.payload).not.toHaveProperty('origin')
   })
 
   it('cancels the running turn first when told to interrupt', async () => {

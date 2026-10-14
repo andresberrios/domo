@@ -1215,12 +1215,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           delivery,
           origin: `agent:${caller.id}`
         })
-        await appendAgentEvent(result.agentSessionId, 'mesh_inbound', {
-          from: caller.id, fromTitle: caller.title, message: args.message, delivery: result.delivery
-        })
-        await appendAgentEvent(caller.id, 'mesh_outbound', {
-          to: result.agentSessionId, toTitle: assistant.name, message: args.message, delivery: result.delivery
-        })
         return { delivered: true, assistantId: assistant.id, agentId: result.agentSessionId, name: assistant.name, delivery: result.delivery, outcome: result.outcome }
       }
       const messaged = await getAgentSessionWithEnvironment(args.agentId)
@@ -1235,13 +1229,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         content: [{ type: 'text', text: `[Message from agent "${from}" (${caller.id})]\n\n${args.message}` }],
         delivery,
         origin: `agent:${caller.id}`
-      })
-      // A handed-off assistant session passes the message to the current one.
-      await appendAgentEvent(result.agentSessionId, 'mesh_inbound', {
-        from: caller.id, fromTitle: from, message: args.message, delivery: result.delivery
-      })
-      await appendAgentEvent(caller.id, 'mesh_outbound', {
-        to: result.agentSessionId, toTitle: target.title, message: args.message, delivery: result.delivery
       })
       return {
         delivered: true,
@@ -1286,9 +1273,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         throw new Error(`No option ${optionId}. Options: ${permission.options.map(option => `${option.optionId} (${option.name})`).join(', ')}.`)
       }
       await acpManager.answerPermission(target.id, permission.id, optionId, `agent:${caller.id}`)
-      await appendAgentEvent(caller.id, 'mesh_permission_answered', {
-        agentId: target.id, title: target.title, permissionId: permission.id, request: permission.title, optionId
-      })
       return { agentId: target.id, permissionId: permission.id, answered: true, optionId }
     }
 
@@ -1319,9 +1303,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const notify = args.notifyWhenDone !== false
       const window = subscriptionWindow(args.notifyTurns, args.notifyIndefinitely)
       if (notify) await subscribe(caller.id, session.id, window)
-      await appendAgentEvent(caller.id, 'mesh_spawned', {
-        agentId: session.id, title: session.title, notifyWhenDone: notify
-      })
       return {
         id: session.id,
         title: session.title,

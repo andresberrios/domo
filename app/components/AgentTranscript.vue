@@ -69,6 +69,7 @@ function plainText(item: CondensedItem): string {
     case 'permission':
       return item.title
     case 'notice':
+    case 'mesh':
       return item.text
     case 'handoff':
       return item.note
@@ -98,6 +99,15 @@ const ASSISTANT_PROPS = computed(() => ({
 }) as const)
 /** A handoff is a divider across the conversation, not something either side said. */
 const DIVIDER_PROPS = { side: 'left', variant: 'naked', avatar: undefined } as const
+/** A message that reached this agent from another one, or from Domo. */
+const INBOUND_PROPS = { side: 'left', variant: 'naked', avatar: { icon: 'i-lucide-message-square' } } as const
+
+function rowProps(item: CondensedItem) {
+  if (item.kind === 'user') return USER_PROPS
+  if (item.kind === 'handoff') return DIVIDER_PROPS
+  if (item.kind === 'mesh' && item.direction === 'in') return INBOUND_PROPS
+  return ASSISTANT_PROPS.value
+}
 
 const pendingPermissionIds = computed(() =>
   props.permissions.filter(permission => !permission.resolvedAt).map(permission => permission.id)
@@ -282,9 +292,7 @@ onMounted(() => nextTick(() => followTail()))
         >
           <UChatMessage
             v-bind="{
-              ...(items[row.index]!.kind === 'user'
-                ? USER_PROPS
-                : items[row.index]!.kind === 'handoff' ? DIVIDER_PROPS : ASSISTANT_PROPS),
+              ...rowProps(items[row.index]!),
               ...messageFor(items[row.index]!)
             }"
           >

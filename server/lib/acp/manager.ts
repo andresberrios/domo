@@ -224,6 +224,16 @@ function pendingMark(live: boolean): { pending?: true } {
   return live ? {} : { pending: true }
 }
 
+/**
+ * Who a prompt came from, on its `user_message`: the transcript draws a
+ * message from another agent or from Domo differently from one the person
+ * typed. Absent when a turn hands over several queued messages at once — the
+ * dividers between them say who sent each.
+ */
+function withOrigin<T extends object>(payload: T, origin: MessageOrigin | undefined): T & { origin?: MessageOrigin } {
+  return origin ? { ...payload, origin } : payload
+}
+
 class AgentRuntime {
   readonly agentSessionId: string
   private proc: ChildProcessWithoutNullStreams | null = null
@@ -1295,7 +1305,7 @@ class AgentRuntime {
    * is exactly what the inbox exists to avoid. Everything that is not the
    * initial prompt of a session should go through `deliver`.
    */
-  prompt(content: any[]): Promise<{ stopReason: string }> {
+  prompt(content: any[], origin?: MessageOrigin): Promise<{ stopReason: string }> {
     const controller = new AbortController()
     let settle!: () => void
     const turn: Turn = {
@@ -1305,7 +1315,7 @@ class AgentRuntime {
     }
     this.turn = turn
 
-    return this.runTurn(content, turn, controller).finally(() => {
+    return this.runTurn(content, turn, controller, origin).finally(() => {
       if (this.turn === turn) this.turn = null
       settle()
       // A turn ending — normally, cancelled, or failed — is the other moment
@@ -1317,7 +1327,8 @@ class AgentRuntime {
   private async runTurn(
     asked: any[],
     turn: Turn,
-    controller: AbortController
+    controller: AbortController,
+    origin?: MessageOrigin
   ): Promise<{ stopReason: string }> {
     await this.assertStartable('sending it a message')
     await this.ensureStarted()
@@ -1332,7 +1343,7 @@ class AgentRuntime {
     const stale = this.takeStream()
     await this.serial(async () => {
       await this.closeStream(stale)
-      await appendAgentEvent(this.agentSessionId, 'user_message', { content })
+      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin({ content }, origin))
       // `last_error` is history and the transcript already carries it at the
       // moment it happened; the row's copy describes the *current* state, so a
       // turn starting clears it. Left behind, a failed turn's message outlived
@@ -1430,7 +1441,7 @@ class AgentRuntime {
           this.drainInbox()
           return queued
         }
-        const turn = this.prompt(input.content)
+        const turn = this.prompt(input.content, input.origin)
         turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
         return { delivery: input.delivery, outcome: 'prompted' as const }
       }
@@ -1439,7 +1450,7 @@ class AgentRuntime {
         case 'queue':
           return this.enqueue(input.content, 'queue', input.origin)
         case 'interrupt':
-          return this.interruptWith(input.content)
+          return this.interruptWith(input.content, input.origin)
         default:
           return this.steerInto(input.content, input.origin)
       }
@@ -1461,7 +1472,7 @@ class AgentRuntime {
   }
 
   /** Cancel what is running, wait for it to settle, then prompt. */
-  private async interruptWith(content: any[]): Promise<DeliveryResult> {
+  private async interruptWith(content: any[], origin: MessageOrigin): Promise<DeliveryResult> {
     const running = this.turn
     if (running) {
       running.interrupted = true
@@ -1470,7 +1481,7 @@ class AgentRuntime {
     }
     // The drain that turn kicked off is queued behind this critical section, so
     // it finds the slot taken and leaves the queue for the turn below.
-    const turn = this.prompt(content)
+    const turn = this.prompt(content, origin)
     turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
     return { delivery: 'interrupt', outcome: 'prompted' }
   }
@@ -1479,7 +1490,7 @@ class AgentRuntime {
   private async steerInto(content: any[], origin: MessageOrigin): Promise<DeliveryResult> {
     // "Change course now" is what was asked for, and queueing is the one thing
     // it definitely does not mean.
-    if (!this.steering) return this.interruptWith(content)
+    if (!this.steering) return this.interruptWith(content, origin)
 
     let outcome: string
     try {
@@ -1506,7 +1517,7 @@ class AgentRuntime {
     const block = this.takeStream()
     await this.serial(async () => {
       await this.closeStream(block)
-      await appendAgentEvent(this.agentSessionId, 'user_message', { content, delivery: 'steer' })
+      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin({ content, delivery: 'steer' }, origin))
       await this.touchIfStale()
     })
     return { delivery: 'steer', outcome: 'steered' }
@@ -1528,7 +1539,8 @@ class AgentRuntime {
       if (this.turn || !this.alive || !this.acpSessionId) return
       const waiting = await claimInboxMessages(this.agentSessionId)
       if (!waiting.length) return
-      const turn = this.prompt(combineInboxContent(waiting))
+      // Several messages carry their senders in the dividers between them.
+      const turn = this.prompt(combineInboxContent(waiting), waiting.length === 1 ? waiting[0]!.origin : undefined)
       // Anything that arrives *during* this turn is drained when it ends.
       turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
     }).catch(error => console.error(`[acp:${this.agentSessionId}] could not drain the inbox`, error))
@@ -1955,7 +1967,11 @@ class AcpManager {
       .catch(() => false)
 
     if (started && input.initialPrompt) {
-      void this.promptInBackground(session.id, [{ type: 'text', text: input.initialPrompt }])
+      void this.promptInBackground(
+        session.id,
+        [{ type: 'text', text: input.initialPrompt }],
+        input.spawnedBy ? `agent:${input.spawnedBy}` : 'user'
+      )
     }
     return (await getAgentSession(session.id))!
   }
@@ -1969,10 +1985,10 @@ class AcpManager {
   }
 
   /** Fire-and-forget turn: the UI and the voice bar follow it through events. */
-  async promptInBackground(agentSessionId: string, content: any[]): Promise<void> {
+  async promptInBackground(agentSessionId: string, content: any[], origin?: MessageOrigin): Promise<void> {
     const runtime = this.runtime(agentSessionId)
     try {
-      await runtime.prompt(content)
+      await runtime.prompt(content, origin)
     } catch (error) {
       console.error(`[acp:${agentSessionId}] turn failed`, error)
     }

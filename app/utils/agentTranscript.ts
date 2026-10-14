@@ -7,6 +7,7 @@ import {
   isHandoffRequest
 } from '~~/shared/assistants'
 import type { AgentEvent, HandoffReason, PendingPermission } from '~~/shared/types'
+import { domoCall, domoToolLabel, domoToolName } from '~/utils/domoTools'
 
 export interface ToolCallView {
   toolCallId: string
@@ -30,6 +31,36 @@ export type TranscriptItem =
   | { id: string, seq: number, at: string, kind: 'notice', tone: 'info' | 'error', text: string }
   /** Where an assistant's session took over from the one before: the note it started from. */
   | { id: string, seq: number, at: string, kind: 'handoff', reason: HandoffReason, note: string, sessionId: string }
+  | MeshItem
+
+/**
+ * How one agent's message reached another, or reached the person:
+ * - `message`: `message_agent`, seen from either end;
+ * - `spawn`: the task `spawn_agent` handed a new agent;
+ * - `notify`: `notify_supervisor`, which goes to the person;
+ * - `update`: Domo telling a subscriber what an agent it follows did;
+ * - `domo`: any other note from Domo itself.
+ */
+export type MeshVia = 'message' | 'spawn' | 'notify' | 'update' | 'domo'
+
+/**
+ * Traffic between agents, as one item at each end: the sender's tool call and
+ * the prompt it became for the receiver. Never folded into a run of tool
+ * activity — who is talking to whom is the conversation, not its workings.
+ */
+export interface MeshItem {
+  id: string
+  seq: number
+  at: string
+  kind: 'mesh'
+  direction: 'in' | 'out'
+  via: MeshVia
+  /** The other end. Both null is the person (`notify`) or Domo (`domo`). */
+  peer: { id: string | null, title: string | null }
+  text: string
+  /** The sender's tool call, for its status and result. */
+  tool: ToolCallView | null
+}
 
 /**
  * A setting changed on a session with no adapter running is a request, not a
@@ -54,13 +85,6 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   config_changed: payload => `${payload?.name || payload?.configId}: ${payload?.value}${whenPending(payload)}`,
   'adapter-exit': payload =>
     `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
-  mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,
-  mesh_outbound: payload => `Sent to agent "${payload?.toTitle ?? payload?.to}": ${payload?.message}`,
-  mesh_spawned: payload => `Spawned agent "${payload?.title}"`,
-  mesh_message: payload => `Told you: ${payload?.message}${
-    payload?.attachments?.length ? ` (attached ${payload.attachments.join(', ')})` : ''}`,
-  mesh_permission_answered: payload =>
-    `Answered a permission request from agent "${payload?.title}": ${payload?.optionId ?? 'rejected'}`,
   cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
   handed_off: () => 'Handed off to a new session',
   environment_retired: () =>
@@ -116,18 +140,12 @@ export function buildTranscript(
           items.push({ ...base, kind: 'notice', tone: 'info', text: `Carrying on: ${continuation.text.slice(HANDOFF_CONTINUE_PREFIX.length).trim()}` })
           break
         }
-        // A spoken turn carries a note for the agent saying so; the reader
-        // gets a microphone instead of the note.
-        const texts = blocks.filter(block => block?.type === 'text')
-        items.push({
-          ...base,
-          kind: 'user',
-          spoken: texts.some(block => isSpokenNote(block.text)),
-          text: texts.filter(block => !isSpokenNote(block.text)).map(block => block.text).join('\n'),
-          attachments: blocks
-            .filter(block => block?.type === 'resource_link' || block?.type === 'resource' || block?.type === 'image')
-            .map(block => ({ name: block.name ?? block.uri ?? 'attachment', uri: block.uri }))
-        })
+        // A turn that handed over several queued messages is one row with a
+        // divider before each; the reader gets them as the separate messages
+        // they were.
+        for (const [index, part] of promptParts({ ...event.payload, content: blocks }).entries()) {
+          items.push(promptItem(index ? { ...base, id: `${base.id}:${index}` } : base, part))
+        }
         break
       }
 
@@ -289,7 +307,127 @@ export function buildTranscript(
 
   // A permission that has been answered is history, not a prompt.
   const resolved = new Set(permissions.filter(p => p.resolvedAt).map(p => p.id))
-  return items.filter(item => item.kind !== 'permission' || !resolved.has(item.permissionId))
+  return items
+    .filter(item => item.kind !== 'permission' || !resolved.has(item.permissionId))
+    .map(item => (item.kind === 'tool' ? sentMessage(item) ?? item : item))
+}
+
+/* -------------------------------------------------------------------------
+ * Traffic between agents
+ * ------------------------------------------------------------------------- */
+
+/**
+ * `combineInboxContent`'s divider (`inboxDivider`), in its own block before
+ * each message. "[From you]" is what older rows said for the human and for a
+ * scheduled task alike.
+ */
+const DIVIDER = /^\n?\[(?:Message from agent (\S+)|(From Domo)|(From the human|From you)|(From a scheduled task))\]\n?$/
+
+/** The origin a divider names; a scheduled task's id is not in it. */
+function dividerOrigin(divider: RegExpExecArray): string | null {
+  if (divider[1]) return `agent:${divider[1]}`
+  if (divider[2]) return 'system'
+  if (divider[3]) return 'user'
+  if (divider[4]) return 'cron:'
+  return null
+}
+/** What `message_agent` puts before the message it delivers. */
+const FROM_AGENT = /^\[Message from agent "([\s\S]*?)" \((ag_\w+)\)\]\n*/
+/** How Domo's notes about an agent begin. */
+const ABOUT_AGENT = /^Agent (.+?) \((ag_\w+)\) /
+/**
+ * The same, for a note written before prompts said who sent them — narrow, so
+ * that a person typing "Agent …" is not mistaken for one.
+ */
+const SUBSCRIPTION_NOTE = /^Agent .+? \(ag_\w+\) (?:finished its turn|stopped|is waiting for a permission)/
+
+interface PromptPart {
+  /** `MessageOrigin`, where the row or a divider says; null where neither does. */
+  origin: string | null
+  blocks: any[]
+}
+
+function promptParts(payload: any): PromptPart[] {
+  const blocks: any[] = payload?.content ?? []
+  const parts: PromptPart[] = []
+  let current: PromptPart = { origin: payload?.origin ?? null, blocks: [] }
+  for (const block of blocks) {
+    const divider = block?.type === 'text' ? DIVIDER.exec(block.text ?? '') : null
+    if (!divider) {
+      current.blocks.push(block)
+      continue
+    }
+    if (current.blocks.length) parts.push(current)
+    current = { origin: dividerOrigin(divider), blocks: [] }
+  }
+  if (current.blocks.length || !parts.length) parts.push(current)
+  return parts
+}
+
+function promptItem(base: { id: string, seq: number, at: string }, part: PromptPart): TranscriptItem {
+  // A spoken turn carries a note for the agent saying so; the reader gets a
+  // microphone instead of the note.
+  const texts = part.blocks.filter(block => block?.type === 'text')
+  const text = texts.filter(block => !isSpokenNote(block.text)).map(block => block.text).join('\n')
+  const mesh = (via: MeshVia, peer: MeshItem['peer'], body: string): MeshItem =>
+    ({ ...base, kind: 'mesh', direction: 'in', via, peer, text: body.trim(), tool: null })
+
+  const fromAgent = FROM_AGENT.exec(text)
+  if (fromAgent) return mesh('message', { id: fromAgent[2]!, title: fromAgent[1]! }, text.slice(fromAgent[0].length))
+  if (part.origin?.startsWith('agent:')) {
+    // From an agent, without `message_agent`'s heading: the task it was
+    // started with.
+    return mesh('spawn', { id: part.origin.slice('agent:'.length), title: null }, text)
+  }
+  if (part.origin === 'system' || (!part.origin && SUBSCRIPTION_NOTE.test(text))) {
+    const about = ABOUT_AGENT.exec(text)
+    return about
+      ? mesh('update', { id: about[2]!, title: about[1]! }, text.slice(about[0].length))
+      : mesh('domo', { id: null, title: null }, text)
+  }
+
+  return {
+    ...base,
+    kind: 'user',
+    spoken: texts.some(block => isSpokenNote(block.text)),
+    text,
+    attachments: part.blocks
+      .filter(block => block?.type === 'resource_link' || block?.type === 'resource' || block?.type === 'image')
+      .map(block => ({ name: block.name ?? block.uri ?? 'attachment', uri: block.uri }))
+  }
+}
+
+const SENDS: Record<string, MeshVia> = {
+  message_agent: 'message',
+  spawn_agent: 'spawn',
+  notify_supervisor: 'notify'
+}
+
+/** A tool call that sent a message, as the message it sent. */
+function sentMessage(item: Extract<TranscriptItem, { kind: 'tool' }>): MeshItem | null {
+  const name = domoToolName(item.tool)
+  const via = name ? SENDS[name] : undefined
+  if (!via) return null
+  const { args, result } = domoCall(item.tool)!
+  const ok = result && typeof result === 'object'
+  const peer: MeshItem['peer']
+    = via === 'message'
+      ? { id: args.agentId ?? (ok ? result.agentId : null) ?? null, title: (ok ? result.title : null) ?? null }
+      : via === 'spawn'
+        ? { id: (ok ? result.id : null) ?? null, title: args.title ?? (ok ? result.title : null) ?? null }
+        : { id: null, title: null }
+  const text = via === 'spawn' ? args.prompt : args.message
+  return {
+    id: item.id,
+    seq: item.seq,
+    at: item.at,
+    kind: 'mesh',
+    direction: 'out',
+    via,
+    peer,
+    text: typeof text === 'string' ? text : '',
+    tool: item.tool
+  }
 }
 
 export const TOOL_KIND_ICONS: Record<string, string> = {
@@ -327,6 +465,11 @@ export interface ActivityGroup {
   thoughts: number
   failed: number
   names: Array<{ name: string, count: number }>
+  /**
+   * The run is still going: its last item is what the agent is doing right
+   * now, and the next tool call will join it.
+   */
+  live: boolean
 }
 
 export type CondensedItem = TranscriptItem | ActivityGroup
@@ -334,16 +477,18 @@ export type CondensedItem = TranscriptItem | ActivityGroup
 export interface CondenseOptions {
   /** Runs shorter than this are left alone: one card is not clutter. */
   minRun?: number
-  /** The session is still working, so a trailing thought is the live tail. */
+  /** The session is still working, so the trailing run is still open. */
   live?: boolean
 }
 
 function toolName(item: Extract<TranscriptItem, { kind: 'tool' }>): string {
+  const domo = domoToolName(item.tool)
+  if (domo) return domoToolLabel(domo)
   return item.tool.name || item.tool.title || 'Tool'
 }
 
 /** A run of `tool` / `thought` items, in the order they happened. */
-function groupOf(run: TranscriptItem[]): ActivityGroup {
+function groupOf(run: TranscriptItem[], live = false): ActivityGroup {
   const counts = new Map<string, number>()
   let toolCalls = 0
   let thoughts = 0
@@ -374,9 +519,13 @@ function groupOf(run: TranscriptItem[]): ActivityGroup {
     thoughts,
     failed,
     // Most frequent first; ties keep the order they first appeared in.
-    names: [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
+    names: [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+    live
   }
 }
+
+const isRunning = (item: TranscriptItem) =>
+  item.kind === 'tool' && (item.tool.status === 'pending' || item.tool.status === 'in_progress')
 
 /**
  * The second pass over `buildTranscript()`'s output: what happened is already
@@ -384,9 +533,11 @@ function groupOf(run: TranscriptItem[]): ActivityGroup {
  * `thought` items becomes one `activity` row; everything else is passed
  * through untouched, so a pending permission is never swallowed by a group.
  *
- * The live tail stays open — a tool that is still running, or a trailing
- * thought while the session is working, renders on its own below the group, so
- * the user can always see what the agent is doing right now.
+ * The run at the end of a working session is open, and it is a group from its
+ * first tool call on, whatever its length, with the call that is running as
+ * its last item. A call joins the row it will end up in when it starts, so
+ * finishing it changes that row's contents and moves nothing around it. A
+ * lone thought is still drawn as itself while it streams, so it can be read.
  */
 export function condenseTranscript(
   items: TranscriptItem[],
@@ -394,23 +545,18 @@ export function condenseTranscript(
 ): CondensedItem[] {
   const minRun = options.minRun ?? 2
   const last = items[items.length - 1]
-  const tailIsLive = !!last && (
-    (last.kind === 'tool' && (last.tool.status === 'pending' || last.tool.status === 'in_progress'))
-    || (last.kind === 'thought' && !!options.live)
-  )
-  const end = tailIsLive ? items.length - 1 : items.length
+  const open = !!last && (isRunning(last) || (!!options.live && (last.kind === 'tool' || last.kind === 'thought')))
 
   const out: CondensedItem[] = []
   let run: TranscriptItem[] = []
 
-  const flush = () => {
-    if (run.length >= minRun) out.push(groupOf(run))
+  const flush = (live = false) => {
+    if (run.length >= minRun || (live && run.some(item => item.kind === 'tool'))) out.push(groupOf(run, live))
     else out.push(...run)
     run = []
   }
 
-  for (let index = 0; index < end; index += 1) {
-    const item = items[index]!
+  for (const item of items) {
     if (item.kind === 'tool' || item.kind === 'thought') {
       run.push(item)
       continue
@@ -418,9 +564,8 @@ export function condenseTranscript(
     flush()
     out.push(item)
   }
-  flush()
+  flush(open)
 
-  if (tailIsLive) out.push(last!)
   return out
 }
 
@@ -450,6 +595,17 @@ export function activityBreakdown(group: ActivityGroup): string {
  * title and status are edited in place by later updates, and streamed text is
  * concatenated.
  */
+function sameTool(mine: ToolCallView, theirs: ToolCallView): boolean {
+  return mine.status === theirs.status
+    && mine.title === theirs.title
+    && mine.kind === theirs.kind
+    && mine.name === theirs.name
+    && mine.content === theirs.content
+    && mine.rawInput === theirs.rawInput
+    && mine.rawOutput === theirs.rawOutput
+    && mine.locations === theirs.locations
+}
+
 function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
   if (a === b) return true
   if (a.id !== b.id || a.kind !== b.kind) return false
@@ -468,17 +624,16 @@ function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
       return a.text === (b as typeof a).text
     case 'handoff':
       return a.note === (b as typeof a).note
-    case 'tool': {
-      const mine = a.tool
-      const theirs = (b as typeof a).tool
-      return mine.status === theirs.status
-        && mine.title === theirs.title
-        && mine.kind === theirs.kind
-        && mine.name === theirs.name
-        && mine.content === theirs.content
-        && mine.rawInput === theirs.rawInput
-        && mine.rawOutput === theirs.rawOutput
-        && mine.locations === theirs.locations
+    case 'tool':
+      return sameTool(a.tool, (b as typeof a).tool)
+    case 'mesh': {
+      const other = b as typeof a
+      return a.direction === other.direction
+        && a.via === other.via
+        && a.text === other.text
+        && a.peer.id === other.peer.id
+        && a.peer.title === other.peer.title
+        && (a.tool === other.tool || (!!a.tool && !!other.tool && sameTool(a.tool, other.tool)))
     }
     case 'plan': {
       const other = b as typeof a
@@ -535,6 +690,7 @@ export function reconcileCondensed(
     if (item.kind !== 'activity') return item
     const old = groups.get(item.id)
     const same = old
+      && old.live === item.live
       && old.items.length === item.items.length
       && old.items.every((entry, index) => entry === item.items[index])
     return same ? old : item
