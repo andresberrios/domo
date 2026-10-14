@@ -1,18 +1,38 @@
 <script setup lang="ts">
-import type { AgentSession } from '~~/shared/types'
+import type { AgentDraft, AgentEvent, AgentSession } from '~~/shared/types'
 import { agentAdapterInfo } from '~~/shared/agent-adapters'
+import { agentPageKey, draftRequest, freshDraftPage, initialDraft, promoteDraftPage } from '~/utils/agentDraft'
+
+/**
+ * One session — or, at `/agents/new`, one that does not exist yet.
+ *
+ * A draft is this same page with no row behind it: the composer with its
+ * settings card, and a panel above it for where the session works. Its first
+ * message creates the session, and the address moves onto it without the page
+ * being built again (`agentPageKey`), so what was typed, the message just sent
+ * and the reply streaming under it are all on the page that was already open.
+ */
+definePageMeta({
+  key: agentPageKey,
+  middleware: (to) => {
+    if (to.params.id === 'new') freshDraftPage()
+  }
+})
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 
 const agentId = computed(() => route.params.id as string)
+const isDraft = computed(() => agentId.value === 'new')
+/** The session's id, once there is one; nothing is synced for a draft. */
+const sessionId = computed(() => isDraft.value ? null : agentId.value)
 
-const { session: synced } = useAgentSession(agentId)
-const { all: allEnvironments } = useDevEnvironments()
-const { events } = useAgentEvents(agentId)
+const { session: synced } = useAgentSession(sessionId)
+const { all: allEnvironments, environments, isReady: environmentsReady } = useDevEnvironments()
+const { events } = useAgentEvents(sessionId)
 const { permissions, pending } = usePermissions(agentId)
-const { queued } = useAgentInbox(agentId)
+const { queued } = useAgentInbox(sessionId)
 const condensed = useCondensedTranscript()
 
 /**
@@ -32,8 +52,115 @@ const session = computed<AgentSession | null>(() => synced.value)
 const environment = computed(() =>
   allEnvironments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
 )
-/** The agent that spawned this one over the mesh: the edge its cross-agent powers follow. */
 const { all: allSessions } = useAgentSessions()
+
+/* ------------------------------ the draft ------------------------------ */
+
+const { projects, isReady: projectsReady } = useProjects()
+const { data: settings } = useSettings()
+const draft = ref<AgentDraft | null>(null)
+
+// Made once the projects and environments are in, because where it starts —
+// the address's project or environment, else a running one — is read off them.
+watch([isDraft, projectsReady, environmentsReady], () => {
+  if (!isDraft.value || draft.value || !projectsReady.value || !environmentsReady.value) return
+  draft.value = initialDraft(
+    { project: route.query.project as string | undefined, environment: route.query.environment as string | undefined },
+    projects.value,
+    environments.value,
+    settings.value?.defaultCwd
+  )
+}, { immediate: true })
+
+const draftEnvironment = computed(() => environments.value.find(item => item.id === draft.value?.devEnvironmentId) ?? null)
+
+const creating = ref(false)
+const createError = ref<string | null>(null)
+
+/**
+ * The first message, from the moment it is sent until the transcript has its
+ * own record of it.
+ *
+ * The session's row and the message are written at once, but the message only
+ * reaches the transcript when the adapter has booted and taken it from the
+ * inbox — seconds, or the start of a container. Without this the message
+ * would vanish from the composer and reappear later; with it, it stays where
+ * it will be. A boot that fails leaves it in the inbox, and the inbox shows it.
+ */
+const firstMessage = ref<{ content: any[], at: string } | null>(null)
+
+const shownEvents = computed<AgentEvent[]>(() => {
+  const sent = firstMessage.value
+  if (!sent) return events.value
+  return [...events.value, {
+    id: 'first-message',
+    agentSessionId: sessionId.value ?? 'new',
+    seq: Number.MAX_SAFE_INTEGER,
+    type: 'user_message',
+    payload: { content: sent.content },
+    createdAt: sent.at
+  }]
+})
+
+watch([events, () => synced.value?.status], () => {
+  if (!firstMessage.value || !synced.value) return
+  const delivered = events.value.some(event => event.type === 'user_message')
+  if (delivered || synced.value.status === 'error' || synced.value.status === 'stopped') firstMessage.value = null
+})
+
+/** The new session's row, once Electric has brought it: the page has nothing to show before. */
+function rowArrives(id: string): Promise<void> {
+  const arrived = () => allSessions.value.some(item => item.id === id)
+  if (arrived()) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, 15_000)
+    const stop = watch(allSessions, () => {
+      if (arrived()) done()
+    })
+    function done() {
+      clearTimeout(timer)
+      stop()
+      resolve()
+    }
+  })
+}
+
+/**
+ * What the composer's send does on a draft: make the session, with this as its
+ * first message, and move onto it. False when it could not be made — the draft
+ * stays as it was and the message goes back into the composer.
+ */
+async function startFromDraft(content: any[]): Promise<boolean> {
+  if (!draft.value || creating.value) return false
+  creating.value = true
+  createError.value = null
+  firstMessage.value = { content, at: new Date().toISOString() }
+  try {
+    const created = await $fetch<{ id: string }>('/api/agents', {
+      method: 'POST',
+      body: draftRequest(draft.value, content)
+    })
+    await rowArrives(created.id)
+    // Somebody who went elsewhere meanwhile is not pulled back; the session is
+    // in the sidebar.
+    if (isDraft.value) {
+      promoteDraftPage(created.id)
+      // Replaced, so Back does not return to an empty draft.
+      await router.replace(`/agents/${created.id}`)
+    }
+    return true
+  } catch (error: any) {
+    firstMessage.value = null
+    createError.value = error?.data?.statusMessage ?? error?.data?.message ?? error?.message ?? 'The server did not say why.'
+    return false
+  } finally {
+    creating.value = false
+  }
+}
+
+/* ----------------------------- the session ----------------------------- */
+
+/** The agent that spawned this one over the mesh: the edge its cross-agent powers follow. */
 const spawner = computed(() => {
   const id = session.value?.spawnedBy
   return id ? { id, title: allSessions.value.find(item => item.id === id)?.title ?? id } : null
@@ -136,7 +263,7 @@ const menuItems = computed(() => [
     <template #header>
       <UDashboardNavbar icon="i-lucide-bot">
         <template #title>
-          <span class="truncate">{{ session?.title ?? 'Agent' }}</span>
+          <span class="truncate">{{ session?.title ?? (isDraft ? 'New agent' : 'Agent') }}</span>
         </template>
 
         <template #trailing>
@@ -146,7 +273,8 @@ const menuItems = computed(() => [
 
         <template #right>
           <UsageMeter
-            :usage="session?.usage ?? null"
+            v-if="session"
+            :usage="session.usage ?? null"
             :provider="usageProvider"
           />
           <UButton
@@ -158,7 +286,8 @@ const menuItems = computed(() => [
             :ui="{ label: 'hidden sm:inline' }"
             @click="start"
           />
-          <UTooltip v-if="!closed" :text="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'">
+          <!-- The voice bar talks to a session, so a draft has none to open. -->
+          <UTooltip v-if="session && !closed" :text="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'">
             <UButton
               icon="i-lucide-mic"
               :color="voiceOpen ? 'primary' : 'neutral'"
@@ -167,7 +296,7 @@ const menuItems = computed(() => [
               @click="voiceOpen = !voiceOpen"
             />
           </UTooltip>
-          <UDropdownMenu :items="menuItems">
+          <UDropdownMenu v-if="session" :items="menuItems">
             <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
           </UDropdownMenu>
         </template>
@@ -175,16 +304,29 @@ const menuItems = computed(() => [
 
       <UDashboardToolbar>
         <template #left>
-          <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">
+          <!--
+            A draft says where it is about to work in the same places a session
+            says where it works, so the bar does not jump when it becomes one.
+          -->
+          <UBadge v-if="session || (draft && !draft.devEnvironmentId)" color="neutral" variant="subtle" size="sm" class="font-mono">
             <UIcon name="i-lucide-folder" class="me-1 size-3" />
-            {{ session?.cwd }}
+            {{ session?.cwd ?? draft?.cwd }}
           </UBadge>
           <UBadge
             color="neutral"
             variant="subtle"
             size="sm"
-            :label="`${adapter?.label ?? 'Coding agent'} · ACP`"
+            :label="`${adapter?.label ?? (draft ? agentAdapterInfo(draft.adapter).label : 'Coding agent')} · ACP`"
           />
+          <UBadge
+            v-if="!session && draftEnvironment"
+            color="primary"
+            variant="subtle"
+            size="sm"
+            :label="draftEnvironment.name"
+          >
+            <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
+          </UBadge>
           <UBadge
             v-if="environment"
             :color="environment.retiredAt ? 'neutral' : 'primary'"
@@ -240,7 +382,20 @@ const menuItems = computed(() => [
         />
         <AgentErrorBanner v-else-if="session" :session="session" />
 
-        <div v-if="!events.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
+        <div v-if="isDraft && !firstMessage" class="flex flex-1 items-center justify-center">
+          <div class="max-w-sm text-center">
+            <UIcon name="i-lucide-bot" class="mx-auto size-8 text-dimmed" />
+            <p class="mt-3 text-sm font-medium">
+              A new coding agent
+            </p>
+            <p class="mt-1 text-sm text-muted">
+              Choose where it works and which agent and model below, then send it its first task.
+              Sending is what starts it.
+            </p>
+          </div>
+        </div>
+
+        <div v-else-if="!shownEvents.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
           <div class="max-w-sm text-center">
             <UIcon name="i-lucide-bot" class="mx-auto size-8 text-dimmed" />
             <p class="mt-3 text-sm font-medium">
@@ -262,10 +417,10 @@ const menuItems = computed(() => [
           the composer paint on top of the messages.
         -->
         <AgentTranscript
-          v-else-if="session"
+          v-else-if="session || firstMessage"
           class="min-h-0 flex-1"
           :session="session"
-          :events="events"
+          :events="shownEvents"
           :permissions="permissions"
           :condensed="condensed"
         />
@@ -284,7 +439,8 @@ const menuItems = computed(() => [
           take-back button, which would be the one thing left on this page that
           still wrote to a session nothing can reach.
         -->
-        <div v-if="queued.length" class="shrink-0 pt-2">
+        <!-- The first message is in the transcript already while it waits there. -->
+        <div v-if="queued.length && !firstMessage" class="shrink-0 pt-2">
           <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" />
         </div>
 
@@ -292,8 +448,28 @@ const menuItems = computed(() => [
           <AgentVoiceBar :session="session" />
         </div>
 
-        <div v-if="!closed" class="shrink-0 pt-2">
-          <AgentComposer v-if="session" :session="session" />
+        <div v-if="isDraft && draft" class="shrink-0 space-y-2 pt-2">
+          <UAlert
+            v-if="createError"
+            color="error"
+            variant="subtle"
+            icon="i-lucide-circle-alert"
+            title="Could not start the agent"
+            :description="createError"
+            class="mx-auto max-w-3xl"
+            :close="{ color: 'neutral', variant: 'link' }"
+            @update:open="createError = null"
+          />
+          <AgentDraftPanel v-model="draft" :disabled="creating" />
+        </div>
+
+        <!--
+          One composer for the draft and the session it becomes: it is the
+          same component either way, so it is not rebuilt at the moment the
+          session appears.
+        -->
+        <div v-if="!closed && (session || draft)" class="shrink-0 pt-2">
+          <AgentComposer v-model:draft="draft" :session="session" :start="startFromDraft" />
         </div>
       </div>
         <UModal v-model:open="renaming" title="Rename agent" description="Give this agent session a name.">

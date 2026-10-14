@@ -2221,3 +2221,77 @@ describe('plan limits that arrive on a working agent', () => {
     })
   })
 })
+
+/**
+ * The new-session page creates its session with the first message and moves
+ * onto it straight away, so `create` must not wait for the adapter — and the
+ * message must survive whatever the boot does, which is why it goes through
+ * the inbox rather than straight into a prompt.
+ */
+describe('a session started by its first message', () => {
+  const first = [
+    { type: 'resource_link', uri: 'file:///tmp/shot.png', name: 'shot.png', mimeType: 'image/png', size: 3 },
+    { type: 'text', text: 'Fix the login page\nIt 500s on submit' }
+  ]
+
+  it('returns before the adapter answers, with the message waiting in the inbox', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const created = await acpManager.create({ adapter: 'claude-code', cwd: workspace, firstMessage: first, config: { effort: 'high' } })
+
+    // Nothing has answered `initialize` yet: the fake adapter is unserved.
+    expect(created.status).toBe('starting')
+    expect(created.title).toBe('Fix the login page')
+    expect(created.config).toEqual({ effort: 'high' })
+    const waiting = await listInboxMessages(created.id)
+    expect(waiting.map(message => message.content)).toEqual([first])
+    expect(await listAgentEvents(created.id)).toEqual([])
+
+    const prompts: any[] = []
+    const asked: any[] = []
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => { await send(textChunk('On it.')) }, {
+      effort: { current: 'medium', ids: ['low', 'medium', 'high'] },
+      onPrompt: params => prompts.push(params),
+      onSetConfigOption: params => asked.push(params)
+    })
+
+    await vi.waitFor(async () => {
+      expect((await listAgentEvents(created.id)).map(event => event.type)).toEqual(['user_message', 'agent_message', 'turn_end'])
+    })
+    // Handed over as written, attachment and all, and only once.
+    expect(prompts.map(params => params.prompt)).toEqual([first])
+    expect(await listInboxMessages(created.id)).toEqual([])
+    // The draft's adapter settings were applied at attach like any other choice.
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'effort', value: 'high' }])
+  })
+
+  it('sends a second message after the first, not ahead of it, when it arrives during the boot', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const created = await acpManager.create({ adapter: 'claude-code', cwd: workspace, firstMessage: [{ type: 'text', text: 'first' }] })
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+
+    const second = acpManager.deliver(created.id, { content: [{ type: 'text', text: 'second' }], delivery: 'steer', origin: 'user' })
+    const prompts: string[] = []
+    serve(state.adapters[0]!, async () => {}, { onPrompt: params => prompts.push(promptText(params)) })
+    await second
+
+    await vi.waitFor(async () => {
+      expect((await listAgentEvents(created.id)).filter(event => event.type === 'turn_end')).toHaveLength(1)
+    })
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.indexOf('first')).toBeGreaterThanOrEqual(0)
+    expect(prompts[0]!.indexOf('first')).toBeLessThan(prompts[0]!.indexOf('second'))
+  })
+
+  it('keeps the message in the inbox when the boot fails, for the retry to deliver', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const created = await acpManager.create({ adapter: 'claude-code', cwd: workspace, firstMessage: [{ type: 'text', text: 'still here?' }] })
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    // The adapter dies before it says anything.
+    state.adapters[0]!.kill()
+
+    // An adapter that exits reads as stopped, one that fails to start as error; either way it is not starting.
+    await vi.waitFor(async () => expect(['stopped', 'error']).toContain((await getAgentSession(created.id))!.status))
+    expect((await listInboxMessages(created.id)).map(message => message.content)).toEqual([[{ type: 'text', text: 'still here?' }]])
+  })
+})

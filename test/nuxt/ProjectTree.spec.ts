@@ -124,12 +124,6 @@ function buttonLabelled(label: string): HTMLButtonElement | undefined {
     .find(element => element.getAttribute('aria-label') === label)
 }
 
-/** The select whose current label matches, as the user would find it. */
-function selectTrigger(label: string): HTMLElement | undefined {
-  return [...document.body.querySelectorAll<HTMLElement>('button[aria-haspopup="listbox"]')]
-    .find(element => element.textContent?.includes(label))
-}
-
 /** Reka's dropdown opens on `pointerdown`, not on a bare click. */
 async function openMenu(label: string): Promise<HTMLElement> {
   const trigger = buttonLabelled(label)
@@ -266,35 +260,30 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('preselects the project and the environment when the agent is started from its row', async () => {
+  it('opens the new-session page on the environment when the agent is started from its row', async () => {
+    const push = vi.spyOn(useRouter(), 'push').mockResolvedValue(undefined)
     const wrapper = await mountTree()
 
     buttonLabelled('New agent in feature-auth')!.click()
 
-    await vi.waitFor(() => {
-      // The environment decides the project above it, so both read back.
-      expect(selectTrigger('Domo'), 'the project select follows the environment').toBeTruthy()
-      expect(selectTrigger('feature-auth'), 'the environment select is the row that opened it').toBeTruthy()
-    })
+    // The environment decides the project above it, so naming it is enough.
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith('/agents/new?environment=env_1'))
 
+    push.mockRestore()
     wrapper.unmount()
   })
 
-  it('starts an agent in the project\'s own checkout from the project\'s menu', async () => {
+  it('opens the new-session page on the project\'s own checkout from the project\'s menu', async () => {
+    const push = vi.spyOn(useRouter(), 'push').mockResolvedValue(undefined)
     const wrapper = await mountTree()
 
     // Nothing runs in the checkout yet, so it has no row; the menu is the way in.
     expect(document.body.textContent).not.toContain('Local checkout')
     await choose('Actions for Domo', 'New agent in the local checkout')
 
-    await vi.waitFor(() => {
-      expect(selectTrigger('Domo')).toBeTruthy()
-      expect(selectTrigger('Local checkout'), 'no container, the checkout itself').toBeTruthy()
-      expect(
-        document.body.querySelector<HTMLInputElement>('input[placeholder="/path/to/repository"]')?.value
-      ).toBe('/work/domo')
-    })
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith('/agents/new?project=p1'))
 
+    push.mockRestore()
     wrapper.unmount()
   })
 

@@ -4,7 +4,8 @@ import type { AgentEvent, AgentSession, PendingPermission } from '~~/shared/type
 import type { CondensedItem, TranscriptItem } from '~/utils/agentTranscript'
 
 const props = withDefaults(defineProps<{
-  session: AgentSession
+  /** `null` while the session is still being made from a draft, which counts as working. */
+  session: AgentSession | null
   events: AgentEvent[]
   permissions: PendingPermission[]
   /** Collapse runs of tool activity into one row. On unless told otherwise. */
@@ -33,7 +34,7 @@ const built = computed(() => {
 })
 
 /** A trailing thought is the live tail only while the agent is still working. */
-const live = computed(() => props.session.status === 'thinking' || props.session.status === 'starting')
+const live = computed(() => !props.session || props.session.status === 'thinking' || props.session.status === 'starting')
 
 const items = computed<CondensedItem[]>(() => {
   const next = props.condensed

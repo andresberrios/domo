@@ -7,6 +7,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import { bus } from '../bus'
 import { adapterCommandPath } from '../dev-env/runtime-volume'
 import {
+  assertNotRetired,
   containerExecArgs,
   ensureEnvironmentRunning,
   readEnvironmentFile,
@@ -46,7 +47,9 @@ import {
   enqueueInboxMessage,
   getAgentSession,
   getAgentSessionWithEnvironment,
+  getDevEnvironment,
   listAgentSessions,
+  listInboxMessages,
   listMcpServers,
   openAgentStream,
   resolvePermissionRow,
@@ -1419,6 +1422,14 @@ class AgentRuntime {
       await this.ensureStarted()
 
       if (!this.turn) {
+        // Something still waiting goes first: a session's first message sits
+        // in the inbox while its adapter boots, and a second one sent in that
+        // window must not overtake it. The drain sends both, in order.
+        if ((await listInboxMessages(this.agentSessionId)).length) {
+          const queued = await this.enqueue(input.content, input.delivery, input.origin)
+          this.drainInbox()
+          return queued
+        }
         const turn = this.prompt(input.content)
         turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
         return { delivery: input.delivery, outcome: 'prompted' as const }
@@ -1854,6 +1865,14 @@ function warnNoHttpMcp(adapter: AgentAdapter): void {
   )
 }
 
+/** The environment a session is about to be created in, checked but not started. */
+async function environmentForNewSession(id: string): Promise<DevEnvironment> {
+  const environment = await getDevEnvironment(id)
+  if (!environment) throw new Error('Development environment not found')
+  assertNotRetired(environment)
+  return environment
+}
+
 class AcpManager {
   private runtimes = new Map<string, AgentRuntime>()
 
@@ -1875,6 +1894,17 @@ class AcpManager {
     model?: string | null
     devEnvironmentId?: string | null
     initialPrompt?: string
+    /**
+     * The first message, as prompt content — attachments included — for a
+     * session started by writing to it. Unlike `initialPrompt` it does not wait
+     * for the adapter: the row and the message are written and the call
+     * returns, so the page can move onto the session while it boots. The
+     * message waits in the inbox, which the attach drains — so a boot that
+     * fails leaves it there, visible, for the retry to deliver.
+     */
+    firstMessage?: any[]
+    /** The adapter's own settings (effort and the like), by option id. */
+    config?: Record<string, string> | null
     /** The agent spawning this one over the mesh. */
     spawnedBy?: string | null
     /** The assistant this session belongs to. */
@@ -1883,8 +1913,13 @@ class AcpManager {
     firstEvent?: { type: string, payload: any }
   }): Promise<AgentSession> {
     const settings = await getSettings()
+    const firstMessage = input.firstMessage?.length ? input.firstMessage : null
+    // Starting the container is the boot's job too, so a session started by its
+    // first message does not wait for it here: the row is all the page needs.
     const environment = input.devEnvironmentId
-      ? await ensureEnvironmentRunning(input.devEnvironmentId)
+      ? firstMessage
+        ? await environmentForNewSession(input.devEnvironmentId)
+        : await ensureEnvironmentRunning(input.devEnvironmentId)
       : null
     const cwd = environment?.workspacePath ?? normalizeCwd(input.cwd || settings.defaultCwd)
     // Asking for an agent in a directory that does not exist yet is a real and
@@ -1892,7 +1927,8 @@ class AcpManager {
     // here rather than in `boot()` is what lets the start path treat a missing
     // directory as a reason to refuse instead of silently making an empty one.
     if (!environment) await mkdir(cwd, { recursive: true }).catch(() => {})
-    const title = titleFrom(input.title || input.initialPrompt || UNTITLED_AGENT_TITLE)
+    const words = firstMessage?.find(block => block?.type === 'text' && typeof block.text === 'string')?.text
+    const title = titleFrom(input.title?.trim() || input.initialPrompt || words?.trim() || UNTITLED_AGENT_TITLE)
     const session = await createAgentSession({
       adapter: input.adapter ?? 'claude-code',
       title,
@@ -1901,8 +1937,15 @@ class AcpManager {
       model: input.model?.trim() || null,
       devEnvironmentId: environment?.id ?? null,
       spawnedBy: input.spawnedBy ?? null,
-      assistantId: input.assistantId ?? null
+      assistantId: input.assistantId ?? null,
+      config: input.config ?? null
     })
+    if (firstMessage) {
+      await enqueueInboxMessage({ agentSessionId: session.id, content: firstMessage, delivery: 'queue', origin: 'user' })
+      // A failed boot is on the row and in the transcript; the caller has its session either way.
+      void this.runtime(session.id).ensureStarted().catch(() => {})
+      return session
+    }
     if (input.firstEvent) await appendAgentEvent(session.id, input.firstEvent.type, input.firstEvent.payload)
     // A failed boot is recorded on the session row (status + lastError) so the
     // UI can show it and offer a retry instead of blowing up the request.

@@ -69,7 +69,6 @@ const configSource = computed(() => {
 
 const busy = ref(false)
 const newEnvironmentOpen = ref(false)
-const newAgentOpen = ref(false)
 const renaming = ref(false)
 const confirmingRetire = ref(false)
 
@@ -226,7 +225,7 @@ const cascade = computed(() => {
         <section class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold">Agents in the local checkout</h2>
-            <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" @click="newAgentOpen = true" />
+            <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" :to="newAgentPath({ projectId })" />
           </div>
 
           <ul v-if="localAgents.length" class="divide-y divide-default overflow-hidden rounded-lg border border-default">
@@ -247,7 +246,6 @@ const cascade = computed(() => {
 
       <NewEnvironmentModal v-model:open="newEnvironmentOpen" :project="project" />
 
-      <NewAgentModal v-if="project" v-model:open="newAgentOpen" :project-id="project.id" />
 
       <RenameModal
         v-if="project"

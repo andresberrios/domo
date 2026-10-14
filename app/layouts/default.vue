@@ -1,7 +1,6 @@
 <script setup lang="ts">
-const { creating, talk } = useTalk()
-
-const newAgentOpen = ref(false)
+const { creating, talk, assistant } = useTalk()
+const talkLabel = computed(() => assistant.value ? `Talk to ${assistant.value.name}` : 'Talk in a new session')
 </script>
 
 <template>
@@ -29,20 +28,23 @@ const newAgentOpen = ref(false)
         <div v-if="!collapsed" class="flex flex-col gap-4">
           <div class="flex flex-col gap-3">
             <div class="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-1.5">
-              <UButton
-                label="Talk"
-                icon="i-lucide-mic"
-                block
-                :loading="creating"
-                @click="talk"
-              />
+              <UTooltip :text="talkLabel">
+                <UButton
+                  label="Talk"
+                  icon="i-lucide-mic"
+                  block
+                  :loading="creating"
+                  :aria-label="talkLabel"
+                  @click="talk"
+                />
+              </UTooltip>
               <UButton
                 label="New agent"
                 icon="i-lucide-plus"
                 color="neutral"
                 variant="subtle"
                 block
-                @click="newAgentOpen = true"
+                to="/agents/new"
               />
             </div>
             <nav class="flex flex-col gap-px">
@@ -65,8 +67,8 @@ const newAgentOpen = ref(false)
         </div>
 
         <div v-else class="flex flex-col items-center gap-2">
-          <UButton icon="i-lucide-mic" :loading="creating" aria-label="Talk" @click="talk" />
-          <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New coding agent" @click="newAgentOpen = true" />
+          <UButton icon="i-lucide-mic" :loading="creating" :aria-label="talkLabel" @click="talk" />
+          <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New coding agent" to="/agents/new" />
           <UButton to="/schedules" icon="i-lucide-clock-3" color="neutral" variant="ghost" aria-label="Schedules" />
           <NotificationsButton collapsed />
         </div>
@@ -93,7 +95,5 @@ const newAgentOpen = ref(false)
     </UDashboardSidebar>
 
     <slot />
-
-    <NewAgentModal v-model:open="newAgentOpen" />
   </UDashboardGroup>
 </template>

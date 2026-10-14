@@ -118,24 +118,15 @@ const localAgents = computed(() =>
 const newProjectOpen = ref(false)
 const newEnvironmentOpen = ref(false)
 const newEnvironmentProject = ref<Project | null>(null)
-const newAgentOpen = ref(false)
-
-/**
- * Where the next agent should start, as the row that asked for it knows it.
- *
- * `projectId: undefined` leaves the choice to the modal; `null` is this tree
- * saying "no project", which is what the no-project section's plus means.
- */
-const newAgentTarget = ref<{ projectId?: string | null, environmentId?: string }>({})
 
 function openNewEnvironment(project: Project) {
   newEnvironmentProject.value = project
   newEnvironmentOpen.value = true
 }
 
+/** The new-session page, opened on the place the row stands for. */
 function openNewAgent(target: { projectId?: string | null, environmentId?: string }) {
-  newAgentTarget.value = target
-  newAgentOpen.value = true
+  return navigateTo(newAgentPath(target))
 }
 </script>
 
@@ -309,10 +300,5 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
 
     <NewProjectModal v-model:open="newProjectOpen" />
     <NewEnvironmentModal v-model:open="newEnvironmentOpen" :project="newEnvironmentProject" />
-    <NewAgentModal
-      v-model:open="newAgentOpen"
-      :project-id="newAgentTarget.projectId"
-      :environment-id="newAgentTarget.environmentId"
-    />
   </div>
 </template>
