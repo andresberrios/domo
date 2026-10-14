@@ -36,11 +36,9 @@ dependency.
   - A refused pg connection is an `AggregateError` with an *empty* message.
     Keep the `error.message || error.name` fallback: without it, an earlier
     harness treated the database as reachable and emptied the real `domo`.
-  - All three ACP adapter entries and `NUXT_CODEX_ENTRY` point at
-    `test/helpers/dead-adapter.mjs`. The server-backed layers blank the Claude
-    OAuth tokens and point `NUXT_ANTHROPIC_API_BASE` at an unreachable address.
-    Clearing the API keys is not enough: on macOS, Claude Code reads its login
-    from the Keychain.
+  - The server-backed layers blank the Claude OAuth tokens and point
+    `NUXT_ANTHROPIC_API_BASE` at an unreachable address. Clearing the API keys
+    is not enough: on macOS, Claude Code reads its login from the Keychain.
   - Nothing in `unit` may call `security find-generic-password`. It opens a GUI
     prompt, and the run hangs.
   - Docker specs use a scratch home overlay (`NUXT_HOME_OVERLAY_DIR`). Never
