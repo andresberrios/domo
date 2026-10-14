@@ -2238,16 +2238,14 @@ describe('plan limits that arrive on a working agent', () => {
 describe('a turn the agent starts for itself', () => {
   /** Long enough to be a real deadline, short enough to wait out. */
   const IDLE = 120
-  const WORKING = 2_000
 
-  /** Whatever the app ships, so a change to either constant costs nothing here. */
-  let windows: { idle: number, working: number }
+  /** Whatever the app ships, so a change to the constant costs nothing here. */
+  let windows: { idle: number }
 
   beforeEach(async () => {
     const { adapterTurnWindows } = await import('../../server/lib/acp/manager')
     windows = { ...adapterTurnWindows }
     adapterTurnWindows.idle = IDLE
-    adapterTurnWindows.working = WORKING
   })
 
   afterEach(async () => {
@@ -2367,9 +2365,128 @@ describe('a turn the agent starts for itself', () => {
     expect(await statusOf(agent.id)).toBe('thinking')
 
     await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
+    const completedAt = Date.now()
+
+    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+    // The quiet window starts again from the tool's last word, not before it.
+    expect(Date.now() - completedAt).toBeGreaterThanOrEqual(IDLE)
+    expect(await statusOf(agent.id)).toBe('idle')
+  })
+
+  it('holds for a tool call that is the first thing the turn says', async () => {
+    const { agent, connection } = await attached()
+
+    await wake(connection, {
+      sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Bash', kind: 'execute', status: 'in_progress'
+    })
+    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('tool_call'))
+
+    await sleep(IDLE * 5)
+    expect(await typesOf(agent.id)).not.toContain('turn_end')
+
+    await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'failed' })
+    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+  })
+
+  /**
+   * An open call has no deadline, so only something that really started a
+   * call may open one. claude-agent-acp sends content and `_meta` updates with
+   * no status, and `in_progress` beats for calls whose start this turn may
+   * never have seen.
+   */
+  it('lets no update but a tool call hold the turn open', async () => {
+    const { agent, connection } = await attached()
+
+    await wake(connection, { sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Read', kind: 'read', status: 'pending' })
+    await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
+    await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [] })
+    await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'elsewhere', status: 'in_progress' })
 
     await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
     expect(await statusOf(agent.id)).toBe('idle')
+  })
+
+  describe('that Codex reports on', () => {
+    const thread = (type: string) => ({
+      sessionUpdate: 'session_info_update',
+      _meta: { codex: { threadStatus: type === 'active' ? { type, activeFlags: [] } : { type } } }
+    })
+
+    it('ends when the thread goes idle, without waiting out the quiet', async () => {
+      const { adapterTurnWindows } = await import('../../server/lib/acp/manager')
+      adapterTurnWindows.idle = 60_000
+      const { agent, connection } = await attached()
+
+      await wake(connection, thread('active'))
+      await wake(connection, textChunk('Steered while idle, so this turn is mine.'))
+      // A command that outlives the turn: Codex's word that it is idle wins.
+      await wake(connection, { sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'npm run dev', kind: 'execute', status: 'in_progress' })
+      await wake(connection, thread('idle'))
+
+      await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+      expect(await statusOf(agent.id)).toBe('idle')
+    })
+
+    it('holds while the thread says it is active, however quiet', async () => {
+      const { agent, connection } = await attached()
+
+      await wake(connection, thread('active'))
+      await wake(connection, textChunk('Thinking about this for a while.'))
+      await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_start'))
+
+      await sleep(IDLE * 5)
+      expect(await typesOf(agent.id)).not.toContain('turn_end')
+      expect(await statusOf(agent.id)).toBe('thinking')
+
+      await wake(connection, thread('idle'))
+      await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+    })
+
+    it('opens no turn on a status alone', async () => {
+      const { agent, connection } = await attached()
+
+      await wake(connection, thread('active'))
+      await wake(connection, thread('idle'))
+      await sleep(IDLE * 3)
+      expect(await typesOf(agent.id)).not.toContain('turn_start')
+      expect(await statusOf(agent.id)).toBe('idle')
+    })
+  })
+
+  describe('held open by a tool call that never reports back', () => {
+    async function held(options: ServeOptions = {}) {
+      const attachedSession = await attached('Held', options)
+      await wake(attachedSession.connection, {
+        sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Bash', kind: 'execute', status: 'in_progress'
+      })
+      await vi.waitFor(async () => expect(await typesOf(attachedSession.agent.id)).toContain('tool_call'))
+      return attachedSession
+    }
+
+    it('ends on a cancel, and drains the inbox', async () => {
+      const prompts: string[] = []
+      const { acpManager, agent } = await held({ onPrompt: params => prompts.push(promptText(params)) })
+      await enqueueInboxMessage({ agentSessionId: agent.id, content: [{ type: 'text', text: 'after that' }], delivery: 'queue', origin: 'user' })
+
+      await acpManager.cancel(agent.id)
+
+      await vi.waitFor(() => expect(prompts).toEqual(['after that']))
+      const events = await listAgentEvents(agent.id)
+      const types = events.map(event => event.type)
+      // Cancelled, not ended: the `turn_end` that follows is the drained prompt's.
+      expect(types.slice(0, types.indexOf('cancelled') + 1)).toEqual(['turn_start', 'tool_call', 'cancelled'])
+      expect(events.filter(event => event.type === 'turn_end' && event.payload.origin === 'adapter')).toEqual([])
+    })
+
+    it('ends when the adapter exits', async () => {
+      const { acpManager, agent } = await held()
+
+      state.adapters.at(-1)!.kill()
+
+      await vi.waitFor(async () => expect(await statusOf(agent.id)).toBe('stopped'))
+      expect(acpManager.isBusy(agent.id)).toBe(false)
+      expect(await typesOf(agent.id)).not.toContain('turn_end')
+    })
   })
 
   /**

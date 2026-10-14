@@ -121,7 +121,9 @@ const BUSY_STATUSES = new Set<AgentSessionStatus>(['starting', 'thinking', 'awai
  * Every entry here is one that arrives with no turn running in normal use.
  * `session_info_update` is claude-agent-acp's generated title, which it asks
  * the CLI for *after* a turn ends, in the background, and publishes a couple of
- * seconds later — after Domo has already closed the turn.
+ * seconds later — after Domo has already closed the turn. codex-acp's thread
+ * status rides on the same kind and is read before this list; see
+ * `codexThreadStatus`.
  * `available_commands_update` is sent from a `setTimeout(…, 0)` scheduled
  * inside `loadSession`, so it lands after the load response and can outrun the
  * end of `boot()` — after `restoring` has been cleared, on a session that is
@@ -220,59 +222,54 @@ function flushDelay(length: number): number {
 const ACTIVITY_TOUCH_MS = 30_000
 
 /**
- * How long an adapter-initiated turn may say nothing before Domo calls it over.
+ * What codex-acp says about whether its thread is running a turn, or null for
+ * an update that says nothing about it.
  *
- * There is no `stopReason` to wait on — nobody sent a `session/prompt`, so
- * nothing will ever answer one — and the alternative to a deadline is a session
- * that streams an unprompted answer and then sits at `thinking` for ever, with
- * its inbox stranded behind a turn that cannot end. Being a little late is
- * cheap and never ending is not, so quiet is what the turn is read off.
+ * This is the only end signal an unprompted turn has on ACP v1, which ends a
+ * turn by answering its `session/prompt`, and nobody sent one. codex-acp
+ * forwards Codex's `thread/status/changed` as a `session_info_update` with
+ * `_meta.codex.threadStatus`, prompt or not. Anything but `active` (`idle`,
+ * `systemError`, `notLoaded`) means the thread has no turn running.
  *
- * The error to design against is ending *early*, not ending late. A turn
- * declared over while the adapter is still in one drains the inbox into it, and
- * a `session/prompt` sent then lands in the adapter's own invisible queue —
- * precisely the failure `agent_inbox` exists to prevent. Ending late costs a
- * badge that reads `thinking` for a while longer, and nothing else.
+ * claude-agent-acp has no equivalent on v1. Its `usage_update` with a `cost`
+ * marks a Claude Code `result`, but a queued background-task notification gets
+ * a placeholder result *before* the follow-up it belongs to runs, and the
+ * placeholder looks the same on the wire. Its real signal, a `state_update`
+ * that goes `idle`, exists only on its experimental ACP v2 surface. OpenCode
+ * sends nothing of the kind.
+ */
+export function codexThreadStatus(update: any): 'active' | 'idle' | null {
+  if (update?.sessionUpdate !== 'session_info_update') return null
+  const type = update._meta?.codex?.threadStatus?.type
+  if (typeof type !== 'string') return null
+  return type === 'active' ? 'active' : 'idle'
+}
+
+/**
+ * How long a turn nobody prompted may say nothing before Domo calls it over,
+ * when nothing the adapter said holds it open.
  *
- * So a minute, not the twenty seconds that covers the gap between two deltas of
- * one answer. The gap that sets the floor is the other one: a model round trip
- * on a full context, between a tool call reporting back and the next token,
- * which is tens of seconds on a large session. The two things that legitimately
- * go quiet for longer than any number belongs here are held open explicitly
- * instead — `ADAPTER_TURN_WORKING_MS` for a tool call still running, and the
- * permission gate in `onAdapterTurnQuiet`.
+ * The error to design against is ending *early*. A turn declared over while
+ * the adapter is still in one drains the inbox into it, and the
+ * `session/prompt` sent then lands in the adapter's own queue, which Domo
+ * cannot see. Ending late only leaves the badge at `thinking` for longer. So a
+ * minute, which covers a model round trip on a full context.
+ *
+ * Two things hold the turn open with no deadline at all: a tool call the turn
+ * opened that has not reported `completed` or `failed`, and a Codex thread
+ * that says it is `active`. Both are the adapter's own word that it is still
+ * working, and a command may run for an hour. A turn held that way still ends
+ * when the adapter exits, on a cancel, on a reattach and on a server restart.
  */
 const ADAPTER_TURN_IDLE_MS = 60_000
 
 /**
- * The same deadline while a tool call this turn opened has not reported back.
- *
- * A coding agent's silence is usually a command running, not a turn that ended:
- * an install, a test suite, a build. Closing the turn under one would drain the
- * inbox into an adapter that is still working, and a `session/prompt` sent then
- * lands in the adapter's own invisible queue — which is the failure `agent_inbox`
- * exists to avoid in the first place.
- *
- * It is still a deadline and not a gate, because "the tool call is open" is the
- * adapter's word for it: a terminal `tool_call_update` that never arrives would
- * otherwise hang the turn for as long as the process lives. Ten minutes of
- * complete silence is longer than any real command and still an ending.
- */
-const ADAPTER_TURN_WORKING_MS = 10 * 60_000
-
-/**
- * The two windows above, in the one place a test can shorten them.
- *
- * An injected parameter rather than two `const`s for the same reason the git
- * transport and the `gh` lookup are: the alternative is faking `setTimeout`
- * around a runtime that is doing real Postgres I/O on every one of these
- * paths, which makes the test about the fake clock instead of about the turn —
- * and, measured, deadlocks the `pg` pool once its own timers are pretend.
+ * The window above, where a test can shorten it. A test fakes no clock here,
+ * because faked timers deadlock the `pg` pool this runtime writes through.
  * Nothing in the app writes to it.
  */
 export const adapterTurnWindows = {
-  idle: ADAPTER_TURN_IDLE_MS,
-  working: ADAPTER_TURN_WORKING_MS
+  idle: ADAPTER_TURN_IDLE_MS
 }
 
 /**
@@ -360,14 +357,13 @@ class AgentRuntime {
   /** Resolves the open adapter turn's `done`; null when there is no such turn. */
   private adapterTurnSettle: (() => void) | null = null
   /**
-   * Tool calls the current turn has opened and not yet heard back about.
-   *
-   * Only the adapter-turn watchdog reads it — a Domo turn ends on its own
-   * promise and does not care — but it is kept for every turn because the
-   * cheapest way to be right about which calls belong to *this* turn is to
-   * clear it whenever one starts.
+   * Tool calls the open adapter turn has started and not yet heard back about.
+   * Only kept during such a turn, and cleared when one opens: a Domo turn ends
+   * on its own promise and does not care.
    */
   private openToolCalls = new Set<string>()
+  /** Whether codex-acp last said its thread is running a turn; see `codexThreadStatus`. */
+  private threadActive = false
   /** Whether the adapter advertised `_session/steering`; per connection. */
   private steering = false
   /**
@@ -859,6 +855,7 @@ class AgentRuntime {
       this.containerPidFile = null
       for (const waiter of this.waiters.values()) waiter.resolve(null)
       this.waiters.clear()
+      this.threadActive = false
       // Nothing is running any more, so a watchdog still armed would fire
       // against a dead connection and write `turn_end` under `adapter-exit`.
       this.discardAdapterTurn()
@@ -1297,10 +1294,8 @@ class AgentRuntime {
 
     // Before the branches below, because what this decides is whether there is
     // a turn at all. An update arriving with the slot empty is the agent having
-    // woken itself — see `noteAdapterActivity` — and the tool state it reads
-    // has to be current before the deadline is set from it.
-    this.noteToolCall(kind, update)
-    this.noteAdapterActivity(kind)
+    // woken itself; see `noteAdapterActivity`.
+    this.noteAdapterActivity(kind, update)
 
     // Before `takeStream()` and before anything claims a `seq`: this is state,
     // it is not part of the transcript, and it arrives in the middle of the
@@ -1457,31 +1452,43 @@ class AgentRuntime {
    * for ever — its inbox stranded behind a turn that has no end to hang a drain
    * off, and `list_agents` telling every other agent it is busy.
    */
-  private noteAdapterActivity(kind: string): void {
-    if (SESSION_STATE_UPDATES.has(kind)) return
-    if (!this.turn) {
-      this.openAdapterTurn()
+  private noteAdapterActivity(kind: string, update: any): void {
+    // Tracked whoever owns the turn: Codex reports `active` before the first
+    // update of a turn it starts, and `idle` after the answer to a prompt.
+    const thread = codexThreadStatus(update)
+    if (thread) {
+      this.threadActive = thread === 'active'
+      if (this.turn?.origin !== 'adapter') return
+      if (this.threadActive) this.armAdapterTurn()
+      else this.onAdapterTurnQuiet()
       return
     }
-    // The agent is still going: push the deadline out. Domo's own turns end on
-    // their `session/prompt` and want no watchdog.
-    if (this.turn.origin === 'adapter') this.armAdapterTurn()
+    if (SESSION_STATE_UPDATES.has(kind)) return
+    if (!this.turn) this.openAdapterTurn()
+    // Domo's own turns end on their `session/prompt` and want no watchdog.
+    if (this.turn?.origin !== 'adapter') return
+    this.noteToolCall(kind, update)
+    // The agent is still going: push the deadline out.
+    this.armAdapterTurn()
   }
 
   /**
    * Follow which tool calls are still outstanding, so the watchdog can tell a
    * turn that has ended from a command that is taking a while.
+   *
+   * Only a `tool_call` opens one, and only a terminal status closes it. A
+   * `tool_call_update` that is not terminal opens nothing: one with no status
+   * is a late content or `_meta` update, and claude-agent-acp sends progress
+   * beats as `in_progress` for calls this turn may never have seen start. Read
+   * as opening a call, either could hold the turn for as long as the adapter
+   * lives, since an open call has no deadline.
    */
   private noteToolCall(kind: string, update: any): void {
-    if (kind !== 'tool_call' && kind !== 'tool_call_update') return
     const id = update?.toolCallId
     if (!id) return
-    // A `tool_call` can arrive already finished for something instantaneous,
-    // and a `tool_call_update` is the only thing that ever ends one — so both
-    // are read the same way, off the status rather than off the kind.
     const status = update.status
     if (status === 'completed' || status === 'failed') this.openToolCalls.delete(id)
-    else this.openToolCalls.add(id)
+    else if (kind === 'tool_call') this.openToolCalls.add(id)
   }
 
   /**
@@ -1533,13 +1540,14 @@ class AgentRuntime {
     }).catch(error => console.error(`[acp:${this.agentSessionId}] could not open an agent-started turn`, error))
   }
 
-  /** Push the watchdog's deadline out to the full window from now. */
+  /**
+   * Push the watchdog's deadline out to the full window from now, or take it
+   * away while the adapter says it is still working.
+   */
   private armAdapterTurn(): void {
     this.clearAdapterTurnTimer()
-    const timer = setTimeout(
-      () => this.onAdapterTurnQuiet(),
-      this.openToolCalls.size ? adapterTurnWindows.working : adapterTurnWindows.idle
-    )
+    if (this.openToolCalls.size || this.threadActive) return
+    const timer = setTimeout(() => this.onAdapterTurnQuiet(), adapterTurnWindows.idle)
     // A pending watchdog must not keep Node alive on its own.
     timer.unref?.()
     this.adapterTurnTimer = timer
@@ -1551,9 +1559,9 @@ class AgentRuntime {
     this.adapterTurnTimer = null
   }
 
-  /** The turn has said nothing for its whole window. */
+  /** The turn has said nothing for its whole window, or Codex said it is over. */
   private onAdapterTurnQuiet(): void {
-    this.adapterTurnTimer = null
+    this.clearAdapterTurnTimer()
     const turn = this.turn
     if (turn?.origin !== 'adapter') return
     // A permission is the one wait with no deadline on it, because the thing it
@@ -1647,7 +1655,6 @@ class AgentRuntime {
     // run, and its watchdog must not outlive the slot it was watching.
     this.discardAdapterTurn()
     this.turn = turn
-    this.openToolCalls.clear()
 
     return this.runTurn(content, turn, controller).finally(() => {
       if (this.turn === turn) this.turn = null
@@ -2172,6 +2179,7 @@ class AgentRuntime {
 
   stop(): void {
     this.discardAdapterTurn()
+    this.threadActive = false
     // A block left open would render as text that streams forever, and a
     // reading left in the trailing timer would be lost with the process.
     const block = this.takeStream()
