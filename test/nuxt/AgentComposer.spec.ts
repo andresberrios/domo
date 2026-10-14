@@ -1,5 +1,6 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { UApp, UDropdownMenu, UPopover } from '#components'
+import { enableAutoUnmount } from '@vue/test-utils'
 import { getQuery, readBody } from 'h3'
 import { defineComponent, h, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -155,18 +156,11 @@ async function openSettings(component: any) {
  * panel shows every column at once — "High" is an effort on one adapter and
  * could be anything on the next — so nothing in here looks for an option
  * without saying which column it belongs to.
- *
- * The *last* match wins: the panel is teleported out of the app, and a mount
- * from an earlier test in this file may still have one in the document.
  */
 function column(label: string): HTMLElement {
-  const headings = Array.from(document.querySelectorAll('[id^="composer-"]'))
-    .filter(node => node.textContent?.trim() === label)
-  const heading = headings[headings.length - 1]
-  const lists = heading
-    ? Array.from(document.querySelectorAll(`[aria-labelledby="${heading.id}"]`))
-    : []
-  const list = lists[lists.length - 1]
+  const heading = Array.from(document.querySelectorAll('[id^="composer-"]'))
+    .find(node => node.textContent?.trim() === label)
+  const list = heading && document.querySelector(`[aria-labelledby="${heading.id}"]`)
   if (!list) {
     const seen = Array.from(document.querySelectorAll('[id^="composer-"]'))
       .map(node => node.textContent?.trim()).join(' | ')
@@ -221,15 +215,27 @@ function pointer(kind: 'coarse' | 'fine') {
 
 let restorePointer: (() => void) | null = null
 
+/**
+ * Every test starts from an empty document. A mount left behind keeps its
+ * open settings panel and its toaster, and the toasts are one
+ * `useState` for the whole file: by the end, two dozen apps re-rendered every
+ * toast, a click took half a second to reach its PATCH, and a test waiting a
+ * second for its own toast failed under load beside another test's leftover.
+ */
+enableAutoUnmount(afterEach)
+
 beforeEach(() => {
-  sent.mockClear()
-  uploaded.mockClear()
-  patched.mockClear()
-  probed.mockClear()
+  // Reset, not clear: a once-implementation a failed test never used would
+  // answer the next test's request.
+  sent.mockReset()
+  uploaded.mockReset()
+  patched.mockReset()
+  probed.mockReset()
 })
 afterEach(() => {
   restorePointer?.()
   restorePointer = null
+  useToast().clear()
 })
 
 describe('AgentComposer', () => {
