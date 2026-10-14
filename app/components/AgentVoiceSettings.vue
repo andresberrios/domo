@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { BAR_SOUNDS, GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
 
 /**
  * The cascade behind talking to a coding agent: who hears, who speaks, and
@@ -108,6 +108,28 @@ const toolSoundItems = TOOL_SOUNDS.map(sound => ({ label: sound.label, value: so
 
 const detectorItems = TURN_DETECTORS.map(detector => ({ label: detector.label, value: detector.id, description: detector.description }))
 
+/** The microphone on this device; kept in this browser, like the device's voice. */
+const inputs = useAudioInputs()
+// The select refuses an empty value, and '' is how "the system's default" is stored.
+const SYSTEM_DEFAULT = 'system-default'
+const microphoneItems = computed(() => inputs.options.value.map(option => ({ label: option.label, value: option.deviceId || SYSTEM_DEFAULT })))
+const microphone = computed({
+  get: () => inputs.selected.value || SYSTEM_DEFAULT,
+  set: (value: string) => inputs.select(value === SYSTEM_DEFAULT ? '' : value)
+})
+const microphoneProblem = ref<string | null>(null)
+async function nameMicrophones() {
+  microphoneProblem.value = await inputs.allow()
+}
+onMounted(() => void inputs.refresh())
+
+/** Each sound at the volume on its slider, before it is saved. */
+const preview = useVoicePreview()
+function hear(kind: (typeof BAR_SOUNDS)[number]['id']) {
+  if (kind === 'speech') void preview.play({ agentVoice: form.value }, form.value.volumes.speech)
+  else void previewSound(kind, form.value.volumes[kind], form.value.toolSound)
+}
+
 const uses = computed(() => new Set([
   form.value.transcriber,
   form.value.speaker,
@@ -138,6 +160,30 @@ const uses = computed(() => new Set([
           class="w-full"
         />
         <p v-if="keyWarning(form.speaker)" class="mt-1 text-xs text-warning">{{ keyWarning(form.speaker) }}</p>
+        <div class="mt-1.5 flex items-center gap-2">
+          <UButton
+            icon="i-lucide-play"
+            label="Hear this voice"
+            size="xs"
+            color="neutral"
+            variant="subtle"
+            :loading="preview.loading.value"
+            @click="hear('speech')"
+          />
+          <span class="text-xs text-dimmed">As the fields below are now, saved or not.</span>
+        </div>
+        <p v-if="preview.error.value" class="mt-1 text-xs text-error">{{ preview.error.value }}</p>
+      </UFormField>
+    </div>
+
+    <div class="grid gap-4 sm:grid-cols-2">
+      <UFormField label="Microphone on this device" description="Kept in this browser. As the browser names them; the system default follows whatever the system uses.">
+        <USelect v-model="microphone" :items="microphoneItems" class="w-full" />
+        <div v-if="!inputs.named.value" class="mt-1.5 flex flex-wrap items-center gap-2">
+          <UButton icon="i-lucide-list" label="Show their names" size="xs" color="neutral" variant="subtle" @click="nameMicrophones" />
+          <span class="text-xs text-dimmed">The browser names its devices once it may use the microphone.</span>
+        </div>
+        <p v-if="microphoneProblem" class="mt-1 text-xs text-error">{{ microphoneProblem }}</p>
       </UFormField>
     </div>
 
@@ -154,6 +200,34 @@ const uses = computed(() => new Set([
         <ChoiceMenu v-model="form.toolSound" :items="toolSoundItems" value-key="value" class="w-full" />
       </UFormField>
     </div>
+
+    <UFormField label="Volume" description="How loud each sound the bar makes is, on every device. Play one to hear it at that level.">
+      <div class="mt-1 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+        <div v-for="sound in BAR_SOUNDS" :key="sound.id" class="flex items-center gap-2" :title="sound.description">
+          <span class="w-28 shrink-0 truncate text-sm">{{ sound.label }}</span>
+          <USlider
+            v-model="form.volumes[sound.id]"
+            :min="0"
+            :max="1"
+            :step="0.01"
+            size="sm"
+            class="min-w-0 flex-1"
+            :aria-label="`${sound.label} volume`"
+          />
+          <span class="w-9 shrink-0 text-right text-xs tabular-nums text-muted">{{ Math.round(form.volumes[sound.id] * 100) }}%</span>
+          <UButton
+            icon="i-lucide-play"
+            size="xs"
+            color="neutral"
+            variant="ghost"
+            :aria-label="`Play ${sound.label.toLowerCase()}`"
+            :loading="sound.id === 'speech' && preview.loading.value"
+            :disabled="sound.id === 'tool' && form.toolSound === 'off'"
+            @click="hear(sound.id)"
+          />
+        </div>
+      </div>
+    </UFormField>
 
     <div class="grid gap-4 sm:grid-cols-2">
       <UFormField label="End of turn" description="Hands-free: what decides, at a pause, that you have finished.">

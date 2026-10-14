@@ -718,6 +718,16 @@ export type Speaker = SpeechEngine | 'browser' | 'pocket'
 /** What a tool call sounds like in the voice bar. */
 export type ToolSound = 'typing' | 'laptop' | 'tick' | 'off'
 
+/** The voice bar's short signals (`useAgentVoice`'s `chime`). */
+export type Chime = 'sent' | 'turn' | 'nothing' | 'record' | 'working'
+
+/**
+ * How loud each thing the voice bar plays is, 0..1. For the chimes and the
+ * tool call sound it is the sound's peak, as a share of full scale; for
+ * `speech` it is the gain on the voice as it was synthesised.
+ */
+export type SoundVolumes = Record<Chime | 'tool' | 'speech', number>
+
 /**
  * What decides, at a pause, whether a hands-free turn is over: Smart Turn
  * on the audio, the Kyutai transcriber's own pause prediction, or nothing
@@ -769,6 +779,7 @@ export interface AgentVoiceSettings {
   kyutaiUrl: string
   kyutaiVoice: string
   toolSound: ToolSound
+  volumes: SoundVolumes
   /** A Pocket TTS voice name, or `clone:<id>` for one of `ClonedVoice`. */
   pocketVoice: string
   /** A Pocket TTS server to use; '' is the one Domo runs itself through uvx. */
@@ -894,3 +905,5 @@ export type AgentVoiceServerMessage =
   /** Drop whatever is still playing. */
   | { type: 'hushed' }
   | { type: 'error', message: string }
+  /** Worth a moment on the bar, not an error: an assistant's voice gave way to the bar's. */
+  | { type: 'notice', message: string }

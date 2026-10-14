@@ -116,6 +116,8 @@ export class AgentVoiceRuntime {
    */
   private queue: Array<{ text: string, voiceOf: string }> = []
   private pumping = false
+  /** The bar has been told once that an assistant's voice gave way to its own. */
+  private fallbackNoticed = false
   private current: AbortController | null = null
   private speakingText: string | null = null
   /** Set by `hush`; the rest of this answer is not read. Cleared by a new turn. */
@@ -553,6 +555,11 @@ export class AgentVoiceRuntime {
           // piece, rather than silence.
           if (fallback && !spoke && !controller.signal.aborted) {
             console.warn(`[agent-voice:${this.agentSessionId}] the assistant's voice failed, using the bar's: ${describe(error)}`)
+            // Said once a bar, not every sentence: the reason does not change between them.
+            if (!this.fallbackNoticed) {
+              this.fallbackNoticed = true
+              this.emit({ type: 'notice', message: `The assistant's own voice could not speak, so the bar's voice is reading it: ${describe(error)}` })
+            }
             try {
               if (fallback.speaker === 'browser') this.emit({ type: 'say', text })
               else await synthesizeWith(fallback, text, play, controller.signal)

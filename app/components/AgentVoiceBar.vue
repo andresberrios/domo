@@ -12,7 +12,11 @@ const props = defineProps<{ session: AgentSession }>()
 const busy = computed(() => props.session.status === 'thinking' || props.session.status === 'awaiting-permission')
 
 const { data: appSettings } = useSettings()
-const voice = useAgentVoice(() => props.session.id, { busy, toolSound: () => appSettings.value?.agentVoice?.toolSound })
+const voice = useAgentVoice(() => props.session.id, {
+  busy,
+  toolSound: () => appSettings.value?.agentVoice?.toolSound,
+  volumes: () => appSettings.value?.agentVoice?.volumes
+})
 
 const modeItems = [
   { value: 'click', label: 'Click to talk', icon: 'i-lucide-mouse-pointer-click' },
@@ -87,7 +91,6 @@ onMounted(() => {
   // outside a tap, which iOS leaves suspended. The first tap on the button
   // opens it.
   voice.connect()
-  void voice.refreshDevices()
 })
 </script>
 
@@ -128,11 +131,7 @@ onMounted(() => {
               </UButton>
             </UTooltip>
           </UFieldGroup>
-          <AgentVoiceQuickSettings
-            :input-devices="voice.inputDevices.value"
-            :input-device-id="voice.inputDeviceId.value"
-            @update:input-device-id="(id: string) => voice.setInputDevice(id)"
-          />
+          <AgentVoiceQuickSettings />
         </div>
 
         <div class="flex flex-col items-center gap-2">

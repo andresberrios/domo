@@ -1,4 +1,4 @@
-import type { AgentVoiceSettings, Speaker, SpeechEngine, ToolSound, Transcriber, TurnDetector } from './types'
+import type { AgentVoiceSettings, SoundVolumes, Speaker, SpeechEngine, ToolSound, Transcriber, TurnDetector } from './types'
 
 /**
  * Talking to a coding agent: what the browser and the server both need to know.
@@ -170,6 +170,44 @@ export const TRANSCRIBE_MODELS = {
   ]
 } as const
 
+/**
+ * Every sound the voice bar makes, for a volume each in Settings. The chimes
+ * sit at a tenth of full scale: at a quarter they were louder than the voice.
+ */
+export const BAR_SOUNDS: Array<{ id: keyof SoundVolumes, label: string, description: string }> = [
+  { id: 'speech', label: 'Spoken replies', description: 'The agent\'s voice.' },
+  { id: 'record', label: 'Recording', description: 'A tick when a recording opens.' },
+  { id: 'turn', label: 'Turn heard', description: 'Hands-free: a falling pair when it hears you have finished.' },
+  { id: 'sent', label: 'Sent', description: 'A rising pair when your turn reaches the agent.' },
+  { id: 'nothing', label: 'Nothing heard', description: 'A low tone when the recording had no words.' },
+  { id: 'working', label: 'Still working', description: 'A soft blip every few seconds while the agent works on a spoken turn.' },
+  { id: 'tool', label: 'Tool call', description: 'The tool call sound chosen above.' }
+]
+
+export const DEFAULT_VOLUMES: SoundVolumes = {
+  speech: 1,
+  record: 0.1,
+  turn: 0.1,
+  sent: 0.1,
+  nothing: 0.1,
+  working: 0.1,
+  tool: 0.2
+}
+
+/** Stored volumes, each kept only when it is a number in 0..1. */
+export function normalizeVolumes(value: unknown): SoundVolumes {
+  const volumes = { ...DEFAULT_VOLUMES }
+  if (!value || typeof value !== 'object') return volumes
+  for (const key of Object.keys(volumes) as Array<keyof SoundVolumes>) {
+    const level = (value as Record<string, unknown>)[key]
+    if (typeof level === 'number' && Number.isFinite(level) && level >= 0 && level <= 1) volumes[key] = level
+  }
+  return volumes
+}
+
+/** What a voice says when it is tried out in Settings or the assistant form. */
+export const VOICE_PREVIEW_TEXT = 'Hi. This is how I will sound when I read you my replies.'
+
 export const DEFAULT_AGENT_VOICE: AgentVoiceSettings = {
   transcriber: 'gemini',
   speaker: 'gemini',
@@ -188,6 +226,7 @@ export const DEFAULT_AGENT_VOICE: AgentVoiceSettings = {
   kyutaiVoice: 'expresso/ex03-ex01_happy_001_channel1_334s.wav',
   macVoice: '',
   toolSound: 'typing',
+  volumes: { ...DEFAULT_VOLUMES },
   pocketVoice: 'alba',
   pocketUrl: ''
 }

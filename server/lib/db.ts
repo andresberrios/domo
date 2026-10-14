@@ -197,8 +197,8 @@ delete from settings where key in (
 -- sessions are ordinary agent_sessions rows chained by handoffs; this row says
 -- who it is, what the next session starts on, and which session is current.
 -- Streamed to the browser, so nothing secret: the avatar is a small data URL
--- the browser shrank before upload, and the row is written on edits and
--- handoffs only, never per turn.
+-- the server shrinks to a 256px WebP on the way in, and the row is written
+-- on edits and handoffs only, never per turn.
 create table if not exists assistants (
   id text primary key,
   name text not null,

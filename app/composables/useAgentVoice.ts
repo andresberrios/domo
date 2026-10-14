@@ -1,9 +1,15 @@
-import type { AgentVoiceClientMessage, AgentVoiceServerMessage, ToolSound } from '~~/shared/types'
-import type { AgentVoiceMode } from '~~/shared/agent-voice'
+import type { AgentVoiceClientMessage, AgentVoiceServerMessage, Chime, SoundVolumes, ToolSound } from '~~/shared/types'
+import { DEFAULT_VOLUMES, type AgentVoiceMode } from '~~/shared/agent-voice'
+import { playChime } from '~/utils/barSounds'
+import { createDownsampler } from '~/utils/downsample'
 import { RECORDER_WORKLET, base64ToFloat32, floatToPcm16Base64 } from '~/utils/pcm'
 import { playToolSound } from '~/utils/toolSounds'
 
 const INPUT_SAMPLE_RATE = 16000
+/** The recorder's frame, in samples at `INPUT_SAMPLE_RATE`: 128 ms. */
+const FRAME_SAMPLES = 2048
+/** A microphone that has given nothing but exact zeros for this long is not working. */
+const DEAD_MIC_MS = 4000
 const OUTPUT_SAMPLE_RATE = 24000
 
 /** Hands-free: a pause this long ends a segment and asks the server whether the turn is over. */
@@ -30,14 +36,8 @@ const DICTATION_GRACE_MS = 2500
 const DICTATION_PHRASES = 100
 const MODE_KEY = 'domo:agent-voice:mode'
 const SPEAK_KEY = 'domo:agent-voice:speak'
-const DEVICE_KEY = 'domo:agent-voice:input-device'
 
 export type AgentVoiceState = 'offline' | 'connecting' | 'live' | 'error'
-
-export interface AudioInputDevice {
-  deviceId: string
-  label: string
-}
 
 /**
  * The browser half of talking to a coding agent: the microphone up, the
@@ -74,6 +74,8 @@ export function useAgentVoice(
     busy?: MaybeRefOrGetter<boolean>
     /** What a tool call sounds like, from Settings. */
     toolSound?: MaybeRefOrGetter<ToolSound | undefined>
+    /** How loud each sound is, from Settings; read as each one plays. */
+    volumes?: MaybeRefOrGetter<SoundVolumes | undefined>
   } = {}
 ) {
   const state = ref<AgentVoiceState>('offline')
@@ -105,8 +107,7 @@ export function useAgentVoice(
   const errorMessage = ref<string | null>(null)
   /** The device's own recogniser is the transcriber (Settings), and this browser has one. */
   const dictation = ref(false)
-  const inputDevices = ref<AudioInputDevice[]>([])
-  const inputDeviceId = ref<string>(readStored(DEVICE_KEY) ?? '')
+  const inputs = useAudioInputs()
 
   let socket: WebSocket | null = null
   let captureContext: AudioContext | null = null
@@ -137,6 +138,15 @@ export function useAgentVoice(
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
   let workingTimer: ReturnType<typeof setTimeout> | null = null
   let lastToolSoundAt = 0
+  /** The turn-end chime played for the turn now being delivered, so "sent" is not chimed too. */
+  let turnChimed = false
+  /** The microphone problem on show, so a working microphone can take it away again. */
+  let micProblem: string | null = null
+  /** Since the microphone opened: whether anything but exact zeros came from it, and for how long it has not. */
+  let micHeardAnything = false
+  let micSilentMs = 0
+  /** The voice's own gain, so its volume can change while it speaks. */
+  let speechGain: GainNode | null = null
 
   // device dictation
   let dictationWanted = false
@@ -167,6 +177,20 @@ export function useAgentVoice(
 
   function send(message: AgentVoiceClientMessage) {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
+  }
+
+  function volume(kind: keyof SoundVolumes): number {
+    return toValue(options.volumes)?.[kind] ?? DEFAULT_VOLUMES[kind]
+  }
+
+  function showMicProblem(message: string) {
+    micProblem = message
+    errorMessage.value = message
+  }
+
+  function clearMicProblem() {
+    if (micProblem && errorMessage.value === micProblem) errorMessage.value = null
+    micProblem = null
   }
 
   function showNotice(text: string, ms = 4000) {
@@ -258,6 +282,7 @@ export function useAgentVoice(
     }
     playbackElement = null
     playbackOut = null
+    speechGain = null
     void playbackContext?.close().catch(() => {})
     playbackContext = null
   }
@@ -266,6 +291,19 @@ export function useAgentVoice(
   function output(context: AudioContext): AudioNode {
     return playbackOut ?? context.destination
   }
+
+  /** Where speech goes: through its own volume, then `output`. */
+  function speechOut(context: AudioContext): AudioNode {
+    if (!speechGain || speechGain.context !== context) {
+      speechGain = context.createGain()
+      speechGain.connect(output(context))
+    }
+    speechGain.gain.value = volume('speech')
+    return speechGain
+  }
+  watch(() => toValue(options.volumes)?.speech, () => {
+    if (speechGain) speechGain.gain.value = volume('speech')
+  })
 
   async function playChunk(base64: string, sampleRate: number) {
     const context = await ensurePlayback()
@@ -276,7 +314,7 @@ export function useAgentVoice(
     buffer.getChannelData(0).set(floats)
     const source = context.createBufferSource()
     source.buffer = buffer
-    source.connect(output(context))
+    source.connect(speechOut(context))
 
     const startAt = Math.max(context.currentTime + 0.02, playbackCursor)
     source.start(startAt)
@@ -300,39 +338,10 @@ export function useAgentVoice(
     }
   }
 
-  /**
-   * A sound that means something, for when the screen is in a pocket: a rising
-   * pair for "your turn went through", a low one for "nothing was heard", a
-   * tick for "recording". Made here, in the playback context a tap already
-   * unlocked, so it costs no request and no model.
-   */
-  function chime(kind: 'sent' | 'nothing' | 'record' | 'working' | 'turn') {
+  /** One of the bar's signals (`playChime`), at its volume from Settings. */
+  function chime(kind: Chime) {
     if (!playbackContext || playbackContext.state !== 'running') return
-    const context = playbackContext
-    const tones = kind === 'sent'
-      ? [[660, 0, 0.09], [990, 0.1, 0.12]]
-      : kind === 'turn'
-        // Hands-free heard the end of the turn: a falling pair, the opposite
-        // of the rising "sent" that follows once it is delivered.
-        ? [[880, 0, 0.07], [660, 0.08, 0.09]]
-      : kind === 'nothing'
-        ? [[220, 0, 0.22]]
-        : kind === 'working'
-          ? [[520, 0, 0.06]]
-          : [[880, 0, 0.05]]
-    for (const [frequency, at, length] of tones as Array<[number, number, number]>) {
-      const oscillator = context.createOscillator()
-      const gain = context.createGain()
-      oscillator.type = 'sine'
-      oscillator.frequency.value = frequency
-      const start = context.currentTime + at
-      gain.gain.setValueAtTime(0, start)
-      gain.gain.linearRampToValueAtTime(0.25, start + 0.01)
-      gain.gain.linearRampToValueAtTime(0, start + length)
-      oscillator.connect(gain).connect(output(context))
-      oscillator.start(start)
-      oscillator.stop(start + length + 0.02)
-    }
+    playChime(playbackContext, output(playbackContext), kind, volume(kind))
   }
 
   /** The tool call sound chosen in Settings (`playToolSound`), at most one burst at a time. */
@@ -341,7 +350,7 @@ export function useAgentVoice(
     const now = Date.now()
     if (now - lastToolSoundAt < TOOL_SOUND_GAP_MS) return
     lastToolSoundAt = now
-    playToolSound(playbackContext, output(playbackContext), toValue(options.toolSound) ?? 'typing')
+    playToolSound(playbackContext, output(playbackContext), toValue(options.toolSound) ?? 'typing', volume('tool'))
   }
 
   /**
@@ -377,6 +386,7 @@ export function useAgentVoice(
       return
     }
     const utterance = new SpeechSynthesisUtterance(text)
+    utterance.volume = volume('speech')
     const voice = deviceVoice(deviceLanguage)
     if (voice) {
       utterance.voice = voice
@@ -440,60 +450,76 @@ export function useAgentVoice(
   /* ------------------------------ devices ----------------------------- */
 
   /**
-   * Labels are only given out once the microphone has been allowed, so this
-   * is worth calling again after the first successful `startMic`.
+   * A microphone chosen here or in Settings (`useAudioInputs`) takes over at
+   * once. Playback is untouched, so earbuds can keep the sound.
    */
-  async function refreshDevices() {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices()
-      inputDevices.value = devices
-        .filter(device => device.kind === 'audioinput')
-        .map((device, index) => ({ deviceId: device.deviceId, label: device.label || `Microphone ${index + 1}` }))
-      // A remembered device that is gone falls back to the browser's choice.
-      if (inputDeviceId.value && !inputDevices.value.some(device => device.deviceId === inputDeviceId.value)) {
-        inputDeviceId.value = ''
-      }
-    } catch {
-      inputDevices.value = []
-    }
-  }
-
-  /** Switch microphones. Playback is untouched, so earbuds can keep the sound. */
-  async function setInputDevice(deviceId: string) {
-    inputDeviceId.value = deviceId
-    writeStored(DEVICE_KEY, deviceId)
+  watch(inputs.selected, async () => {
     if (!micEnabled.value) return
     const wasRecording = recording.value && mode.value === 'click'
     stopMic({ endTurn: false })
     await startMic()
-    if (wasRecording) recording.value = true
-  }
+    if (wasRecording && micEnabled.value) recording.value = true
+  })
 
   /* ------------------------------ capture ----------------------------- */
 
-  async function startMic() {
-    if (micEnabled.value) return
-    try {
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          ...inputDeviceId.value ? { deviceId: { exact: inputDeviceId.value } } : {},
-          channelCount: 1,
-          // "all": cancel everything the device plays, the agent's voice and
-          // the device's own speech included, not only WebRTC audio (Chrome
-          // 141+). Older browsers read it as true.
-          echoCancellation: 'all' as unknown as boolean,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      })
-    } catch (error) {
-      errorMessage.value = `Microphone access denied: ${error instanceof Error ? error.message : error}`
-      state.value = 'error'
-      return
+  function constraints(deviceId: string): MediaStreamConstraints {
+    return {
+      audio: {
+        ...deviceId ? { deviceId: { exact: deviceId } } : {},
+        channelCount: 1,
+        // "all": cancel everything the device plays, the agent's voice and
+        // the device's own speech included, not only WebRTC audio (Chrome
+        // 141+). Older browsers read it as true.
+        echoCancellation: 'all' as unknown as boolean,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
     }
+  }
 
-    captureContext = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE })
-    const context = captureContext
+  /**
+   * The chosen microphone, or the system's default when the chosen one is not
+   * here: a headset left at home should not leave the bar without a
+   * microphone.
+   */
+  async function openMicrophone(): Promise<MediaStream> {
+    const chosen = inputs.selected.value
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints(chosen))
+    } catch (error) {
+      const name = (error as { name?: string })?.name
+      if (!chosen || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw error
+      logDevice(`the chosen microphone is not here (${name}); using the system default`)
+      showNotice('The chosen microphone is not connected, so the system default is listening.', 6000)
+      return await navigator.mediaDevices.getUserMedia(constraints(''))
+    }
+  }
+
+  /**
+   * The capture graph: microphone, recorder worklet, 128 ms frames at 16 kHz.
+   * The context runs at 16 kHz so the browser does the resampling, which it
+   * does well; a browser that refuses to feed a microphone into a context of
+   * another rate (Firefox) gets one at the microphone's own rate, and the
+   * frames are brought down here.
+   */
+  async function buildCapture(stream: MediaStream): Promise<AudioContext> {
+    let context = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE })
+    captureContext = context
+    let source: MediaStreamAudioSourceNode
+    try {
+      source = context.createMediaStreamSource(stream)
+    } catch (error) {
+      void context.close().catch(() => {})
+      // At the microphone's own rate: Firefox compares the two, and the
+      // output device's rate, a context's default, may not be it.
+      const rate = stream.getAudioTracks()[0]?.getSettings().sampleRate
+      logDevice(`no 16 kHz capture (${error instanceof Error ? error.message : error}); recording at ${rate ?? 'the default'} Hz and resampling in the page`)
+      context = new AudioContext(rate ? { sampleRate: rate } : undefined)
+      captureContext = context
+      source = context.createMediaStreamSource(stream)
+    }
+    sourceNode = source
     const syncSuspended = () => { captureSuspended.value = context.state !== 'running' }
     context.addEventListener('statechange', syncSuspended)
     await context.resume().catch(() => {})
@@ -501,22 +527,63 @@ export function useAgentVoice(
 
     const blob = new Blob([RECORDER_WORKLET], { type: 'application/javascript' })
     const url = URL.createObjectURL(blob)
-    await context.audioWorklet.addModule(url)
-    URL.revokeObjectURL(url)
+    try {
+      await context.audioWorklet.addModule(url)
+    } finally {
+      URL.revokeObjectURL(url)
+    }
 
-    sourceNode = context.createMediaStreamSource(micStream)
-    workletNode = new AudioWorkletNode(context, 'domo-recorder')
-    workletNode.port.onmessage = (event) => {
+    const toFrames = context.sampleRate === INPUT_SAMPLE_RATE
+      ? (samples: Float32Array) => [samples]
+      : createDownsampler(context.sampleRate, INPUT_SAMPLE_RATE, FRAME_SAMPLES)
+    const recorder = new AudioWorkletNode(context, 'domo-recorder')
+    workletNode = recorder
+    recorder.port.onmessage = (event) => {
       const { type, samples } = event.data ?? {}
       if (type !== 'chunk') return
-      onFrame(samples as Float32Array)
+      for (const frame of toFrames(samples as Float32Array)) onFrame(frame)
     }
-    sourceNode.connect(workletNode)
+    source.connect(recorder)
     const sink = context.createGain()
     sink.gain.value = 0
-    workletNode.connect(sink).connect(context.destination)
+    recorder.connect(sink).connect(context.destination)
+    return context
+  }
+
+  async function startMic() {
+    if (micEnabled.value) return
+    let stream: MediaStream
+    try {
+      stream = await openMicrophone()
+    } catch (error) {
+      logDevice(`microphone refused: ${(error as Error)?.name}: ${(error as Error)?.message}`)
+      showMicProblem(microphoneError(error))
+      return
+    }
+    micStream = stream
+
+    let context: AudioContext
+    try {
+      context = await buildCapture(stream)
+    } catch (error) {
+      // The microphone is open but nothing records it: close it again, or the
+      // system shows it in use with nothing on the screen to say why.
+      logDevice(`capture failed: ${error instanceof Error ? `${error.name}: ${error.message}` : error}`)
+      releaseCapture()
+      showMicProblem(`The microphone opened, but this browser could not record it: ${error instanceof Error ? error.message : error}`)
+      return
+    }
+    clearMicProblem()
     micEnabled.value = true
     noiseFloor = 0
+    micHeardAnything = false
+    micSilentMs = 0
+    const track = stream.getAudioTracks()[0]
+    track?.addEventListener('ended', () => {
+      if (micStream !== stream) return
+      stopMic()
+      showMicProblem('The microphone was disconnected. Tap to use another one.')
+    })
     // Android: the speaker opened before the microphone is on the media
     // channel, out of the echo canceller's sight (closePlayback). Reopen it now,
     // inside the same tap, so it opens on the call channel.
@@ -525,16 +592,13 @@ export function useAgentVoice(
       await ensurePlayback()
       logDevice('speaker reopened after the microphone, on the call channel')
     }
-    const granted = micStream.getAudioTracks()[0]?.getSettings() as any
-    logDevice(`microphone: echo cancellation ${JSON.stringify(granted?.echoCancellation)}, noise suppression ${granted?.noiseSuppression}`)
+    const granted = track?.getSettings() as any
+    logDevice(`microphone: ${track?.label || 'unnamed'} at ${granted?.sampleRate ?? '?'} Hz into ${context.sampleRate} Hz, echo cancellation ${JSON.stringify(granted?.echoCancellation)}, noise suppression ${granted?.noiseSuppression}`)
     void startDictation()
-    void refreshDevices()
+    void inputs.refresh()
   }
 
-  function stopMic({ endTurn = true } = {}) {
-    // The recogniser is stopped once the segment's words are in, not before.
-    if (endTurn && recording.value && mode.value === 'click') void endSegment(true).then(() => stopDictation())
-    else stopDictation()
+  function releaseCapture() {
     workletNode?.port.close()
     workletNode?.disconnect()
     sourceNode?.disconnect()
@@ -544,6 +608,13 @@ export function useAgentVoice(
     sourceNode = null
     micStream = null
     captureContext = null
+  }
+
+  function stopMic({ endTurn = true } = {}) {
+    // The recogniser is stopped once the segment's words are in, not before.
+    if (endTurn && recording.value && mode.value === 'click') void endSegment(true).then(() => stopDictation())
+    else stopDictation()
+    releaseCapture()
     micEnabled.value = false
     captureSuspended.value = false
     // Android: the phone leaves call mode with the microphone, so the speaker
@@ -579,11 +650,32 @@ export function useAgentVoice(
     return Math.sqrt(sum / Math.ceil(samples.length / 4))
   }
 
+  /**
+   * A real microphone is never exactly silent: there is always some hiss.
+   * Exact zeros mean the system is handing over nothing (a muted or virtual
+   * input, an input level at zero, a device that is not the one in use), and
+   * the bar would otherwise sit there "listening" to it forever.
+   */
+  function watchForDeadMic(samples: Float32Array, frameMs: number) {
+    if (micHeardAnything) return
+    if (samples.some(sample => sample !== 0)) {
+      micHeardAnything = true
+      clearMicProblem()
+      return
+    }
+    micSilentMs += frameMs
+    if (micSilentMs < DEAD_MIC_MS || micProblem) return
+    const label = micStream?.getAudioTracks()[0]?.label
+    logDevice(`microphone ${label || ''} gives only silence`)
+    showMicProblem(`${label ? `"${label}"` : 'The microphone'} is sending only silence. Pick another microphone in the voice settings, or check the system's sound input and its level.`)
+  }
+
   /** One 128 ms frame from the microphone. */
   function onFrame(samples: Float32Array) {
     const level = rms(samples)
     inputLevel.value = Math.min(1, level * 6)
     const frameMs = (samples.length / INPUT_SAMPLE_RATE) * 1000
+    watchForDeadMic(samples, frameMs)
 
     if (mode.value === 'click') {
       if (recording.value) send({ type: 'audio', data: floatToPcm16Base64(samples) })
@@ -854,15 +946,21 @@ export function useAgentVoice(
         utterance.value = ''
         holding.value = false
         awaitingReply.value = true
-        chime('sent')
+        // Hands-free already chimed the end of this turn; a failure has its own tone.
+        if (!turnChimed) chime('sent')
+        turnChimed = false
         showNotice(`Sent: ${message.text}`, 6000)
         break
       case 'turn':
         holding.value = !message.complete
-        if (message.complete) chime('turn')
+        if (message.complete) {
+          chime('turn')
+          turnChimed = true
+        }
         break
       case 'nothing-heard':
         holding.value = false
+        turnChimed = false
         chime('nothing')
         showNotice(
           message.reason === 'no-speech'
@@ -873,6 +971,7 @@ export function useAgentVoice(
         )
         break
       case 'command':
+        turnChimed = false
         noteCommand(message.name)
         break
       case 'audio':
@@ -892,7 +991,11 @@ export function useAgentVoice(
         stopPlayback()
         break
       case 'error':
+        turnChimed = false
         errorMessage.value = message.message
+        break
+      case 'notice':
+        showNotice(message.message, 8000)
         break
     }
   }
@@ -1067,16 +1170,12 @@ export function useAgentVoice(
     holding,
     dictation,
     errorMessage,
-    inputDevices,
-    inputDeviceId,
     connect,
     start,
     stop,
     toggleRecording,
     setMode,
     setSpeak,
-    setInputDevice,
-    refreshDevices,
     hush,
     cancel,
     sendHeld,

@@ -66,10 +66,16 @@ function typing(): Key[] {
   return keys
 }
 
-export function playToolSound(context: BaseAudioContext, out: AudioNode, kind: ToolSound) {
+/** The level the sounds below are drawn at; `volume` scales from it. */
+const DRAWN_AT = 0.2
+
+/** `volume` is the sound's peak, 0..1 of full scale (`SoundVolumes.tool`). */
+export function playToolSound(context: BaseAudioContext, destination: AudioNode, kind: ToolSound, volume = DRAWN_AT) {
+  if (kind === 'off' || volume <= 0) return
+  const out = context.createGain()
+  out.gain.value = volume / DRAWN_AT
+  out.connect(destination)
   switch (kind) {
-    case 'off':
-      return
     case 'tick':
       play(context, out, noiseBurst(context, 0.02, 0.004), 0, 0.18, 'bandpass', 2400, 1.2)
       return

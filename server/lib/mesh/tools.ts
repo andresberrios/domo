@@ -1436,8 +1436,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         voice,
         name: cloned.name,
         seconds: cloned.seconds,
-        ...target ? { assistantId: target.id, assistant: target.name } : {},
-        ...process.env.HF_TOKEN ? {} : { note: 'Pocket TTS needs Kyutai\'s gated weights (HF_TOKEN) to speak a cloned voice; until then the bar\'s own voice is used.' }
+        ...target ? { assistantId: target.id, assistant: target.name } : {}
       }
     }
 
