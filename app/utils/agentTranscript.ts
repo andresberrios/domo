@@ -292,6 +292,11 @@ export interface ActivityGroup {
   thoughts: number
   failed: number
   names: Array<{ name: string, count: number }>
+  /**
+   * The run is still going: its last item is what the agent is doing right
+   * now, and the next tool call will join it.
+   */
+  live: boolean
 }
 
 export type CondensedItem = TranscriptItem | ActivityGroup
@@ -299,7 +304,7 @@ export type CondensedItem = TranscriptItem | ActivityGroup
 export interface CondenseOptions {
   /** Runs shorter than this are left alone: one card is not clutter. */
   minRun?: number
-  /** The session is still working, so a trailing thought is the live tail. */
+  /** The session is still working, so the trailing run is still open. */
   live?: boolean
 }
 
@@ -308,7 +313,7 @@ function toolName(item: Extract<TranscriptItem, { kind: 'tool' }>): string {
 }
 
 /** A run of `tool` / `thought` items, in the order they happened. */
-function groupOf(run: TranscriptItem[]): ActivityGroup {
+function groupOf(run: TranscriptItem[], live = false): ActivityGroup {
   const counts = new Map<string, number>()
   let toolCalls = 0
   let thoughts = 0
@@ -339,9 +344,13 @@ function groupOf(run: TranscriptItem[]): ActivityGroup {
     thoughts,
     failed,
     // Most frequent first; ties keep the order they first appeared in.
-    names: [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
+    names: [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+    live
   }
 }
+
+const isRunning = (item: TranscriptItem) =>
+  item.kind === 'tool' && (item.tool.status === 'pending' || item.tool.status === 'in_progress')
 
 /**
  * The second pass over `buildTranscript()`'s output: what happened is already
@@ -349,9 +358,11 @@ function groupOf(run: TranscriptItem[]): ActivityGroup {
  * `thought` items becomes one `activity` row; everything else is passed
  * through untouched, so a pending permission is never swallowed by a group.
  *
- * The live tail stays open — a tool that is still running, or a trailing
- * thought while the session is working, renders on its own below the group, so
- * the user can always see what the agent is doing right now.
+ * The run at the end of a working session is open, and it is a group from its
+ * first tool call on, whatever its length, with the call that is running as
+ * its last item. A call joins the row it will end up in when it starts, so
+ * finishing it changes that row's contents and moves nothing around it. A
+ * lone thought is still drawn as itself while it streams, so it can be read.
  */
 export function condenseTranscript(
   items: TranscriptItem[],
@@ -359,23 +370,18 @@ export function condenseTranscript(
 ): CondensedItem[] {
   const minRun = options.minRun ?? 2
   const last = items[items.length - 1]
-  const tailIsLive = !!last && (
-    (last.kind === 'tool' && (last.tool.status === 'pending' || last.tool.status === 'in_progress'))
-    || (last.kind === 'thought' && !!options.live)
-  )
-  const end = tailIsLive ? items.length - 1 : items.length
+  const open = !!last && (isRunning(last) || (!!options.live && (last.kind === 'tool' || last.kind === 'thought')))
 
   const out: CondensedItem[] = []
   let run: TranscriptItem[] = []
 
-  const flush = () => {
-    if (run.length >= minRun) out.push(groupOf(run))
+  const flush = (live = false) => {
+    if (run.length >= minRun || (live && run.some(item => item.kind === 'tool'))) out.push(groupOf(run, live))
     else out.push(...run)
     run = []
   }
 
-  for (let index = 0; index < end; index += 1) {
-    const item = items[index]!
+  for (const item of items) {
     if (item.kind === 'tool' || item.kind === 'thought') {
       run.push(item)
       continue
@@ -383,9 +389,8 @@ export function condenseTranscript(
     flush()
     out.push(item)
   }
-  flush()
+  flush(open)
 
-  if (tailIsLive) out.push(last!)
   return out
 }
 
@@ -498,6 +503,7 @@ export function reconcileCondensed(
     if (item.kind !== 'activity') return item
     const old = groups.get(item.id)
     const same = old
+      && old.live === item.live
       && old.items.length === item.items.length
       && old.items.every((entry, index) => entry === item.items[index])
     return same ? old : item

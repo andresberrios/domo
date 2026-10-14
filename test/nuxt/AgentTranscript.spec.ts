@@ -212,16 +212,16 @@ describe('AgentTranscript', () => {
       expect(component.text()).toContain('2 tool calls')
     })
 
-    it('leaves the call that is running now outside the group', async () => {
+    it('draws the call that is running now inside its group, in the header', async () => {
       const component = await render([
         toolCall('c1', 'Read'),
         toolCall('c2', 'Read'),
         agentEvent('tool_call', { toolCallId: 'c3', title: 'Bash', name: 'Bash', kind: 'execute', status: 'in_progress' })
       ], [], true)
 
-      await text(component).toContain('2 tool calls')
-      expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(1)
-      expect(component.text()).toContain('Running')
+      await text(component).toContain('3 tool calls')
+      expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(0)
+      expect(component.find('[data-testid="activity-current"]').text()).toBe('Bash')
     })
   })
 })

@@ -5,6 +5,7 @@ import {
   activityLabel,
   buildTranscript,
   condenseTranscript,
+  reconcileCondensed,
   type ActivityGroup,
   type CondensedItem
 } from '~/utils/agentTranscript'
@@ -170,14 +171,15 @@ describe('condenseTranscript', () => {
   })
 
   describe('the live tail', () => {
-    it('keeps a running tool call out of the group', () => {
+    it('puts a running tool call inside the group, as its last item', () => {
       const items = condenseTranscript(transcript([
         tool('c1'), tool('c2'), tool('c3'),
         tool('c4', 'Bash', 'in_progress')
       ]))
 
-      expect(kinds(items)).toEqual(['activity', 'tool'])
-      expect(group(items).toolCalls).toBe(3)
+      expect(kinds(items)).toEqual(['activity'])
+      expect(group(items)).toMatchObject({ toolCalls: 4, live: true })
+      expect(group(items).items.at(-1)).toMatchObject({ kind: 'tool', tool: { toolCallId: 'c4' } })
     })
 
     it('does the same for a call that has not started yet', () => {
@@ -186,28 +188,62 @@ describe('condenseTranscript', () => {
         tool('c4', 'Bash', 'pending')
       ]))
 
-      expect(kinds(items)).toEqual(['activity', 'tool'])
+      expect(kinds(items)).toEqual(['activity'])
+      expect(group(items).live).toBe(true)
     })
 
-    it('groups a finished tail — there is nothing live to watch', () => {
-      const items = condenseTranscript(transcript([tool('c1'), tool('c2'), tool('c3')]))
+    it('draws the same row from the first call starting to the last one finishing', () => {
+      // Every step of a turn, as the log grows. A call drawn outside the group
+      // while it ran and folded in when it finished re-parented on every call,
+      // which is what moved the view up and down.
+      const steps: Parameters<typeof buildTranscript>[0][] = []
+      const events: Parameters<typeof buildTranscript>[0] = [userMessage('run the checks')]
+      for (const id of ['c1', 'c2', 'c3']) {
+        events.push(tool(id, 'Bash', 'in_progress'))
+        steps.push([...events])
+        events.push(agentEvent('tool_call_update', { toolCallId: id, status: 'completed' }))
+        steps.push([...events])
+      }
+
+      const rows = steps.map(step => condenseTranscript(transcript(step), { live: true }))
+
+      for (const row of rows) expect(kinds(row)).toEqual(['user', 'activity'])
+      expect(new Set(rows.map(row => group(row).id)).size).toBe(1)
+      expect(rows.map(row => group(row).toolCalls)).toEqual([1, 1, 2, 2, 3, 3])
+    })
+
+    it('closes the group once the session stops working', () => {
+      const events = [tool('c1'), tool('c2')]
+
+      expect(group(condenseTranscript(transcript(events), { live: true })).live).toBe(true)
+      expect(group(condenseTranscript(transcript(events), { live: false })).live).toBe(false)
+    })
+
+    it('closes the group when something other than activity follows it', () => {
+      const items = condenseTranscript(transcript([tool('c1'), tool('c2'), textChunk('done')]), { live: true })
+
+      expect(group(items).live).toBe(false)
+    })
+
+    it('leaves a closed run of one alone, even if it was a live group', () => {
+      const live = condenseTranscript(transcript([textChunk('hi'), tool('c1', 'Bash', 'in_progress')]), { live: true })
+      const closed = condenseTranscript(transcript([textChunk('hi'), tool('c1'), textChunk('done')]), { live: true })
+
+      expect(kinds(live)).toEqual(['assistant', 'activity'])
+      expect(kinds(closed)).toEqual(['assistant', 'tool', 'assistant'])
+    })
+
+    it('takes a trailing thought into the open group', () => {
+      const items = condenseTranscript(transcript([tool('c1'), tool('c2'), thoughtChunk('what now')]), { live: true })
 
       expect(kinds(items)).toEqual(['activity'])
-      expect(group(items).toolCalls).toBe(3)
+      expect(group(items)).toMatchObject({ toolCalls: 2, thoughts: 1, live: true })
     })
 
-    it('keeps a trailing thought out only while the session is working', () => {
-      const events = [tool('c1'), tool('c2'), thoughtChunk('what now')]
+    it('leaves a lone streaming thought on its own, so it can be read', () => {
+      const items = condenseTranscript(transcript([userMessage('hi'), thoughtChunk('let me see')]), { live: true })
 
-      expect(kinds(condenseTranscript(transcript(events), { live: true }))).toEqual(['activity', 'thought'])
-      expect(kinds(condenseTranscript(transcript(events), { live: false }))).toEqual(['activity'])
-    })
-
-    it('leaves the rest of the run alone when the tail is all that is left of it', () => {
-      // One grouped item would be a group of one, so nothing is grouped at all.
-      const items = condenseTranscript(transcript([textChunk('hi'), tool('c1'), tool('c2', 'Bash', 'in_progress')]))
-
-      expect(kinds(items)).toEqual(['assistant', 'tool', 'tool'])
+      expect(kinds(items)).toEqual(['user', 'thought'])
     })
 
     it('does not treat a live tail in the middle of the log as one', () => {
@@ -219,7 +255,7 @@ describe('condenseTranscript', () => {
       ]))
 
       expect(kinds(items)).toEqual(['activity', 'assistant'])
-      expect(group(items).toolCalls).toBe(3)
+      expect(group(items)).toMatchObject({ toolCalls: 3, live: false })
     })
   })
 
@@ -272,6 +308,26 @@ describe('condenseTranscript', () => {
   })
 })
 
+describe('reconcileCondensed', () => {
+  it('keeps a group that stands for the same items', () => {
+    const items = transcript([tool('c1'), tool('c2')])
+    const before = condenseTranscript(items)
+
+    expect(reconcileCondensed(before, condenseTranscript(items))[0]).toBe(before[0])
+  })
+
+  it('replaces a group that closed, though its items did not change', () => {
+    // The header shows the live call only while the group is open, so a group
+    // carried forward past the end of the turn would keep its spinner.
+    const items = transcript([tool('c1'), tool('c2')])
+    const before = condenseTranscript(items, { live: true })
+    const after = reconcileCondensed(before, condenseTranscript(items, { live: false }))
+
+    expect(after[0]).not.toBe(before[0])
+    expect(group(after).live).toBe(false)
+  })
+})
+
 describe('activityLabel', () => {
   const group = (toolCalls: number, thoughts: number): ActivityGroup => ({
     id: 'activity:ev_1',
@@ -282,7 +338,8 @@ describe('activityLabel', () => {
     toolCalls,
     thoughts,
     failed: 0,
-    names: []
+    names: [],
+    live: false
   })
 
   it.each([
