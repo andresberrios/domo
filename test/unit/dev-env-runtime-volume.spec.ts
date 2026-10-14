@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
@@ -55,6 +57,26 @@ describe('runtimeVolumeName', () => {
   })
 })
 
+describe('the pins', () => {
+  // Host sessions run what package.json installs and container sessions what
+  // the volume does; drifting apart gives the two different models.
+  it('match what package.json and pnpm-workspace.yaml install on the host', async () => {
+    const { ADAPTER_PACKAGES, ADAPTER_OVERRIDES } = await load()
+    const root = new URL('../../', import.meta.url)
+    const dependencies = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).dependencies
+    const workspace = readFileSync(new URL('pnpm-workspace.yaml', root), 'utf8')
+
+    for (const { spec } of Object.values(ADAPTER_PACKAGES)) {
+      const at = spec.lastIndexOf('@')
+      expect(dependencies[spec.slice(0, at)]?.replace(/^\^/, ''), spec).toBe(spec.slice(at + 1))
+    }
+    for (const [name, version] of Object.entries(ADAPTER_OVERRIDES)) {
+      expect(workspace).toContain(`'${name}': ${version}`)
+      expect(dependencies[name]?.replace(/^\^/, ''), name).toBe(version)
+    }
+  })
+})
+
 describe('adapterCommandPath', () => {
   it('points at the wrapper in the volume, not at anything on the image\'s PATH', async () => {
     const { adapterCommandPath } = await load()
@@ -79,9 +101,14 @@ describe('ensureRuntimeVolume', () => {
     expect(dockerCalls()[0]).toEqual(['volume', 'create', '--label', 'domo.runtime=true', volume])
     const script = dockerCalls().at(-1)!.at(-1)!
     expect(script).toContain('npm install --prefix /opt/domo/adapters')
-    expect(script).toContain('@agentclientprotocol/claude-agent-acp@0.81.1')
-    expect(script).toContain('@agentclientprotocol/codex-acp@1.13.1')
-    expect(script).toContain('@opencode/cli@2.0.15')
+    expect(script).toContain('@agentclientprotocol/claude-agent-acp@0.90.0')
+    expect(script).toContain('@agentclientprotocol/codex-acp@2.2.2')
+    expect(script).toContain('@opencode/cli@2.0.29')
+    // codex-acp's own range would bring a second, older Codex; the override is
+    // in place before the install that reads it.
+    expect(script.indexOf('{"private":true,"overrides":{"@openai/codex":"0.162.1"}}'))
+      .toBeLessThan(script.indexOf('npm install'))
+    expect(script.indexOf('{"private":true')).toBeGreaterThan(-1)
     // The absolute node: npm's own shims say `#!/usr/bin/env node`, and the environment's
     // image is not required to have a node at all.
     expect(script).toContain('exec /opt/domo/node/bin/node /opt/domo/adapters/node_modules/')

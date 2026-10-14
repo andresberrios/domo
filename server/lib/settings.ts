@@ -22,7 +22,7 @@ export const DEFAULTS: AppSettings = {
   autoApprovePermissions: false,
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
-  // `agent` ("Approve for me"). The ids are not interchangeable — see
+  // `agent` ("Auto review"). The ids are not interchangeable — see
   // `AppSettings.defaultAgentModes`.
   defaultAgentModes: Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, adapter.defaultMode])) as AppSettings['defaultAgentModes'],
   // Empty, meaning "whatever the adapter starts on": there is no model id Domo

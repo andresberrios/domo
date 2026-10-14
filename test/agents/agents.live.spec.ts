@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { AgentAdapter, DevEnvironment } from '~~/shared/types'
 import { removeCachedImages } from '../helpers/cached-images'
@@ -32,10 +32,10 @@ const HOUR = 60 * 60 * 1000
 
 /** The cheapest model each adapter offers, read off a real `session/new`. */
 const MODELS: Record<AgentAdapter, string> = {
-  // "Haiku 4.5 · Fastest for quick answers". The adapter lists `haiku`, not a
+  // "Haiku 5.5 · Fastest for quick answers". The adapter lists `haiku`, not a
   // dated id; the resolver accepts either.
   'claude-code': 'haiku',
-  // "Fast and affordable agentic coding model" — codex-acp lists no *-mini or
+  // "Older fast and efficient model" — codex-acp lists no *-mini or
   // *-nano id at all, and luna is the cheap end of the 5.6 family.
   codex: 'gpt-5.6-luna',
   // Exact, and it has to be: with a key set the adapter lists `opencode/*` and
@@ -43,6 +43,13 @@ const MODELS: Record<AgentAdapter, string> = {
   // like `glm-5.3` is refused as ambiguous rather than guessed at. The `-go`
   // provider is the flat subscription; `flash` is the cheap end of it.
   opencode: 'opencode-go/glm-5.3-flash'
+}
+
+/** A second cheap model per adapter, for the switch. */
+const OTHER_MODELS: Record<AgentAdapter, string> = {
+  'claude-code': 'sonnet',
+  codex: 'gpt-6-luna',
+  opencode: 'opencode-go/gpt-5.6-luna'
 }
 
 let mesh: MeshHarness
@@ -119,9 +126,9 @@ afterAll(async () => {
  * to the client raises nothing, because the client is doing it. A shell command
  * is the one it always asks about.
  *
- * codex-acp starts in `agent` ("Approve for me") and asks for nothing at all;
- * `read-only` ("Ask for approval") is the mode that does, and there it asks to
- * edit files rather than about the command that would edit them.
+ * codex-acp starts in `agent` ("Auto review") and asks for nothing at all;
+ * `read-only` is the mode that does. Since codex-acp 2.0 it is really read-only,
+ * and it asks to run the command and to read, not to edit.
  */
 const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
   'claude-code': {
@@ -135,8 +142,7 @@ const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
   },
   // Measured, and it is neither a command nor an edit: OpenCode asks when a
   // tool touches a path *outside* the session's working directory. An in-`cwd`
-  // write raises nothing at all, because it is delegated to the client as
-  // `fs/write_text_file`.
+  // write raises nothing at all.
   opencode: {
     modeId: 'build',
     prompt: 'Read the file /etc/hosts with your read tool and reply with its first line.'
@@ -341,6 +347,86 @@ describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev e
       .toBeTruthy()
     // The bearer is the calling session's own token, minted in this process.
     expect(verifyMeshToken(toolCall!.authorization.replace(/^Bearer\s+/i, ''))).toBe(session.id)
+  }, HOUR / 4)
+
+  it('switches model on a live session, and runs the next turn on it', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { getAgentSession } = await import('../../server/lib/repo')
+    const session = await start(adapter)
+    await acpManager.prompt(session.id, [{ type: 'text', text: 'Reply with the single word ONE.' }])
+
+    await acpManager.setModel(session.id, OTHER_MODELS[adapter])
+
+    expect((await getAgentSession(session.id))!.model).toBe(OTHER_MODELS[adapter])
+    expect((await eventsOfType(session.id, 'model_changed')).at(-1)?.payload)
+      .toMatchObject({ modelId: OTHER_MODELS[adapter] })
+    const result = await acpManager.prompt(session.id, [{ type: 'text', text: 'Reply with the single word TWO.' }])
+    expect(result.stopReason).toBe('end_turn')
+    expect(await assistantText(session.id)).toMatch(/TWO/i)
+  }, HOUR / 4)
+
+  // Every restart of Domo, and every Nitro reload under `pnpm dev`, reattaches
+  // a session through `session/load` inside the container.
+  it('picks the conversation back up after its adapter restarts', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { getAgentSession } = await import('../../server/lib/repo')
+    const session = await start(adapter, { modeId: ASKS[adapter].modeId })
+    const codeword = `kumquat-${Math.random().toString(36).slice(2, 7)}`
+    await acpManager.prompt(session.id, [{ type: 'text', text: `The codeword is ${codeword}. Reply with OK only.` }])
+
+    acpManager.stop(session.id)
+    await vi.waitFor(() => expect(acpManager.isRunning(session.id)).toBe(false))
+    const answered = answerPermissions(session.id)
+    const result = await acpManager.prompt(session.id, [{
+      type: 'text',
+      text: 'What was the codeword I gave you? Reply with the codeword only.'
+    }])
+    await answered.stop()
+
+    expect(result.stopReason).toBe('end_turn')
+    expect(await assistantText(session.id)).toContain(codeword)
+    // The row's choices are put back on the reloaded session.
+    expect(await getAgentSession(session.id)).toMatchObject({
+      model: MODELS[adapter],
+      modeId: ASKS[adapter].modeId
+    })
+  }, HOUR / 4)
+
+  it('takes a message mid-turn: steered where the adapter can be, then one queued behind it', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { getAgentSession, listInboxMessages } = await import('../../server/lib/repo')
+    const session = await start(adapter)
+    const answered = answerPermissions(session.id)
+
+    const first = acpManager.prompt(session.id, [{
+      type: 'text',
+      text: 'Run the shell command `sleep 8` with your shell tool, then reply with the word FIRST.'
+    }]).catch(() => ({ stopReason: 'failed' }))
+    await vi.waitFor(async () => expect((await eventsOfType(session.id, 'tool_call')).length).toBeGreaterThan(0), { timeout: 120_000, interval: 250 })
+
+    const steered = await acpManager.deliver(session.id, {
+      content: [{ type: 'text', text: 'Also end your reply with the word STEERED.' }],
+      delivery: 'steer'
+    })
+    const queued = await acpManager.deliver(session.id, {
+      content: [{ type: 'text', text: 'Reply with the single word QUEUED.' }],
+      delivery: 'queue'
+    })
+    await first
+    await vi.waitFor(async () => {
+      expect(await listInboxMessages(session.id)).toEqual([])
+      expect(acpManager.isBusy(session.id)).toBe(false)
+      expect((await getAgentSession(session.id))!.status).toBe('idle')
+    }, { timeout: 240_000, interval: 500 })
+    await answered.stop()
+
+    // OpenCode cannot be steered, so a steer interrupts it instead.
+    expect(steered.outcome).toBe(acpManager.supportsSteering(session.id) ? 'steered' : 'prompted')
+    expect(queued.outcome).toBe('queued')
+    const text = await assistantText(session.id)
+    expect(text).toMatch(/STEERED/)
+    expect(text).toMatch(/QUEUED/)
+    console.log(`[${adapter}] steer: ${steered.delivery}/${steered.outcome}`)
   }, HOUR / 4)
 })
 

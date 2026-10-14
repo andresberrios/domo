@@ -22,21 +22,30 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
 }> = {
   'claude-code': {
     command: 'claude-agent-acp',
-    spec: '@agentclientprotocol/claude-agent-acp@0.81.1',
+    spec: '@agentclientprotocol/claude-agent-acp@0.90.0',
     entry: 'dist/index.js'
   },
   codex: {
     command: 'codex-acp',
-    spec: '@agentclientprotocol/codex-acp@1.13.1',
+    spec: '@agentclientprotocol/codex-acp@2.2.2',
     entry: 'dist/index.js'
   },
   opencode: {
     command: 'opencode-acp',
-    spec: '@opencode/cli@2.0.15',
+    spec: '@opencode/cli@2.0.29',
     entry: 'bin/opencode.exe',
     args: ['acp'],
     native: true
   }
+}
+
+/**
+ * Transitive versions forced in the volume, as `overrides` in `pnpm-workspace.yaml`
+ * forces them on the host. codex-acp asks for an older Codex than the one Domo
+ * pins, and without this the two sides would run different Codex binaries.
+ */
+export const ADAPTER_OVERRIDES: Record<string, string> = {
+  '@openai/codex': '0.162.1'
 }
 
 /** The version of each adapter the runtime volume built today would hold. */
@@ -54,7 +63,12 @@ export function adapterCommandPath(adapter: AgentAdapter): string {
 }
 
 export function runtimeVolumeName(arch: string): string {
-  const pins = [RUNTIME_IMAGE, ...Object.values(ADAPTER_PACKAGES).map(entry => entry.spec), arch].join('\n')
+  const pins = [
+    RUNTIME_IMAGE,
+    ...Object.values(ADAPTER_PACKAGES).map(entry => entry.spec),
+    ...Object.entries(ADAPTER_OVERRIDES).map(([name, version]) => `${name}=${version}`),
+    arch
+  ].join('\n')
   return `${resourcePrefix()}runtime-${createHash('sha256').update(pins).digest('hex').slice(0, 12)}`
 }
 
@@ -87,6 +101,7 @@ function populateScript(): string {
     `rm -rf ${RUNTIME_ROOT}/node ${RUNTIME_ROOT}/bin ${RUNTIME_ROOT}/adapters`,
     `mkdir -p ${RUNTIME_ROOT}/node/bin ${RUNTIME_ROOT}/bin ${RUNTIME_ROOT}/adapters`,
     `cp "$(command -v node)" ${RUNTIME_ROOT}/node/bin/node`,
+    `printf '%s' '${JSON.stringify({ private: true, overrides: ADAPTER_OVERRIDES })}' > ${RUNTIME_ROOT}/adapters/package.json`,
     `npm install --prefix ${RUNTIME_ROOT}/adapters --no-fund --no-audit --loglevel=error `
     + Object.values(ADAPTER_PACKAGES).map(entry => entry.spec).join(' '),
     ...wrappers,

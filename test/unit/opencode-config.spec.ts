@@ -12,11 +12,11 @@ describe('the OpenCode config a session starts with', () => {
     expect(JSON.parse(sessionConfigContent(null, true, DEFAULTS)!)).toEqual({ permission: 'allow' })
   })
 
-  it('writes nothing at all for `ask`, which is what OpenCode already does', () => {
-    // The smaller the config Domo injects, the less there is to disagree with a
-    // future OpenCode about.
-    expect(sessionConfigContent(null, false, DEFAULTS)).toBeNull()
-    expect(sessionConfigContent('{"agent":{}}', false, DEFAULTS)).toBe('{"agent":{}}')
+  it('spells `ask` out, because OpenCode 2.0.29 no longer asks about other directories unaided', () => {
+    expect(JSON.parse(sessionConfigContent(null, false, DEFAULTS)!))
+      .toEqual({ permission: { external_directory: 'ask' } })
+    expect(JSON.parse(sessionConfigContent('{"agent":{}}', false, DEFAULTS)!))
+      .toEqual({ agent: {}, permission: { external_directory: 'ask' } })
   })
 
   it('lets the user choose per surface, and they are independent', () => {
@@ -25,7 +25,8 @@ describe('the OpenCode config a session starts with', () => {
     // Somebody tired of being asked on their own machine:
     expect(permissionFor({ host: 'allow', environment: 'allow' }, false)).toBe('allow')
     // And somebody who wants the prompts back in environments:
-    expect(sessionConfigContent(null, true, { host: 'ask', environment: 'ask' })).toBeNull()
+    expect(JSON.parse(sessionConfigContent(null, true, { host: 'ask', environment: 'ask' })!))
+      .toEqual({ permission: { external_directory: 'ask' } })
   })
 
   it('keeps the developer\'s own config, comments and all', () => {

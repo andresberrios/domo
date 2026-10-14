@@ -102,6 +102,8 @@ function inexactMatches(
   const tiers = [
     (entry: { value?: string, name?: string }) => entry.value!.toLowerCase() === wanted,
     (entry: { value?: string, name?: string }) => (entry.name ?? '').toLowerCase() === wanted,
+    // Before containment, which would take a bare `fable` for `claude-fable-5-1[1m]`.
+    (entry: { value?: string, name?: string }) => claudeAlias(entry.value!.toLowerCase()) === claudeAlias(wanted),
     (entry: { value?: string, name?: string }) => entry.value!.toLowerCase().includes(wanted),
     (entry: { value?: string, name?: string }) => wanted.includes(entry.value!.toLowerCase())
   ]
@@ -110,6 +112,17 @@ function inexactMatches(
     if (found.length) return found
   }
   return []
+}
+
+/**
+ * A full Claude Code id as the alias that replaced it: `claude-fable-5-1[1m]`
+ * is `fable[1m]`. claude-agent-acp 0.90.0 lists `fable` where 0.81.1 listed
+ * `claude-fable-5-1`, and rows and settings still hold the old id. The bracketed
+ * suffix is kept, so a 1M-context id never lands on the 200k model.
+ */
+function claudeAlias(id: string): string {
+  const match = /^claude-([a-z]+)(?:-\d+)+(\[[^\]]*\])?$/.exec(id)
+  return match ? match[1]! + (match[2] ?? '') : id
 }
 
 /** The ids an adapter offered, for an error that tells the operator what to write. */

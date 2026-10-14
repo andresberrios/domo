@@ -850,8 +850,8 @@ class AgentRuntime {
    * Put the adapter in the mode the row asks for, and record which one it is in.
    *
    * `session/load` restores the *adapter's* transcript, not Domo's choices. It
-   * comes back in whatever mode it defaults to — for Claude Code that means
-   * asking for permissions again, however the session was set up — so the mode
+   * may come back in whatever mode it defaults to (Codex does; Claude Code
+   * restores the mode from its own transcript since 0.90.0) — so the mode
    * has to be re-applied from the row on every attach, exactly as the model is
    * (`applyRequestedModel`). Under `pnpm dev` this is not a rare path: every
    * edit to `server/` restarts Nitro and reattaches every session.
@@ -1145,6 +1145,14 @@ class AgentRuntime {
       this.noteUsage(update)
       return
     }
+    // State too, and the row has to follow it as it follows a
+    // `current_mode_update`: OpenCode sends one when it refreshes its model
+    // catalogue or another client changes the session, and left alone the row
+    // went on describing a model and options the adapter no longer had.
+    if (kind === 'config_option_update') {
+      await this.serial(() => this.takeConfigOptions(update.configOptions))
+      return
+    }
 
     const streamType: AgentStreamType | null
       = kind === 'agent_message_chunk'
@@ -1200,6 +1208,32 @@ class AgentRuntime {
       // A turn that is all tool calls and no text is still a working agent.
       await this.touchIfStale()
     })
+  }
+
+  /** An adapter's unprompted report of its whole option set: the model, the mode and the rest. */
+  private async takeConfigOptions(options: unknown): Promise<void> {
+    if (!Array.isArray(options)) return
+    const response = { configOptions: options }
+    const session = await getAgentSession(this.agentSessionId)
+    if (!session) return
+    const patch: { model?: string, modeId?: string, configOptions?: SessionConfigOptionInfo[] } = {}
+
+    this.modelOption = modelConfigOption(response) ?? this.modelOption
+    const model = currentModel(this.modelOption)?.value
+    if (model && model !== session.model) patch.model = model
+
+    // Only an adapter that publishes its modes as an option; the others say
+    // so through `current_mode_update`.
+    if (this.modeOption) {
+      this.modeOption = modeConfigOption(response) ?? this.modeOption
+      const modeId = currentModeId(response)
+      if (modeId) this.reportedModeId = modeId
+      if (modeId && modeId !== session.modeId) patch.modeId = modeId
+    }
+
+    this.configOptions = adapterConfigOptions(response)
+    if (!sameConfigOptions(this.configOptions, session.configOptions)) patch.configOptions = this.configOptions
+    if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
   }
 
   private async onPermission(params: any): Promise<any> {

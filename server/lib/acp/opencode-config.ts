@@ -24,8 +24,7 @@ import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser'
  * **What prompts is a path outside the session's `cwd`, not an edit and not a
  * command**, which is measured rather than guessed. Reading `/etc/hosts` with
  * the `read` tool raises one `session/request_permission` titled with the path;
- * an in-`cwd` write raises nothing whatever the policy says, because OpenCode
- * delegates it to the client as `fs/write_text_file`. A coding agent steps
+ * an in-`cwd` write raises nothing whatever the policy says. A coding agent steps
  * outside its directory constantly — a global config, a sibling checkout,
  * `/tmp`, `/opt/domo` — so this is what "it asks me for permission for
  * everything" is made of.
@@ -66,7 +65,8 @@ export function permissionFor(
  * `deny` on `bash` must not have it overwritten by a default.
  */
 export function withPermission(content: string | null, action: OpenCodePermission): string {
-  if (!content || !content.trim()) return JSON.stringify({ permission: action })
+  const policy = POLICY[action]
+  if (!content || !content.trim()) return JSON.stringify({ permission: policy })
   const errors: ParseError[] = []
   const parsed = parse(content, errors, { allowTrailingComma: true })
   // Unparseable, or not an object: hand it over exactly as it is. OpenCode is
@@ -74,7 +74,16 @@ export function withPermission(content: string | null, action: OpenCodePermissio
   // words, rather than Domo silently replacing it with something that parses.
   if (errors.length || !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return content
   if ('permission' in parsed) return content
-  return applyEdits(content, modify(content, ['permission'], action, {}))
+  return applyEdits(content, modify(content, ['permission'], policy, {}))
+}
+
+/**
+ * The block each setting writes. `ask` has to be spelled out: OpenCode 2.0.15
+ * asked about a path outside `cwd` unaided, and 2.0.29 no longer does.
+ */
+const POLICY: Record<OpenCodePermission, string | Record<string, string>> = {
+  ask: { external_directory: 'ask' },
+  allow: 'allow'
 }
 
 /**
@@ -84,17 +93,11 @@ export function withPermission(content: string | null, action: OpenCodePermissio
  * another, and so there is a single place to look for what a session's config
  * is made of: the developer's own global config, plus the permission policy
  * for this surface when the config does not already name one.
- *
- * `ask` is what OpenCode does unaided, so it writes nothing at all rather than
- * spelling out the default — the smaller the config Domo injects, the less
- * there is to disagree with a future OpenCode about.
  */
 export function sessionConfigContent(
   base: string | null,
   inContainer: boolean,
   setting: { host: OpenCodePermission, environment: OpenCodePermission }
 ): string | null {
-  const action = permissionFor(setting, inContainer)
-  if (action === 'ask') return base
-  return withPermission(base, action)
+  return withPermission(base, permissionFor(setting, inContainer))
 }
