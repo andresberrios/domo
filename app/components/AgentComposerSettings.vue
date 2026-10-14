@@ -115,21 +115,57 @@ watch(() => draft.value && adapter.value, (draftAdapter) => {
 }, { immediate: true })
 
 /**
- * A draft starts from what the last session was started with, and the
- * adapter may no longer offer all of it — a model retired, a plan changed. What
- * the probe does not list goes back to the default rather than starting a
- * session on something that is not there. A failed probe proves nothing, so
- * it changes nothing.
+ * The settings a draft's model offers. The probe above answers for the
+ * adapter's *default* model, and adapters publish settings per model — Haiku
+ * has no effort at all — so a draft on another model, by its own choice or the
+ * install's default, asks again for that one (cached by the server like the
+ * first). `null` until the answer for the model now chosen is in: showing the
+ * default model's settings meanwhile would offer what this one does not have.
  */
-watch(modelData, (offered) => {
+const draftModel = computed(() => props.session
+  ? null
+  : (draft.value?.model || settings.value?.defaultAgentModels?.[adapter.value] || null))
+const modelSettings = ref<{ key: string, options: SessionConfigOptionInfo[] } | null>(null)
+const modelSettingsKey = computed(() => `${adapter.value}|${draftModel.value}`)
+const needsModelSettings = computed(() => {
+  const model = draftModel.value
+  const offered = modelData.value
+  return !!model && !!offered && model !== offered.current && offered.models.some(entry => entry.id === model)
+})
+
+watch([needsModelSettings, modelSettingsKey], async () => {
+  if (!needsModelSettings.value || modelSettings.value?.key === modelSettingsKey.value) return
+  const key = modelSettingsKey.value
+  const answer = await $fetch<{ configOptions?: SessionConfigOptionInfo[] }>('/api/adapters/models', {
+    query: { adapter: adapter.value, model: draftModel.value }
+  }).catch(() => null)
+  if (answer && key === modelSettingsKey.value) modelSettings.value = { key, options: answer.configOptions ?? [] }
+}, { immediate: true })
+
+const draftConfigOptions = computed<SessionConfigOptionInfo[] | null>(() => {
+  if (!modelData.value) return null
+  if (!needsModelSettings.value) return modelData.value.configOptions ?? []
+  return modelSettings.value?.key === modelSettingsKey.value ? modelSettings.value.options : null
+})
+
+/**
+ * A draft starts from what the last session was started with, and the
+ * adapter may no longer offer all of it — a model retired, a plan changed, a
+ * setting the chosen model does not have. What it does not offer goes back to
+ * the default rather than starting a session on something that is not there.
+ * A failed probe proves nothing, so it changes nothing.
+ */
+watch([modelData, draftConfigOptions, draft], ([offered, options]) => {
   const current = draft.value
   if (!offered || props.session || !current) return
   const model = current.model && !offered.models.some(entry => entry.id === current.model) ? '' : current.model
   const modes = offered.modes ?? []
   const modeId = current.modeId && modes.length && !modes.some(mode => mode.id === current.modeId) ? '' : current.modeId
-  const options = offered.configOptions ?? []
-  const config = Object.fromEntries(Object.entries(current.config).filter(([id, value]) =>
-    options.find(option => option.id === id)?.options.some(entry => entry.value === value)))
+  // Settings are judged only against the model they belong to, once that is known.
+  const config = options && model === current.model
+    ? Object.fromEntries(Object.entries(current.config).filter(([id, value]) =>
+        options.find(option => option.id === id)?.options.some(entry => entry.value === value)))
+    : current.config
   if (model !== current.model || modeId !== current.modeId || Object.keys(config).length !== Object.keys(current.config).length) {
     draft.value = { ...current, model, modeId, config }
   }
@@ -246,7 +282,7 @@ const configColumns = computed<Column[]>(() => {
   }
   const chosen = draft.value?.config ?? {}
   const defaults = settings.value?.defaultAgentConfig?.[adapter.value] ?? {}
-  return (modelData.value?.configOptions ?? []).map(option => ({
+  return (draftConfigOptions.value ?? []).map(option => ({
     key: option.id,
     label: option.name,
     items: option.options.map(entry => ({ value: entry.value, label: entry.name, description: entry.description })),

@@ -91,6 +91,47 @@ const attachments = ref<Array<{ name: string, path: string, mimeType: string, si
 const fileInput = ref<HTMLInputElement | null>(null)
 
 /**
+ * What is typed and not sent is kept per session, so leaving for another page
+ * and coming back — or reloading — finds it where it was. It is forgotten only
+ * when the send has gone through: the composer keeps the text through a
+ * session's send, and a draft's first message, which leaves the box at once,
+ * is held back from storage until the session exists (`holding`).
+ */
+const draftKey = computed(() => props.session?.id ?? 'new')
+let holding = false
+
+function persist() {
+  if (!holding) writeComposerDraft(draftKey.value, { text: text.value, attachments: attachments.value })
+}
+
+watch([text, attachments], persist, { deep: true })
+
+/**
+ * The key changes under a mounted composer only when the conversation carries
+ * on in another session: a draft becoming its session, or an assistant handing
+ * off — every other move between sessions builds the page again. What was
+ * typed goes along, and the old slot is emptied.
+ */
+watch(draftKey, (_current, previous) => {
+  writeComposerDraft(previous, { text: '', attachments: [] })
+  persist()
+})
+
+const prompt = ref<{ textareaRef?: HTMLTextAreaElement | null } | null>(null)
+
+onMounted(() => {
+  const saved = readComposerDraft(draftKey.value)
+  if (!saved) return
+  text.value = saved.text
+  attachments.value = saved.attachments
+  // The cursor goes after what was there, as if the typing had never stopped.
+  nextTick(() => {
+    const textarea = prompt.value?.textareaRef
+    textarea?.setSelectionRange(textarea.value.length, textarea.value.length)
+  })
+})
+
+/**
  * Uploads are counted rather than flagged, and they chain: a paste while an
  * earlier one is still in flight is normal, and a submit in the gap has to
  * wait for both rather than send the message without its attachments.
@@ -105,10 +146,12 @@ const status = computed(() => (busy.value ? ('streaming' as const) : ('ready' as
 const placeholder = computed(() => {
   if (!props.session) return 'What should it do? Sending this starts the session…'
   if (!busy.value) return 'Message this agent…'
-  if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
-  if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'
-  if (!steers.value) return 'The agent is working — it cannot take a message mid-turn, so this stops its turn first…'
-  return 'The agent is working — this goes into the turn it is running…'
+  // One line on a phone: a placeholder that wraps is cut off by the box, which
+  // keeps its height. The send button's tooltip has the longer version.
+  if (delivery.value === 'queue') return 'Waits for this turn to end…'
+  if (delivery.value === 'interrupt') return 'Stops the turn, then sends…'
+  if (!steers.value) return 'Can’t steer — this stops the turn…'
+  return 'Joins the turn it is running…'
 })
 
 /** Never rejects: a failed upload is a toast, not something a caller handles. */
@@ -210,6 +253,7 @@ async function submit() {
   }
   try {
     const content = messageContent(body, attachments.value)
+    const key = draftKey.value
 
     await $fetch(`/api/agents/${props.session.id}/prompt`, {
       method: 'POST',
@@ -217,6 +261,8 @@ async function submit() {
     })
     text.value = ''
     attachments.value = []
+    // Written here, not left to the watcher: a page left mid-send has stopped watching.
+    writeComposerDraft(key, { text: '', attachments: [] })
   } catch (error: any) {
     toast.add({
       title: 'Could not send',
@@ -243,13 +289,22 @@ async function startSession() {
     const body = text.value.trim()
     const sent = { text: text.value, attachments: attachments.value }
     if (!body && !sent.attachments.length) return
+    holding = true
     text.value = ''
     attachments.value = []
-    if (!await props.start(messageContent(body, sent.attachments))) {
+    const started = await props.start(messageContent(body, sent.attachments))
+    if (!started) {
       text.value = sent.text
       attachments.value = sent.attachments
     }
+    await nextTick()
+    holding = false
+    // Sent: the draft's slot goes (the key moved on with the session). Not
+    // sent: it is written back as it was, with anything typed since.
+    if (started) writeComposerDraft('new', { text: '', attachments: [] })
+    persist()
   } finally {
+    holding = false
     sending.value = false
   }
 }
@@ -310,6 +365,7 @@ async function stop() {
     </div>
 
     <UChatPrompt
+      ref="prompt"
       v-model="text"
       :placeholder="placeholder"
       :autoresize="true"

@@ -205,6 +205,47 @@ describe('listAdapterModels', () => {
     await expect(probing).resolves.toMatchObject({ modes: [], currentMode: null })
   })
 
+  it('reads a model\'s own settings when asked about that model, and caches it apart', async () => {
+    // Effort is per model: Sonnet has it, Haiku does not.
+    const modelOption = (current: string) => ({
+      id: 'model', name: 'Model', category: 'model', type: 'select' as const, currentValue: current,
+      options: [{ value: 'sonnet', name: 'Sonnet' }, { value: 'haiku', name: 'Haiku' }]
+    })
+    const effort = {
+      id: 'effort', name: 'Effort', category: 'thought_level', type: 'select' as const, currentValue: 'high',
+      options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }]
+    }
+    const asked: any[] = []
+    const serveModels = (adapter: FakeAdapter) => acp
+      .agent({ name: 'fake' })
+      .onRequest(acp.methods.agent.initialize, () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: false } }))
+      .onRequest(acp.methods.agent.session.new, () => ({ sessionId: 'acp_fake', configOptions: [modelOption('sonnet'), effort] }))
+      .onRequest(acp.methods.agent.session.setConfigOption, (ctx: any) => {
+        asked.push(ctx.params)
+        return { configOptions: ctx.params.value === 'haiku' ? [modelOption('haiku')] : [modelOption('sonnet'), effort] }
+      })
+      .connect(adapter.stream())
+
+    const { listAdapterModels } = await import('../../server/lib/acp/models')
+    const onHaiku = listAdapterModels('claude-code', 'haiku')
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serveModels(state.adapters[0]!)
+    await expect(onHaiku).resolves.toMatchObject({ current: 'sonnet', configOptions: [] })
+    expect(asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
+
+    // The default model's answer is a probe of its own, with its effort.
+    const onDefault = listAdapterModels('claude-code')
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(2))
+    serveModels(state.adapters[1]!)
+    expect((await onDefault).configOptions.map(option => option.id)).toEqual(['effort'])
+    // A model it does not offer is not asked for; the default's settings come back.
+    const unknown = listAdapterModels('claude-code', 'retired')
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(3))
+    serveModels(state.adapters[2]!)
+    expect((await unknown).configOptions.map(option => option.id)).toEqual(['effort'])
+    expect(asked).toHaveLength(1)
+  })
+
   it('spawns once for two concurrent callers', async () => {
     const { listAdapterModels } = await import('../../server/lib/acp/models')
     const both = Promise.all([listAdapterModels('claude-code'), listAdapterModels('claude-code')])

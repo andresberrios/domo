@@ -44,8 +44,9 @@ function probeTimeoutMs(): number {
 /** The list only moves when the adapter is upgraded or an account changes plan. */
 const CACHE_TTL_MS = 60 * 60 * 1000
 
-const cache = new Map<AgentAdapter, { at: number, value: AdapterModels }>()
-const inFlight = new Map<AgentAdapter, Promise<AdapterModels>>()
+/** Keyed by adapter, and by model when the caller asked about one. */
+const cache = new Map<string, { at: number, value: AdapterModels }>()
+const inFlight = new Map<string, Promise<AdapterModels>>()
 
 /**
  * What an adapter offers — models and permission modes — asked by starting a
@@ -58,22 +59,28 @@ const inFlight = new Map<AgentAdapter, Promise<AdapterModels>>()
  * so the lists are the same, and a container is minutes of environment
  * lifecycle for an answer that does not differ.
  *
- * Cached for an hour and de-duplicated, so a modal opening twice is one spawn.
+ * `model` asks what the adapter offers *on that model*: the throwaway session
+ * is switched to it before its settings are read, since adapters publish
+ * settings like reasoning effort per model (Haiku has none). The models and
+ * modes are the same either way.
+ *
+ * Cached for an hour and de-duplicated, so a page opening twice is one spawn.
  */
-export async function listAdapterModels(adapter: AgentAdapter): Promise<AdapterModels> {
-  const hit = cache.get(adapter)
+export async function listAdapterModels(adapter: AgentAdapter, model?: string | null): Promise<AdapterModels> {
+  const key = model ? `${adapter}|${model}` : adapter
+  const hit = cache.get(key)
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value
 
-  const existing = inFlight.get(adapter)
+  const existing = inFlight.get(key)
   if (existing) return existing
 
-  const probing = probe(adapter)
+  const probing = probe(adapter, model ?? null)
     .then((value) => {
-      cache.set(adapter, { at: Date.now(), value })
+      cache.set(key, { at: Date.now(), value })
       return value
     })
-    .finally(() => inFlight.delete(adapter))
-  inFlight.set(adapter, probing)
+    .finally(() => inFlight.delete(key))
+  inFlight.set(key, probing)
   return probing
 }
 
@@ -136,7 +143,7 @@ export async function listAdapterCatalog(only?: AgentAdapter): Promise<{ adapter
   return { adapters }
 }
 
-async function probe(adapter: AgentAdapter): Promise<AdapterModels> {
+async function probe(adapter: AgentAdapter, model: string | null): Promise<AdapterModels> {
   const cwd = await mkdtemp(join(tmpdir(), 'domo-models-'))
   let proc: ChildProcessWithoutNullStreams | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -183,20 +190,33 @@ async function probe(adapter: AgentAdapter): Promise<AdapterModels> {
         clientInfo: { name: 'domo', title: 'Domo', version: '1.0.0' }
       } as any)
       // No MCP servers: this session exists only to be asked what it could run on.
-      return (await connection.agent.request(acp.methods.agent.session.new, {
+      const created = (await connection.agent.request(acp.methods.agent.session.new, {
         cwd,
         mcpServers: []
       } as any)) as any
+      // Moved onto the model asked about, when the adapter offers it, so the
+      // settings read are that model's. One it does not offer answers with
+      // the default model's, as an unasked probe does.
+      const option = modelConfigOption(created)
+      const offered = availableModelOptions(option).some(entry => entry.id === model)
+      const onModel = model && offered && currentModel(option)?.value !== model
+        ? (await connection.agent.request(acp.methods.agent.session.setConfigOption, {
+            sessionId: created.sessionId,
+            configId: option.id,
+            value: model
+          } as any)) as any
+        : created
+      return { created, onModel }
     })()
 
-    const created = await Promise.race([ask, exited, timedOut])
+    const { created, onModel } = await Promise.race([ask, exited, timedOut])
     const option = modelConfigOption(created)
     return {
       models: availableModelOptions(option),
       current: currentModel(option)?.value ?? null,
       modes: availableModes(created),
       currentMode: currentModeId(created),
-      configOptions: adapterConfigOptions(created)
+      configOptions: adapterConfigOptions(onModel)
     }
   } finally {
     if (timer) clearTimeout(timer)
