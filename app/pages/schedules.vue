@@ -20,10 +20,12 @@ const scheduleItems = [
   { label: 'One time', value: 'once' }
 ]
 const deliveryItems = [
-  { label: 'Queue', value: 'queue' },
-  { label: 'Steer', value: 'steer' },
-  { label: 'Interrupt', value: 'interrupt' }
+  { label: 'Wait for the turn to end', value: 'queue' },
+  { label: 'Join the running turn', value: 'steer' },
+  { label: 'Stop the turn and start', value: 'interrupt' }
 ]
+
+const STATUS_LABELS: Record<string, string> = { running: 'Running', delivered: 'Delivered', failed: 'Failed' }
 const form = reactive({
   agentSessionId: '',
   name: '',
@@ -126,7 +128,7 @@ async function remove() {
           color="primary"
           variant="subtle"
           title="Wake an agent with a prompt"
-          description="Schedules keep running across Domo restarts. If the agent is busy when one fires, “If busy” decides: wait in its inbox, join the turn it is on, or stop that turn."
+          description="Schedules keep running across Domo restarts. “If busy” decides what happens when the agent is mid-turn as one fires."
         />
 
         <section class="space-y-4 rounded-lg border border-default p-4">
@@ -137,12 +139,12 @@ async function remove() {
           <div v-if="!agentItems.length" class="text-sm text-muted">Create an assistant or a coding agent before scheduling work.</div>
           <template v-else>
             <div class="grid gap-3 sm:grid-cols-2">
-              <UFormField label="Agent">
+              <UFormField label="Send to">
                 <ChoiceMenu
                   v-model="form.agentSessionId"
                   :items="agentItems"
                   value-key="value"
-                  placeholder="Choose an agent"
+                  placeholder="Choose an assistant or agent"
                   class="w-full"
                 />
               </UFormField>
@@ -189,7 +191,7 @@ async function remove() {
                 <div class="flex flex-wrap items-center gap-2">
                   <h2 class="text-sm font-semibold">{{ job.name }}</h2>
                   <UBadge color="neutral" variant="subtle" :label="targetName(job)" />
-                  <UBadge v-if="job.lastStatus" :color="job.lastStatus === 'failed' ? 'error' : 'success'" variant="subtle" :label="job.lastStatus" />
+                  <UBadge v-if="job.lastStatus" :color="job.lastStatus === 'failed' ? 'error' : job.lastStatus === 'delivered' ? 'success' : 'neutral'" variant="subtle" :label="STATUS_LABELS[job.lastStatus] ?? job.lastStatus" />
                 </div>
                 <p class="mt-1 line-clamp-2 text-sm text-muted">{{ job.prompt }}</p>
                 <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-dimmed">

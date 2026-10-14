@@ -39,6 +39,13 @@ export type TranscriptItem =
  * otherwise a transcript would claim a mode took effect on a session that has
  * not run since.
  */
+/** How a scheduled prompt reached the agent, completing "Scheduled task "x" …". */
+const CRON_OUTCOMES: Record<string, string> = {
+  prompted: 'ran',
+  steered: 'ran, joining the turn in progress',
+  queued: 'is waiting for the turn to end'
+}
+
 const whenPending = (payload: any) => (payload?.pending ? ' (when it next starts)' : '')
 
 const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
@@ -61,7 +68,7 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
     payload?.attachments?.length ? ` (attached ${payload.attachments.join(', ')})` : ''}`,
   mesh_permission_answered: payload =>
     `Answered a permission request from agent "${payload?.title}": ${payload?.optionId ?? 'rejected'}`,
-  cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
+  cron_triggered: payload => `Scheduled task "${payload?.name}" ${CRON_OUTCOMES[payload?.outcome] ?? 'ran'}`,
   handed_off: () => 'Handed off to a new session',
   environment_retired: () =>
     'Its development environment was retired — this session can no longer be started'

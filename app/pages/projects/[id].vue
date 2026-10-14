@@ -103,7 +103,7 @@ const cascade = computed(() => {
   const count = projectEnvironments.value.length
   const environmentsText = count === 1 ? '1 development environment' : `${count} development environments`
   const agents = environmentAgentCount.value
-  const agentsText = agents === 1 ? '1 coding agent session' : `${agents} coding agent sessions`
+  const agentsText = agents === 1 ? '1 coding agent' : `${agents} coding agents`
   return `Destroys ${environmentsText}: each container, its worktree and everything it made in Docker. `
     + 'Commits stay in your repository; each branch Domo made for one is deleted if every commit on it is also on another branch. '
     + `The records are kept — this project, those environments and ${agentsText} inside them stay readable — `
