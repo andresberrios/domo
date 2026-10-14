@@ -26,7 +26,7 @@ docker version --format '{{.Server.Version}}' >/dev/null && echo "docker ok"
 export DOMO_HOME=/root/.domo
 mkdir -p "$DOMO_HOME"
 cat > "$DOMO_HOME/.env" <<EOF
-DATABASE_URL=postgresql://postgres:password@host.docker.internal:54331/domo_linux
+DATABASE_URL=postgresql://postgres:password@host.docker.internal:54331/domo
 ELECTRIC_URL=http://host.docker.internal:30010
 COMPOSE_PROJECT_NAME=domo-inst
 DOMO_PG_PORT=54331
@@ -38,7 +38,7 @@ echo "== install"
 if ! DOMO_REPO=file:///repo.git DOMO_CHANNEL="$1" DOMO_INSTALL_ARGS="--no-service" sh /src/scripts/install.sh > /tmp/install.log 2>&1; then
   echo "INSTALL FAILED"; tail -40 /tmp/install.log; exit 1
 fi
-grep -E "^==>|\[domo\]|^domo:|Built\." /tmp/install.log
+grep -E "==>|\[domo\]|^domo:|Built\." /tmp/install.log
 echo "== git: $(command -v git || echo none on the machine) / $(cat "$DOMO_HOME/git/VERSION" 2>/dev/null || echo not bundled)"
 echo "== status"
 "$DOMO_HOME/bin/domo" status
