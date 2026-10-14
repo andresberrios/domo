@@ -146,7 +146,7 @@ describe('an npm project with no commits yet', () => {
     expect(toast).toContain('Copied .env.')
 
     const environment = await environmentNamed('checkout-probe')
-    expect(environment).toMatchObject({ status: 'running', branch: 'checkout-probe', branchCreated: true })
+    expect(environment).toMatchObject({ status: 'running', branch: 'checkout-probe' })
     // The ignored .env came along; the dependency was installed in the container, by lockfile.
     await expect(inside(environment, 'cat .env')).resolves.toBe('SECRET=from-the-host')
     await expect(inside(environment, 'node -p "require(\'is-number\')(5)"')).resolves.toBe('true')
@@ -159,7 +159,7 @@ describe('an npm project with no commits yet', () => {
     expect(await exists(join(repo, 'made-inside.txt'))).toBe(false)
 
     await page.goto(`${ENVIRONMENTS_SERVER_ORIGIN}/environments/${environment.id}`)
-    await page.getByText('Made for this environment.').waitFor()
+    await page.getByText('Retiring the environment deletes the branch once every commit on it is also on another branch.').waitFor()
   }, CREATE_MS)
 
   it('retires it, removing the worktree and keeping a branch with commits of its own', async () => {
@@ -175,7 +175,7 @@ describe('an npm project with no commits yet', () => {
     expect(await git(repo, 'log', '-1', '--format=%s', 'checkout-probe')).toBe('made inside')
   }, CREATE_MS)
 
-  it('warns before reusing a branch, refuses one checked out elsewhere, and never deletes a reused one', async () => {
+  it('warns before reusing a branch, refuses one checked out elsewhere, and deletes a reused one once merged', async () => {
     await git(repo, 'branch', 'taken')
     await openNewEnvironment(project)
 
@@ -189,16 +189,18 @@ describe('an npm project with no commits yet', () => {
     expect(toast).toContain('It is on your existing branch taken, checked out with its commits.')
 
     const environment = await environmentNamed('taken')
-    expect(environment).toMatchObject({ branch: 'taken', branchCreated: false })
-    const { confirmation } = await retireFromPage(environment)
-    expect(confirmation).toContain('so does your branch taken, which it reused')
-    expect(await git(repo, 'branch', '--list', 'taken')).toContain('taken')
+    expect(environment).toMatchObject({ branch: 'taken' })
+    // At main's tip, with no work done: fully merged, so nothing is lost by deleting it.
+    const retired = await retireFromPage(environment)
+    expect(retired.confirmation).toContain('its branch taken is deleted if every commit on it is also on another branch')
+    expect(retired.toast).toContain('Deleted the branch taken: Every commit on it is also on main.')
+    expect(await git(repo, 'branch', '--list', 'taken')).toBe('')
   }, CREATE_MS)
 
   it('deletes the branch it made when nothing on it would be lost', async () => {
     await openNewEnvironment(project)
-    await createFromDialog('Scratch Idea')
-    const environment = await environmentNamed('Scratch Idea')
+    await createFromDialog('scratch-idea')
+    const environment = await environmentNamed('scratch-idea')
 
     const { toast } = await retireFromPage(environment)
 

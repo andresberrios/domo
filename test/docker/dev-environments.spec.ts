@@ -163,7 +163,6 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     leftovers: [],
     adapterVersions: null,
     branch: null,
-    branchCreated: false,
     cleanedAt: null,
     ...overrides
   }
@@ -627,9 +626,9 @@ describe('start, stop and remove', () => {
       expect(repo.markEnvironmentCleaned).not.toHaveBeenCalled()
     })
 
-    it('deletes the branch Domo made once the worktree is gone, and reports what it did', async () => {
-      const made = { ...retired, branch: 'api-work', branchCreated: true }
-      repo.getDevEnvironment.mockResolvedValue(environment({ branch: 'api-work', branchCreated: true }))
+    it('deletes the environment\'s branch once the worktree is gone, and reports what it did', async () => {
+      const made = { ...retired, branch: 'api-work' }
+      repo.getDevEnvironment.mockResolvedValue(environment({ branch: 'api-work' }))
       repo.listDevEnvironments.mockResolvedValue([made])
       daemon({})
       inspectContainer.mockResolvedValue(null)
@@ -642,12 +641,9 @@ describe('start, stop and remove', () => {
       expect(report.branches).toEqual([{ environmentId: 'env_1', name: 'api-work', deleted: true, reason: 'Every commit on it is also on main.' }])
     })
 
-    it('never touches a branch it reused, nor one while the worktree is still there', async () => {
-      repo.listDevEnvironments.mockResolvedValue([{ ...retired, branch: 'theirs', branchCreated: false }])
+    it('never touches the branch while the worktree is still there', async () => {
+      repo.listDevEnvironments.mockResolvedValue([{ ...retired, branch: 'api-work' }])
       daemon({})
-      expect((await reconcileEnvironmentResources()).branches).toEqual([])
-
-      repo.listDevEnvironments.mockResolvedValue([{ ...retired, branch: 'api-work', branchCreated: true }])
       hostWorktree.onDisk.add(worktree)
       hostWorktree.removeHostWorktree.mockResolvedValueOnce([worktree])
       expect((await reconcileEnvironmentResources()).branches).toEqual([])

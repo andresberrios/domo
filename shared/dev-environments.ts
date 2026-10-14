@@ -103,11 +103,9 @@ export function environmentListRows<T extends { name: string }>(
  * What retiring does to an environment's branch, in a sentence, for every
  * surface that asks before retiring.
  */
-export function branchOnRetirement(environment: Pick<DevEnvironment, 'branch' | 'branchCreated'>): string {
+export function branchOnRetirement(environment: Pick<DevEnvironment, 'branch'>): string {
   if (!environment.branch) return 'Commits stay in your repository.'
-  return environment.branchCreated
-    ? `Commits stay in your repository, and its branch ${environment.branch} is deleted if every commit on it is also on another branch.`
-    : `Commits stay in your repository, and so does your branch ${environment.branch}, which it reused.`
+  return `Commits stay in your repository, and its branch ${environment.branch} is deleted if every commit on it is also on another branch.`
 }
 
 /** What a retirement did with the branch, in a sentence; empty when it had none to decide on. */

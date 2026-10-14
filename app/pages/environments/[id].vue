@@ -240,9 +240,7 @@ async function retryCleanup() {
               <dd class="min-w-0 flex-1">
                 <span class="font-mono text-xs">{{ environment.branch }}</span>
                 <span class="ms-2 text-xs text-muted">
-                  {{ environment.branchCreated
-                    ? 'Made for this environment. Retiring it deletes the branch once every commit on it is also on another branch.'
-                    : 'Your existing branch, reused. Retiring the environment keeps it.' }}
+                  Retiring the environment deletes the branch once every commit on it is also on another branch.
                 </span>
               </dd>
             </div>

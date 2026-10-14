@@ -831,7 +831,7 @@ export const MESH_TOOLS = [
     name: 'retire_project',
     description:
       'Retire a project and every one of its development environments: their containers and worktrees are '
-      + 'destroyed, and each branch Domo made for one is deleted if fully merged. The records are kept — the project, the environments and the full transcript of '
+      + 'destroyed, and each of their branches is deleted if fully merged. The records are kept — the project, the environments and the full transcript of '
       + 'every coding agent that ran in them stay readable — but those agents can never be started again, and '
       + 'nothing inside a container can be brought back.',
     inputSchema: {
@@ -896,7 +896,7 @@ export const MESH_TOOLS = [
     name: 'retire_dev_environment',
     description:
       'Retire a development environment: its container and its worktree are destroyed, so uncommitted work in it '
-      + 'is lost, and a build under way is stopped. Commits stay in the project\'s repository. The branch Domo made for it is deleted if every commit '
+      + 'is lost, and a build under way is stopped. Commits stay in the project\'s repository. Its branch, made or reused, is deleted if every commit '
       + 'on it is also on another branch, and kept otherwise; the result says which. The records are kept — the '
       + 'environment and the full transcript of every coding agent that ran in it stay readable — but those agents '
       + 'can never be started again.',
@@ -1606,7 +1606,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         ...environment.leftovers.length
           ? { leftovers: environment.leftovers.map(({ kind, name, error }) => ({ resource: `${kind} ${name}`, error })) }
           : {},
-        ...environment.branch ? { branch: environment.branch, branchCreated: environment.branchCreated } : {},
+        ...environment.branch ? { branch: environment.branch } : {},
         agents: sessions
           .filter(session => session.devEnvironmentId === environment.id && !session.archived)
           .map(session => ({ id: session.id, title: session.title, status: session.status }))

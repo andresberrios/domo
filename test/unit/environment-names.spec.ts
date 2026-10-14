@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
-import { branchNameProblem, environmentListRows, environmentSlug } from '../../shared/dev-environments'
+import { branchNameProblem, branchOnRetirement, environmentListRows, environmentSlug } from '../../shared/dev-environments'
 
 /** What git itself says: the rules above are a copy, so they are checked against the original. */
 function gitAccepts(name: string): boolean {
@@ -72,5 +72,14 @@ describe('environmentListRows', () => {
   it('makes no empty folders of an old name with stray slashes', () => {
     const rows = environmentListRows([env('/odd//name/')])
     expect(rows.map(row => [row.kind, row.label])).toEqual([['folder', 'odd'], ['environment', 'name']])
+  })
+})
+
+describe('branchOnRetirement', () => {
+  it('says the branch goes once fully merged, whether it was made or reused', () => {
+    expect(branchOnRetirement({ branch: 'handoff-domo-tool-gaps' })).toBe(
+      'Commits stay in your repository, and its branch handoff-domo-tool-gaps is deleted if every commit on it is also on another branch.'
+    )
+    expect(branchOnRetirement({ branch: null })).toBe('Commits stay in your repository.')
   })
 })

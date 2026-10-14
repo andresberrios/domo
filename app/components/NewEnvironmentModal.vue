@@ -59,7 +59,7 @@ async function createFirstCommit() {
 function seedDescription(seed: WorkspaceSeedReport | undefined): string {
   if (!seed) return 'It starts from your last commit.'
   const start = seed.branch && !seed.branch.created
-    ? `It is on your existing branch ${seed.branch.name}, checked out with its commits. Retiring it keeps that branch.`
+    ? `It is on your existing branch ${seed.branch.name}, checked out with its commits.`
     : `It is on a new branch${seed.branch ? `, ${seed.branch.name},` : ''} made from your last commit.`
   const parts = [seed.total
     ? `${start} ${seed.total} uncommitted ${seed.total === 1 ? 'path stays' : 'paths stay'} on your machine.`
@@ -152,7 +152,7 @@ async function submit() {
         variant="subtle"
         icon="i-lucide-git-branch"
         :title="`The branch ${existingBranch.name} already exists`"
-        description="The environment will check it out, with the commits it already has, instead of making a new branch. Retiring the environment keeps it. Pick another name for a fresh branch."
+        description="The environment will check it out, with the commits it already has, instead of making a new branch. Retiring the environment deletes it if every commit on it is also on another branch. Pick another name for a fresh branch."
       />
     </template>
 

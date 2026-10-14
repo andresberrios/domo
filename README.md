@@ -159,8 +159,8 @@ into the container. Several agents can share one environment.
 - **Retiring** an environment destroys its container, worktree and every
   container, network, volume and image tag it made on the Docker daemon. Its
   commits stay in your repository; commit anything you want to keep first.
-  The branch Domo made for it is deleted if every commit on it is also on
-  another branch, and kept otherwise. A branch it reused is never deleted.
+  Its branch, whether Domo made it or reused an existing one, is deleted if
+  every commit on it is also on another branch, and kept otherwise.
   The agent transcripts and the environment's record are kept.
 - **Stopping** an environment stops the containers it started.
 - **Open in VS Code** attaches VS Code to the container. You need the Dev

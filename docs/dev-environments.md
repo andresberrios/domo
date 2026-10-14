@@ -162,9 +162,8 @@ Every environment gets a locked git worktree in
   slashes included; the UI groups names by their slashes. Only the
   `/workspaces/<slug>` directory is a slug, with a hash when the name is not
   one path segment already, so `a/b` and `a-b` cannot collide. The sweep deletes that branch once the
-  worktree is gone, only if Domo made it (`branch_created`) and every commit
-  on it is on another branch; otherwise it is kept and the retirement says
-  why. Never any other branch the worktree was switched to.
+  worktree is gone, made or reused alike, only if every commit on it is on
+  another branch; otherwise it is kept and the retirement says why. Never any other branch the worktree was switched to.
 - **A claimed worktree path is force-removed only if git lists it locked with
   Domo's reason.** Anything else there is reported, not removed.
 - **`retired_at` is lifecycle, and `status` is health.** A retired row that

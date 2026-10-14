@@ -74,10 +74,10 @@ alter table dev_environments add column if not exists leftovers jsonb not null d
 -- row claims nothing, so a path or a name derived from its id is never removed
 -- again, whatever later appears there. Written once.
 alter table dev_environments add column if not exists cleaned_at text;
--- The branch the worktree was created on, and whether Domo made it. Only a
--- branch Domo made is deleted at retirement, and only once fully merged.
+-- The branch the worktree was created on, deleted at retirement once fully
+-- merged, whether Domo made it or reused it.
 alter table dev_environments add column if not exists branch text;
-alter table dev_environments add column if not exists branch_created boolean not null default false;
+alter table dev_environments drop column if exists branch_created;
 do $$ begin
   if exists (select 1 from information_schema.columns
               where table_name = 'dev_environments' and column_name = 'deleted_at') then

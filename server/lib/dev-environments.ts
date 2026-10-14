@@ -379,8 +379,8 @@ async function buildEnvironment(input: {
         branch: name,
         copyIgnored: resolved.config.copyIgnored
       }).then(async (made) => {
-        // At once, so a creation that fails after this still knows which branch it made.
-        await updateDevEnvironment(id, { branch: made.branch.name, branchCreated: made.branch.created })
+        // At once, so a creation that fails after this still knows which branch it is on.
+        await updateDevEnvironment(id, { branch: made.branch.name })
         return made
       })),
       timer.measure('image', ensureCacheVolumes(caches).then(() => buildEnvironmentImage({

@@ -67,9 +67,9 @@ export interface EnvironmentRetirement {
    */
   leftovers: EnvironmentLeftover[]
   /**
-   * The branch Domo made for it, deleted when every commit on it is also on
-   * another branch and kept otherwise, with why. Null when Domo made none, or
-   * it was gone already.
+   * The branch it was created on, made or reused, deleted when every commit on
+   * it is also on another branch and kept otherwise, with why. Null when it had
+   * none, or it was gone already.
    */
   branch: BranchOutcome | null
 }
