@@ -10,25 +10,18 @@
 # the install (building, the service, the certificate) is
 # `bin/domo.mjs install`.
 #
-# git comes from the machine when it has one that runs. When it does not, on
-# macOS Domo downloads its own (see GIT_RELEASE below) instead of the Xcode
-# Command Line Tools, and on Linux it installs the distribution's package.
+# git comes from the machine. When it has none that runs, the script installs
+# it: on macOS the Xcode Command Line Tools (Apple's dialog, then it waits),
+# on Linux the distribution's package.
 #
 # Overrides: DOMO_HOME, DOMO_REPO (a URL or a local path), DOMO_CHANNEL (the
 # branch to follow, default `release`), DOMO_INSTALL_ARGS (passed to
-# `domo install`, e.g. `--skip-trust --no-open`), DOMO_BUNDLE_GIT=1 (Domo's
-# own git even where the machine has one).
+# `domo install`, e.g. `--skip-trust --no-open`).
 set -eu
 
 DOMO_HOME="${DOMO_HOME:-$HOME/.domo}"
 DOMO_REPO="${DOMO_REPO:-https://github.com/andresberrios/domo.git}"
 DOMO_CHANNEL="${DOMO_CHANNEL:-release}"
-
-# GitHub Desktop's relocatable git build (dugite-native, MIT; git is GPLv2),
-# signed and linked only against system libraries on macOS. Keep in step with
-# BUNDLED_GIT in bin/domo.mjs, which keeps an existing one at this version.
-GIT_RELEASE=v2.53.0-4
-GIT_BUILD=4098283
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf 'domo install: %s\n' "$*" >&2; exit 1; }
@@ -66,55 +59,27 @@ machine_git() {
   "$g" --version >/dev/null 2>&1
 }
 
-sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1
-}
-
-# Domo's own git in DOMO_HOME/git, run through a wrapper in DOMO_HOME/bin,
-# which is first on the PATH of the launcher, the server and every agent it
-# starts. The build finds its helpers and templates from these variables, not
-# from where it is, and the server hands agents an allow-list of variables, so
-# the wrapper sets them. Git Credential Manager and its .NET runtime (115 of
-# the 150 MB on macOS) are removed: nothing turns it on.
-bundle_git() {
-  case "$os-$node_cpu" in
-    Darwin-arm64) asset=macOS-arm64 sum=f9dc64635a5b62fbd7ad95db73268bbb8912255ac516d65d37bf7af22fcb8ffe ;;
-    Darwin-x64) asset=macOS-x64 sum=ae6686718aa34f4140424db16b92a47dcffd6d1f312eb8b5f3b267f7404e2680 ;;
-    # Needs glibc 2.34, and the system's libcurl for HTTPS: only on request.
-    Linux-arm64) asset=ubuntu-arm64 sum=a161f45af4626bb7e0c688854bd4a9aee47cc514bca404cff0a5e3536ef1c0af ;;
-    Linux-x64) asset=ubuntu-x64 sum=cca76aa31ad9e835e771ee7f55b73934777fbd8d16757a10d307ba06de860901 ;;
-  esac
-  if [ "$(cat "$DOMO_HOME/git/VERSION" 2>/dev/null)" != "$GIT_RELEASE" ]; then
-    say "Downloading git (${GIT_RELEASE#v})"
-    curl -fsSL "https://github.com/desktop/dugite-native/releases/download/$GIT_RELEASE/dugite-native-${GIT_RELEASE%-*}-$GIT_BUILD-$asset.tar.gz" -o "$tmp/git.tgz"
-    [ "$(sha256 "$tmp/git.tgz")" = "$sum" ] || die "the git download does not match its checksum"
-    rm -rf "$DOMO_HOME/git.new"
-    mkdir -p "$DOMO_HOME/git.new"
-    tar -xzf "$tmp/git.tgz" -C "$DOMO_HOME/git.new"
-    core="$DOMO_HOME/git.new/libexec/git-core"
-    find "$core" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.json' -o -name 'git-credential-manager*' -o -name createdump -o -name uninstall.sh \) -exec rm -f {} +
-    find "$core" -mindepth 1 -maxdepth 1 -type d ! -name mergetools -exec rm -rf {} +
-    printf '%s\n' "$GIT_RELEASE" > "$DOMO_HOME/git.new/VERSION"
-    rm -rf "$DOMO_HOME/git"
-    mv "$DOMO_HOME/git.new" "$DOMO_HOME/git"
-  fi
-  write_git_wrapper
-}
-
-write_git_wrapper() {
-  cat > "$DOMO_HOME/bin/git" <<WRAPPER
-#!/bin/sh
-# Domo's own git ($DOMO_HOME/git), because this machine had none that runs.
-GIT_EXEC_PATH="$DOMO_HOME/git/libexec/git-core"
-GIT_TEMPLATE_DIR="$DOMO_HOME/git/share/git-core/templates"
-export GIT_EXEC_PATH GIT_TEMPLATE_DIR
-if [ -z "\${GIT_SSL_CAINFO:-}" ] && [ -f "$DOMO_HOME/git/ssl/cacert.pem" ]; then
-  GIT_SSL_CAINFO="$DOMO_HOME/git/ssl/cacert.pem"
-  export GIT_SSL_CAINFO
-fi
-exec "$DOMO_HOME/git/bin/git" "\$@"
-WRAPPER
-  chmod +x "$DOMO_HOME/bin/git"
+# The Command Line Tools, through Apple's own dialog, which needs the user's
+# click and an admin's approval, downloads about a gigabyte and takes several
+# minutes. The script waits for `xcode-select -p` to name the tools; the
+# dialog's process going away first means it was cancelled or failed. A
+# dialog never seen is not taken as cancelled: the hour runs out instead.
+clt_git() {
+  say "git comes with Apple's Command Line Tools, which are not installed."
+  say "A macOS dialog is asking to install them: click Install. It takes several minutes; this waits."
+  out=$(xcode-select --install 2>&1) || die "xcode-select --install failed: $out"
+  seen= waited=0
+  until machine_git; do
+    if pgrep -f "Install Command Line Developer Tools" >/dev/null 2>&1; then
+      seen=1
+    elif [ -n "$seen" ]; then
+      die "the Command Line Tools were not installed (the dialog was cancelled or failed). Run \`xcode-select --install\`, finish it, then run this again."
+    fi
+    [ "$waited" -ge 3600 ] && die "gave up after an hour waiting for the Command Line Tools. Finish \`xcode-select --install\`, then run this again."
+    sleep 5
+    waited=$((waited + 5))
+  done
+  say "Command Line Tools installed"
 }
 
 # The distribution's git, with sudo when not root. Piped into sh, sudo can
@@ -137,13 +102,9 @@ package_git() {
     || die "could not install git; run ${sudo:+sudo }$install, then this again"
 }
 
-# Once Domo has its own git it keeps it, at the version pinned above.
-if [ -n "${DOMO_BUNDLE_GIT:-}" ] || [ -d "$DOMO_HOME/git" ]; then
-  bundle_git
-elif ! machine_git; then
-  if [ "$os" = Darwin ]; then bundle_git; else package_git; fi
+if ! machine_git; then
+  if [ "$os" = Darwin ]; then clt_git; else package_git; fi
 fi
-if [ -x "$DOMO_HOME/bin/git" ]; then PATH="$DOMO_HOME/bin:$PATH"; export PATH; fi
 git --version >/dev/null 2>&1 || die "git does not run: $(git --version 2>&1 | head -n 1)"
 
 if [ -d "$DOMO_HOME/app/.git" ]; then

@@ -6,14 +6,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 /**
  * Where `scripts/install.sh` gets git from, on a PATH that has no git: the
- * machine's tools are linked in one by one, and `uname`, `docker`, `curl`,
- * `sudo` and the package managers are fakes that write down what they were
- * asked. Offline: the real download is the Linux container test's
- * (docs/install-and-updates.md).
+ * machine's tools are linked in one by one, and `uname`, `docker`, `sudo`,
+ * the package managers, `xcode-select` and `pgrep` (Apple's install dialog)
+ * are fakes that write down what they were asked. The real apt install is the
+ * Linux container test's (docs/install-and-updates.md).
  */
 
 const SCRIPT = join(process.cwd(), 'scripts', 'install.sh')
-const FAKED = new Set(['git', 'curl', 'docker', 'uname', 'id', 'sudo', 'xcode-select', 'apt-get', 'dnf', 'yum', 'zypper', 'pacman', 'apk'])
+const FAKED = new Set(['git', 'curl', 'docker', 'uname', 'id', 'sudo', 'xcode-select', 'pgrep', 'apt-get', 'dnf', 'yum', 'zypper', 'pacman', 'apk'])
 
 let root: string
 let bin: string
@@ -42,7 +42,7 @@ beforeEach(async () => {
   await fake('id', '[ "$1" = -u ] && echo 1000 || exec /usr/bin/id "$@"')
   await fake('uname', '[ "$1" = -m ] && echo arm64 || echo "$FAKE_OS"')
   await fake('sudo', 'echo "sudo $*" >> "$CALLS"; exec "$@"')
-  await fake('curl', 'echo "curl $*" >> "$CALLS"; while [ $# -gt 0 ]; do [ "$1" = -o ] && echo not-a-tarball > "$2"; shift; done')
+  await fake('curl', 'echo "curl $*" >> "$CALLS"; exit 1')
 })
 
 afterEach(async () => {
@@ -66,7 +66,7 @@ describe('install.sh and git', () => {
 
     install('Linux')
 
-    expect(await logged()).not.toMatch(/apt-get|curl .*dugite/)
+    expect(await logged()).not.toMatch(/apt-get|xcode-select/)
     expect(await logged()).toContain('git clone')
   })
 
@@ -90,29 +90,47 @@ describe('install.sh and git', () => {
     expect(await logged()).toBe('')
   })
 
-  it('on macOS without a git that runs, downloads Domo\'s own instead of the Command Line Tools, and checks it', async () => {
-    await fake('xcode-select', 'echo "xcode-select $*" >> "$CALLS"; exit 2')
-    await fake('apt-get', 'echo "apt-get $*" >> "$CALLS"')
+  describe('on macOS without a git that runs', () => {
+    // The dialog's process is there on the first look; what happens next is the test's.
+    const dialog = (then: string) => fake('pgrep', `n=$(cat "$CALLS.pgrep" 2>/dev/null || echo 0); echo $((n + 1)) > "$CALLS.pgrep"
+[ "$n" = 0 ] && exit 0
+${then}`)
 
-    const { status, output } = install('Darwin')
+    beforeEach(async () => {
+      await fake('xcode-select', 'echo "xcode-select $*" >> "$CALLS"; [ "$1" = --install ] && echo "install requested" && exit 0; exit 2')
+    })
 
-    expect(output).toContain('Downloading git (2.53.0-4)')
-    expect(await logged()).toMatch(/curl .*releases\/download\/v2\.53\.0-4\/dugite-native-v2\.53\.0-4098283-macOS-arm64\.tar\.gz/)
-    // The fake download is not the pinned file.
-    expect(status).toBe(1)
-    expect(output).toContain('does not match its checksum')
-    expect(await logged()).not.toMatch(/apt-get|xcode-select --install/)
-  })
+    it('starts Apple\'s Command Line Tools install, waits for it, and goes on', async () => {
+      // Finishing puts git on the PATH, as the tools would.
+      await dialog(`cat > "${bin}/git" <<'G' && chmod +x "${bin}/git"\n#!/bin/sh\n${FAKE_GIT}\nG\nexit 0`)
 
-  it('pins the same build as the launcher, which keeps an existing one at that version', async () => {
-    const script = await readFile(SCRIPT, 'utf8')
-    const launcher = await readFile(join(process.cwd(), 'bin', 'domo.mjs'), 'utf8')
-    const release = script.match(/^GIT_RELEASE=(\S+)$/m)![1]
-    const build = script.match(/^GIT_BUILD=(\S+)$/m)![1]
-    expect(launcher).toContain(`release: '${release}'`)
-    expect(launcher).toContain(`build: '${build}'`)
-    const sums = [...script.matchAll(/asset=(\S+) sum=([0-9a-f]{64})/g)].map(([, asset, sum]) => [asset, sum])
-    expect(sums).toHaveLength(4)
-    for (const [asset, sum] of sums) expect(launcher).toContain(`['${asset}', '${sum}']`)
+      const { output } = install('Darwin')
+
+      expect(output).toContain('A macOS dialog is asking to install them')
+      expect(output).toContain('Command Line Tools installed')
+      expect((await logged()).split('\n')).toEqual(expect.arrayContaining([
+        'xcode-select --install', 'git --version', expect.stringMatching(/^git clone /)
+      ]))
+      expect(await logged()).not.toMatch(/curl|apt-get/)
+    }, 20_000)
+
+    it('stops with what to do when the dialog goes away without installing', async () => {
+      await dialog('exit 1')
+
+      const { status, output } = install('Darwin')
+
+      expect(status).toBe(1)
+      expect(output).toContain('the Command Line Tools were not installed (the dialog was cancelled or failed)')
+      expect(await logged()).not.toMatch(/git clone/)
+    }, 20_000)
+
+    it('stops at once when xcode-select refuses to start the install', async () => {
+      await fake('xcode-select', 'echo "xcode-select $*" >> "$CALLS"; echo "xcode-select: error: no GUI session" >&2; exit 1')
+
+      const { status, output } = install('Darwin')
+
+      expect(status).toBe(1)
+      expect(output).toContain('xcode-select --install failed: xcode-select: error: no GUI session')
+    })
   })
 })
