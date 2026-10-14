@@ -252,7 +252,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     const wrapper = await mountTree()
 
     buttonLabelled('New project')!.click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Points Domo at an existing local Git checkout'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('A local git checkout, or a folder Domo makes into one'))
 
     wrapper.unmount()
   })

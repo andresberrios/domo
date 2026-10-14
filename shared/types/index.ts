@@ -320,6 +320,25 @@ export interface WorkspaceSeedReport {
   branch: { name: string, created: boolean } | null
 }
 
+/**
+ * What is at a path someone wants to make a project of, before anything is
+ * written: an existing checkout, a folder `git init` would turn into one, or a
+ * path Domo would create.
+ */
+export interface ProjectPathState {
+  /** Absolute, with `~` expanded. */
+  path: string
+  kind: 'repository' | 'directory' | 'missing' | 'file'
+  /** A `directory` with nothing in it, hidden files included. Such a folder, like a new one, gets an empty first commit. */
+  empty: boolean
+  /** For `missing`: every directory that would be made, outermost first. */
+  toCreate: string[]
+  /** The top of the git repository the path is inside, when it is not itself that top. */
+  enclosingRepository: string | null
+  /** Why it cannot be used as it is: it is a file, or its nearest existing parent is not writable. */
+  problem: string | null
+}
+
 /** Whether a project's checkout can have a worktree cut from it yet. */
 export interface RepositoryState {
   repository: boolean
