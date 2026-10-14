@@ -107,10 +107,10 @@ describe('adapter settings page', () => {
 
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain('Default model')
-      // "Adapter default" is a named sentinel: Reka throws on `value: ''`.
-      expect(button('Adapter default')).toBeTruthy()
+      // "Default" is a named sentinel: Reka throws on `value: ''`.
+      expect(button('Default')).toBeTruthy()
     })
-    button('Adapter default')!.click()
+    button('Default')!.click()
     await vi.waitFor(() => expect(option('Sonnet')).toBeTruthy())
     option('Sonnet')!.click()
     button('Save')!.click()

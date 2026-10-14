@@ -86,7 +86,7 @@ const { data: modelData, status: modelStatus, refresh: refreshModels } = await u
 
 const modelItems = computed(() => {
   const items = [
-    { label: 'Adapter default', value: ADAPTER_DEFAULT },
+    { label: 'Default', value: ADAPTER_DEFAULT },
     ...(modelData.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id }))
   ]
   for (const id of [form.model, ...typedModels.value]) {
@@ -264,7 +264,7 @@ async function save() {
     v-model:open="open"
     :title="editing ? `Edit ${assistant?.name}` : 'New assistant'"
     :description="editing
-      ? 'Name, picture, persona and voice change now. Harness, model and workspace apply from its next session.'
+      ? 'Name, picture, persona and voice change now. Coding agent, model and folder apply from its next session.'
       : 'An assistant keeps one conversation with you for as long as you like. When its context fills up it writes itself a note and carries on in a fresh session.'"
     :ui="{ content: 'sm:max-w-xl' }"
   >
@@ -326,7 +326,7 @@ async function save() {
         </UFormField>
 
         <div class="grid gap-3 sm:grid-cols-2">
-          <UFormField label="Harness">
+          <UFormField label="Coding agent">
             <ChoiceMenu v-model="form.adapter" :items="adapterItems" value-key="value" class="w-full" />
           </UFormField>
           <UFormField label="Model">
@@ -349,7 +349,7 @@ async function save() {
             value-key="value"
             :loading="modelStatus === 'pending'"
             class="w-full"
-            placeholder="Agent default"
+            placeholder="Default"
           />
           <template #help>
             <span class="text-xs text-muted">{{ selectedAdapter.modeDescription }}</span>

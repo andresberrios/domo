@@ -27,7 +27,7 @@ async function retry() {
     await $fetch(`/api/agents/${props.session.id}/start`, { method: 'POST' })
   } catch (error: any) {
     toast.add({
-      title: 'Could not start the adapter',
+      title: 'Could not start the agent',
       description: error?.data?.statusMessage ?? error?.message,
       color: 'error'
     })
@@ -44,7 +44,7 @@ async function retry() {
     variant="subtle"
     icon="i-lucide-triangle-alert"
     title="This agent stopped on an error"
-    :description="session.lastError ?? 'The adapter reported no details.'"
+    :description="session.lastError ?? 'No details were given.'"
     class="mb-3"
     :actions="[{
       label: 'Retry',

@@ -70,7 +70,7 @@ const {
 const typedModels = ref<string[]>([])
 
 const modelItems = computed(() => [
-  { label: 'Adapter default', value: ADAPTER_DEFAULT },
+  { label: 'Default', value: ADAPTER_DEFAULT },
   ...(modelData.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id })),
   ...typedModels.value.map(id => ({ label: id, value: id }))
 ])
@@ -232,7 +232,7 @@ async function create() {
   <UModal
     v-model:open="open"
     title="New coding agent"
-    description="Starts a coding agent over ACP in a project's checkout, one of its development environments, or any directory on this machine."
+    description="Starts a coding agent in a project's checkout, one of its development environments, or any directory on this machine."
   >
     <template #body>
       <div class="space-y-4">
@@ -278,7 +278,7 @@ async function create() {
             :loading="modelStatus === 'pending'"
             create-item
             class="w-full"
-            placeholder="Agent default"
+            placeholder="Default"
             @create="(id: string) => { typedModes.push(id); mode = id }"
           />
           <template #help>

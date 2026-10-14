@@ -53,10 +53,10 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   // "Effort: High" on Claude Code, "Reasoning effort: High" on Codex.
   config_changed: payload => `${payload?.name || payload?.configId}: ${payload?.value}${whenPending(payload)}`,
   'adapter-exit': payload =>
-    `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
+    `The agent's process stopped${payload?.code != null ? ` (exit code ${payload.code})` : ''}`,
   mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,
   mesh_outbound: payload => `Sent to agent "${payload?.toTitle ?? payload?.to}": ${payload?.message}`,
-  mesh_spawned: payload => `Spawned agent "${payload?.title}"`,
+  mesh_spawned: payload => `Started agent "${payload?.title}"`,
   mesh_message: payload => `Told you: ${payload?.message}${
     payload?.attachments?.length ? ` (attached ${payload.attachments.join(', ')})` : ''}`,
   mesh_permission_answered: payload =>

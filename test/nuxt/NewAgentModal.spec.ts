@@ -103,6 +103,12 @@ function selectTrigger(label: string): HTMLElement | undefined {
     .find(element => element.textContent?.includes(label))
 }
 
+/** The model picker before a choice: its sentinel reads just "Default". */
+function defaultModelTrigger(): HTMLElement | undefined {
+  return [...document.body.querySelectorAll<HTMLElement>('button[aria-haspopup="listbox"]')]
+    .find(element => element.textContent?.trim() === 'Default')
+}
+
 describe('NewAgentModal', () => {
   it('opens the development environment menu without throwing', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -172,12 +178,12 @@ describe('NewAgentModal', () => {
     wrapper.unmount()
   })
 
-  it('offers the adapter\'s own models, behind an "adapter default" that is not an empty value', async () => {
+  it('offers the adapter\'s own models, behind a "Default" that is not an empty value', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const wrapper = await open()
 
     const trigger = await vi.waitFor(() => {
-      const found = selectTrigger('Adapter default')
+      const found = defaultModelTrigger()
       expect(found).toBeTruthy()
       return found!
     })
@@ -185,7 +191,7 @@ describe('NewAgentModal', () => {
     trigger.click()
     await vi.waitFor(() => {
       const listbox = [...document.body.querySelectorAll('[role="listbox"]')]
-        .find(element => element.textContent?.includes('Adapter default'))
+        .find(element => element.textContent?.includes('Haiku 4.5'))
       // The list the server probed the adapter for, not a hard-coded one.
       expect(listbox?.textContent).toContain('Haiku 4.5')
     })
@@ -258,7 +264,7 @@ describe('NewAgentModal', () => {
       expect(document.body.textContent).toContain('Could not ask Claude Code which models it offers')
     })
     // A failed probe must not take the whole form down with it.
-    expect(selectTrigger('Adapter default')).toBeTruthy()
+    expect(defaultModelTrigger()).toBeTruthy()
 
     errors.mockRestore()
     modelsFail = false

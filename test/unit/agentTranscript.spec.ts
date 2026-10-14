@@ -268,8 +268,8 @@ describe('buildTranscript', () => {
 
       expect(items.map(item => (item as any).text)).toEqual([
         'Message from agent "auth": take over',
-        'Spawned agent "docs"',
-        'ACP adapter exited (code 1)'
+        'Started agent "docs"',
+        'The agent\'s process stopped (exit code 1)'
       ])
     })
 

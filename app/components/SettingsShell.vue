@@ -33,7 +33,7 @@ const current = computed(() =>
 )
 const menuItems = computed(() => [
   sections,
-  [{ label: 'Adapters', type: 'label' as const }, ...adapterItems],
+  [{ label: 'Each coding agent', type: 'label' as const }, ...adapterItems],
   afterAdapters
 ])
 </script>
