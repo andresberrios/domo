@@ -10,7 +10,7 @@ defineProps<{
 
 const sections = [
   { label: 'General', to: '/settings', icon: 'i-lucide-settings' },
-  { label: 'Talking to agents', to: '/settings/voice', icon: 'i-lucide-audio-lines' },
+  { label: 'Voice', to: '/settings/voice', icon: 'i-lucide-audio-lines' },
   { label: 'Coding agents', to: '/settings/agents', icon: 'i-lucide-bot' }
 ]
 

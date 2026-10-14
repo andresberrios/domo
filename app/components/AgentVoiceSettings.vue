@@ -118,7 +118,7 @@ const uses = computed(() => new Set([
 <template>
   <div class="space-y-4">
     <div class="grid gap-4 sm:grid-cols-2">
-      <UFormField label="Transcriber" description="Turns what you say into text.">
+      <UFormField label="Hear with" description="Turns what you say into text.">
         <ChoiceMenu
           v-model="form.transcriber"
           :items="transcriberItems"
@@ -130,7 +130,7 @@ const uses = computed(() => new Set([
           This browser has no dictation of its own. Chrome, Edge and Safari do.
         </p>
       </UFormField>
-      <UFormField label="Speaker" description="Reads the agent's replies out loud.">
+      <UFormField label="Speak with" description="Reads the agent's replies out loud.">
         <ChoiceMenu
           v-model="form.speaker"
           :items="speakerItems"

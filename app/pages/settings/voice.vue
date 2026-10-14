@@ -31,7 +31,7 @@ async function save() {
 
 <template>
   <SettingsShell
-    title="Talking to agents"
+    title="Voice"
     description="The voice bar on an agent's page. One engine hears you, one speaks the agent's replies; the agent itself does the thinking. The bar's own settings button changes the common ones on the spot."
     :saving="saving"
     :save="save"
