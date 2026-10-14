@@ -300,7 +300,7 @@ describe('the agent-mesh MCP endpoint', () => {
     expect(body.result.content[0].text).toContain('Unknown mesh tool: no_such_tool')
   })
 
-  it('records a message on both sides and hands it to the target as a turn', async () => {
+  it('hands a message to the target as a turn, and writes nothing else', async () => {
     const caller = await session('caller')
     const target = await session('target')
 
@@ -319,12 +319,10 @@ describe('the agent-mesh MCP endpoint', () => {
       delivery: 'queue',
       origin: `agent:${caller.id}`
     })
-    await expect(listAgentEvents(target.id)).resolves.toMatchObject([
-      { type: 'mesh_inbound', payload: { from: caller.id, fromTitle: 'caller', message: 'take over the migration', delivery: 'queue' } }
-    ])
-    await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
-      { type: 'mesh_outbound', payload: { to: target.id, toTitle: 'target', message: 'take over the migration', delivery: 'queue' } }
-    ])
+    // One record each side: the caller's tool call, and the target's prompt
+    // when it is delivered. A notice as well drew every message twice.
+    await expect(listAgentEvents(target.id)).resolves.toEqual([])
+    await expect(listAgentEvents(caller.id)).resolves.toEqual([])
   })
 
   it('takes a delivery mode when the caller wants one, and refuses nonsense', async () => {
@@ -369,9 +367,7 @@ describe('the agent-mesh MCP endpoint', () => {
       initialPrompt: 'write the README'
     }))
     expect(body.id).toMatch(/^ag_/)
-    await expect(listAgentEvents(caller.id)).resolves.toMatchObject([
-      { type: 'mesh_spawned', payload: { agentId: body.id, title: 'docs' } }
-    ])
+    await expect(listAgentEvents(caller.id)).resolves.toEqual([])
 
     // Omitted, null or empty: the host, in the environment's project checkout
     // unless a directory is named, however the caller runs.

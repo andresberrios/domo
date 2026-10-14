@@ -1,5 +1,6 @@
 import { isSpokenNote } from '~~/shared/agent-voice'
 import type { AgentEvent, PendingPermission } from '~~/shared/types'
+import { domoCall, domoToolLabel, domoToolName } from '~/utils/domoTools'
 
 export interface ToolCallView {
   toolCallId: string
@@ -21,6 +22,36 @@ export type TranscriptItem =
   | { id: string, seq: number, at: string, kind: 'plan', entries: Array<{ content: string, status: string, priority: string }> }
   | { id: string, seq: number, at: string, kind: 'permission', permissionId: string, title: string, toolCall: any }
   | { id: string, seq: number, at: string, kind: 'notice', tone: 'info' | 'error', text: string }
+  | MeshItem
+
+/**
+ * How one agent's message reached another, or reached the person:
+ * - `message`: `message_agent`, seen from either end;
+ * - `spawn`: the task `spawn_agent` handed a new agent;
+ * - `notify`: `notify_supervisor`, which goes to the person;
+ * - `update`: Domo telling a subscriber what an agent it follows did;
+ * - `domo`: any other note from Domo itself.
+ */
+export type MeshVia = 'message' | 'spawn' | 'notify' | 'update' | 'domo'
+
+/**
+ * Traffic between agents, as one item at each end: the sender's tool call and
+ * the prompt it became for the receiver. Never folded into a run of tool
+ * activity — who is talking to whom is the conversation, not its workings.
+ */
+export interface MeshItem {
+  id: string
+  seq: number
+  at: string
+  kind: 'mesh'
+  direction: 'in' | 'out'
+  via: MeshVia
+  /** The other end. Both null is the person (`notify`) or Domo (`domo`). */
+  peer: { id: string | null, title: string | null }
+  text: string
+  /** The sender's tool call, for its status and result. */
+  tool: ToolCallView | null
+}
 
 /**
  * A setting changed on a session with no adapter running is a request, not a
@@ -45,13 +76,6 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
   config_changed: payload => `${payload?.name || payload?.configId}: ${payload?.value}${whenPending(payload)}`,
   'adapter-exit': payload =>
     `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
-  mesh_inbound: payload => `Message from agent "${payload?.fromTitle ?? payload?.from}": ${payload?.message}`,
-  mesh_outbound: payload => `Sent to agent "${payload?.toTitle ?? payload?.to}": ${payload?.message}`,
-  mesh_spawned: payload => `Spawned agent "${payload?.title}"`,
-  mesh_message: payload => `Told you: ${payload?.message}${
-    payload?.attachments?.length ? ` (attached ${payload.attachments.join(', ')})` : ''}`,
-  mesh_permission_answered: payload =>
-    `Answered a permission request from agent "${payload?.title}": ${payload?.optionId ?? 'rejected'}`,
   cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
   environment_retired: () =>
     'Its development environment was retired — this session can no longer be started'
@@ -92,19 +116,12 @@ export function buildTranscript(
     switch (event.type) {
       case 'user_message': {
         closeText()
-        const blocks: any[] = event.payload?.content ?? []
-        // A spoken turn carries a note for the agent saying so; the reader
-        // gets a microphone instead of the note.
-        const texts = blocks.filter(block => block?.type === 'text')
-        items.push({
-          ...base,
-          kind: 'user',
-          spoken: texts.some(block => isSpokenNote(block.text)),
-          text: texts.filter(block => !isSpokenNote(block.text)).map(block => block.text).join('\n'),
-          attachments: blocks
-            .filter(block => block?.type === 'resource_link' || block?.type === 'resource' || block?.type === 'image')
-            .map(block => ({ name: block.name ?? block.uri ?? 'attachment', uri: block.uri }))
-        })
+        // A turn that handed over several queued messages is one row with a
+        // divider before each; the reader gets them as the separate messages
+        // they were.
+        for (const [index, part] of promptParts(event.payload).entries()) {
+          items.push(promptItem(index ? { ...base, id: `${base.id}:${index}` } : base, part))
+        }
         break
       }
 
@@ -254,7 +271,114 @@ export function buildTranscript(
 
   // A permission that has been answered is history, not a prompt.
   const resolved = new Set(permissions.filter(p => p.resolvedAt).map(p => p.id))
-  return items.filter(item => item.kind !== 'permission' || !resolved.has(item.permissionId))
+  return items
+    .filter(item => item.kind !== 'permission' || !resolved.has(item.permissionId))
+    .map(item => (item.kind === 'tool' ? sentMessage(item) ?? item : item))
+}
+
+/* -------------------------------------------------------------------------
+ * Traffic between agents
+ * ------------------------------------------------------------------------- */
+
+/** `combineInboxContent`'s divider, in its own block before each message. */
+const DIVIDER = /^\n?\[(?:Message from agent (\S+)|From Domo|From you)\]\n?$/
+/** What `message_agent` puts before the message it delivers. */
+const FROM_AGENT = /^\[Message from agent "([\s\S]*?)" \((ag_\w+)\)\]\n*/
+/** How Domo's notes about an agent begin. */
+const ABOUT_AGENT = /^Agent (.+?) \((ag_\w+)\) /
+/**
+ * The same, for a note written before prompts said who sent them — narrow, so
+ * that a person typing "Agent …" is not mistaken for one.
+ */
+const SUBSCRIPTION_NOTE = /^Agent .+? \(ag_\w+\) (?:finished its turn|stopped|is waiting for a permission)/
+
+interface PromptPart {
+  /** `MessageOrigin`, where the row or a divider says; null where neither does. */
+  origin: string | null
+  blocks: any[]
+}
+
+function promptParts(payload: any): PromptPart[] {
+  const blocks: any[] = payload?.content ?? []
+  const parts: PromptPart[] = []
+  let current: PromptPart = { origin: payload?.origin ?? null, blocks: [] }
+  for (const block of blocks) {
+    const divider = block?.type === 'text' ? DIVIDER.exec(block.text ?? '') : null
+    if (!divider) {
+      current.blocks.push(block)
+      continue
+    }
+    if (current.blocks.length) parts.push(current)
+    current = { origin: divider[1] ? `agent:${divider[1]}` : null, blocks: [] }
+  }
+  if (current.blocks.length || !parts.length) parts.push(current)
+  return parts
+}
+
+function promptItem(base: { id: string, seq: number, at: string }, part: PromptPart): TranscriptItem {
+  // A spoken turn carries a note for the agent saying so; the reader gets a
+  // microphone instead of the note.
+  const texts = part.blocks.filter(block => block?.type === 'text')
+  const text = texts.filter(block => !isSpokenNote(block.text)).map(block => block.text).join('\n')
+  const mesh = (via: MeshVia, peer: MeshItem['peer'], body: string): MeshItem =>
+    ({ ...base, kind: 'mesh', direction: 'in', via, peer, text: body.trim(), tool: null })
+
+  const fromAgent = FROM_AGENT.exec(text)
+  if (fromAgent) return mesh('message', { id: fromAgent[2]!, title: fromAgent[1]! }, text.slice(fromAgent[0].length))
+  if (part.origin?.startsWith('agent:')) {
+    // From an agent, without `message_agent`'s heading: the task it was
+    // started with.
+    return mesh('spawn', { id: part.origin.slice('agent:'.length), title: null }, text)
+  }
+  if (part.origin === 'system' || (!part.origin && SUBSCRIPTION_NOTE.test(text))) {
+    const about = ABOUT_AGENT.exec(text)
+    return about
+      ? mesh('update', { id: about[2]!, title: about[1]! }, text.slice(about[0].length))
+      : mesh('domo', { id: null, title: null }, text)
+  }
+
+  return {
+    ...base,
+    kind: 'user',
+    spoken: texts.some(block => isSpokenNote(block.text)),
+    text,
+    attachments: part.blocks
+      .filter(block => block?.type === 'resource_link' || block?.type === 'resource' || block?.type === 'image')
+      .map(block => ({ name: block.name ?? block.uri ?? 'attachment', uri: block.uri }))
+  }
+}
+
+const SENDS: Record<string, MeshVia> = {
+  message_agent: 'message',
+  spawn_agent: 'spawn',
+  notify_supervisor: 'notify'
+}
+
+/** A tool call that sent a message, as the message it sent. */
+function sentMessage(item: Extract<TranscriptItem, { kind: 'tool' }>): MeshItem | null {
+  const name = domoToolName(item.tool)
+  const via = name ? SENDS[name] : undefined
+  if (!via) return null
+  const { args, result } = domoCall(item.tool)!
+  const ok = result && typeof result === 'object'
+  const peer: MeshItem['peer']
+    = via === 'message'
+      ? { id: args.agentId ?? (ok ? result.agentId : null) ?? null, title: (ok ? result.title : null) ?? null }
+      : via === 'spawn'
+        ? { id: (ok ? result.id : null) ?? null, title: args.title ?? (ok ? result.title : null) ?? null }
+        : { id: null, title: null }
+  const text = via === 'spawn' ? args.prompt : args.message
+  return {
+    id: item.id,
+    seq: item.seq,
+    at: item.at,
+    kind: 'mesh',
+    direction: 'out',
+    via,
+    peer,
+    text: typeof text === 'string' ? text : '',
+    tool: item.tool
+  }
 }
 
 export const TOOL_KIND_ICONS: Record<string, string> = {
@@ -309,6 +433,8 @@ export interface CondenseOptions {
 }
 
 function toolName(item: Extract<TranscriptItem, { kind: 'tool' }>): string {
+  const domo = domoToolName(item.tool)
+  if (domo) return domoToolLabel(domo)
   return item.tool.name || item.tool.title || 'Tool'
 }
 
@@ -420,6 +546,17 @@ export function activityBreakdown(group: ActivityGroup): string {
  * title and status are edited in place by later updates, and streamed text is
  * concatenated.
  */
+function sameTool(mine: ToolCallView, theirs: ToolCallView): boolean {
+  return mine.status === theirs.status
+    && mine.title === theirs.title
+    && mine.kind === theirs.kind
+    && mine.name === theirs.name
+    && mine.content === theirs.content
+    && mine.rawInput === theirs.rawInput
+    && mine.rawOutput === theirs.rawOutput
+    && mine.locations === theirs.locations
+}
+
 function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
   if (a === b) return true
   if (a.id !== b.id || a.kind !== b.kind) return false
@@ -436,17 +573,16 @@ function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
     case 'thought':
     case 'notice':
       return a.text === (b as typeof a).text
-    case 'tool': {
-      const mine = a.tool
-      const theirs = (b as typeof a).tool
-      return mine.status === theirs.status
-        && mine.title === theirs.title
-        && mine.kind === theirs.kind
-        && mine.name === theirs.name
-        && mine.content === theirs.content
-        && mine.rawInput === theirs.rawInput
-        && mine.rawOutput === theirs.rawOutput
-        && mine.locations === theirs.locations
+    case 'tool':
+      return sameTool(a.tool, (b as typeof a).tool)
+    case 'mesh': {
+      const other = b as typeof a
+      return a.direction === other.direction
+        && a.via === other.via
+        && a.text === other.text
+        && a.peer.id === other.peer.id
+        && a.peer.title === other.peer.title
+        && (a.tool === other.tool || (!!a.tool && !!other.tool && sameTool(a.tool, other.tool)))
     }
     case 'plan': {
       const other = b as typeof a

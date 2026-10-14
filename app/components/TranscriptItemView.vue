@@ -94,6 +94,11 @@ const permissionPending = computed(() =>
     :tool="item.tool"
   />
 
+  <MeshMessageCard
+    v-else-if="item.kind === 'mesh'"
+    :item="item"
+  />
+
   <PlanCard
     v-else-if="item.kind === 'plan'"
     :entries="item.entries"

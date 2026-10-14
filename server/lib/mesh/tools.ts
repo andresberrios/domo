@@ -922,12 +922,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         delivery,
         origin: `agent:${caller.id}`
       })
-      await appendAgentEvent(target.id, 'mesh_inbound', {
-        from: caller.id, fromTitle: from, message: args.message, delivery: result.delivery
-      })
-      await appendAgentEvent(caller.id, 'mesh_outbound', {
-        to: target.id, toTitle: target.title, message: args.message, delivery: result.delivery
-      })
       return {
         delivered: true,
         agentId: target.id,
@@ -982,9 +976,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         throw new Error(`No option ${optionId}. Options: ${permission.options.map(option => `${option.optionId} (${option.name})`).join(', ')}.`)
       }
       await acpManager.answerPermission(target.id, permission.id, optionId, voiceSessionId ? 'voice-agent' : `agent:${caller.id}`)
-      await appendAgentEvent(caller.id, 'mesh_permission_answered', {
-        agentId: target.id, title: target.title, permissionId: permission.id, request: permission.title, optionId
-      })
       return { agentId: target.id, permissionId: permission.id, answered: true, optionId }
     }
 
@@ -1016,9 +1007,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const notify = args.notifyWhenDone !== false
       const window = subscriptionWindow(args.notifyTurns, args.notifyIndefinitely)
       if (notify) await subscribe(caller.id, session.id, window)
-      await appendAgentEvent(caller.id, 'mesh_spawned', {
-        agentId: session.id, title: session.title, notifyWhenDone: notify
-      })
       return {
         id: session.id,
         title: session.title,

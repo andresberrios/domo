@@ -797,9 +797,6 @@ class VoiceRuntime {
           + 'Tell the user what happened in one or two sentences.'
         )
       }
-      // Not `mesh_message`: `notifyHuman` injects that note itself, whatever
-      // the proactive setting, since the agent addressed the human directly.
-      // Relaying it here as well had the supervisor say it twice.
     }
 
     if (event.type === 'permission-changed') {

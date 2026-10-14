@@ -21,6 +21,8 @@ const open = ref(false)
 const label = computed(() => activityLabel(props.group))
 const breakdown = computed(() => activityBreakdown(props.group))
 
+const names = useDomoNames()
+
 const current = computed(() => {
   if (!props.group.live) return null
   const item = props.group.items[props.group.items.length - 1]!
@@ -31,11 +33,15 @@ const current = computed(() => {
   if (item.kind !== 'tool') return null
   const { tool } = item
   const running = tool.status === 'pending' || tool.status === 'in_progress'
+  const domo = domoCall(tool)
+  const described = domo ? describeDomoCall(domo, names) : null
   const command = tool.rawInput?.command ?? tool.rawInput?.cmd
   return {
-    icon: running ? 'i-lucide-loader-circle' : (TOOL_KIND_ICONS[tool.kind] ?? TOOL_KIND_ICONS.other!),
+    icon: running ? 'i-lucide-loader-circle' : (described?.icon ?? TOOL_KIND_ICONS[tool.kind] ?? TOOL_KIND_ICONS.other!),
     spin: running,
-    text: command ? `${tool.title} · ${command}` : tool.title
+    text: described
+      ? [described.label, described.subject].filter(Boolean).join(' ')
+      : command ? `${tool.title} · ${command}` : tool.title
   }
 })
 </script>

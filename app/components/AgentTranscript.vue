@@ -66,6 +66,7 @@ function plainText(item: CondensedItem): string {
     case 'permission':
       return item.title
     case 'notice':
+    case 'mesh':
       return item.text
     case 'activity':
       return activityLabel(item)
@@ -87,6 +88,14 @@ function messageFor(item: CondensedItem) {
 
 const USER_PROPS = { side: 'right', variant: 'soft', avatar: { icon: 'i-lucide-user' } } as const
 const ASSISTANT_PROPS = { side: 'left', variant: 'naked', avatar: { icon: 'i-lucide-sparkles' } } as const
+/** A message that reached this agent from another one, or from Domo. */
+const INBOUND_PROPS = { side: 'left', variant: 'naked', avatar: { icon: 'i-lucide-message-square' } } as const
+
+function rowProps(item: CondensedItem) {
+  if (item.kind === 'user') return USER_PROPS
+  if (item.kind === 'mesh' && item.direction === 'in') return INBOUND_PROPS
+  return ASSISTANT_PROPS
+}
 
 const pendingPermissionIds = computed(() =>
   props.permissions.filter(permission => !permission.resolvedAt).map(permission => permission.id)
@@ -271,7 +280,7 @@ onMounted(() => nextTick(() => followTail()))
         >
           <UChatMessage
             v-bind="{
-              ...(items[row.index]!.kind === 'user' ? USER_PROPS : ASSISTANT_PROPS),
+              ...rowProps(items[row.index]!),
               ...messageFor(items[row.index]!)
             }"
           >

@@ -5,7 +5,7 @@ import { newId } from './db'
 import { run } from './dev-env/docker'
 import { RUNTIME_ROOT } from './dev-env/runtime-volume'
 import { dataDir } from './paths'
-import { appendAgentEvent, createNotification, getDevEnvironment } from './repo'
+import { createNotification, getDevEnvironment } from './repo'
 import { voiceManager } from './voice/runtime'
 import type { AgentSession, DomoNotification, NotificationAttachment } from '../../shared/types'
 
@@ -87,8 +87,8 @@ async function readAgentFile(caller: AgentSession, path: string): Promise<Buffer
  *
  * A row in `notifications` is what makes it durable: the browser shows it
  * until it is marked seen, whether or not anyone was looking when it arrived.
- * A live voice conversation also hears it at once. The `mesh_message` event
- * keeps the line in the agent's own transcript.
+ * A live voice conversation also hears it at once. The agent's own transcript
+ * has the line already: it is the tool call that sent it.
  */
 export async function notifyHuman(input: {
   caller: AgentSession
@@ -120,14 +120,6 @@ export async function notifyHuman(input: {
     message,
     urgent: !!input.urgent,
     attachments
-  })
-  await appendAgentEvent(input.caller.id, 'mesh_message', {
-    from: input.caller.title,
-    agentId: input.caller.id,
-    message,
-    urgent: !!input.urgent,
-    notificationId: id,
-    attachments: attachments.map(attachment => attachment.name)
   })
 
   const runtime = voiceManager.active()

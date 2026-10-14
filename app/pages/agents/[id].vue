@@ -38,6 +38,13 @@ const spawner = computed(() => {
   const id = session.value?.spawnedBy
   return id ? { id, title: allSessions.value.find(item => item.id === id)?.title ?? id } : null
 })
+
+const { all: allProjects } = useProjects()
+provideDomoNames({
+  agent: id => allSessions.value.find(item => item.id === id)?.title ?? null,
+  environment: id => allEnvironments.value.find(item => item.id === id)?.name ?? null,
+  project: id => allProjects.value.find(item => item.id === id)?.name ?? null
+})
 const startability = useSessionStartability(session)
 /** Set only when the session cannot run; the sentence to show for it. */
 const blocked = computed(() => startability.value.startable ? null : startability.value.reason)

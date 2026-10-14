@@ -5,7 +5,17 @@ const props = defineProps<{ tool: ToolCallView }>()
 
 const open = ref(false)
 
-const icon = computed(() => TOOL_KIND_ICONS[props.tool.kind] ?? TOOL_KIND_ICONS.other!)
+const names = useDomoNames()
+/** A call to one of Domo's own tools says what it did in words, not as JSON. */
+const domo = computed(() => domoCall(props.tool))
+const described = computed(() => (domo.value ? describeDomoCall(domo.value, names) : null))
+const domoResult = computed(() => {
+  const result = domo.value?.result
+  if (result == null) return null
+  return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+})
+
+const icon = computed(() => described.value?.icon ?? TOOL_KIND_ICONS[props.tool.kind] ?? TOOL_KIND_ICONS.other!)
 const status = computed(() => TOOL_STATUS_META[props.tool.status] ?? TOOL_STATUS_META.pending!)
 
 const diffs = computed(() =>
@@ -24,6 +34,7 @@ const terminals = computed(() =>
 )
 
 const command = computed(() => {
+  if (domo.value) return null
   const input = props.tool.rawInput
   if (!input || typeof input !== 'object') return null
   return input.command ?? input.cmd ?? null
@@ -43,7 +54,12 @@ const hasDetail = computed(() =>
       @click="hasDetail && (open = !open)"
     >
       <UIcon :name="icon" class="size-4 shrink-0 text-muted" />
-      <span class="min-w-0 flex-1 truncate text-sm">
+      <span v-if="described" class="min-w-0 flex-1 truncate text-sm" data-testid="domo-tool">
+        {{ described.label }}
+        <span v-if="described.subject" class="font-medium">{{ described.subject }}</span>
+        <span v-if="described.outcome" class="ms-1 text-xs text-muted">· {{ described.outcome }}</span>
+      </span>
+      <span v-else class="min-w-0 flex-1 truncate text-sm">
         {{ tool.title }}
         <span v-if="command" class="ms-1 font-mono text-xs text-muted">{{ truncate(String(command), 60) }}</span>
       </span>
@@ -88,7 +104,9 @@ const hasDetail = computed(() =>
         Ran in terminal {{ terminals.map((terminal: any) => terminal.terminalId).join(', ') }}
       </div>
 
-      <div v-if="textOutput" class="max-h-72 overflow-auto rounded-lg bg-default p-2">
+      <pre v-if="domoResult" class="max-h-72 overflow-auto rounded-lg bg-default p-2 font-mono text-[11px] text-muted">{{ domoResult }}</pre>
+
+      <div v-else-if="textOutput" class="max-h-72 overflow-auto rounded-lg bg-default p-2">
         <MarkdownView :text="textOutput" />
       </div>
 
