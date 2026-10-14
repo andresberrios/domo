@@ -3,7 +3,6 @@ import { deliverToAssistant } from '../assistants'
 import { sessionStartability } from '../../../shared/retention'
 import { nextCronOccurrence } from './expression'
 import {
-  appendAgentEvent,
   claimCronJob,
   disableCronJobsForAgent,
   failCronJobSchedule,
@@ -97,13 +96,6 @@ export class CronScheduler {
 
     try {
       const result = await deliverCronJob(job)
-      await appendAgentEvent(result.agentSessionId, 'cron_triggered', {
-        cronJobId: job.id,
-        name: job.name,
-        scheduledFor: run.scheduledFor,
-        delivery: result.delivery,
-        outcome: result.outcome
-      })
       await finishCronRun(run.id, 'delivered', result.outcome)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

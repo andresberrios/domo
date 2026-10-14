@@ -31,7 +31,8 @@ describe('MeshMessageCard', () => {
     [{ direction: 'in', via: 'spawn' }, 'Task from auth'],
     [{ direction: 'out', via: 'notify', peer: { id: null, title: null } }, 'To you'],
     [{ direction: 'in', via: 'domo', peer: { id: null, title: null } }, 'From Domo'],
-    [{ direction: 'in', via: 'update' }, 'auth']
+    [{ direction: 'in', via: 'update' }, 'auth'],
+    [{ direction: 'in', via: 'schedule', peer: { id: 'cj_1', title: 'nightly check' } }, 'Scheduled task "nightly check"']
   ] as const)('heads %o as "%s"', async (overrides, heading) => {
     const component = await render(overrides as Partial<MeshItem>)
 

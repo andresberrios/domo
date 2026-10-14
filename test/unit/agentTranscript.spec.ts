@@ -552,24 +552,24 @@ describe('messages between agents', () => {
       expect(items[2]).toMatchObject({ kind: 'user', text: 'and push it' })
     })
 
-    it('splits at the dividers Domo writes now, and keeps the human and a scheduled task as messages', () => {
+    it('splits at the dividers Domo writes now, the human\'s and a scheduled task\'s included', () => {
       // `inboxDivider`: "[From the human]" and "[From a scheduled task]" replaced "[From you]".
       const event = agentEvent('user_message', {
         content: [
           { type: 'text', text: '[From the human]\n' },
           { type: 'text', text: 'and push it' },
           { type: 'text', text: '\n[From a scheduled task]\n' },
-          { type: 'text', text: 'Run the nightly report' },
+          { type: 'text', text: '[Scheduled task "nightly" (cron_1)]\n\nRun the nightly report' },
           { type: 'text', text: '\n[From Domo]\n' },
           { type: 'text', text: 'Development environment "x" (env_1) is running at /w.' }
         ]
       })
       const items = buildTranscript([event])
 
-      expect(kinds(items)).toEqual(['user', 'user', 'mesh'])
+      expect(kinds(items)).toEqual(['user', 'mesh', 'mesh'])
       expect(items[0]).toMatchObject({ text: 'and push it' })
-      expect(items[1]).toMatchObject({ text: 'Run the nightly report' })
-      expect(mesh(items, 0)).toMatchObject({ via: 'domo' })
+      expect(mesh(items, 0)).toMatchObject({ via: 'schedule', peer: { id: 'cron_1', title: 'nightly' }, text: 'Run the nightly report' })
+      expect(mesh(items, 1)).toMatchObject({ via: 'domo' })
     })
   })
 
@@ -643,6 +643,41 @@ describe('messages between agents', () => {
     ]))
 
     expect(items.map(item => item.kind)).toEqual(['activity', 'mesh', 'activity'])
+  })
+
+  describe('scheduled tasks', () => {
+    it('reads a task firing as one item, named after the task', () => {
+      const items = buildTranscript([
+        prompt('[Scheduled task "nightly check" (cj_1)]\n\nRun the nightly check.', 'cron:cj_1'),
+        // Written beside the prompt by older installs; the prompt is the record.
+        agentEvent('cron_triggered', { cronJobId: 'cj_1', name: 'nightly check', outcome: 'queued' })
+      ])
+
+      expect(items).toEqual([expect.objectContaining({
+        kind: 'mesh', direction: 'in', via: 'schedule', peer: { id: 'cj_1', title: 'nightly check' }, text: 'Run the nightly check.'
+      })])
+    })
+  })
+
+  describe('Codex reviewing its own calls', () => {
+    const review = (status: string, verdict: string) => agentEvent('tool_call', {
+      toolCallId: `r_${verdict}`,
+      title: 'Guardian Review',
+      kind: 'think',
+      status,
+      rawInput: { action: { type: 'mcpToolCall', server: 'domo', toolName: 'list_agents' }, review: { status: 'inProgress' } },
+      ...status === 'completed' ? { rawOutput: { action: { type: 'mcpToolCall' }, review: { status: verdict } } } : {}
+    })
+
+    it('leaves out a review that passed, or is still deciding', () => {
+      expect(buildTranscript([review('completed', 'approved')])).toEqual([])
+      expect(buildTranscript([review('in_progress', 'pending')])).toEqual([])
+    })
+
+    it('keeps a review that refused', () => {
+      expect(kinds(buildTranscript([review('completed', 'denied')]))).toEqual(['tool'])
+      expect(kinds(buildTranscript([review('failed', 'pending')]))).toEqual(['tool'])
+    })
   })
 })
 

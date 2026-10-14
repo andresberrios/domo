@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { relativeTime, shortPath, truncate } from '~/utils/format'
+import { clockTime, dayKey, dayLabel, fullTime, relativeTime, shortPath, truncate } from '~/utils/format'
 
 describe('relativeTime', () => {
   afterEach(() => vi.useRealTimers())
@@ -79,5 +79,39 @@ describe('truncate', () => {
 
   it('leaves a value exactly at the limit alone', () => {
     expect(truncate('abc', 3)).toBe('abc')
+  })
+})
+
+describe('transcript times', () => {
+  // Local wall-clock instants, so the day boundaries hold in any time zone.
+  const local = (year: number, month: number, day: number, hour = 12, minute = 0) =>
+    new Date(year, month - 1, day, hour, minute).toISOString()
+  const today = dayKey(new Date(2026, 9, 14, 9))
+
+  it('names today and yesterday, and dates the rest', () => {
+    expect(dayLabel(local(2026, 10, 14, 0, 1), today)).toBe('Today')
+    expect(dayLabel(local(2026, 10, 13, 23, 59), today)).toBe('Yesterday')
+    expect(dayLabel(local(2026, 10, 12), today)).not.toMatch(/Today|Yesterday|2026/)
+    expect(dayLabel(local(2025, 12, 31), today)).toContain('2025')
+  })
+
+  it('knows yesterday across the start of a month', () => {
+    expect(dayLabel(local(2026, 9, 30), dayKey(new Date(2026, 9, 1, 9)))).toBe('Yesterday')
+  })
+
+  it('puts two instants of one local day on one key, and midnight on the next', () => {
+    expect(dayKey(local(2026, 10, 14, 0, 0))).toBe(dayKey(local(2026, 10, 14, 23, 59)))
+    expect(dayKey(local(2026, 10, 14, 23, 59))).not.toBe(dayKey(local(2026, 10, 15, 0, 0)))
+  })
+
+  it('gives a clock time, and the whole instant for a tooltip', () => {
+    expect(clockTime(local(2026, 10, 14, 14, 5))).toMatch(/(14|2):05/)
+    expect(fullTime(local(2026, 10, 14, 14, 5))).toMatch(/2026/)
+  })
+
+  it('is empty rather than "Invalid Date"', () => {
+    expect(clockTime(null)).toBe('')
+    expect(clockTime('nope')).toBe('')
+    expect(fullTime(undefined)).toBe('')
   })
 })

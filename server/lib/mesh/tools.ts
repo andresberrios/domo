@@ -30,7 +30,6 @@ import { avatarFromSource } from '../assistants/avatar'
 import { deliverCronJob } from '../cron/scheduler'
 import {
   addAgentSubscription,
-  appendAgentEvent,
   createCronJob,
   deleteCronJob,
   deleteInboxMessage,
@@ -1754,9 +1753,6 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         // The same content, delivery and origin the scheduler uses, so a test
         // run is the real thing.
         const result = await deliverCronJob(job)
-        await appendAgentEvent(result.agentSessionId, 'cron_triggered', {
-          cronJobId: job.id, name: job.name, scheduledFor: run.scheduledFor, delivery: result.delivery, outcome: result.outcome, manual: true
-        })
         await finishCronRun(run.id, 'delivered', result.outcome)
         return { jobId: job.id, agentId: result.agentSessionId, delivered: true, outcome: result.outcome }
       } catch (error) {

@@ -117,4 +117,39 @@ describe('ActivityGroup', () => {
       expect(component.text()).toContain('Read ×1, Bash ×1')
     })
   })
+
+  it('times each item it opens to, in a column of their own', async () => {
+    const component = await render([
+      tool('c1', 'Read', 'completed', {}), tool('c2', 'Bash')
+    ])
+
+    expect(component.findAll('[data-testid="item-time"]')).toHaveLength(0)
+    await component.find('button').trigger('click')
+
+    await expect.poll(() => component.findAll('[data-testid="item-time"]').length).toBe(2)
+    const times = component.findAll('[data-testid="item-time"]')
+    expect(times.every(time => !!time.attributes('datetime') && time.text() !== '')).toBe(true)
+  })
+
+  it('leaves the command off the live line on a phone, not the title', async () => {
+    const component = await render([
+      tool('c1', 'Read'),
+      tool('c2', 'Bash', 'in_progress', { title: 'Run the tests', rawInput: { command: 'pnpm test' } })
+    ], true)
+
+    const detail = component.find('[data-testid="activity-current"] .hidden')
+    expect(detail.text()).toContain('pnpm test')
+    expect(detail.classes()).toContain('sm:inline')
+  })
+
+  it('names the call itself when it is the only one, not "Bash ×1"', async () => {
+    const component = await render([
+      tool('c1', 'Bash', 'completed', { title: 'Run the tests', rawInput: { command: 'pnpm test' } }),
+      agentEvent('agent_message', { text: 'done', streaming: false })
+    ])
+
+    expect(component.find('[data-testid="activity-current"]').text()).toBe('Run the tests · pnpm test')
+    expect(component.find('[data-testid="activity-current"] .animate-spin').exists()).toBe(false)
+    expect(component.text()).not.toContain('Bash ×1')
+  })
 })

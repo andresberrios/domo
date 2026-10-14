@@ -10,7 +10,6 @@ const repo = vi.hoisted(() => ({
   claimCronJob: vi.fn(),
   finishCronRun: vi.fn(async () => {}),
   failCronJobSchedule: vi.fn(async () => true),
-  appendAgentEvent: vi.fn(async () => {}),
   // A job due against a session that cannot start is dropped rather than fired,
   // so every firing begins by reading the session and the environment it names.
   // The default here is a host session, which is always startable.

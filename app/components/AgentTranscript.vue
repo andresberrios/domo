@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { observeElementRect, useVirtualizer } from '@tanstack/vue-virtual'
+import { useNow } from '@vueuse/core'
 import type { AgentEvent, AgentSession, PendingPermission } from '~~/shared/types'
 import type { CondensedItem, TranscriptItem } from '~/utils/agentTranscript'
 
@@ -107,6 +108,27 @@ function rowProps(item: CondensedItem) {
   if (item.kind === 'handoff') return DIVIDER_PROPS
   if (item.kind === 'mesh' && item.direction === 'in') return INBOUND_PROPS
   return ASSISTANT_PROPS.value
+}
+
+/**
+ * When each row happened: a clock time under its avatar, which the row's own
+ * padding already has room for, so a time never adds height or moves anything.
+ * It hangs from the avatar's outer edge and runs inward, into the gap before
+ * the message, since a phone has no margin outside the avatar to spill into;
+ * and a line naming the day above the first row of each day. Whether a row
+ * opens a day depends only on the row before it, which never changes once
+ * drawn. Clock times rather than "2m ago": they do not tick, and a column of
+ * them reads as a timeline.
+ *
+ * `today` only changes at midnight, so the day lines re-render once a day.
+ */
+const now = useNow({ interval: 60_000 })
+const today = computed(() => dayKey(now.value))
+
+function opensDay(index: number) {
+  const item = items.value[index]
+  const before = items.value[index - 1]
+  return !!item && (!before || dayKey(before.at) !== dayKey(item.at))
 }
 
 const pendingPermissionIds = computed(() =>
@@ -290,12 +312,34 @@ onMounted(() => nextTick(() => followTail()))
           class="absolute inset-x-0 top-0 pb-4"
           :style="{ transform: `translateY(${row.start}px)` }"
         >
+          <div
+            v-if="opensDay(row.index)"
+            role="separator"
+            class="flex items-center gap-3 pb-4 text-xs text-dimmed"
+            data-testid="day-separator"
+          >
+            <span class="h-px flex-1 bg-(--ui-border)" />
+            <time :datetime="items[row.index]!.at">{{ dayLabel(items[row.index]!.at, today) }}</time>
+            <span class="h-px flex-1 bg-(--ui-border)" />
+          </div>
           <UChatMessage
             v-bind="{
               ...rowProps(items[row.index]!),
               ...messageFor(items[row.index]!)
             }"
           >
+            <template #leading="{ avatar, ui }">
+              <span class="relative inline-flex">
+                <UAvatar v-bind="avatar" :size="(ui.leadingAvatarSize() as any) || undefined" :class="ui.leadingAvatar()" />
+                <time
+                  :datetime="items[row.index]!.at"
+                  :title="fullTime(items[row.index]!.at)"
+                  class="absolute top-full mt-1 whitespace-nowrap text-[10px] leading-none tracking-tight text-dimmed tabular-nums"
+                  :class="rowProps(items[row.index]!).side === 'right' ? 'right-0' : 'left-0'"
+                  data-testid="row-time"
+                >{{ clockTime(items[row.index]!.at) }}</time>
+              </span>
+            </template>
             <template #content>
               <ActivityGroup
                 v-if="items[row.index]!.kind === 'activity'"
