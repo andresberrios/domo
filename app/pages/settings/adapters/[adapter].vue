@@ -130,7 +130,7 @@ async function save() {
     await refreshSettings()
     toast.add({ title: `${adapter.value.label} settings saved`, color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
-    toast.add({ title: 'Could not save', description: error?.message, color: 'error' })
+    toast.add({ title: 'Could not save', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     saving.value = false
   }
@@ -150,7 +150,7 @@ async function removeKey() {
     await refreshSettings()
     toast.add({ title: 'Console key removed', color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
-    toast.add({ title: 'Could not remove the key', description: error?.message, color: 'error' })
+    toast.add({ title: 'Could not remove the key', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     removing.value = false
   }
@@ -178,7 +178,7 @@ async function removeKey() {
       color="neutral"
       variant="subtle"
       :icon="adapter.icon"
-      :title="`${probe?.models.length ?? 0} models available`"
+      :title="probe?.models.length === 1 ? '1 model available' : `${probe?.models.length ?? 0} models available`"
       :description="probe?.current ? `Adapter default: ${probe.current}` : 'The adapter chooses its default model.'"
     />
 

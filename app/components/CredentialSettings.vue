@@ -64,7 +64,7 @@ async function write(credential: Credential, value: string) {
     emit('saved')
     toast.add({ title: value ? `${credential.label} saved` : `${credential.label} removed`, color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
-    toast.add({ title: `Could not ${value ? 'save' : 'remove'} the ${credential.label.toLowerCase()}`, description: error?.message, color: 'error' })
+    toast.add({ title: `Could not ${value ? 'save' : 'remove'} the ${credential.label.toLowerCase()}`, description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     busy[credential.key] = false
   }

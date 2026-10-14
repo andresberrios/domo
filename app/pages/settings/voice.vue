@@ -22,7 +22,7 @@ async function save() {
     await refresh()
     toast.add({ title: 'Settings saved', color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
-    toast.add({ title: 'Could not save', description: error?.message, color: 'error' })
+    toast.add({ title: 'Could not save', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     saving.value = false
   }

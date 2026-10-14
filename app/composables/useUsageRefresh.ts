@@ -44,7 +44,7 @@ export function useUsageRefresh() {
         cooldownTimer = null
       }, REFRESH_FLOOR_MS)
     } catch (error: any) {
-      toast.add({ title: 'Could not refresh usage', description: error?.message, color: 'error' })
+      toast.add({ title: 'Could not refresh usage', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
     } finally {
       state.refreshing.value = false
     }

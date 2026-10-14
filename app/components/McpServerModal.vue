@@ -81,7 +81,7 @@ async function save() {
   <UModal
     v-model:open="open"
     :title="server ? 'Edit MCP server' : 'Add MCP server'"
-    description="MCP servers give the agents extra tools. stdio servers run locally; http/sse servers are remote."
+    description="MCP servers give every coding agent extra tools. A stdio server is a command that runs wherever the agent runs, inside its container for an environment; an HTTP or SSE server is reached at its URL."
   >
     <template #body>
       <div class="space-y-4">
@@ -120,7 +120,7 @@ async function save() {
           </UFormField>
         </template>
 
-        <UFormField label="Environment" hint="one per line, KEY=value">
+        <UFormField label="Environment variables" hint="one per line, KEY=value">
           <UTextarea v-model="form.env" :rows="3" class="w-full font-mono text-xs" />
         </UFormField>
 

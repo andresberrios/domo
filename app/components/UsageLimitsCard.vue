@@ -23,7 +23,7 @@ async function refresh() {
   try {
     await $fetch('/api/usage/refresh', { method: 'POST' })
   } catch (error: any) {
-    toast.add({ title: 'Could not refresh usage', description: error?.message, color: 'error' })
+    toast.add({ title: 'Could not refresh usage', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     refreshing.value = false
   }

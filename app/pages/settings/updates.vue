@@ -31,7 +31,7 @@ async function act(action: 'check' | 'apply' | 'restart') {
     const result = await $fetch<{ restarting?: boolean }>(`/api/updates/${action}`, { method: 'POST' })
     if (action === 'restart' && result.restarting) toast.add({ title: 'Restarting Domo', description: 'The page reconnects by itself.', icon: 'i-lucide-rotate-cw' })
   } catch (error: any) {
-    toast.add({ title: 'Could not do that', description: error?.data?.message ?? error?.message, color: 'error' })
+    toast.add({ title: { check: 'Could not check for updates', apply: 'Could not update', restart: 'Could not restart' }[action], description: error?.data?.message ?? error?.message, color: 'error' })
   } finally {
     busy.value = null
   }
@@ -144,7 +144,7 @@ const statusColor = computed(() => {
             </ul>
           </div>
           <p v-else-if="update.behind === null && update.checkedAt" class="text-muted">
-            More than the fetched history behind; the list of changes is not available.
+            Too far behind to list the changes.
           </p>
         </div>
       </UCard>
@@ -157,7 +157,7 @@ const statusColor = computed(() => {
       </UFormField>
       <USwitch
         v-model="form.autoApply"
-        label="Install updates by themselves"
+        label="Update automatically"
         description="Build each new version when it appears and restart onto it when no agent is working, no environment is being created, and no schedule is about to fire. Off, Domo only tells you."
       />
       <UFormField label="Automatic updates" :description="form.autoApply ? undefined : 'Applies when the switch above is on.'">

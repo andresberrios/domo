@@ -23,7 +23,7 @@ async function remove(server: McpServer) {
     </div>
     <div v-if="!servers.length" class="rounded-lg border border-dashed border-default p-8 text-center">
       <p class="text-sm text-muted">No MCP servers yet.</p>
-      <p class="mt-1 text-xs text-dimmed">Coding agents still get Domo's built-in mesh server when their adapter supports HTTP MCP.</p>
+      <p class="mt-1 text-xs text-dimmed">Coding agents also always get Domo's own tools: to see and message each other, notify you and schedule tasks.</p>
     </div>
     <div v-else class="divide-y divide-default overflow-hidden rounded-lg border border-default">
       <div v-for="server in servers" :key="server.id" class="flex items-center gap-3 p-3">

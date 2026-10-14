@@ -218,7 +218,7 @@ describe('environment details page', { timeout: 30_000 }, () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain('Retire feature-auth?'))
     // The cascade is named, and named honestly: the container goes, the
     // session does not — it stays readable and simply cannot be started again.
-    expect(document.body.textContent).toContain('The 1 coding agent session')
+    expect(document.body.textContent).toContain('the full transcript of every coding agent that ran in it stay readable')
     expect(document.body.textContent).toContain('never be started again')
     expect(calls).toHaveLength(0)
 
