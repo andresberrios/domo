@@ -45,7 +45,7 @@ describe('previewing a voice', () => {
   })
 
   it('refuses, with the reason, a voice that would fall back to the bar\'s, and the device\'s own', async () => {
-    await expect(previewVoice({ voice: { speaker: 'gemini', voice: 'Puck' } })).rejects.toThrow(/No Gemini key/)
+    await expect(previewVoice({ voice: { speaker: 'gemini', voice: 'Puck' } })).rejects.toThrow(/No Gemini API key/)
     await expect(previewVoice({ voice: { speaker: 'gemini', voice: 'Puck' } })).rejects.toBeInstanceOf(PreviewError)
     await expect(previewVoice({ agentVoice: { speaker: 'browser' } })).rejects.toThrow(/device/)
     expect(synthesizeWith).not.toHaveBeenCalled()
