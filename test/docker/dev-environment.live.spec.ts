@@ -117,7 +117,7 @@ const {
 } = await import('../../server/lib/dev-env/host-worktree')
 const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
 const { environmentImageName } = await import('../../server/lib/dev-env/image')
-const { ensureRuntimeVolume, pinnedAdapterVersions, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
+const { ensureRuntimeVolume, pinnedAdapterVersions, RUNTIME_ROOT, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
 const {
   cleanupEnvironment,
   createEnvironment,
@@ -976,7 +976,7 @@ describe('upgrading an environment with a Docker stack', () => {
     const retry = (command: string) => `for i in $(seq 1 60); do ${command} && exit 0; sleep 0.25; done; exit 1`
     const devServer = () => run('docker', [
       'exec', '--detach', '--user', 'vscode', state.rows.get(id)!.containerId!,
-      'node', '-e', 'require("http").createServer((q, r) => r.end("dev-server")).listen(5173, "127.0.0.1")'
+      `${RUNTIME_ROOT}/node/bin/node`, '-e', 'require("http").createServer((q, r) => r.end("dev-server")).listen(5173, "127.0.0.1")'
     ])
     /** Everything the stack is for, from the agent's side. */
     const works = async () => {
