@@ -71,6 +71,7 @@ function runArgs(input: {
     browserVolume: input.browserVolume ?? null,
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
     codexConfigDir: input.codexConfigDir ?? null,
+    seccompProfile: '/data/seccomp/environment-abc.json',
     homeOverlay: input.homeOverlay
       ?? emptyHomeOverlay({ containerHome: '/home/vscode', workspacePath: '/workspaces/api' }),
     dockerSocket: input.dockerSocket ?? null
@@ -279,10 +280,10 @@ describe('containerRunArgs', () => {
     expect(values(args, '--mount').join('\n')).not.toContain('dind-var-lib-docker')
   })
 
-  it('lets a process make a user namespace, which Codex\'s sandbox needs, and is still not privileged', () => {
+  it('runs under Domo\'s seccomp profile, unprivileged', () => {
     const args = runArgs({ config: { docker: false } })
 
-    expect(values(args, '--security-opt')).toContain('seccomp=unconfined')
+    expect(values(args, '--security-opt')).toContain('seccomp=/data/seccomp/environment-abc.json')
     expect(args).not.toContain('--privileged')
   })
 

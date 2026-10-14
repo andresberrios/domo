@@ -45,6 +45,7 @@ import {
   pinnedAdapterVersions,
   RUNTIME_ROOT
 } from './dev-env/runtime-volume'
+import { ensureSeccompProfile } from './dev-env/seccomp'
 import {
   doodSocketPath,
   ensureDoodProxy,
@@ -429,6 +430,7 @@ async function buildEnvironment(input: {
       browserVolume,
       ports: declaredPorts,
       codexConfigDir,
+      seccompProfile: await ensureSeccompProfile(),
       homeOverlay: overlay,
       dockerSocket
     }))

@@ -175,6 +175,8 @@ export interface RunContainerInput {
   browserVolume: string | null
   ports: ResolvedPortConfig[]
   codexConfigDir: string | null
+  /** A file: `ensureSeccompProfile()`. */
+  seccompProfile: string
   /** The host user's login state, projected into the container's home. */
   homeOverlay: HomeOverlay
   /**
@@ -213,12 +215,8 @@ export function containerRunArgs(input: RunContainerInput): string[] {
     // `--network host` shares its network (`hostModes` in `dood/rewrite.ts`).
     // Docker's default is `private`, which no other container can join.
     '--ipc', 'shareable',
-    // Codex runs every command in a bubblewrap sandbox, which needs a user
-    // namespace, and Docker's default seccomp profile refuses one. Without
-    // this, Codex's `read-only` and `workspace-write` modes cannot run a
-    // single command ("bwrap: No permissions to create a new namespace").
-    // An environment is a namespace, not a security boundary.
-    '--security-opt', 'seccomp=unconfined',
+    // Docker's default, plus what Codex's command sandbox needs (`seccomp.ts`).
+    '--security-opt', `seccomp=${input.seccompProfile}`,
     // The environment's checkout: a bind mount of its host worktree, at a
     // canonical path — never at `workspacePath` directly, which is a symlink
     // to this, created once the container is up (`workspaceAliasArgs`).
