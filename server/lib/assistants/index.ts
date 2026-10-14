@@ -243,7 +243,7 @@ async function startSession(assistant: Assistant, handoff?: HandoffPayload): Pro
  * session that can no longer run (its environment was retired) is replaced,
  * carrying over what it can without a note it cannot write.
  */
-async function ensureCurrentSession(assistantId: string): Promise<string> {
+export async function ensureCurrentSession(assistantId: string): Promise<string> {
   return serial(assistantId, async () => {
     const assistant = await getAssistant(assistantId)
     if (!assistant) fail(`No assistant ${assistantId}.`, 404)

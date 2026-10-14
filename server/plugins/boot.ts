@@ -75,6 +75,11 @@ export default defineNitroPlugin(async (nitro) => {
   await rebuildEnvironmentForwarders().catch(error => console.error('[domo] port restore failed', error))
   cronScheduler.start()
 
+  // Notes and messages that reached an agent just before the restart. After
+  // the notifier, so a turn this starts is reported on, and after the
+  // environments, so an agent in one finds its container and proxy.
+  await acpManager.resume().catch(error => console.error('[domo] inbox resume', error))
+
   // One pass, and the only one that is not somebody asking: a boot is the
   // moment a blocking container has most likely gone by itself, because the
   // machine restarted and it is not running any more. Not awaited — it is a

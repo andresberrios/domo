@@ -41,6 +41,7 @@ import { mintMeshToken } from '../../server/lib/mesh/token'
 const acp = vi.hoisted(() => ({
   promptInBackground: vi.fn(async () => {}),
   drainInbox: vi.fn(),
+  wake: vi.fn(),
   stop: vi.fn(),
   isBusy: vi.fn(() => false),
   cancel: vi.fn(async () => {}),
@@ -339,7 +340,13 @@ describe('the agent-mesh MCP endpoint', () => {
       message: 'take over the migration'
     })).body)
     expect(body).toEqual({
-      delivered: true, agentId: target.id, title: 'target', delivery: 'queue', outcome: 'queued'
+      delivered: true,
+      agentId: target.id,
+      title: 'target',
+      delivery: 'queue',
+      outcome: 'queued',
+      messageId: expect.stringMatching(/^in_/),
+      notifyWhenDone: 1
     })
 
     // An agent has no idea what its peer is in the middle of, so the default
@@ -347,7 +354,8 @@ describe('the agent-mesh MCP endpoint', () => {
     expect(acp.deliver).toHaveBeenCalledWith(target.id, {
       content: [{ type: 'text', text: `[Message from agent "caller" (${caller.id})]\n\ntake over the migration` }],
       delivery: 'queue',
-      origin: `agent:${caller.id}`
+      origin: `agent:${caller.id}`,
+      id: body.messageId
     })
     // One record each side: the caller's tool call, and the target's prompt
     // when it is delivered. A notice as well drew every message twice.
@@ -1112,6 +1120,76 @@ describe('spawn_agent choices', () => {
     const held = await listAgentSubscriptions(caller.id)
     expect(held.find(entry => entry.targetId === three.id)?.remainingTurns).toBe(3)
     expect(held.find(entry => entry.targetId === always.id)?.remainingTurns).toBeNull()
+  })
+})
+
+describe('following a message', () => {
+  const watches = () => query('select message_id, subscriber_id, target_id, remaining_turns from agent_message_watches')
+
+  it('waits on the message it sent, under the id the message goes out with', async () => {
+    const caller = await session('caller')
+    const target = await session('target')
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'message_agent', {
+      agentId: target.id, message: 'fix it', notifyTurns: 2
+    })).body)
+
+    expect(body.notifyWhenDone).toBe(2)
+    // Waiting, not following: the turn running now is not the one that answers.
+    await expect(listAgentSubscriptions(caller.id)).resolves.toEqual([])
+    await expect(watches()).resolves.toEqual([
+      { message_id: body.messageId, subscriber_id: caller.id, target_id: target.id, remaining_turns: 2 }
+    ])
+    expect((acp.deliver.mock.calls.at(-1) as any[])[1].id).toBe(body.messageId)
+  })
+
+  it('waits on nothing when told not to, for its own session, or for the human', async () => {
+    const caller = await session('caller')
+    const target = await session('target')
+    const token = mintMeshToken(caller.id)
+
+    const quiet = resultOf((await callTool(token, 'message_agent', { agentId: target.id, message: 'fyi', notifyWhenDone: false })).body)
+    const self = resultOf((await callTool(token, 'message_agent', { agentId: caller.id, message: 'note to self' })).body)
+
+    expect(quiet.notifyWhenDone).toBe(false)
+    expect(self.notifyWhenDone).toBe(false)
+    await expect(watches()).resolves.toEqual([])
+  })
+
+  it('needs nothing new when the sender already follows the target indefinitely', async () => {
+    const caller = await session('caller')
+    const target = await session('target')
+    await addAgentSubscription(caller.id, target.id, null)
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'message_agent', { agentId: target.id, message: 'more' })).body)
+
+    expect(body.notifyWhenDone).toBe('indefinite')
+    await expect(watches()).resolves.toEqual([])
+  })
+
+  it('answers the agent following it, and refuses only an indefinite loop', async () => {
+    const coordinator = await session('coordinator')
+    const worker = await session('worker')
+    await addAgentSubscription(coordinator.id, worker.id, 1)
+    const token = mintMeshToken(worker.id)
+
+    const counted = await callTool(token, 'message_agent', { agentId: coordinator.id, message: 'done' })
+    expect(resultOf(counted.body).notifyWhenDone).toBe(1)
+
+    const forever = await callTool(token, 'message_agent', { agentId: coordinator.id, message: 'done', notifyIndefinitely: true })
+    expect(text(forever.body)).toContain('would never stop')
+    expect(acp.deliver).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the watch when the message cannot be delivered', async () => {
+    const caller = await session('caller')
+    const target = await session('target')
+    acp.deliver.mockRejectedValueOnce(new Error('the adapter would not start'))
+
+    const body = await callTool(mintMeshToken(caller.id), 'message_agent', { agentId: target.id, message: 'hi' })
+
+    expect(text(body.body)).toContain('the adapter would not start')
+    await expect(watches()).resolves.toEqual([])
   })
 })
 

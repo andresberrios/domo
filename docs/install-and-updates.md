@@ -156,9 +156,11 @@ watches it. Steps:
 **A quiet moment** means all of these, checked by the server, which is the
 only process that knows:
 
-- no `agent_sessions` row in `starting`, `thinking` or `awaiting-permission`,
-  and no adapter process alive in `acpManager`;
-- no `dev_environments` row in `creating`;
+- no `agent_sessions` row in `starting`, `thinking` or `awaiting-permission`;
+- no inbox message younger than two minutes still waiting, which is most
+  often a subscription note about to wake an idle agent. An older one does
+  not hold the restart, and the boot delivers anything from the last hour;
+- no `dev_environments` row in `creating` or `upgrading`;
 - no cron job due in the next two minutes.
 
 `restartBlockers()` in `repo.ts` answers this, as phrases the row carries

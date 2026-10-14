@@ -7,7 +7,7 @@ import { describeSeed } from '../dev-env/workspace-seed'
 import { pinnedAdapterVersions } from '../dev-env/runtime-volume'
 import { inspectContainer, type ContainerInspection } from '../dev-env/docker'
 import { DOOD_CONTAINER_LABEL } from '../dev-env/container'
-import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
+import { awaitMessage, startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import {
   adaptersAreCurrent,
   beginEnvironment,
@@ -26,12 +26,14 @@ import { voiceCatalog } from '../agent-voice/assistant-voice'
 import { pocketSample } from '../agent-voice/sample'
 import { createClonedVoice } from '../agent-voice/voice-store'
 import { CLONED_VOICE_PREFIX } from '../../../shared/agent-voice'
-import { createAssistant, deliverToAssistant, generateAssistantPicture, recordHandoffNote, updateAssistantFields } from '../assistants'
+import { createAssistant, ensureCurrentSession, generateAssistantPicture, recordHandoffNote, updateAssistantFields } from '../assistants'
 import { generateImage, hasChatGptLogin, ImageGenerationError } from '../images/generate'
 import { avatarFromSource } from '../assistants/avatar'
 import { deliverCronJob } from '../cron/scheduler'
+import { newId } from '../db'
 import {
   addAgentSubscription,
+  addMessageWatch,
   createCronJob,
   deleteCronJob,
   deleteInboxMessage,
@@ -58,6 +60,7 @@ import {
   listUsageProviders,
   replaceCronJob,
   removeAgentSubscription,
+  removeMessageWatch,
   startManualCronRun,
   updateDevEnvironment,
   updateProject
@@ -88,7 +91,7 @@ export const MESH_INSTRUCTIONS = [
   'You are one of those agents. These tools are how you see and act on the rest of Domo.',
   'An agent session has an id (ag_…); the tools that read or change one session default to your own when agentId is omitted.',
   'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own branch and worktree of it. Agents run either on the host or inside an environment.',
-  'You cannot wait for another agent: its turn ends long after yours. Use spawn_agent or subscribe_to_agent and Domo will message you when it finishes.',
+  'You cannot wait for another agent: its turn ends long after yours. spawn_agent and message_agent follow the agent you hand work to by default, and subscribe_to_agent follows any other; Domo messages you when it finishes.',
   'To reach the human, use notify_supervisor: it stays in the UI until they have seen it.',
   'An assistant (as_…) is a named agent the human keeps talking to: it lives across many sessions chained by handoffs, so message it by its assistant id, not a session id.'
 ].join(' ')
@@ -161,6 +164,36 @@ async function subscribe(subscriberId: string, targetId: string, remainingTurns:
 }
 
 /**
+ * Arrange for `subscriberId` to hear about the turn that handles message
+ * `messageId` to `targetId`, for `remainingTurns` turn ends from there (see
+ * `armMessageWatches`). Returns the window the sender ends up with: an
+ * indefinite subscription it already holds covers the message as it is.
+ *
+ * Only an indefinite window is refused on a pair that already follows the
+ * other way: a counted one ends by itself, and a worker that answers the agent
+ * following it is exactly the case this is for.
+ */
+async function followMessage(
+  subscriberId: string,
+  targetId: string,
+  messageId: string,
+  remainingTurns: number | null
+): Promise<number | null> {
+  const held = (await listAgentSubscriptions(subscriberId)).find(entry => entry.targetId === targetId)
+  if (held && held.remainingTurns === null) return null
+  if (remainingTurns === null && (await listAgentSubscriptions(targetId)).some(entry => entry.targetId === subscriberId)) {
+    throw new Error(
+      `Agent ${targetId} already subscribes to this session, so following it indefinitely would never stop. `
+      + 'Pass notifyTurns instead, or notifyWhenDone: false.'
+    )
+  }
+  await startSubscriptionNotifier()
+  await addMessageWatch({ messageId, subscriberId, targetId, remainingTurns })
+  awaitMessage(messageId)
+  return remainingTurns
+}
+
+/**
  * Queue a note from Domo itself in an agent's inbox: delivered now if it is
  * idle, after its turn if it is busy. Best effort — the agent may have been
  * archived or retired in the meantime, and then there is nobody to tell.
@@ -168,7 +201,7 @@ async function subscribe(subscriberId: string, targetId: string, remainingTurns:
 async function tellAgent(agentId: string, text: string): Promise<void> {
   try {
     await enqueueInboxMessage({ agentSessionId: agentId, content: [{ type: 'text', text }], delivery: 'queue', origin: 'system' })
-    acpManager.drainInbox(agentId)
+    acpManager.wake(agentId)
   } catch (error) {
     console.error(`[mesh] could not tell ${agentId}`, error)
   }
@@ -455,7 +488,9 @@ export const MESH_TOOLS = [
     name: 'message_agent',
     description:
       'Send a message (a prompt) to another agent session; it becomes that agent\'s next turn. Also how you start a '
-      + 'stopped agent, or test one by hand. Nothing is lost if it is busy.',
+      + 'stopped agent, or test one by hand. Nothing is lost if it is busy. By default you are messaged when the turn '
+      + 'that handles your message ends (also when it needs a permission or fails meanwhile), even if the message '
+      + 'waits behind other turns first. Set notifyWhenDone false for replies and messages you will not follow up.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -468,6 +503,15 @@ export const MESH_TOOLS = [
             'When the agent is busy: "queue" (default) waits for its current turn to end; "steer" injects the message '
             + 'into the running turn (agents that cannot be steered are interrupted instead); "interrupt" cancels the '
             + 'turn first. An idle agent starts on it immediately either way.'
+        },
+        notifyWhenDone: {
+          type: 'boolean',
+          description: 'Be messaged when the turn that handles this message ends, and when it needs a permission or fails. Default true. Set false for fire-and-forget messages.'
+        },
+        notifyTurns: { type: 'number', description: 'How many turn ends to be told about, from the one that handles this message. Default 1.' },
+        notifyIndefinitely: {
+          type: 'boolean',
+          description: 'Be told about every turn until you unsubscribe. Use deliberately, and call unsubscribe_from_agent when you no longer need updates.'
         }
       },
       required: ['agentId', 'message'],
@@ -1225,36 +1269,46 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'message_agent': {
-      if (String(args.agentId ?? '').startsWith('as_')) {
-        const assistant = await getAssistant(args.agentId)
-        if (!assistant) throw new Error(`No assistant ${args.agentId}. Use list_assistants to find ids.`)
-        const delivery = DELIVERIES.find(mode => mode === args.delivery) ?? 'queue'
-        const result = await deliverToAssistant(assistant.id, {
-          content: [{ type: 'text', text: `[Message from agent "${caller.title}" (${caller.id})]\n\n${args.message}` }],
-          delivery,
-          origin: `agent:${caller.id}`
-        })
-        return { delivered: true, assistantId: assistant.id, agentId: result.agentSessionId, name: assistant.name, delivery: result.delivery, outcome: result.outcome }
+      const assistant = String(args.agentId ?? '').startsWith('as_') ? await getAssistant(args.agentId) : null
+      if (String(args.agentId ?? '').startsWith('as_') && !assistant) {
+        throw new Error(`No assistant ${args.agentId}. Use list_assistants to find ids.`)
       }
-      const messaged = await getAgentSessionWithEnvironment(args.agentId)
+      const messaged = await getAgentSessionWithEnvironment(assistant ? await ensureCurrentSession(assistant.id) : args.agentId)
       const target = messaged.session
       if (!target) throw new Error(`No agent ${args.agentId}. Use list_agents to find ids.`)
       assertSessionStartable(target, messaged.environment, null, 'messaging it')
-      const from = caller.title
       // An agent writing to a peer has no idea what that peer is in the middle
       // of, so the default waits rather than cutting across it.
       const delivery = DELIVERIES.find(mode => mode === args.delivery) ?? 'queue'
-      const result = await acpManager.deliver(target.id, {
-        content: [{ type: 'text', text: `[Message from agent "${from}" (${caller.id})]\n\n${args.message}` }],
-        delivery,
-        origin: `agent:${caller.id}`
-      })
+      // As with spawn_agent, the sender cannot wait for the answer, so being
+      // told is the default. The watch exists before the message does, so the
+      // turn that takes the message cannot start before anyone is waiting on it.
+      const messageId = newId('in')
+      const notify = args.notifyWhenDone !== false && target.id !== caller.id
+      const window = notify
+        ? await followMessage(caller.id, target.id, messageId, subscriptionWindow(args.notifyTurns, args.notifyIndefinitely))
+        : null
+      let result
+      try {
+        result = await acpManager.deliver(target.id, {
+          content: [{ type: 'text', text: `[Message from agent "${caller.title}" (${caller.id})]\n\n${args.message}` }],
+          delivery,
+          origin: `agent:${caller.id}`,
+          id: messageId
+        })
+      } catch (error) {
+        if (notify) await removeMessageWatch(messageId)
+        throw error
+      }
       return {
         delivered: true,
+        ...assistant ? { assistantId: assistant.id, name: assistant.name } : {},
         agentId: result.agentSessionId,
         title: target.title,
         delivery: result.delivery,
-        outcome: result.outcome
+        outcome: result.outcome,
+        ...result.outcome === 'queued' ? { messageId } : {},
+        notifyWhenDone: notify ? describeWindow(window) : false
       }
     }
 

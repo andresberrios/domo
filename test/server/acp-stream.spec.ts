@@ -322,6 +322,8 @@ afterEach(async () => {
   stopSubscriptionNotifier()
   const { acpManager } = await import('../../server/lib/acp/manager')
   await acpManager.shutdown()
+  // The next test is a server that is running again.
+  acpManager.open()
   // Let the exit handler's writes land before the next truncate.
   await sleep(50)
   seen.stop()
@@ -1886,16 +1888,213 @@ describe('subscriptions between agents', () => {
       options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
     } as any).catch(() => {})
 
-    // The watcher was never started, and a note must not be what starts it: an
-    // `adapter-exit` is one of these, and `shutdown()` raises one per session.
-    await vi.waitFor(async () => {
-      const queued = await listInboxMessages(watcher.id)
-      expect(queued).toHaveLength(1)
-      expect(queued[0]!.content[0].text).toContain('is waiting for a permission: Run `rm -rf build`')
-    })
-    expect(state.adapters).toHaveLength(1)
-    expect(await listInboxMessages(watcher.id).then(rows => rows[0]!.origin)).toBe('system')
+    // The watcher was not running, and the note is what starts it: left in
+    // the inbox, it waited for somebody to open the session, and after a
+    // restart every subscriber is in that state.
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(2))
+    const notes: any[] = []
+    serve(state.adapters[1]!, async () => {}, { onPrompt: params => notes.push(params) })
+    await vi.waitFor(() => expect(notes).toHaveLength(1))
+    expect(promptText(notes[0])).toContain('is waiting for a permission: Run `rm -rf build`')
+    expect(await listInboxMessages(watcher.id, false).then(rows => rows[0]!.origin)).toBe('system')
     held.release()
+  })
+
+  it('tells nobody about a shutdown, starts nothing, and leaves an idle session idle', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { startSubscriptionNotifier } = await import('../../server/lib/acp/subscriptions')
+    const watcher = await session('Supervisor')
+    const idle = await session('Idle')
+    const busy = await session('Busy')
+    await addAgentSubscription(watcher.id, idle.id, null)
+    await addAgentSubscription(watcher.id, busy.id, null)
+    await startSubscriptionNotifier()
+
+    const starting = acpManager.start(idle.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {})
+    await starting
+    const held = heldTurn()
+    void acpManager.prompt(busy.id, [{ type: 'text', text: 'work' }]).catch(() => {})
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(2))
+    serve(state.adapters[1]!, held.turn)
+    await held.started
+
+    await acpManager.shutdown()
+    await sleep(100)
+
+    // Nothing it was doing was cut off, and a message starts it again:
+    // "stopped" read as "did not come back" after every update.
+    expect((await getAgentSession(idle.id))!.status).toBe('idle')
+    expect((await getAgentSession(busy.id))!.status).toBe('stopped')
+    // Every adapter exits on a shutdown, and none of it is news to a subscriber.
+    await expect(listInboxMessages(watcher.id, false)).resolves.toEqual([])
+    expect(state.adapters).toHaveLength(2)
+    held.release()
+  })
+})
+
+/**
+ * `message_agent` follows the turn that handles the message, through the mesh
+ * endpoint and the real runtime: that turn is decided by the runtime (queued,
+ * steered, prompted, drained with others), and only its `user_message` knows.
+ */
+describe('a message an agent sends', () => {
+  async function send(from: string, args: Record<string, unknown>) {
+    const { handleMeshMcpRequest } = await import('../../server/lib/mesh/server')
+    const { mintMeshToken } = await import('../../server/lib/mesh/token')
+    const response = await handleMeshMcpRequest(new Request('http://mesh.internal/api/internal/mcp', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'accept': 'application/json, text/event-stream',
+        'authorization': `Bearer ${mintMeshToken(from)}`
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: args.tool ?? 'message_agent', arguments: { ...args, tool: undefined } } })
+    }))
+    const body = await response.json()
+    if (body.result.isError) throw new Error(body.result.content[0].text)
+    return JSON.parse(body.result.content[0].text)
+  }
+
+  /** The notes Domo queued for `agentId`, delivered or not. */
+  async function notes(agentId: string): Promise<string[]> {
+    return (await listInboxMessages(agentId, false)).filter(row => row.origin === 'system').map(row => row.content[0].text)
+  }
+
+  /**
+   * A target that holds its first turn until released and answers every later
+   * one at once, saying which turn it is.
+   */
+  async function busyTarget(title = 'Worker') {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const target = await session(title)
+    const held = heldTurn()
+    let turns = 0
+    const prompts: any[] = []
+    void acpManager.prompt(target.id, [{ type: 'text', text: 'first job' }]).catch(() => {})
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (say) => {
+      turns++
+      if (turns === 1) {
+        await say(textChunk('Did the first job.'))
+        await held.turn(say)
+        return
+      }
+      await say(textChunk(`Answered in turn ${turns}.`))
+    }, { onPrompt: params => prompts.push(params) })
+    await held.started
+    return { target, held, prompts }
+  }
+
+  beforeEach(async () => {
+    const { startSubscriptionNotifier } = await import('../../server/lib/acp/subscriptions')
+    await startSubscriptionNotifier()
+  })
+
+  it('reports on the turn that handles a queued message, not the one it waited behind', async () => {
+    const sender = await session('Coordinator')
+    const { target, held, prompts } = await busyTarget()
+
+    const sent = await send(sender.id, { agentId: target.id, message: 'the tests fail, fix them' })
+    expect(sent).toMatchObject({ outcome: 'queued', notifyWhenDone: 1 })
+
+    held.release()
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    await vi.waitFor(async () => expect(await notes(sender.id)).toHaveLength(1))
+    await sleep(100)
+    const [note] = await notes(sender.id)
+    expect(note).toContain(`Agent Worker (${target.id}) finished its turn (end_turn). Latest output: Answered in turn 2.`)
+    expect(note).toContain('That was the last update')
+    expect(await notes(sender.id)).toHaveLength(1)
+  })
+
+  it('reports on the turn a message is steered into', async () => {
+    const sender = await session('Coordinator')
+    const { target, held } = await busyTarget()
+
+    const sent = await send(sender.id, { agentId: target.id, message: 'also check lint', delivery: 'steer' })
+    expect(sent).toMatchObject({ outcome: 'steered' })
+    // Arming is the `user_message` the steer writes, so give it a moment
+    // before the turn it joined ends.
+    await vi.waitFor(async () => expect((await listAgentEvents(target.id)).filter(event => event.type === 'user_message')).toHaveLength(2))
+    await sleep(50)
+    held.release()
+
+    await vi.waitFor(async () => expect(await notes(sender.id)).toHaveLength(1))
+    expect((await notes(sender.id))[0]).toContain('Latest output: Did the first job.')
+  })
+
+  it('reports on a stopped agent the message starts', async () => {
+    const sender = await session('Coordinator')
+    const target = await session('Worker')
+
+    const sending = send(sender.id, { agentId: target.id, message: 'pick this up' })
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async say => say(textChunk('Picked it up.')))
+    expect(await sending).toMatchObject({ outcome: 'prompted', notifyWhenDone: 1 })
+
+    await vi.waitFor(async () => expect(await notes(sender.id)).toHaveLength(1))
+    expect((await notes(sender.id))[0]).toContain('Latest output: Picked it up.')
+  })
+
+  it('says nothing about a message that was withdrawn', async () => {
+    const sender = await session('Coordinator')
+    const { target, held, prompts } = await busyTarget()
+
+    const sent = await send(sender.id, { agentId: target.id, message: 'never mind this' })
+    await send(sender.id, { tool: 'withdraw_queued_message', agentId: target.id, messageId: sent.messageId })
+    held.release()
+
+    await vi.waitFor(async () => expect((await getAgentSession(target.id))!.status).toBe('idle'))
+    await sleep(100)
+    expect(prompts).toHaveLength(1)
+    expect(await notes(sender.id)).toEqual([])
+    expect((await query('select * from agent_message_watches')).length).toBe(0)
+  })
+
+  it('merges with a subscription the sender already holds rather than telling it twice', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const sender = await session('Coordinator')
+    const target = await session('Worker')
+    await addAgentSubscription(sender.id, target.id, 1)
+    const { startSubscriptionNotifier, stopSubscriptionNotifier } = await import('../../server/lib/acp/subscriptions')
+    stopSubscriptionNotifier()
+    await startSubscriptionNotifier()
+    const starting = acpManager.start(target.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async say => say(textChunk('Done.')))
+    await starting
+
+    await send(sender.id, { agentId: target.id, message: 'one more thing', notifyTurns: 2 })
+
+    await vi.waitFor(async () => expect(await notes(sender.id)).toHaveLength(1))
+    await sleep(100)
+    expect(await notes(sender.id)).toHaveLength(1)
+    // The longer of the two windows, counted from the message's turn.
+    expect((await notes(sender.id))[0]).toContain('Subscribed for 1 more turn end.')
+  })
+})
+
+describe('after a restart', () => {
+  it('delivers what was left waiting, starting the agent, unless it is old', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const fresh = await session('Fresh')
+    const stale = await session('Stale')
+    for (const agent of [fresh, stale]) {
+      await enqueueInboxMessage({ agentSessionId: agent.id, content: [{ type: 'text', text: 'note' }], delivery: 'queue', origin: 'system' })
+    }
+    await query(`update agent_inbox set created_at = $1 where agent_session_id = $2`, [new Date(Date.now() - 2 * 3600_000).toISOString(), stale.id])
+
+    const prompts: any[] = []
+    await acpManager.resume()
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {}, { onPrompt: params => prompts.push(params) })
+
+    await vi.waitFor(() => expect(prompts).toHaveLength(1))
+    await expect(listInboxMessages(fresh.id)).resolves.toEqual([])
+    await expect(listInboxMessages(stale.id)).resolves.toHaveLength(1)
+    expect(state.adapters).toHaveLength(1)
   })
 })
 

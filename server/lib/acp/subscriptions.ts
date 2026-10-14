@@ -1,11 +1,14 @@
 import { bus } from '../bus'
+import { keyedSerial } from '../keyed-serial'
 import {
+  armMessageWatches,
   consumeSubscriptionTurn,
   enqueueInboxMessage,
   getAgentSession,
   latestAgentMessage,
   listAgentFollowers,
-  listAllSubscriptionTargets
+  listAllSubscriptionTargets,
+  listMessageWatchIds
 } from '../repo'
 import { acpManager } from './manager'
 import type { StreamEvent } from '../../../shared/types'
@@ -22,6 +25,13 @@ import type { StreamEvent } from '../../../shared/types'
  * that ends counts: a permission request or an error is worth hearing about
  * but is not the "it finished" the subscriber is waiting for, so those notify
  * without using the window up.
+ *
+ * A message an agent sends with `message_agent` is followed the same way, but
+ * from the turn that handles it, which may be several turns away: the watch on
+ * it (`agent_message_watches`) becomes a subscription when that turn's
+ * `user_message` names the message. Events about one agent are handled one at
+ * a time, in the order they were written, so that arming and the previous
+ * turn's end can never swap places.
  *
  * This listens on the bus rather than being called from `AgentRuntime`, for the
  * same reason the voice runtime does: the notifier needs `acpManager` to
@@ -50,6 +60,21 @@ export function watch(targetId: string): void {
   watched.add(targetId)
 }
 
+/**
+ * The messages somebody is waiting on an answer to, so a `user_message` costs
+ * no query unless it carries one. A superset, like `watched`: a withdrawn or
+ * cascaded watch leaves its id behind, which costs a query that arms nothing.
+ */
+const awaited = new Set<string>()
+
+/** Say that a watch on message `messageId` exists. */
+export function awaitMessage(messageId: string): void {
+  awaited.add(messageId)
+}
+
+/** One queue per agent the events are about. */
+const serially = keyedSerial()
+
 function trimmed(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim()
   return clean.length > OUTPUT_LIMIT ? `${clean.slice(0, OUTPUT_LIMIT)}…` : clean
@@ -58,15 +83,11 @@ function trimmed(text: string): string {
 /**
  * Queue one note about `targetId` for everyone subscribed to it.
  *
- * Written straight to the inbox rather than through `acpManager.deliver`, and
- * the distinction is not cosmetic: `deliver` starts the adapter it is
- * delivering to. One of the things a subscriber is told about is the target's
- * `adapter-exit`, which is raised for *every* session by `acpManager.shutdown()`
- * on Nitro's `close` hook — so a note that started adapters would spawn a fresh
- * one per subscriber as the server goes down. A row plus a nudge has the
- * behaviour that was wanted anyway: delivered now if the subscriber is up and
- * idle, after its current turn if it is busy, and on its next attach if it is
- * not running at all.
+ * Written straight to the inbox rather than through `acpManager.deliver`, so a
+ * note never cuts across a turn, and woken with `acpManager.wake`, which does
+ * nothing while the server shuts down: delivered now if the subscriber is up
+ * and idle, after its current turn if it is busy, and once its adapter has
+ * started if it is not running.
  *
  * `queue` and origin `system`: a note is never a reason to cut across work an
  * agent is already doing.
@@ -95,7 +116,10 @@ async function notifySubscribers(
         delivery: 'queue',
         origin: 'system'
       })
-      acpManager.drainInbox(subscriber)
+      // Woken, not only drained: a subscriber that is idle is often not
+      // running at all — after a restart none is — and a note left in its
+      // inbox until somebody opened it is the stall this exists to prevent.
+      acpManager.wake(subscriber)
     } catch (error) {
       console.error(`[acp:${subscriber}] could not queue a subscription note`, error)
     }
@@ -114,10 +138,26 @@ function windowNote(remainingTurns: number | null): string {
 function handle(event: StreamEvent): Promise<void> | void {
   const targetId
     = event.type === 'agent-event' || event.type === 'permission-changed' ? event.agentSessionId : null
+  if (!targetId) return
+  const arming = event.type === 'agent-event' && event.event.type === 'user_message' ? awaitedIn(event.event.payload) : []
   // Synchronous, and the usual answer: an agent nobody follows must not turn
   // every turn it ends into a query.
-  if (!targetId || !watched.has(targetId)) return
-  return dispatch(event)
+  if (!arming.length && !watched.has(targetId)) return
+  return serially(targetId, async () => {
+    if (arming.length) {
+      const armed = await armMessageWatches(targetId, arming)
+      arming.forEach(id => awaited.delete(id))
+      if (armed.length) watch(targetId)
+      return
+    }
+    await dispatch(event)
+  })
+}
+
+/** The messages on a `user_message` that somebody is waiting on. */
+function awaitedIn(payload: any): string[] {
+  const ids: unknown = payload?.messageIds
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string' && awaited.has(id)) : []
 }
 
 async function dispatch(event: StreamEvent): Promise<void> {
@@ -149,6 +189,9 @@ async function dispatch(event: StreamEvent): Promise<void> {
       )
       break
     case 'adapter-exit':
+      // Domo stopped it: a shutdown, an archive or a handoff, none of which
+      // is news to whoever follows the agent.
+      if (event.event.payload?.requested) break
       await notifySubscribers(
         event.agentSessionId,
         `stopped: its adapter exited (code ${event.event.payload?.code ?? 'unknown'})`,
@@ -180,12 +223,15 @@ export async function startSubscriptionNotifier(): Promise<void> {
     const running = handle(event)
     if (running) void running.catch(error => console.error('[acp] subscription notifier failed', error))
   })
-  const targets = await listAllSubscriptionTargets()
-    .catch((error) => {
-      console.error('[acp] could not read the subscriptions', error)
-      return [] as string[]
-    })
-  targets.forEach(watch)
+  const [targets, messages] = await Promise.all([
+    listAllSubscriptionTargets(),
+    listMessageWatchIds()
+  ]).catch((error) => {
+    console.error('[acp] could not read the subscriptions', error)
+    return [[], []] as string[][]
+  })
+  targets!.forEach(watch)
+  messages!.forEach(awaitMessage)
 }
 
 /** Stop listening, and forget who was followed. For tests; the app never calls it. */
@@ -193,4 +239,5 @@ export function stopSubscriptionNotifier(): void {
   g[globalKey]?.()
   g[globalKey] = null
   watched.clear()
+  awaited.clear()
 }

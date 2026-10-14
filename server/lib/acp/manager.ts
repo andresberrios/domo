@@ -51,6 +51,8 @@ import {
   listAgentSessions,
   listInboxMessages,
   listMcpServers,
+  listSessionsWithPendingInbox,
+  releaseInboxMessages,
   openAgentStream,
   resolvePermissionRow,
   setAgentUsage,
@@ -379,6 +381,23 @@ function pendingMark(live: boolean): { pending?: true } {
 function withOrigin<T extends object>(payload: T, origin: MessageOrigin | undefined): T & { origin?: MessageOrigin } {
   return origin ? { ...payload, origin } : payload
 }
+
+/**
+ * The ids of the messages a `user_message` carries, on its payload: the event
+ * that says "this turn is answering them", which is what arms a sender's
+ * watch on its message (see `subscriptions.ts`).
+ */
+function withMessageIds<T extends object>(payload: T, ids: string[] | undefined): T & { messageIds?: string[] } {
+  return ids?.length ? { ...payload, messageIds: ids } : payload
+}
+
+/**
+ * Adapter processes Domo stopped on purpose, with whether the session keeps
+ * its status. A server shutdown stops every adapter, and an idle session is
+ * still idle afterwards: nothing it was doing was cut off, and the next
+ * message starts it again. Calling that `stopped` read as "did not come back".
+ */
+const requestedExits = new WeakMap<object, { keepIdle: boolean }>()
 
 class AgentRuntime {
   readonly agentSessionId: string
@@ -893,6 +912,7 @@ class AgentRuntime {
       if (text) console.error(`[acp:${this.agentSessionId}] ${text}`)
     })
     proc.on('exit', (code, signal) => {
+      const requested = requestedExits.get(proc)
       this.connection = null
       this.acpSessionId = null
       this.booting = null
@@ -909,13 +929,17 @@ class AgentRuntime {
       void this.serial(async () => {
         await this.closeStream(block)
         await this.flushUsage()
-        await appendAgentEvent(this.agentSessionId, 'adapter-exit', { code, signal })
+        // `requested`: Domo stopped it, which nobody following the agent needs
+        // to be told about — a shutdown stops all of them at once.
+        await appendAgentEvent(this.agentSessionId, 'adapter-exit', requested ? { code, signal, requested: true } : { code, signal })
         // An adapter that could not start exits, so this handler and the boot
         // failure's own `setStatus('error')` race for the same row — and which
         // of the two lands last is not something the caller should have to
         // guess at. The error is the one that says *why*, and `lastError` beside
         // it is what the UI offers a retry on, so it wins either way.
-        if (this.status !== 'error') await this.setStatus('stopped')
+        if (this.status === 'error') return
+        if (requested?.keepIdle && this.status === 'idle') return
+        await this.setStatus('stopped')
       }).catch(() => {})
     })
 
@@ -1793,7 +1817,7 @@ class AgentRuntime {
    * is exactly what the inbox exists to avoid. Everything that is not the
    * initial prompt of a session should go through `deliver`.
    */
-  prompt(content: any[], origin?: MessageOrigin): Promise<{ stopReason: string }> {
+  prompt(content: any[], origin?: MessageOrigin, messageIds?: string[]): Promise<{ stopReason: string }> {
     const controller = new AbortController()
     let settle!: () => void
     const turn: Turn = {
@@ -1808,7 +1832,7 @@ class AgentRuntime {
     this.discardAdapterTurn()
     this.turn = turn
 
-    return this.runTurn(content, turn, controller, origin).finally(() => {
+    return this.runTurn(content, turn, controller, origin, messageIds).finally(() => {
       if (this.turn === turn) this.turn = null
       settle()
       // A turn ending — normally, cancelled, or failed — is the other moment
@@ -1821,7 +1845,8 @@ class AgentRuntime {
     asked: any[],
     turn: Turn,
     controller: AbortController,
-    origin?: MessageOrigin
+    origin?: MessageOrigin,
+    messageIds?: string[]
   ): Promise<{ stopReason: string }> {
     await this.assertStartable('sending it a message')
     await this.ensureStarted()
@@ -1836,7 +1861,7 @@ class AgentRuntime {
     const stale = this.takeStream()
     await this.serial(async () => {
       await this.closeStream(stale)
-      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin({ content }, origin))
+      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin(withMessageIds({ content }, messageIds), origin))
       // `last_error` is history and the transcript already carries it at the
       // moment it happened; the row's copy describes the *current* state, so a
       // turn starting clears it. Left behind, a failed turn's message outlived
@@ -1933,7 +1958,10 @@ class AgentRuntime {
     content: any[]
     delivery: MessageDelivery
     origin: MessageOrigin
+    /** The message's id, whichever way it goes in: the inbox row's, or the one its `user_message` names. */
+    id?: string
   }): Promise<DeliveryResult> {
+    const ids = input.id ? [input.id] : undefined
     return this.serialDeliver(async () => {
       // Ahead of `ensureStarted` so the caller is told *why* rather than being
       // handed a boot failure, and ahead of every branch below so an
@@ -1948,11 +1976,11 @@ class AgentRuntime {
         // in the inbox while its adapter boots, and a second one sent in that
         // window must not overtake it. The drain sends both, in order.
         if ((await listInboxMessages(this.agentSessionId)).length) {
-          const queued = await this.enqueue(input.content, input.delivery, input.origin)
+          const queued = await this.enqueue(input.content, input.delivery, input.origin, input.id)
           this.drainInbox()
           return queued
         }
-        const turn = this.prompt(input.content, input.origin)
+        const turn = this.prompt(input.content, input.origin, ids)
         turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
         return { delivery: input.delivery, outcome: 'prompted' as const }
       }
@@ -1963,15 +1991,15 @@ class AgentRuntime {
       // right behind this turn is what delivers it, in the very next turn.
       // Steering instead would reach an idle adapter, which is how a detached
       // turn nobody can see the end of gets started.
-      if (this.turn.settled) return this.enqueue(input.content, input.delivery, input.origin)
+      if (this.turn.settled) return this.enqueue(input.content, input.delivery, input.origin, input.id)
 
       switch (input.delivery) {
         case 'queue':
-          return this.enqueue(input.content, 'queue', input.origin)
+          return this.enqueue(input.content, 'queue', input.origin, input.id)
         case 'interrupt':
-          return this.interruptWith(input.content, input.origin)
+          return this.interruptWith(input.content, input.origin, input.id)
         default:
-          return this.steerInto(input.content, input.origin)
+          return this.steerInto(input.content, input.origin, input.id)
       }
     })
   }
@@ -1979,19 +2007,21 @@ class AgentRuntime {
   private async enqueue(
     content: any[],
     delivery: MessageDelivery,
-    origin: MessageOrigin
+    origin: MessageOrigin,
+    id?: string
   ): Promise<DeliveryResult> {
     const row = await enqueueInboxMessage({
       agentSessionId: this.agentSessionId,
       content,
       delivery,
-      origin
+      origin,
+      id
     })
     return { delivery, outcome: 'queued', inboxId: row.id }
   }
 
   /** Cancel what is running, wait for it to settle, then prompt. */
-  private async interruptWith(content: any[], origin: MessageOrigin): Promise<DeliveryResult> {
+  private async interruptWith(content: any[], origin: MessageOrigin, id?: string): Promise<DeliveryResult> {
     const running = this.turn
     if (running) {
       running.interrupted = true
@@ -2000,16 +2030,16 @@ class AgentRuntime {
     }
     // The drain that turn kicked off is queued behind this critical section, so
     // it finds the slot taken and leaves the queue for the turn below.
-    const turn = this.prompt(content, origin)
+    const turn = this.prompt(content, origin, id ? [id] : undefined)
     turn.catch(error => console.error(`[acp:${this.agentSessionId}] turn failed`, error))
     return { delivery: 'interrupt', outcome: 'prompted' }
   }
 
   /** Inject into the running turn, or fall back when the adapter cannot. */
-  private async steerInto(content: any[], origin: MessageOrigin): Promise<DeliveryResult> {
+  private async steerInto(content: any[], origin: MessageOrigin, id?: string): Promise<DeliveryResult> {
     // "Change course now" is what was asked for, and queueing is the one thing
     // it definitely does not mean.
-    if (!this.steering) return this.interruptWith(content, origin)
+    if (!this.steering) return this.interruptWith(content, origin, id)
 
     let outcome: string
     try {
@@ -2021,14 +2051,14 @@ class AgentRuntime {
       outcome = String(response?.outcome ?? 'failed')
     } catch (error) {
       console.error(`[acp:${this.agentSessionId}] steering failed, queueing instead`, error)
-      return this.enqueue(content, 'steer', origin)
+      return this.enqueue(content, 'steer', origin, id)
     }
 
     if (outcome === 'promptRequired' || outcome === 'failed') {
       // The turn settled inside the adapter between our check and the request.
       // Queue rather than prompt: our own `session/prompt` may still be in
       // flight, and its end is what drains the queue a moment later.
-      return this.enqueue(content, 'steer', origin)
+      return this.enqueue(content, 'steer', origin, id)
     }
 
     // The message joined the running turn, so the transcript has to show it in
@@ -2036,7 +2066,7 @@ class AgentRuntime {
     const block = this.takeStream()
     await this.serial(async () => {
       await this.closeStream(block)
-      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin({ content, delivery: 'steer' }, origin))
+      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin(withMessageIds({ content, delivery: 'steer' }, id ? [id] : undefined), origin))
       await this.touchIfStale()
     })
     return { delivery: 'steer', outcome: 'steered' }
@@ -2065,18 +2095,15 @@ class AgentRuntime {
       // of sight. Put them back instead: they are still waiting, in order, and
       // the turn that took the slot drains them when it ends.
       if (this.turn) {
-        for (const message of waiting) {
-          await enqueueInboxMessage({
-            agentSessionId: this.agentSessionId,
-            content: message.content,
-            delivery: message.delivery,
-            origin: message.origin
-          })
-        }
+        await releaseInboxMessages(waiting)
         return
       }
       // Several messages carry their senders in the dividers between them.
-      const turn = this.prompt(combineInboxContent(waiting), waiting.length === 1 ? waiting[0]!.origin : undefined)
+      const turn = this.prompt(
+        combineInboxContent(waiting),
+        waiting.length === 1 ? waiting[0]!.origin : undefined,
+        waiting.map(message => message.id)
+      )
       // Anything that arrives *during* this turn is drained when it ends.
       turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
     }).catch(error => console.error(`[acp:${this.agentSessionId}] could not drain the inbox`, error))
@@ -2353,7 +2380,11 @@ class AgentRuntime {
     })
   }
 
-  stop(): void {
+  stop(options: { keepIdle?: boolean } = {}): void {
+    if (this.proc) requestedExits.set(this.proc, { keepIdle: !!options.keepIdle })
+    // A turn cut off on purpose is not a failure: without this it ended as an
+    // `error` ("ACP connection closed"), and every follower was told so.
+    if (this.turn) this.turn.interrupted = true
     this.discardAdapterTurn()
     this.threadActive = false
     // A block left open would render as text that streams forever, and a
@@ -2430,8 +2461,16 @@ async function environmentForNewSession(id: string): Promise<DevEnvironment> {
   return environment
 }
 
+/** How far back `resume` looks for messages left waiting by a restart. */
+const RESUME_WINDOW_MS = 60 * 60_000
+
+/** The statuses a restart interrupts. */
+const WORKING = new Set<AgentSessionStatus>(['starting', 'thinking', 'awaiting-permission'])
+
 class AcpManager {
   private runtimes = new Map<string, AgentRuntime>()
+  /** Set by `shutdown`, cleared by `resume`: the manager outlives a dev-server reload. */
+  private closing = false
 
   private runtime(agentSessionId: string): AgentRuntime {
     let runtime = this.runtimes.get(agentSessionId)
@@ -2553,7 +2592,7 @@ class AcpManager {
    */
   async deliver(
     agentSessionId: string,
-    input: { content: any[], delivery?: MessageDelivery, origin?: MessageOrigin }
+    input: { content: any[], delivery?: MessageDelivery, origin?: MessageOrigin, id?: string }
   ): Promise<DeliveryResult & { agentSessionId: string }> {
     // A session of an assistant that has handed off is a closed chapter; what
     // is said to it is said to the assistant, whose current session takes it.
@@ -2568,7 +2607,8 @@ class AcpManager {
     const result = await this.runtime(agentSessionId).deliver({
       content: input.content,
       delivery: input.delivery ?? 'steer',
-      origin: input.origin ?? 'user'
+      origin: input.origin ?? 'user',
+      id: input.id
     })
     return { ...result, agentSessionId }
   }
@@ -2582,6 +2622,36 @@ class AcpManager {
   /** Hand over anything waiting, if the agent is free to take it. */
   drainInbox(agentSessionId: string): void {
     this.runtimes.get(agentSessionId)?.drainInbox()
+  }
+
+  /**
+   * Hand over anything waiting, starting the adapter if it is not running:
+   * the attach drains the inbox. What a note to an agent needs, because the
+   * agent it is for is most often not running — every adapter is gone after a
+   * restart, and its subscriber is often idle and asleep.
+   *
+   * Never while the server is shutting down, or every note written as the
+   * adapters go down would start a fresh one.
+   */
+  wake(agentSessionId: string): void {
+    const runtime = this.runtimes.get(agentSessionId)
+    if (runtime?.alive) return runtime.drainInbox()
+    if (this.closing) return
+    void this.runtime(agentSessionId).ensureStarted()
+      .catch(error => console.error(`[acp:${agentSessionId}] could not start to deliver its inbox`, error))
+  }
+
+  /**
+   * After a boot, deliver what was left waiting: nothing is running to drain
+   * it, so a note that reached an agent just before the restart would sit
+   * there until somebody opened the session. Only messages from the last
+   * hour: an old one on a session nobody has used since is not a reason to
+   * start it now.
+   */
+  async resume(now = new Date()): Promise<void> {
+    this.open()
+    const since = new Date(now.getTime() - RESUME_WINDOW_MS).toISOString()
+    for (const id of await listSessionsWithPendingInbox(since)) this.wake(id)
   }
 
   isBusy(agentSessionId: string) {
@@ -2633,11 +2703,22 @@ class AcpManager {
     return this.runtimes.get(agentSessionId)?.alive ?? false
   }
 
+  /** Undo `shutdown`'s refusal to start adapters, for a server that is running again. */
+  open(): void {
+    this.closing = false
+  }
+
   async shutdown() {
-    for (const id of [...this.runtimes.keys()]) this.stop(id)
+    this.closing = true
+    for (const [id, runtime] of [...this.runtimes]) {
+      runtime.stop({ keepIdle: true })
+      this.runtimes.delete(id)
+    }
+    // Only what was cut off is `stopped`; an idle session stays idle, as one
+    // left by a crash does (see `requestedExits`).
     const sessions = await listAgentSessions()
     for (const session of sessions) {
-      if (session.status !== 'stopped') {
+      if (WORKING.has(session.status)) {
         await updateAgentSession(session.id, { status: 'stopped' }).catch(() => {})
       }
     }

@@ -387,6 +387,18 @@ create index if not exists agent_subscriptions_target on agent_subscriptions(tar
 -- before the column existed meant.
 alter table agent_subscriptions add column if not exists remaining_turns integer;
 
+-- An agent that sent a message and wants to hear about the turn that answers
+-- it. Keyed by the message's own id, which the user_message of that turn names:
+-- that event, not the send, turns the row into a subscription, so a message
+-- queued behind other turns is not reported on when the first of them ends.
+create table if not exists agent_message_watches (
+  message_id text primary key,
+  subscriber_id text not null references agent_sessions(id) on delete cascade,
+  target_id text not null references agent_sessions(id) on delete cascade,
+  remaining_turns integer,
+  created_at text not null
+);
+
 -- Prompts that wake an existing agent on a recurring cron schedule or at one
 -- specific instant. next_run_at is materialised so the scheduler only needs an
 -- indexed due-time query; the expression is parsed when the row is written.

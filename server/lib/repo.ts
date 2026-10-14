@@ -158,14 +158,26 @@ export async function saveAppUpdate(update: Omit<AppUpdate, 'updatedAt'>): Promi
  */
 export async function restartBlockers(now = new Date()): Promise<string[]> {
   const soon = new Date(now.getTime() + 2 * 60_000).toISOString()
-  const [agents, environments, cron] = await Promise.all([
+  const recent = new Date(now.getTime() - 2 * 60_000).toISOString()
+  const [agents, messages, environments, cron] = await Promise.all([
     queryOne<{ n: number }>(`select count(*)::int as n from agent_sessions where status in ('starting', 'thinking', 'awaiting-permission')`),
+    // A message about to become a turn: most often a subscription note on its
+    // way to an agent that is idle right now and is about to work on it. It
+    // would survive the restart, but restarting in that gap breaks off work
+    // that is still going. Only a recent one, so a message stuck on a session
+    // that cannot take it does not hold updates back for ever.
+    queryOne<{ n: number }>(
+      `select count(*)::int as n from agent_inbox i join agent_sessions s on s.id = i.agent_session_id
+        where i.delivered_at is null and i.created_at >= $1 and not s.archived`,
+      [recent]
+    ),
     queryOne<{ n: number }>(`select count(*)::int as n from dev_environments where status in ('creating', 'upgrading') and retired_at is null`),
     queryOne<{ n: number }>(`select count(*)::int as n from cron_jobs where enabled = true and next_run_at is not null and next_run_at <= $1`, [soon])
   ])
   const blockers: string[] = []
   const plural = (n: number, one: string, many: string) => (n === 1 ? one : many.replace('%', String(n)))
   if (agents?.n) blockers.push(plural(agents.n, 'an agent is working', '% agents are working'))
+  if (messages?.n) blockers.push(plural(messages.n, 'a message is about to reach an agent', '% messages are about to reach agents'))
   if (environments?.n) blockers.push(plural(environments.n, 'an environment is being built', '% environments are being built'))
   if (cron?.n) blockers.push(plural(cron.n, 'a schedule fires within two minutes', '% schedules fire within two minutes'))
   return blockers
@@ -822,6 +834,7 @@ export async function removeAllAgentSubscriptions(agentSessionId: string): Promi
     'delete from agent_subscriptions where subscriber_id = $1 or target_id = $1 returning subscriber_id',
     [agentSessionId]
   )
+  await query('delete from agent_message_watches where subscriber_id = $1 or target_id = $1', [agentSessionId])
   return rows.length
 }
 
@@ -1116,6 +1129,16 @@ export async function carryOverToSession(fromId: string, toId: string): Promise<
     [fromId, toId]
   )
   await query('delete from agent_subscriptions where subscriber_id = $1 or target_id = $1', [fromId])
+  // A watch is armed by whichever session the message reaches, so only its
+  // ends need moving: the sender, so the answer reaches the assistant's new
+  // session, and the target, so the row does not die with the old one.
+  await query(
+    `update agent_message_watches
+        set subscriber_id = case when subscriber_id = $1 then $2 else subscriber_id end,
+            target_id = case when target_id = $1 then $2 else target_id end
+      where subscriber_id = $1 or target_id = $1`,
+    [fromId, toId]
+  )
   return moved.length
 }
 
@@ -1678,13 +1701,15 @@ export async function enqueueInboxMessage(input: {
   content: any[]
   delivery: MessageDelivery
   origin: MessageOrigin
+  /** Chosen by the sender when something already refers to the message (a watch on it). */
+  id?: string
 }): Promise<AgentInboxMessage> {
   const { session, environment } = await getAgentSessionWithEnvironment(input.agentSessionId)
   assertSessionStartable(session, environment, null, 'queueing a message for it')
   const row = await queryOne(
     `insert into agent_inbox (id, agent_session_id, content, delivery, origin, created_at)
      values ($1, $2, $3::jsonb, $4, $5, $6) returning *`,
-    [newId('in'), input.agentSessionId, JSON.stringify(input.content), input.delivery, input.origin, nowIso()]
+    [input.id ?? newId('in'), input.agentSessionId, JSON.stringify(input.content), input.delivery, input.origin, nowIso()]
   )
   const message = mapInboxMessage(row)
   bus.publish({ type: 'agent-inbox-changed', agentSessionId: input.agentSessionId, message })
@@ -1737,6 +1762,36 @@ export async function claimInboxMessages(agentSessionId: string): Promise<AgentI
   return messages
 }
 
+/**
+ * Put claimed messages back as waiting, under the same ids and in the same
+ * order, for a drain that found the slot taken after claiming them. Same ids,
+ * because a watch on a message is keyed by its id.
+ */
+export async function releaseInboxMessages(messages: AgentInboxMessage[]): Promise<void> {
+  if (!messages.length) return
+  const rows = await query(
+    'update agent_inbox set delivered_at = null where id = any($1) returning *',
+    [messages.map(message => message.id)]
+  )
+  for (const row of rows) {
+    const message = mapInboxMessage(row)
+    bus.publish({ type: 'agent-inbox-changed', agentSessionId: message.agentSessionId, message })
+  }
+}
+
+/**
+ * The sessions with something still waiting in their inbox, sent no earlier
+ * than `since`. After a restart nothing is running to drain them.
+ */
+export async function listSessionsWithPendingInbox(since: string): Promise<string[]> {
+  const rows = await query<{ id: string }>(
+    `select distinct s.id from agent_inbox i join agent_sessions s on s.id = i.agent_session_id
+      where i.delivered_at is null and i.created_at >= $1 and not s.archived`,
+    [since]
+  )
+  return rows.map(row => row.id)
+}
+
 /** Drop a message that is still waiting. Returns false if it already went out. */
 export async function deleteInboxMessage(id: string): Promise<AgentInboxMessage | null> {
   const row = await queryOne(
@@ -1744,6 +1799,8 @@ export async function deleteInboxMessage(id: string): Promise<AgentInboxMessage 
     [id]
   )
   if (!row) return null
+  // Nobody is going to answer a message that was taken back.
+  await removeMessageWatch(id)
   const message = mapInboxMessage(row)
   bus.publish({ type: 'agent-inbox-changed', agentSessionId: message.agentSessionId, message })
   return message
@@ -1792,7 +1849,67 @@ export async function consumeSubscriptionTurn(
 /** Drop every subscription `subscriberId` holds, so nothing queues notes for it. */
 export async function removeSubscriptionsHeldBy(subscriberId: string): Promise<number> {
   const rows = await query('delete from agent_subscriptions where subscriber_id = $1 returning target_id', [subscriberId])
+  await query('delete from agent_message_watches where subscriber_id = $1', [subscriberId])
   return rows.length
+}
+
+/**
+ * Wait for the turn that handles message `messageId` to `targetId`, then
+ * follow it for `remainingTurns` turn ends (null: indefinitely). See
+ * `armMessageWatches`.
+ */
+export async function addMessageWatch(input: {
+  messageId: string
+  subscriberId: string
+  targetId: string
+  remainingTurns: number | null
+}): Promise<void> {
+  await query(
+    `insert into agent_message_watches (message_id, subscriber_id, target_id, remaining_turns, created_at)
+     values ($1, $2, $3, $4, $5)`,
+    [input.messageId, input.subscriberId, input.targetId, input.remainingTurns, nowIso()]
+  )
+}
+
+export async function removeMessageWatch(messageId: string): Promise<void> {
+  await query('delete from agent_message_watches where message_id = $1', [messageId])
+}
+
+/** Every message somebody is waiting on an answer to. */
+export async function listMessageWatchIds(): Promise<string[]> {
+  const rows = await query<{ message_id: string }>('select message_id from agent_message_watches')
+  return rows.map(row => row.message_id)
+}
+
+/**
+ * Messages `messageIds` have just reached `targetId` as a turn: turn the
+ * watches on them into subscriptions to it, in one statement.
+ *
+ * Merged into whatever the sender already holds rather than replacing it,
+ * since both windows start counting now: the longer one wins, and indefinite
+ * beats any count. One row per pair, so one note per event however many
+ * messages the sender is waiting on. Returns who now follows `targetId`.
+ */
+export async function armMessageWatches(targetId: string, messageIds: string[]): Promise<string[]> {
+  if (!messageIds.length) return []
+  const rows = await query<{ subscriber_id: string }>(
+    `with armed as (
+       delete from agent_message_watches where message_id = any($1)
+       returning subscriber_id, remaining_turns
+     ), merged as (
+       select subscriber_id,
+              case when bool_or(remaining_turns is null) then null else max(remaining_turns) end as remaining_turns
+         from armed group by subscriber_id
+     )
+     insert into agent_subscriptions (subscriber_id, target_id, created_at, remaining_turns)
+       select subscriber_id, $2, $3, remaining_turns from merged where subscriber_id <> $2
+     on conflict (subscriber_id, target_id) do update set remaining_turns =
+       case when agent_subscriptions.remaining_turns is null or excluded.remaining_turns is null then null
+            else greatest(agent_subscriptions.remaining_turns, excluded.remaining_turns) end
+     returning subscriber_id`,
+    [messageIds, targetId, nowIso()]
+  )
+  return rows.map(row => row.subscriber_id)
 }
 
 export async function removeAgentSubscription(subscriberId: string, targetId: string): Promise<boolean> {

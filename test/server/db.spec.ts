@@ -21,6 +21,7 @@ const TABLES = [
   'agent_permissions',
   'agent_inbox',
   'agent_subscriptions',
+  'agent_message_watches',
   'cron_jobs',
   'cron_runs',
   'mcp_servers',
@@ -32,12 +33,12 @@ const TABLES = [
 ]
 
 /**
- * `dev_environment_ports` is server-side only, and `agent_subscriptions` is one
- * agent's view of another — neither is anything the browser renders, and
+ * `dev_environment_ports` is server-side only, and `agent_subscriptions` and
+ * `agent_message_watches` are one agent's view of another — neither is anything the browser renders, and
  * `agent_subscriptions` has no single-column key for a shape to be keyed on.
  */
 const SYNCED_TABLES = TABLES.filter(
-  table => !['dev_environment_ports', 'agent_subscriptions', 'cron_runs'].includes(table)
+  table => !['dev_environment_ports', 'agent_subscriptions', 'agent_message_watches', 'cron_runs'].includes(table)
 )
 
 describe('schema bootstrap', () => {

@@ -3,7 +3,9 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { query } from '../../server/lib/db'
 import {
   addAgentSubscription,
+  addMessageWatch,
   appendAgentEvent,
+  armMessageWatches,
   claimInboxMessages,
   createAgentSession,
   createDevEnvironmentRow,
@@ -27,7 +29,9 @@ import {
   listPermissions,
   listProjects,
   openAgentStream,
+  releaseInboxMessages,
   removeAgentSubscription,
+  restartBlockers,
   resolvePermissionRow,
   titleUntitledAgentSession,
   UNTITLED_AGENT_TITLE,
@@ -603,6 +607,30 @@ describe('the agent inbox', () => {
     ])
   })
 
+  it('puts claimed messages back under the same ids, in order', async () => {
+    const session = await agent()
+    const first = await queued(session.id, 'first')
+    const second = await queued(session.id, 'second')
+
+    await releaseInboxMessages(await claimInboxMessages(session.id))
+
+    // A watch on a message is keyed by its id, so a copy would orphan it.
+    await expect(listInboxMessages(session.id)).resolves.toMatchObject([{ id: first.id }, { id: second.id }])
+  })
+
+  it('holds a restart while a message is about to reach an agent, but not for ever', async () => {
+    const session = await agent()
+    await updateAgentSession(session.id, { status: 'idle' })
+    const now = new Date()
+    await queued(session.id, 'about to go')
+
+    await expect(restartBlockers(now)).resolves.toEqual(['a message is about to reach an agent'])
+    // Stuck on a session that cannot take it: no reason to never update.
+    await expect(restartBlockers(new Date(now.getTime() + 3 * 60_000))).resolves.toEqual([])
+    await claimInboxMessages(session.id)
+    await expect(restartBlockers(now)).resolves.toEqual([])
+  })
+
   it('goes away with the session it was queued for', async () => {
     const session = await agent()
     await queued(session.id, 'pending')
@@ -644,6 +672,50 @@ describe('subscriptions between agents', () => {
     await deleteAgentSession(target.id)
 
     await expect(listAgentSubscriptions(watcher.id)).resolves.toEqual([])
+  })
+})
+
+describe('watches on a message', () => {
+  const follows = async (subscriberId: string) =>
+    (await listAgentSubscriptions(subscriberId)).map(entry => [entry.targetId, entry.remainingTurns])
+
+  it('become one subscription per sender when the message is answered, merged with what it held', async () => {
+    const sender = await agent()
+    const other = await agent({ adapter: 'codex', title: 'Other', cwd: '/srv/api' })
+    const target = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
+    await addAgentSubscription(sender.id, target.id, 3)
+    await addMessageWatch({ messageId: 'in_a', subscriberId: sender.id, targetId: target.id, remainingTurns: 1 })
+    await addMessageWatch({ messageId: 'in_b', subscriberId: sender.id, targetId: target.id, remainingTurns: 2 })
+    await addMessageWatch({ messageId: 'in_c', subscriberId: other.id, targetId: target.id, remainingTurns: null })
+    await addMessageWatch({ messageId: 'in_later', subscriberId: other.id, targetId: target.id, remainingTurns: 1 })
+
+    const armed = await armMessageWatches(target.id, ['in_a', 'in_b', 'in_c'])
+
+    expect(armed.sort()).toEqual([sender.id, other.id].sort())
+    // The longer window wins; it does not add up, and it does not shrink.
+    await expect(follows(sender.id)).resolves.toEqual([[target.id, 3]])
+    await expect(follows(other.id)).resolves.toEqual([[target.id, null]])
+    // Not answered yet, so still only waiting.
+    expect(await query('select message_id from agent_message_watches')).toEqual([{ message_id: 'in_later' }])
+  })
+
+  it('never makes an agent follow itself', async () => {
+    const target = await agent()
+    await addMessageWatch({ messageId: 'in_self', subscriberId: target.id, targetId: target.id, remainingTurns: 1 })
+
+    await expect(armMessageWatches(target.id, ['in_self'])).resolves.toEqual([])
+    await expect(listAgentSubscriptions(target.id)).resolves.toEqual([])
+  })
+
+  it('goes when the message is withdrawn', async () => {
+    const sender = await agent()
+    const target = await agent({ adapter: 'codex', title: 'Docs', cwd: '/srv/api' })
+    const message = await enqueueInboxMessage({ agentSessionId: target.id, content: [], delivery: 'queue', origin: `agent:${sender.id}` })
+    await addMessageWatch({ messageId: message.id, subscriberId: sender.id, targetId: target.id, remainingTurns: 1 })
+
+    await deleteInboxMessage(message.id)
+
+    expect(await query('select * from agent_message_watches')).toEqual([])
   })
 })
 
