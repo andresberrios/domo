@@ -59,7 +59,7 @@ echo "branch: $(PATH="$DOMO_HOME/bin:$PATH" git -C /tmp/projects/fresh branch --
 if [ -n "${DOMO_BUNDLE_GIT:-}" ]; then
   echo "== launcher moves a bundled git to the pinned version"
   echo v0 > "$DOMO_HOME/git/VERSION"
-  "$DOMO_HOME/bin/domo" update --force --no-restart 2>&1 | grep -E "git|current is now|domo:" || true
+  "$DOMO_HOME/bin/domo" install --no-service --skip-trust --no-open 2>&1 | grep -E "git|current is now|domo:" || true
   echo "version: $(cat "$DOMO_HOME/git/VERSION"), runs: $("$DOMO_HOME/bin/git" --version)"
 fi
 "$DOMO_HOME/bin/domo" stop 2>/dev/null || true
