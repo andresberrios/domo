@@ -328,9 +328,10 @@ onMounted(() => nextTick(() => followTail()))
               ...messageFor(items[row.index]!)
             }"
           >
-            <template #leading="{ avatar, ui }">
+            <!-- A handoff is a divider with no avatar, so nothing to hang a time from. -->
+            <template v-if="rowProps(items[row.index]!).avatar" #leading="{ avatar: rowAvatar, ui }">
               <span class="relative inline-flex">
-                <UAvatar v-bind="avatar" :size="(ui.leadingAvatarSize() as any) || undefined" :class="ui.leadingAvatar()" />
+                <UAvatar v-bind="rowAvatar" :size="(ui.leadingAvatarSize() as any) || undefined" :class="ui.leadingAvatar()" />
                 <time
                   :datetime="items[row.index]!.at"
                   :title="fullTime(items[row.index]!.at)"
