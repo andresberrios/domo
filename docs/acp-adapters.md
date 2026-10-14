@@ -35,3 +35,16 @@ or when an adapter acts in an unexpected way. Everything else is in
   environment first** (`adapterEnv()` in `server/lib/acp/adapter-process.ts`).
   Inherited `CLAUDE_*` variables or a host `TMPDIR` in a container have both
   caused this error, and the logs said nothing else.
+- **An adapter can start a turn that nobody prompted.** This happens when the
+  agent wakes on a schedule, when a background task it launched finishes, or
+  when codex-acp is steered while idle (it ignores `idleBehavior`). No
+  `session/prompt` is outstanding, and ACP v1 has no other end-of-turn
+  message. `AgentRuntime` opens a turn in `this.turn` and ends it on codex-acp's
+  thread status (`codexThreadStatus`), or else after a minute of quiet with no
+  tool call open. An open tool call or an `active` Codex thread holds the turn
+  with no deadline. Do not end these turns sooner: an early end drains the
+  inbox into an adapter that is still working. claude-agent-acp's per-result
+  `usage_update` with `cost` is not an end signal: a queued background-task
+  notification gets a placeholder result before its follow-up runs. Its real
+  one, a `state_update` that goes `idle`, is on its experimental ACP v2
+  surface only (0.90).

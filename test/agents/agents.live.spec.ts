@@ -1,12 +1,13 @@
 import { rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { AgentAdapter, DevEnvironment } from '~~/shared/types'
 import { removeCachedImages } from '../helpers/cached-images'
 import {
   assistantText,
+  events,
   eventsOfType,
   fixtureRepo,
   PREFIX,
@@ -425,6 +426,55 @@ function answerPermissions(agentSessionId: string) {
     }
   }
 }
+
+/**
+ * Claude Code wakes itself when a background command it launched finishes, with
+ * no `session/prompt` outstanding. This is the only proof that the real adapter
+ * says that turn in a shape the runtime catches, and that the turn ends.
+ */
+describe('a turn Claude Code starts for itself', () => {
+  it('opens when its background command finishes, ends, and drains the inbox behind it', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { listInboxMessages } = await import('../../server/lib/repo')
+    const session = await start('claude-code', { host: true })
+    const answered = answerPermissions(session.id)
+
+    const launched = await acpManager.prompt(session.id, [{
+      type: 'text',
+      text: 'Use your Bash tool with run_in_background set to true to run exactly: sleep 20 && echo background-done\n'
+        + 'Do not wait for it and do not check on it. Reply with the single word LAUNCHED and end your turn. '
+        + 'When you are told it has finished, reply with the single word WOKE.'
+    }])
+    expect(launched.stopReason).toBe('end_turn')
+
+    const adapterTurn = async (type: string) =>
+      (await eventsOfType(session.id, type)).filter(event => event.payload?.origin === 'adapter')
+
+    // Nobody prompts it again: the command finishing is what wakes it.
+    await vi.waitFor(async () => expect(await adapterTurn('turn_start')).toHaveLength(1), { timeout: 3 * 60_000, interval: 500 })
+    const queued = await acpManager.deliver(session.id, {
+      content: [{ type: 'text', text: 'Reply with the single word QUEUED.' }],
+      delivery: 'queue',
+      origin: 'user'
+    })
+    expect(queued.outcome).toBe('queued')
+
+    await vi.waitFor(async () => expect(await adapterTurn('turn_end')).toHaveLength(1), { timeout: 5 * 60_000, interval: 1000 })
+    await vi.waitFor(async () => {
+      expect(await listInboxMessages(session.id)).toEqual([])
+      expect((await eventsOfType(session.id, 'turn_end')).length).toBe(3)
+    }, { timeout: 3 * 60_000, interval: 1000 })
+    await answered.stop()
+
+    // Prompted turn, the turn it started itself, then the message that waited.
+    const order = (await events(session.id))
+      .filter(event => ['user_message', 'turn_start', 'turn_end'].includes(event.type))
+      .map(event => event.payload?.origin === 'adapter' ? `${event.type}:adapter` : event.type)
+    expect(order).toEqual(['user_message', 'turn_end', 'turn_start:adapter', 'turn_end:adapter', 'user_message', 'turn_end'])
+    expect(await assistantText(session.id)).toContain('WOKE')
+    console.log(`[claude-code] self-started turn: ${order.join(' → ')}`)
+  }, HOUR / 4)
+})
 
 describe('cleanup', () => {
   it('leaves no container, worktree or image behind', async () => {

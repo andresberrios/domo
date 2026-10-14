@@ -73,6 +73,20 @@ export interface MeshItem {
 const whenPending = (payload: any) => (payload?.pending ? ' (when it next starts)' : '')
 
 const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
+  /**
+   * A turn nobody asked for.
+   *
+   * Every other turn opens with a `user_message`, and that row is what tells a
+   * reader the text under it is an answer to something. An agent that wakes
+   * itself — a scheduled wake-up, a background task reporting back, a watched
+   * condition changing — writes none, so without this its output is welded to
+   * the end of the previous exchange and there is no way to tell, scrolling
+   * back, whether it was asked for. `server/lib/acp/manager.ts` only ever
+   * appends this for `origin: 'adapter'`, which is why there is no other
+   * wording: a prompted turn has its prompt to introduce it.
+   */
+  turn_start: payload =>
+    payload?.origin === 'adapter' ? 'The agent started this turn on its own' : null,
   turn_end: payload =>
     payload?.stopReason && payload.stopReason !== 'end_turn'
       ? `Turn ended: ${String(payload.stopReason).replace(/_/g, ' ')}`
