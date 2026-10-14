@@ -1818,6 +1818,46 @@ describe('subscriptions between agents', () => {
     )
   })
 
+  it('hands the adapter an answer given the instant the permission appears', async () => {
+    // The row is visible before the event and the status are written. An
+    // answer in that gap was recorded and reached nobody, and the agent waited
+    // on a permission nobody would ask about again. A loop answering as soon
+    // as the row exists — what an agent or a test does — lands in it.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { listPermissions } = await import('../../server/lib/repo')
+    const target = await session('Builder')
+
+    const held = heldTurn()
+    void acpManager.prompt(target.id, [{ type: 'text', text: 'fix the build' }]).catch(() => {})
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    const agentSide = serve(state.adapters[0]!, held.turn)
+    await held.started
+
+    let answered = false
+    const answering = (async () => {
+      while (!answered) {
+        const [pending] = await listPermissions(target.id)
+        if (pending) {
+          answered = true
+          await acpManager.answerPermission(target.id, pending.id, 'allow', 'user')
+        }
+      }
+    })()
+    const outcome = await Promise.race([
+      agentSide.client.request(acp.methods.client.session.requestPermission, {
+        sessionId: 'acp_fake',
+        toolCall: { toolCallId: 'c1', title: 'Run `make`' },
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+      } as any),
+      sleep(5_000).then(() => 'the adapter was never answered')
+    ])
+    answered = true
+    await answering
+    held.release()
+
+    expect(outcome).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+  })
+
   it('says which permission an agent it follows is stuck on', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const { startSubscriptionNotifier } = await import('../../server/lib/acp/subscriptions')

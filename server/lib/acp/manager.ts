@@ -1255,6 +1255,7 @@ class AgentRuntime {
     }
 
     const block = this.takeStream()
+    let answer!: Promise<string | null>
     const permission = await this.serial(async () => {
       await this.closeStream(block)
       const row = await createPermission({
@@ -1263,6 +1264,13 @@ class AgentRuntime {
         title,
         options,
         toolCall: params.toolCall ?? null
+      })
+      // The moment the row exists, before anything else awaits: it can be
+      // answered from then on. An answer that arrived before the waiter was
+      // marked the row resolved and reached nobody, and the agent waited on
+      // a permission nobody would ask about again.
+      answer = new Promise<string | null>((resolvePromise) => {
+        this.waiters.set(row.id, { permission: row, resolve: resolvePromise })
       })
       await appendAgentEvent(this.agentSessionId, 'permission_request', { permissionId: row.id, ...params })
       await this.setStatus('awaiting-permission', { touch: true })
@@ -1273,15 +1281,14 @@ class AgentRuntime {
       const auto =
         options.find((o: any) => o.kind === 'allow_once') ?? options.find((o: any) => o.kind === 'allow_always')
       if (auto) {
+        this.waiters.delete(permission.id)
         await resolvePermissionRow(permission.id, auto.optionId, 'auto')
         await this.setStatus('thinking')
         return { outcome: { outcome: 'selected', optionId: auto.optionId } }
       }
     }
 
-    const optionId = await new Promise<string | null>((resolvePromise) => {
-      this.waiters.set(permission.id, { permission, resolve: resolvePromise })
-    })
+    const optionId = await answer
     this.waiters.delete(permission.id)
 
     if (!optionId) return { outcome: { outcome: 'cancelled' } }
