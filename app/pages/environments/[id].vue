@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { branchOnRetirement, describeBranchOutcome } from '~~/shared/dev-environments'
+import { branchOnRetirement, describeBranchOutcome, upgradeNotes } from '~~/shared/dev-environments'
 
 const route = useRoute()
 const router = useRouter()
@@ -145,7 +145,11 @@ const { data: upgrade, refresh: refreshUpgrade } = useFetch(
   { server: false, lazy: true, default: () => null }
 )
 
-const upgradeLabel = computed(() => (upgrade.value?.runtimeStale ? 'Upgrade (new adapters)' : 'Upgrade'))
+/** Being built or replaced: the container is not there to start, stop or upgrade. */
+const building = computed(() => environment.value?.status === 'creating' || environment.value?.status === 'upgrading')
+const behind = computed(() => upgrade.value?.adaptersCurrent === false)
+const otherInstall = computed(() => upgrade.value?.otherInstallContainer ?? null)
+const upgradeLabel = computed(() => (behind.value ? 'Upgrade (new adapters)' : 'Upgrade'))
 const upgradeDescription = computed(() => {
   const working = agents.value.filter(agent => agent.status === 'thinking' || agent.status === 'awaiting-permission').length
   const home = {
@@ -154,27 +158,41 @@ const upgradeDescription = computed(() => {
     lost: 'Its container is gone, and its home with it: the worktree and its dependencies carry over, but the sessions start without their history.'
   }[upgrade.value?.home ?? 'kept']
   return `Gives the environment a new container, with Domo's current coding-agent adapters and its image rebuilt. ${home} `
-    + (working ? `${working === 1 ? 'The agent working in it is' : `The ${working} agents working in it are`} interrupted. ` : '')
+    + (otherInstall.value ? `Its container (${otherInstall.value}) was made by another Domo; the new one, its image and its volumes are this Domo's. ` : '')
+    + (working ? `${working === 1 ? 'The agent working in it is' : `The ${working} agents working in it are`} interrupted once the image is built. ` : '')
     + 'Its Docker stack is stopped, anything installed in the container outside the checkout and the home is lost, and postCreateCommand runs again.'
+    + (running.value ? '' : ' It stays stopped afterwards.')
 })
 
-/**
- * The row comes back through Electric like any other write; what the reply
- * adds is what is not on it: the services that have to be created again.
- */
+/** What the last upgrade left to do, until it is dismissed here; kept on the row, so it outlives the page. */
+const dismissedKey = computed(() => `domo:upgrade-dismissed:${environmentId.value}`)
+const dismissedUpgrade = ref<string | null>(null)
+watch(dismissedKey, (key) => {
+  dismissedUpgrade.value = localStorage.getItem(key)
+}, { immediate: true })
+function dismissUpgradeNotes() {
+  const finishedAt = environment.value?.lastUpgrade?.finishedAt
+  if (!finishedAt) return
+  dismissedUpgrade.value = finishedAt
+  localStorage.setItem(dismissedKey.value, finishedAt)
+}
+const lastUpgradeNotes = computed(() => {
+  const last = environment.value?.lastUpgrade
+  if (!last || retired.value || building.value || dismissedUpgrade.value === last.finishedAt) return []
+  return upgradeNotes(last)
+})
+
+/** Answered at once; the row says when it is done (`status`, `lastUpgrade`). */
 async function upgradeEnvironment() {
   busy.value = true
   try {
-    const result = await $fetch(`/api/dev-environments/${environmentId.value}/upgrade`, { method: 'POST' })
+    await $fetch(`/api/dev-environments/${environmentId.value}/upgrade`, { method: 'POST' })
     confirmingUpgrade.value = false
-    toast.add(result.stranded.length
-      ? {
-          title: 'Environment upgraded',
-          description: `${result.stranded.join(', ')} shared the old container's network or processes and must be created again: docker compose up -d --force-recreate.`,
-          color: 'warning'
-        }
-      : { title: 'Environment upgraded', description: 'Its sessions resume on the new container.', color: 'success' })
-    await refreshUpgrade()
+    toast.add({
+      title: 'Upgrading the environment',
+      description: 'Its image is being rebuilt. Its agents work on until the new container replaces the old one.',
+      color: 'neutral'
+    })
   } catch (error: any) {
     confirmingUpgrade.value = false
     toast.add({ title: 'Could not upgrade the environment', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
@@ -182,6 +200,22 @@ async function upgradeEnvironment() {
     busy.value = false
   }
 }
+
+// The outcome, while the page is open. A failure is also the error banner.
+watch(() => environment.value?.status, async (now, was) => {
+  if (was !== 'upgrading' || now === 'upgrading' || !now) return
+  if (now === 'error') {
+    toast.add({ title: 'The upgrade failed', description: environment.value?.lastError ?? undefined, color: 'error' })
+  } else {
+    const notes = lastUpgradeNotes.value
+    toast.add({
+      title: 'Environment upgraded',
+      description: notes.length ? notes.join(' ') : 'Its sessions resume on the new container.',
+      color: notes.length ? 'warning' : 'success'
+    })
+  }
+  await refreshUpgrade()
+})
 
 </script>
 
@@ -215,6 +249,7 @@ async function upgradeEnvironment() {
             variant="subtle"
             size="sm"
             :loading="busy"
+            :disabled="building"
             :ui="{ label: 'hidden sm:inline' }"
             @click="action(running ? 'stop' : 'start')"
           />
@@ -222,7 +257,7 @@ async function upgradeEnvironment() {
             v-if="environment && !retired"
             :items="[[
               { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming = true } },
-              { label: upgradeLabel, icon: 'i-lucide-circle-arrow-up', disabled: !!upgrade?.blocked, onSelect: () => { confirmingUpgrade = true } }
+              { label: upgradeLabel, icon: 'i-lucide-circle-arrow-up', disabled: building || !!upgrade?.blocked, onSelect: () => { confirmingUpgrade = true } }
             ], [
               { label: 'Retire', icon: 'i-lucide-box', color: 'error' as const, onSelect: () => { confirmingRetire = true } }
             ]]"
@@ -259,6 +294,29 @@ async function upgradeEnvironment() {
           :title="brokenTitle"
           :description="environment.lastError ?? 'Something about this environment needs looking at.'"
           :actions="brokenActions"
+        />
+
+        <UAlert
+          v-if="!retired && !building && (behind || otherInstall)"
+          color="info"
+          variant="subtle"
+          icon="i-lucide-circle-arrow-up"
+          :title="behind ? 'New coding-agent versions are available' : 'Made by another Domo'"
+          :description="behind
+            ? 'This environment still runs the adapters it was given when its container was made. An upgrade gives it the current ones and keeps its sessions.'
+            : `Its container (${otherInstall}) and its volumes belong to another Domo. An upgrade moves it to this one and keeps its sessions.`"
+          :actions="[{ label: 'Upgrade', color: 'info' as const, variant: 'outline' as const, disabled: !!upgrade?.blocked, onClick: () => { confirmingUpgrade = true } }]"
+        />
+
+        <UAlert
+          v-if="lastUpgradeNotes.length"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-circle-arrow-up"
+          :title="`Upgraded ${relativeTime(environment.lastUpgrade!.finishedAt)}`"
+          :description="lastUpgradeNotes.join(' ')"
+          :close="true"
+          @update:open="dismissUpgradeNotes"
         />
 
         <section class="rounded-lg border border-default">

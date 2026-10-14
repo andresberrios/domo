@@ -167,6 +167,21 @@ export function pnpmSetupArgs(input: { environmentId: string, checkout: string }
 }
 
 /**
+ * Removes every `node_modules` pnpm made in a checkout (it holds pnpm's
+ * `.modules.yaml`), so the next install links them again into this volume's
+ * virtual store. For a checkout whose links point into another volume's: an
+ * environment moved from another Domo. Any other `node_modules` is left alone.
+ */
+export const PNPM_RELINK_SCRIPT = [
+  'find "$1" \\( -name .git -o -name node_modules \\) -prune -name node_modules -type d -print |',
+  'while IFS= read -r dir; do if [ -e "$dir/.modules.yaml" ]; then rm -rf "$dir"; fi; done'
+].join('\n')
+
+export function pnpmRelinkArgs(checkout: string): string[] {
+  return ['sh', '-c', PNPM_RELINK_SCRIPT, 'sh', checkout]
+}
+
+/**
  * Removes the virtual stores of the environments named, from a helper
  * container on the cache volume, and lists what is left there: whether one
  * went is decided by looking, as everywhere in the sweep.

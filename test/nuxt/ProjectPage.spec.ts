@@ -38,6 +38,7 @@ const environment: DevEnvironment = {
   retiredAt: null,
   leftovers: [],
   adapterVersions: null,
+  lastUpgrade: null,
   branch: null,
   cleanedAt: null,
 }

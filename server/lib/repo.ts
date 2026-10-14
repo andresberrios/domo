@@ -160,13 +160,13 @@ export async function restartBlockers(now = new Date()): Promise<string[]> {
   const soon = new Date(now.getTime() + 2 * 60_000).toISOString()
   const [agents, environments, cron] = await Promise.all([
     queryOne<{ n: number }>(`select count(*)::int as n from agent_sessions where status in ('starting', 'thinking', 'awaiting-permission')`),
-    queryOne<{ n: number }>(`select count(*)::int as n from dev_environments where status = 'creating' and retired_at is null`),
+    queryOne<{ n: number }>(`select count(*)::int as n from dev_environments where status in ('creating', 'upgrading') and retired_at is null`),
     queryOne<{ n: number }>(`select count(*)::int as n from cron_jobs where enabled = true and next_run_at is not null and next_run_at <= $1`, [soon])
   ])
   const blockers: string[] = []
   const plural = (n: number, one: string, many: string) => (n === 1 ? one : many.replace('%', String(n)))
   if (agents?.n) blockers.push(plural(agents.n, 'an agent is working', '% agents are working'))
-  if (environments?.n) blockers.push(plural(environments.n, 'an environment is being created', '% environments are being created'))
+  if (environments?.n) blockers.push(plural(environments.n, 'an environment is being built', '% environments are being built'))
   if (cron?.n) blockers.push(plural(cron.n, 'a schedule fires within two minutes', '% schedules fire within two minutes'))
   return blockers
 }
@@ -227,7 +227,7 @@ export async function environmentInstallsMayRun(): Promise<boolean> {
   const row = await queryOne<{ n: number }>(
     `select (select count(*) from agent_sessions
               where dev_environment_id is not null and status in ('starting', 'thinking', 'awaiting-permission'))
-          + (select count(*) from dev_environments where status = 'creating' and retired_at is null) as n`
+          + (select count(*) from dev_environments where status in ('creating', 'upgrading') and retired_at is null) as n`
   )
   return Number(row?.n ?? 0) > 0
 }
@@ -271,6 +271,7 @@ function mapDevEnvironment(r: any): DevEnvironment {
     retiredAt: r.retired_at ?? null,
     leftovers: r.leftovers ?? [],
     adapterVersions: r.adapter_versions ?? null,
+    lastUpgrade: r.last_upgrade ?? null,
     cleanedAt: r.cleaned_at ?? null
   }
 }
@@ -506,7 +507,7 @@ export async function updateDevEnvironment(
   id: string,
   patch: Partial<Pick<DevEnvironment,
     'name' | 'status' | 'lastError' | 'containerName' | 'containerId'
-    | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser' | 'adapterVersions' | 'branch'>>
+    | 'workspacePath' | 'configSource' | 'configPath' | 'remoteUser' | 'adapterVersions' | 'lastUpgrade' | 'branch'>>
 ): Promise<DevEnvironment | null> {
   const sets = ['updated_at = $2']
   const params: any[] = [id, nowIso()]
@@ -526,6 +527,10 @@ export async function updateDevEnvironment(
   if (patch.adapterVersions !== undefined) {
     params.push(JSON.stringify(patch.adapterVersions))
     sets.push(`adapter_versions = $${params.length}::jsonb`)
+  }
+  if (patch.lastUpgrade !== undefined) {
+    params.push(JSON.stringify(patch.lastUpgrade))
+    sets.push(`last_upgrade = $${params.length}::jsonb`)
   }
   if (patch.branch !== undefined) push('branch', patch.branch)
   const row = await queryOne(`update dev_environments set ${sets.join(', ')} where id = $1 returning *`, params)

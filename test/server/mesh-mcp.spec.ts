@@ -85,14 +85,25 @@ const devEnvironments = vi.hoisted(() => ({
   stopEnvironment: vi.fn(async (id: string) => ({ id, name: 'env', status: 'stopped' })),
   // What a cleanup with a working daemon reports: nothing left over.
   retireEnvironment: vi.fn(async () => ({ removed: [], leftovers: [], unattributed: [], branches: [] as any[] })),
-  upgradeEnvironment: vi.fn(async (id: string) => ({
-    environment: { id, name: 'env', status: 'running' },
-    runtime: { from: 'domo-dev-runtime-old', to: 'domo-dev-runtime-new' },
-    home: 'kept',
-    networks: [],
-    stopped: 1,
-    stranded: ['db']
-  })),
+  // Answers with the row marked `upgrading`; `upgraded` settles once the
+  // adapters were stood down (`beforeReplace`) and the container replaced.
+  beginUpgrade: vi.fn(async (id: string, options: { beforeReplace?: () => Promise<void> | void } = {}) => {
+    const upgraded = (async () => {
+      await options.beforeReplace?.()
+      return {
+        environment: { id, name: 'env', status: 'running' },
+        finishedAt: '2026-10-14T00:00:00.000Z',
+        adapters: { from: { codex: '1.0.0' }, to: { codex: '2.0.0' } },
+        home: 'kept',
+        networks: [],
+        stopped: 1,
+        stranded: ['db'],
+        movedFrom: null,
+        releasedVolumes: []
+      }
+    })()
+    return { environment: { id, name: 'env', status: 'upgrading' }, upgraded }
+  }),
   cleanupEnvironment: vi.fn(async (): Promise<{
     removed: Array<{ kind: string, name: string, environmentId: string }>
     leftovers: Array<{ kind: string, name: string, environmentId: string, error: string }>
@@ -101,7 +112,11 @@ const devEnvironments = vi.hoisted(() => ({
   }> => ({ removed: [], leftovers: [], unattributed: [], branches: [] }))
 }))
 
-vi.mock('../../server/lib/dev-environments', () => devEnvironments)
+vi.mock('../../server/lib/dev-environments', async (importOriginal) => ({
+  // Pure, and what `adaptersCurrent` has to agree with.
+  adaptersAreCurrent: (await importOriginal<typeof import('../../server/lib/dev-environments')>()).adaptersAreCurrent,
+  ...devEnvironments
+}))
 
 // No Docker here: an environment row with no container behind it, as far as
 // the mesh can tell.
@@ -772,7 +787,7 @@ describe('projects and dev environments', () => {
     expect(devEnvironments.retireEnvironment).toHaveBeenCalledWith(environment.id)
   })
 
-  it('upgrades another environment, and tells each session in it where its next turn runs', async () => {
+  it('upgrades another environment at once, then tells the caller how it went and each session where its next turn runs', async () => {
     const caller = await session('caller')
     const project = await createProject({ name: 'domo', repoPath })
     const environment = await createDevEnvironmentRow({
@@ -789,14 +804,14 @@ describe('projects and dev environments', () => {
 
     expect(body).toEqual({
       id: environment.id,
-      status: 'running',
-      adapters: 'updated',
-      home: 'kept',
-      stackContainersStopped: 1,
-      stranded: ['db']
+      name: 'env',
+      status: 'upgrading',
+      note: 'Upgrading; you will be messaged when it is done or has failed.'
     })
-    expect(devEnvironments.upgradeEnvironment).toHaveBeenCalledWith(environment.id)
-    expect(acp.stop.mock.invocationCallOrder[0]).toBeLessThan(devEnvironments.upgradeEnvironment.mock.invocationCallOrder[0]!)
+    expect(devEnvironments.beginUpgrade).toHaveBeenCalledWith(environment.id, expect.anything())
+    await expect.poll(async () => (await listInboxMessages(caller.id)).map(message => message.content[0].text)).toEqual([
+      expect.stringMatching(/"env" \(env_\w+\) was upgraded and is running\. Coding-agent adapters: updated\. .*--force-recreate: db/)
+    ])
     expect(acp.stop).toHaveBeenCalledWith(inside.id)
     await expect(listAgentEvents(inside.id)).resolves.toMatchObject([
       { type: 'environment_upgraded', payload: { devEnvironmentId: environment.id, home: 'kept' } }
@@ -817,7 +832,7 @@ describe('projects and dev environments', () => {
 
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toMatch(/Refusing to upgrade the environment/)
-    expect(devEnvironments.upgradeEnvironment).not.toHaveBeenCalled()
+    expect(devEnvironments.beginUpgrade).not.toHaveBeenCalled()
   })
 
   it('refuses to retire the environment the caller is running in', async () => {

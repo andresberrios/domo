@@ -34,13 +34,18 @@ export default defineNitroPlugin(async (nitro) => {
       `update agent_sessions set status = 'stopped'
        where status in ('starting', 'thinking', 'awaiting-permission')`
     )
-    // A build runs in this process, so one still `creating` died with the old
-    // server. Left alone it would read as in progress for ever.
+    // A build or an upgrade runs in this process, so one still `creating` or
+    // `upgrading` died with the old server. Left alone it would read as in
+    // progress for ever. An upgrade's volumes are all still there, so another
+    // upgrade finishes it, whichever step it died at.
     await query(
       `update dev_environments
           set status = 'error', updated_at = $1,
-              last_error = 'Domo restarted while this environment was being created. Retire it and create it again.'
-        where status = 'creating' and retired_at is null`,
+              last_error = case status
+                when 'creating' then 'Domo restarted while this environment was being created. Retire it and create it again.'
+                else 'Domo restarted while this environment was being upgraded. Upgrade it again.'
+              end
+        where status in ('creating', 'upgrading') and retired_at is null`,
       [new Date().toISOString()]
     )
     await query(

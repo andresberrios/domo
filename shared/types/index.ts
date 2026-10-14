@@ -256,7 +256,33 @@ export interface Project {
   retiredAt: string | null
 }
 
-export type DevEnvironmentStatus = 'creating' | 'running' | 'stopped' | 'error'
+export type DevEnvironmentStatus = 'creating' | 'upgrading' | 'running' | 'stopped' | 'error'
+/** What an upgrade (a new container for an environment) did, beyond what the row already says. */
+export interface EnvironmentUpgrade {
+  finishedAt: string
+  adapters: {
+    /** Null when they were never recorded. */
+    from: Partial<Record<AgentAdapter, string>> | null
+    to: Partial<Record<AgentAdapter, string>>
+  }
+  /**
+   * Where the remote user's home, and every session's state with it, came
+   * from: its home volume (`kept`), a copy out of the old container (`migrated`),
+   * or nowhere, because container and home were both gone (`lost`).
+   */
+  home: 'kept' | 'migrated' | 'lost'
+  /** Networks its own stacks made that the new container was put back on. */
+  networks: string[]
+  /** How many of its own stack's containers were stopped. Nothing starts them again. */
+  stopped: number
+  /** Services that shared the old container's namespaces, by the names the environment knows; only a recreate mends them. */
+  stranded: string[]
+  /** The container it replaced, when another Domo (another resource prefix) had made it. */
+  movedFrom: string | null
+  /** That Domo's volumes the old container mounted, which nothing of this Domo's uses any more. Not removed: that Domo may still run. */
+  releasedVolumes: string[]
+}
+
 export type DevEnvironmentConfigSource = 'domo' | 'default'
 
 export interface DevEnvironment {
@@ -306,6 +332,8 @@ export interface DevEnvironment {
    * container the first time somebody asks.
    */
   adapterVersions: Partial<Record<AgentAdapter, string>> | null
+  /** What its last finished upgrade did, for whoever started it to read later. Null until one has. */
+  lastUpgrade: EnvironmentUpgrade | null
   /**
    * When a sweep confirmed the retired environment owes nothing. Only then does
    * the row stop claiming what is named from its id: nothing can be made for a

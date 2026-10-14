@@ -87,9 +87,10 @@ do $$ begin
 end $$;
 
 -- The adapter versions in the runtime volume the container mounted, by
--- adapter. Fixed at docker run, so written once: at creation, or the first
--- time a running container is asked.
+-- adapter. Fixed at docker run, so written at creation and at each upgrade,
+-- or the first time a running container is asked.
 alter table dev_environments add column if not exists adapter_versions jsonb;
+alter table dev_environments add column if not exists last_upgrade jsonb;
 
 create table if not exists dev_environment_ports (
   id text primary key,

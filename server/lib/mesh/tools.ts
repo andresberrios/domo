@@ -9,6 +9,7 @@ import { inspectContainer, type ContainerInspection } from '../dev-env/docker'
 import { DOOD_CONTAINER_LABEL } from '../dev-env/container'
 import { startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import {
+  adaptersAreCurrent,
   beginEnvironment,
   cleanupEnvironment,
   environmentAdapterVersions,
@@ -16,8 +17,9 @@ import {
   stopEnvironment
 } from '../dev-environments'
 import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPort } from '../dev-environment-ports'
-import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment, upgradeProjectEnvironment } from '../projects'
+import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment, beginProjectEnvironmentUpgrade } from '../projects'
 import { normalizeCronJobInput } from '../cron/input'
+import { upgradeAdapterChange, upgradeNotes } from '../../../shared/dev-environments'
 import { notifyHuman, readAgentFile, writeAgentFile } from '../notifications'
 import { getSettings } from '../settings'
 import { voiceCatalog } from '../agent-voice/assistant-voice'
@@ -873,7 +875,7 @@ export const MESH_TOOLS = [
   {
     name: 'get_dev_environment',
     description:
-      'Details of a development environment: status (creating, running, stopped, error, retired), lastError, workspace path, '
+      'Details of a development environment: status (creating, upgrading, running, stopped, error, retired), lastError, workspace path, '
       + 'the adapter versions it runs against the ones Domo installs today, what `docker` reaches from inside it '
       + '(host: the host\'s daemon, shared; own: a private daemon; none), any Docker resources a cleanup could not '
       + 'remove, the branch it was made on, and the agents in it.',
@@ -903,9 +905,11 @@ export const MESH_TOOLS = [
       'Give a development environment a new container: the current coding-agent adapters, its image rebuilt from '
       + 'the project\'s definition, and Domo\'s current settings. Its worktree, branch, installed dependencies and every '
       + 'agent session\'s history carry over, and the sessions resume on their next message; a turn running in it is '
-      + 'interrupted. Anything installed in the container outside the checkout and the home is gone, and '
-      + 'postCreateCommand runs again. Services its own Docker stack runs are stopped: bring the stack up again, and '
-      + 'recreate the ones listed as stranded (docker compose up -d --force-recreate).',
+      + 'interrupted once the image is built. Anything installed in the container outside the checkout and the home is '
+      + 'gone, and postCreateCommand runs again. A stopped environment stays stopped. Returns at once with status '
+      + '"upgrading"; you are messaged with the outcome, which says what to do about its Docker stack (stopped, and '
+      + 'services to recreate with docker compose up -d --force-recreate). get_dev_environment shows whether its '
+      + 'adapters are current (adaptersCurrent).',
     inputSchema: {
       type: 'object',
       properties: { environmentId: { type: 'string', description: 'Environment id, from list_projects.' } },
@@ -1598,14 +1602,15 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           ? { note: 'The container is not actually running; start it with update_dev_environment.' }
           : {},
         lastError: environment.lastError,
+        ...environment.lastUpgrade
+          ? { lastUpgrade: { finishedAt: environment.lastUpgrade.finishedAt, notes: upgradeNotes(environment.lastUpgrade) } }
+          : {},
         workspace: environment.workspacePath,
         createdAt: environment.createdAt,
         ...environment.retiredAt ? { retiredAt: environment.retiredAt } : {},
         adapterVersions: versions ?? 'unknown until the environment is running',
         domoAdapterVersions: pinned,
-        adaptersCurrent: versions
-          ? Object.entries(pinned).every(([adapter, version]) => versions[adapter as keyof typeof versions] === version)
-          : null,
+        adaptersCurrent: adaptersAreCurrent(versions),
         ...inspection ? { docker: dockerAccess(inspection) } : {},
         // Resources a retirement or a failed creation could not remove; empty
         // is done. retry_environment_cleanup is the second ask.
@@ -1632,19 +1637,29 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'upgrade_dev_environment': {
-      // Its own adapter is stopped first, and the answer would never arrive.
+      // Its own adapter is stopped on the way, and the answer would never arrive.
       if (caller.devEnvironmentId === args.environmentId) {
-        throw new Error('Refusing to upgrade the environment this agent session is running in. Ask the user or another agent to do it.')
+        throw new Error('Refusing to upgrade the environment this agent session is running in. Ask the human or another agent to do it.')
       }
-      const report = await upgradeProjectEnvironment(args.environmentId)
+      const { environment, upgraded } = await beginProjectEnvironmentUpgrade(String(args.environmentId ?? ''))
+      // An image build takes minutes, past any tool call's patience.
+      upgraded.then(
+        report => tellAgent(caller.id, [
+          `Development environment "${environment.name}" (${environment.id}) was upgraded and is ${report.environment.status}. `
+          + `Coding-agent adapters: ${upgradeAdapterChange(report)}.`,
+          ...upgradeNotes(report)
+        ].join(' ')),
+        error => tellAgent(
+          caller.id,
+          `Development environment "${environment.name}" (${environment.id}) could not be upgraded: `
+          + `${error instanceof Error ? error.message : String(error)}`
+        )
+      )
       return {
-        id: args.environmentId,
-        status: report.environment.status,
-        adapters: report.runtime.from === report.runtime.to ? 'unchanged' : 'updated',
-        home: report.home,
-        stackContainersStopped: report.stopped,
-        // Services created into the old container's namespace: a start fails, only a recreate mends them.
-        stranded: report.stranded
+        id: environment.id,
+        name: environment.name,
+        status: environment.status,
+        note: 'Upgrading; you will be messaged when it is done or has failed.'
       }
     }
 

@@ -582,6 +582,44 @@ describe('a turn Claude Code starts for itself', () => {
   }, HOUR / 4)
 })
 
+describe('an upgrade under live sessions', () => {
+  // The upgrade replaces the container the adapters ran in; every session
+  // resumes on the new one through `session/load`, reading its state from the
+  // home volume (Claude Code, OpenCode) or the host's `~/.codex` (Codex).
+  it('replaces the container, and every adapter\'s session remembers what it was told before', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { beginProjectEnvironmentUpgrade } = await import('../../server/lib/projects')
+    const { getDevEnvironment, listAgentEvents } = await import('../../server/lib/repo')
+    const { pinnedAdapterVersions } = await import('../../server/lib/dev-env/runtime-volume')
+    const adapters: AgentAdapter[] = ['claude-code', 'codex', 'opencode']
+    const planted = new Map<string, string>()
+    for (const adapter of adapters) {
+      const session = await start(adapter)
+      const codeword = `quince-${Math.random().toString(36).slice(2, 7)}`
+      await acpManager.prompt(session.id, [{ type: 'text', text: `The codeword is ${codeword}. Reply with OK only.` }])
+      planted.set(session.id, codeword)
+    }
+    const before = environment.containerId
+
+    const { upgraded } = await beginProjectEnvironmentUpgrade(environment.id)
+    const report = await upgraded
+    environment = (await getDevEnvironment(environment.id))!
+
+    expect(environment.containerId).not.toBe(before)
+    expect(environment).toMatchObject({ status: 'running', adapterVersions: pinnedAdapterVersions() })
+    expect(report.home).toBe('kept')
+    for (const [id, codeword] of planted) {
+      expect(acpManager.isRunning(id)).toBe(false)
+      expect(await listAgentEvents(id)).toContainEqual(expect.objectContaining({ type: 'environment_upgraded' }))
+      const answered = answerPermissions(id)
+      const result = await acpManager.prompt(id, [{ type: 'text', text: 'What was the codeword I gave you? Reply with the codeword only.' }])
+      await answered.stop()
+      expect(result.stopReason).toBe('end_turn')
+      expect(await assistantText(id), id).toContain(codeword)
+    }
+  }, HOUR / 2)
+})
+
 describe('cleanup', () => {
   it('leaves no container, worktree or image behind', async () => {
     const { retireEnvironment } = await import('../../server/lib/dev-environments')

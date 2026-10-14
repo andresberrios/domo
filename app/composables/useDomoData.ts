@@ -199,6 +199,7 @@ export function useDevEnvironments() {
       updatedAt: row.updated_at,
       retiredAt: row.retired_at ?? null,
       adapterVersions: row.adapter_versions ?? null,
+      lastUpgrade: row.last_upgrade ?? null,
       cleanedAt: row.cleaned_at ?? null
     })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   )

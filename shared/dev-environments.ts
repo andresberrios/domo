@@ -1,4 +1,4 @@
-import type { DevEnvironment } from './types'
+import type { DevEnvironment, EnvironmentUpgrade } from './types'
 
 /**
  * Why git would refuse `name` as a branch, in git's own terms, or null when it
@@ -112,4 +112,32 @@ export function branchOnRetirement(environment: Pick<DevEnvironment, 'branch'>):
 export function describeBranchOutcome(branch: { name: string, deleted: boolean, reason: string } | null | undefined): string {
   if (!branch) return ''
   return `${branch.deleted ? 'Deleted' : 'Kept'} the branch ${branch.name}: ${branch.reason}`
+}
+
+/** Whether an upgrade changed the coding-agent adapters; `unknown` when the old ones were never recorded. */
+export function upgradeAdapterChange(upgrade: Pick<EnvironmentUpgrade, 'adapters'>): 'updated' | 'unchanged' | 'unknown' {
+  const { from, to } = upgrade.adapters
+  if (!from) return 'unknown'
+  return Object.entries(to).every(([adapter, version]) => from[adapter as keyof typeof from] === version) ? 'unchanged' : 'updated'
+}
+
+/** What an upgrade left for somebody to do or know, as plain sentences; empty when nothing. */
+export function upgradeNotes(upgrade: EnvironmentUpgrade): string[] {
+  const notes: string[] = []
+  const stranded = upgrade.stranded.join(', ')
+  if (upgrade.stopped && upgrade.stranded.length) {
+    notes.push(`Its Docker stack was stopped. Bring it up again with docker compose up -d --force-recreate: ${stranded} `
+      + 'shared the old container\'s network or processes, and only a recreate mends them.')
+  } else if (upgrade.stranded.length) {
+    notes.push(`${stranded} shared the old container's network or processes and must be created again: docker compose up -d --force-recreate.`)
+  } else if (upgrade.stopped) {
+    notes.push(`Its Docker stack was stopped (${upgrade.stopped} ${upgrade.stopped === 1 ? 'container' : 'containers'}). Bring it up again with docker compose up -d.`)
+  }
+  if (upgrade.home === 'lost') notes.push('Its home was gone with its old container, so its sessions start without their history.')
+  if (upgrade.movedFrom) notes.push(`It was moved here from a container another Domo made (${upgrade.movedFrom}).`)
+  if (upgrade.releasedVolumes.length) {
+    notes.push(`This Domo no longer uses ${upgrade.releasedVolumes.join(', ')}. They belong to the other Domo, so they were left `
+      + 'in place: remove them with docker volume rm once it no longer needs them.')
+  }
+  return notes
 }

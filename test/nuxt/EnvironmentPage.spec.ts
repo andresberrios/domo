@@ -1,7 +1,7 @@
 import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { UApp } from '#components'
 import { readBody } from 'h3'
-import { computed, defineComponent, h, ref } from 'vue'
+import { computed, defineComponent, h, nextTick, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import EnvironmentPage from '~/pages/environments/[id].vue'
@@ -39,6 +39,7 @@ const environment = ref<DevEnvironment>({
   retiredAt: null,
   leftovers: [],
   adapterVersions: null,
+  lastUpgrade: null,
   branch: null,
   cleanedAt: null,
 })
@@ -118,13 +119,13 @@ registerEndpoint('/api/dev-environments/env_1/cleanup', {
   }
 })
 
-const upgradeStatus = { runtimeStale: true, home: 'migrated', blocked: null as string | null }
+const upgradeStatus = { adaptersCurrent: false, otherInstallContainer: null as string | null, home: 'migrated', blocked: null as string | null }
 registerEndpoint('/api/dev-environments/env_1/upgrade', { method: 'GET', handler: () => upgradeStatus })
 registerEndpoint('/api/dev-environments/env_1/upgrade', {
   method: 'POST',
   handler: async () => {
     calls.push({ method: 'POST', path: '/api/dev-environments/env_1/upgrade' })
-    return { environment: environment.value, runtime: { from: 'a', to: 'b' }, home: 'migrated', networks: [], stopped: 1, stranded: ['db'] }
+    return { environment: { ...environment.value, status: 'upgrading' } }
   }
 })
 
@@ -239,9 +240,10 @@ describe('environment details page', { timeout: 30_000 }, () => {
     wrapper.unmount()
   })
 
-  it('offers newer adapters, and upgrades only after saying what carries over and what does not', async () => {
+  it('says newer adapters are available, and upgrades only after saying what carries over and what does not', async () => {
     const wrapper = await mountPage()
 
+    await vi.waitFor(() => expect(document.body.textContent).toContain('New coding-agent versions are available'))
     const menu = document.body.querySelector<HTMLButtonElement>('button[aria-label="Environment actions"]')!
     menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }))
     menu.click()
@@ -256,16 +258,39 @@ describe('environment details page', { timeout: 30_000 }, () => {
 
     await vi.waitFor(() => expect(document.body.textContent).toContain('Upgrade feature-auth?'))
     // An environment made before the home volume has its home copied first,
-    // and the agent mid-turn in it is interrupted.
+    // and the agent mid-turn in it is interrupted once the image is built.
     expect(document.body.textContent).toContain('copied out of the old container')
-    expect(document.body.textContent).toContain('The agent working in it is interrupted')
+    expect(document.body.textContent).toContain('The agent working in it is interrupted once the image is built')
     expect(calls).toHaveLength(0)
 
     buttonWithText('Upgrade environment')!.click()
     await vi.waitFor(() => expect(calls).toContainEqual({ method: 'POST', path: '/api/dev-environments/env_1/upgrade' }))
-    // The one thing the row does not say: a service that has to be created again.
-    await vi.waitFor(() => expect(document.body.textContent).toContain('db shared the old container'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Upgrading the environment'))
 
+    // The outcome arrives on the row, as everything does.
+    const before = environment.value
+    environment.value = { ...before, status: 'upgrading' }
+    await nextTick()
+    environment.value = {
+      ...before,
+      status: 'running',
+      lastUpgrade: {
+        finishedAt: new Date().toISOString(),
+        adapters: { from: null, to: {} },
+        home: 'migrated',
+        networks: [],
+        stopped: 1,
+        stranded: ['db'],
+        movedFrom: null,
+        releasedVolumes: []
+      }
+    }
+    // A toast now, and on the page until dismissed: a service has to be created again.
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Environment upgraded'))
+    expect(document.body.textContent).toContain('docker compose up -d --force-recreate: db shared the old container')
+    expect(document.body.textContent).toMatch(/Upgraded (just now|.*ago)/)
+
+    environment.value = before
     wrapper.unmount()
   })
 

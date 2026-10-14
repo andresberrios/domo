@@ -117,7 +117,7 @@ const {
 } = await import('../../server/lib/dev-env/host-worktree')
 const { DEFAULT_IMAGE } = await import('../../server/lib/dev-env/config')
 const { environmentImageName } = await import('../../server/lib/dev-env/image')
-const { ensureRuntimeVolume, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
+const { ensureRuntimeVolume, pinnedAdapterVersions, runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
 const {
   cleanupEnvironment,
   createEnvironment,
@@ -130,7 +130,7 @@ const {
 } = await import('../../server/lib/dev-environments')
 const { reconcileEnvironmentResources } = await import('../../server/lib/dev-env/reconcile')
 const { BROWSER_ROOT } = await import('../../server/lib/dev-env/browser-volume')
-const { sharedCacheVolumeName } = await import('../../server/lib/dev-env/caches')
+const { CACHES_ROOT, sharedCacheVolumeName } = await import('../../server/lib/dev-env/caches')
 const { doodSocketDir, doodSocketPath, stopDoodProxy } = await import('../../server/lib/dood/manager')
 const { homeVolumeName, removeEnvironmentResources } = await import('../../server/lib/dev-env/leftovers')
 const { portHelperImage, portHelperName } = await import('../../server/lib/dev-env/port-helper')
@@ -785,7 +785,7 @@ describe('upgrading an environment', () => {
 
   it('replaces the container and keeps the home, the checkout and the stored path', async () => {
     state.project = { id: 'prj_live', name: 'fixture', repoPath: await checkout(definition()) }
-    const environment = await create('Live Upgrade')
+    const environment = await create('live-upgrade')
     const before = environment.containerId!
 
     await inContainer(environment, 'sh', '-c', 'echo wip > uncommitted.txt')
@@ -810,7 +810,8 @@ describe('upgrading an environment', () => {
     expect(await mounts(after)).toContainEqual(expect.objectContaining({
       Type: 'volume', Name: homeVolumeName(environment.id), Destination: '/home/vscode'
     }))
-    expect(report.runtime.to).toBe(await ensureRuntimeVolume())
+    expect(await mounts(after)).toContainEqual(expect.objectContaining({ Name: await ensureRuntimeVolume(), Destination: '/opt/domo' }))
+    expect(state.rows.get(environment.id)!.adapterVersions).toEqual(pinnedAdapterVersions())
 
     const upgraded = { ...report.environment }
     expect(upgraded.workspacePath).toBe(environment.workspacePath)
@@ -827,7 +828,7 @@ describe('upgrading an environment', () => {
   it('copies an older environment\'s home into a volume, without the host directories mounted in it', async () => {
     const repo = await checkout(definition())
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
-    const environment = await create('Live Upgrade Legacy')
+    const environment = await create('live-upgrade-legacy')
     // An environment from before the home volume: the same container, with its
     // home in the writable layer and a host directory bound inside it.
     const secrets = await temp('secrets')
@@ -864,6 +865,153 @@ describe('upgrading an environment', () => {
       'sh', '-c', 'ls -A /h/.ssh-host 2>/dev/null; echo end'
     ])
     expect(onVolume.stdout).toBe('end')
+  }, HOUR / 2)
+})
+
+describe('upgrading an environment another Domo made', () => {
+  it('moves an exited one to this Domo: its names, its home volume, its caches, and its sessions\' state', async () => {
+    const OTHER = 'domo-live-other-'
+    const repo = await checkout({
+      '.domo.json': JSON.stringify({ devEnvironment: { image: DEFAULT_IMAGE, docker: false, remoteUser: 'vscode' } })
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    const environment = await create('live-moved')
+    const id = environment.id
+    // What another Domo (another resource prefix) left: an exited container of
+    // its name, on its own cache volume, with the home in its writable layer,
+    // and the image tagged with its name.
+    const otherName = `${OTHER}${id}`
+    const otherCaches = `${OTHER}caches`
+    volumes.push(otherCaches)
+    await run('docker', ['volume', 'create', otherCaches])
+    await run('docker', ['rm', '--force', environment.containerId!])
+    await run('docker', ['volume', 'rm', homeVolumeName(id)])
+    await run('docker', ['tag', environmentImageName(id), otherName])
+    const { stdout: old } = await run('docker', [
+      'run', '--detach', '--name', otherName,
+      '--label', `domo.envId=${id}`,
+      '--mount', `type=bind,source=${hostWorktreePath(repo, id)},target=/worktrees/${id}`,
+      '--mount', `type=bind,source=${containerGitdirFilePath(repo, id)},target=/worktrees/${id}/.git,readonly`,
+      '--mount', `type=bind,source=${repo}/.git,target=/worktrees/.base/prj_live`,
+      '--mount', `type=volume,source=${await ensureRuntimeVolume()},target=/opt/domo,readonly`,
+      '--mount', `type=volume,source=${otherCaches},target=${CACHES_ROOT}`,
+      '--entrypoint', '/bin/sh', otherName, '-c', 'while sleep 1; do :; done'
+    ])
+    // What each adapter resumes a session from, in the old home.
+    await run('docker', [
+      'exec', '--user', 'vscode', old, 'sh', '-c', [
+        'mkdir -p "$HOME/.claude/projects/-workspaces-live-moved" "$HOME/.local/share/opencode"',
+        'echo transcript > "$HOME/.claude/projects/-workspaces-live-moved/s.jsonl"',
+        'echo onboarded > "$HOME/.claude.json"',
+        'echo db > "$HOME/.local/share/opencode/opencode.db"'
+      ].join(' && ')
+    ])
+    // A checkout whose pnpm links point into the other cache volume, beside an npm one.
+    await writeIn(hostWorktreePath(repo, id), {
+      'node_modules/.modules.yaml': 'virtualStoreDir: /opt/domo-caches/pnpm/projects/x/.pnpm\n',
+      'tools/node_modules/.package-lock.json': '{}\n'
+    })
+    await run('docker', ['stop', old])
+    Object.assign(state.rows.get(id)!, { containerId: old, containerName: otherName, status: 'stopped', adapterVersions: null })
+
+    const report = await upgradeEnvironment(id)
+
+    // Stopped stays stopped, under this Domo's name.
+    const row = state.rows.get(id)!
+    expect(row).toMatchObject({ status: 'stopped', containerName: `${PREFIX}${id}`, adapterVersions: pinnedAdapterVersions() })
+    await expect(inspectContainer(old)).resolves.toBeNull()
+    const after = await inspectContainer(row.containerId)
+    expect(after).toMatchObject({ name: `${PREFIX}${id}`, running: false })
+    expect(after!.namedVolumes).toEqual(expect.arrayContaining([homeVolumeName(id), sharedCacheVolumeName()]))
+    expect(after!.namedVolumes.join(' ')).not.toContain(OTHER)
+    expect((await run('docker', ['image', 'ls', '--quiet', otherName])).stdout).toBe('')
+    expect(report).toMatchObject({ home: 'migrated', movedFrom: otherName, releasedVolumes: [otherCaches] })
+    // Only reported: the other Domo may still be running.
+    expect((await run('docker', ['volume', 'ls', '--quiet', '--filter', `name=^${otherCaches}$`])).stdout).toBe(otherCaches)
+
+    // The sessions' state is on this Domo's home volume, read straight off it.
+    const onVolume = await run('docker', [
+      'run', '--rm', '--mount', `type=volume,source=${homeVolumeName(id)},target=/h`, HELPER_IMAGE, 'sh', '-c',
+      'cat /h/.claude/projects/-workspaces-live-moved/s.jsonl /h/.claude.json /h/.local/share/opencode/opencode.db'
+    ])
+    expect(onVolume.stdout.split('\n')).toEqual(['transcript', 'onboarded', 'db'])
+    // pnpm's links were made to be made again; npm's were left alone.
+    expect(await exists(join(hostWorktreePath(repo, id), 'node_modules'))).toBe(false)
+    expect(await exists(join(hostWorktreePath(repo, id), 'tools/node_modules/.package-lock.json'))).toBe(true)
+  }, HOUR / 2)
+})
+
+/**
+ * Needs the proxy, so the host itself: from inside an environment, a nested
+ * environment's socket cannot be mounted into a sibling container.
+ */
+describe('upgrading an environment with a Docker stack', () => {
+  it('re-points its Docker, rejoins its networks, and its ports, names and host.docker.internal work after a recreate', async () => {
+    const repo = await checkout({
+      '.domo.json': JSON.stringify({ devEnvironment: { image: DEFAULT_IMAGE, docker: true, remoteUser: 'vscode' } }),
+      'site/index.html': 'from-web\n',
+      'compose.yaml': [
+        'services:',
+        '  web:',
+        '    image: busybox:1.37',
+        '    command: ["httpd", "-f", "-p", "8080", "-h", "/site"]',
+        '    volumes: ["./site:/site:ro"]',
+        '    ports: ["8080:8080"]',
+        '  side:',
+        '    image: busybox:1.37',
+        '    network_mode: host',
+        '    command: ["sh", "-c", "mkdir -p /s && echo from-side > /s/index.html && httpd -f -p 8081 -h /s"]',
+        ''
+      ].join('\n')
+    })
+    state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
+    const environment = await create('live-upgrade-stack')
+    const id = environment.id
+    const sh = (script: string) => {
+      const current = state.rows.get(id)!
+      return run('docker', [
+        'exec', '--user', current.remoteUser!, '--workdir', current.workspacePath, current.containerId!, 'bash', '-c', script
+      ], { allowFailure: true })
+    }
+    const retry = (command: string) => `for i in $(seq 1 60); do ${command} && exit 0; sleep 0.25; done; exit 1`
+    const devServer = () => run('docker', [
+      'exec', '--detach', '--user', 'vscode', state.rows.get(id)!.containerId!,
+      'node', '-e', 'require("http").createServer((q, r) => r.end("dev-server")).listen(5173, "127.0.0.1")'
+    ])
+    /** Everything the stack is for, from the agent's side. */
+    const works = async () => {
+      expect((await sh(retry('curl -sf http://localhost:8080/index.html'))).stdout).toBe('from-web')
+      expect((await sh(retry('curl -sf http://web:8080/index.html'))).stdout).toBe('from-web')
+      expect((await sh(retry('curl -sf http://localhost:8081/index.html'))).stdout).toBe('from-side')
+      await devServer()
+      expect((await sh(retry('docker compose -p fixture exec -T web wget -qO- http://host.docker.internal:5173'))).stdout)
+        .toBe('dev-server')
+    }
+
+    expect((await sh('docker compose -p fixture up -d')).stderr).toMatch(/Started/)
+    await works()
+
+    const report = await upgradeEnvironment(id)
+
+    expect(state.rows.get(id)!.containerId).not.toBe(environment.containerId)
+    expect(report).toMatchObject({ stranded: ['fixture-side-1'], stopped: 2 })
+    expect(report.networks.some(network => network.endsWith('fixture_default'))).toBe(true)
+    // Its Docker answers again, through a proxy pointed at the new container.
+    expect((await sh('docker ps -a --format "{{.Names}} {{.State}}" | sort')).stdout).toBe('fixture-side-1 exited\nfixture-web-1 exited')
+    // What the report says: a plain `up` cannot start the stranded service.
+    const plain = await sh('docker compose -p fixture up -d; echo "exit $?"')
+    expect(plain.stdout).toMatch(/exit [1-9]/)
+    expect(plain.stderr).toMatch(/side/)
+    expect((await sh('docker compose -p fixture up -d --force-recreate')).stderr).toMatch(/Started/)
+    await works()
+
+    await retireEnvironment(id)
+    for (const kind of ['ps', 'network', 'volume'] as const) {
+      const listed = (await run('docker', [
+        ...(kind === 'ps' ? ['ps', '-aq'] : [kind, 'ls', '-q']), '--filter', `label=domo.env=${id}`
+      ])).stdout
+      expect(listed, kind).toBe('')
+    }
   }, HOUR / 2)
 })
 

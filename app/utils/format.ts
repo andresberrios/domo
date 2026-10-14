@@ -91,6 +91,7 @@ export const AGENT_STATUS_META: Record<string, { label: string, color: 'neutral'
  */
 export const ENVIRONMENT_STATUS_META: Record<string, { label: string, color: 'neutral' | 'primary' | 'warning' | 'error' | 'success', icon: string }> = {
   creating: { label: 'Creating', color: 'warning', icon: 'text-warning animate-pulse' },
+  upgrading: { label: 'Upgrading', color: 'warning', icon: 'text-warning animate-pulse' },
   starting: { label: 'Starting', color: 'warning', icon: 'text-warning animate-pulse' },
   running: { label: 'Running', color: 'success', icon: 'text-primary' },
   stopped: { label: 'Stopped', color: 'neutral', icon: 'text-dimmed' },

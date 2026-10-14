@@ -134,6 +134,7 @@ const {
   cleanupEnvironment,
   containerExecArgs,
   createEnvironment,
+  beginUpgrade,
   environmentUpgradeStatus,
   readEnvironmentFile,
   reconcileEnvironmentStatus,
@@ -144,7 +145,7 @@ const {
   upgradeEnvironment,
   writeEnvironmentFile
 } = await import('../../server/lib/dev-environments')
-const { runtimeVolumeName } = await import('../../server/lib/dev-env/runtime-volume')
+const { pinnedAdapterVersions } = await import('../../server/lib/dev-env/runtime-volume')
 
 const EMPTY_METADATA = {
   entrypoints: [],
@@ -176,6 +177,7 @@ function environment(overrides: Partial<DevEnvironment> = {}): DevEnvironment {
     retiredAt: null,
     leftovers: [],
     adapterVersions: null,
+    lastUpgrade: null,
     branch: null,
     cleanedAt: null,
     ...overrides
@@ -1203,7 +1205,7 @@ describe('createEnvironment', () => {
   })
 
   it('makes the home volume, labelled for the sweep, before the run that mounts it at the user\'s home', async () => {
-    await createEnvironment({ projectId: 'prj_1', name: 'API work' })
+    await createEnvironment({ projectId: 'prj_1', name: 'api-work' })
 
     const id = repo.createDevEnvironmentRow.mock.calls[0]![0].id
     const created = stepAt('volume', 'create', `domo-dev-${id}-home`)
@@ -1808,6 +1810,7 @@ describe('createEnvironment', () => {
 describe('upgradeEnvironment', () => {
   let repoPath: string
   let hostHome: string
+  let dataRoot: string
   /** Whether the old container is still on the daemon. */
   let oldRemoved: boolean
   const HOME = 'domo-dev-env_1-home'
@@ -1844,6 +1847,9 @@ describe('upgradeEnvironment', () => {
   beforeEach(async () => {
     repoPath = await mkdtemp(join(tmpdir(), 'domo-upgrade-repo-'))
     hostHome = await mkdtemp(join(tmpdir(), 'domo-upgrade-home-'))
+    // The seccomp profile is written under it, as at creation.
+    dataRoot = await mkdtemp(join(tmpdir(), 'domo-upgrade-data-'))
+    process.env.NUXT_DATA_DIR = dataRoot
     process.env.NUXT_HOME_OVERLAY_DIR = hostHome
     state.homeMounts = []
     await mkdir(join(repoPath, '.git'), { recursive: true })
@@ -1861,8 +1867,10 @@ describe('upgradeEnvironment', () => {
 
   afterEach(async () => {
     delete process.env.NUXT_HOME_OVERLAY_DIR
+    delete process.env.NUXT_DATA_DIR
     await rm(repoPath, { recursive: true, force: true })
     await rm(hostHome, { recursive: true, force: true })
+    await rm(dataRoot, { recursive: true, force: true })
   })
 
   /** The order of `docker` calls and of the proxy's steps, as one timeline. */
@@ -1904,8 +1912,12 @@ describe('upgradeEnvironment', () => {
     expect(dockerCalls().flat().join('\n')).not.toContain('/workspaces/renamed')
 
     expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', expect.objectContaining({ containerId: 'new-sha' }))
-    expect(repo.updateDevEnvironment).toHaveBeenLastCalledWith('env_1', { status: 'running', lastError: null })
-    expect(report).toMatchObject({ runtime: { from: 'domo-dev-runtime-old', to: 'domo-dev-runtime-abc123' }, home: 'kept' })
+    expect(repo.updateDevEnvironment).toHaveBeenLastCalledWith('env_1', {
+      status: 'running',
+      lastError: null,
+      lastUpgrade: expect.objectContaining({ home: 'kept', movedFrom: null, releasedVolumes: [] })
+    })
+    expect(report).toMatchObject({ adapters: { to: pinnedAdapterVersions() }, home: 'kept', movedFrom: null })
   })
 
   it('never removes a volume and never touches the worktree', async () => {
@@ -2031,18 +2043,156 @@ describe('upgradeEnvironment', () => {
     expect(dockerCalls().some(args => args[0] === 'image' && args[1] === 'rm')).toBe(false)
   })
 
-  it('reports newer adapters and where the home would come from, without changing anything', async () => {
+  it('reports older adapters, by the versions on the row, and where the home would come from, without changing anything', async () => {
     withContainers(oldContainer({ namedVolumes: ['domo-dev-runtime-old'] }))
+    repo.getDevEnvironment.mockResolvedValue(environment({ adapterVersions: { 'claude-code': '0.1.0', codex: '0.1.0', opencode: '0.1.0' } }))
 
     const status = await environmentUpgradeStatus('env_1')
 
-    expect(status).toEqual({
-      runtimeStale: true,
-      currentRuntime: 'domo-dev-runtime-old',
-      wantedRuntime: runtimeVolumeName('arm64'),
-      home: 'migrated',
-      blocked: null
-    })
+    expect(status).toEqual({ adaptersCurrent: false, otherInstallContainer: null, home: 'migrated', blocked: null })
     expect(dockerCalls()).toEqual([])
+
+    repo.getDevEnvironment.mockResolvedValue(environment({ adapterVersions: pinnedAdapterVersions() }))
+    expect((await environmentUpgradeStatus('env_1')).adaptersCurrent).toBe(true)
+  })
+
+  it('records the adapters the new container runs, so the row is current afterwards', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ containerId: 'old-sha', adapterVersions: { 'claude-code': '0.1.0' } }))
+
+    const report = await upgradeEnvironment('env_1')
+
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', expect.objectContaining({
+      containerId: 'new-sha',
+      adapterVersions: pinnedAdapterVersions()
+    }))
+    expect(report.adapters).toEqual({ from: { 'claude-code': '0.1.0' }, to: pinnedAdapterVersions() })
+  })
+
+  it('gives the new container exactly the `docker run` a new environment gets', async () => {
+    repo.createDevEnvironmentRow.mockImplementation(async (input: any) => environment(input))
+    hostWorktree.createHostWorktree.mockImplementationOnce(async (input) => {
+      // Where the upgrade will look for it, so the two runs mount the same paths.
+      const worktreePath = fakeWorktree(input.repoPath, 'env_1')
+      return {
+        branch: { name: input.branch, created: true },
+        worktreePath,
+        gitdirFilePath: `${worktreePath}.container-gitdir`,
+        commonGitDir: `${input.repoPath}/.git`,
+        seed: { paths: [] as string[], copied: [] as string[] }
+      }
+    })
+    // Settings that reach the run, so a path that forgot one differs.
+    state.homeMounts = ['.gitconfig']
+    await writeFile(join(hostHome, '.gitconfig'), '[user]\n\tname = Ana\n', 'utf8')
+    withContainers(oldContainer())
+    await createEnvironment({ projectId: 'prj_1', name: 'api' })
+    const createdId = repo.createDevEnvironmentRow.mock.calls[0]![0].id as string
+    const created = dockerCalls()[stepAt('run', '--detach')]!.map(arg => arg.replaceAll(createdId, 'env_1'))
+
+    run.mockClear()
+    withContainers(oldContainer())
+    await upgradeEnvironment('env_1')
+    const upgraded = dockerCalls()[stepAt('run', '--detach')]!
+
+    expect(upgraded.join(' ')).toMatch(/seccomp=\S*\/seccomp\//)
+    expect(upgraded.join(' ')).toContain('.gitconfig')
+    expect(upgraded).toEqual(created)
+  })
+
+  it('stops a stopped environment again once it is set up', async () => {
+    withContainers(oldContainer({ running: false }))
+
+    const report = await upgradeEnvironment('env_1')
+
+    expect(stepAt('stop', 'old-sha')).toBe(-1)
+    expect(dockerAt('stop', 'new-sha')).toBeGreaterThan(dockerAt('make setup'))
+    expect(report.environment).toBeTruthy()
+    expect(repo.updateDevEnvironment).toHaveBeenLastCalledWith('env_1', expect.objectContaining({ status: 'stopped' }))
+    expect(ports.refreshEnvironmentPorts).not.toHaveBeenCalled()
+  })
+
+  it('answers at once, marked upgrading, and lets its agents work until the image is built', async () => {
+    let finishBuild: (image: string) => void = () => {}
+    buildEnvironmentImage.mockImplementationOnce(() => new Promise(resolve => { finishBuild = resolve }))
+    const beforeReplace = vi.fn()
+
+    const { environment: marked, upgraded } = await beginUpgrade('env_1', { beforeReplace })
+
+    expect(marked.status).toBe('upgrading')
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', { status: 'upgrading' })
+    await vi.waitFor(() => expect(buildEnvironmentImage).toHaveBeenCalled())
+    expect(beforeReplace).not.toHaveBeenCalled()
+    expect(stepAt('stop', 'old-sha')).toBe(-1)
+
+    finishBuild('domo-dev-env_1')
+    await upgraded
+    expect(beforeReplace.mock.invocationCallOrder[0]).toBeLessThan(dockerAt('stop', 'old-sha'))
+  })
+
+  it('refuses a second upgrade while one is under way', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ status: 'upgrading' }))
+    await expect(beginUpgrade('env_1')).rejects.toThrow('already being upgraded')
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalled()
+  })
+
+  it('puts the status back when it fails before the old container goes', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ status: 'stopped', containerId: 'old-sha' }))
+    withContainers(oldContainer({ running: false }))
+    buildEnvironmentImage.mockRejectedValueOnce(new Error('Feature not found'))
+
+    await expect(upgradeEnvironment('env_1')).rejects.toThrow('Feature not found')
+
+    expect(repo.updateDevEnvironment).toHaveBeenLastCalledWith('env_1', { status: 'stopped', lastError: null })
+  })
+
+  it('moves an environment another Domo made to this one, and says which of its volumes nothing here uses now', async () => {
+    const OTHER = ['domo-other-caches', 'domo-other-runtime-b2c0', 'domo-other-browser-b7b8']
+    await writeFile(join(repoPath, '.domo.json'), JSON.stringify({
+      devEnvironment: { image: 'ghcr.io/acme/dev:latest', remoteUser: 'vscode', docker: true }
+    }), 'utf8')
+    await writeFile(join(fakeWorktree(repoPath, 'env_1'), 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8')
+    repo.getDevEnvironment.mockResolvedValue(environment({ containerName: 'domo-other-env_1', containerId: 'old-sha', status: 'stopped' }))
+    // Another of this Domo's environments still on the other runtime volume.
+    repo.listDevEnvironments.mockResolvedValue([environment(), environment({ id: 'env_2' })])
+    withContainers(oldContainer({ name: 'domo-other-env_1', running: false, namedVolumes: OTHER }), (args) => {
+      if (args[0] === 'ps' && args.includes('volume=domo-other-runtime-b2c0')) return 'env_2\nenv_9'
+      if (args[0] === 'ps' && args.includes('volume=domo-other-caches')) return 'env_9'
+      return undefined
+    })
+
+    const report = await upgradeEnvironment('env_1')
+
+    // This Domo's names, socket, home volume and caches.
+    const runArgs = dockerCalls()[stepAt('run', '--detach')]!
+    expect(runArgs.slice(0, 4)).toEqual(['run', '--detach', '--name', 'domo-dev-env_1'])
+    expect(dood.ensureDoodProxy).toHaveBeenCalledWith(expect.objectContaining({ containerReference: 'domo-dev-env_1', socketPath: undefined }))
+    expect(runArgs).toContain(`type=volume,source=${HOME},target=/home/vscode`)
+    expect(runArgs.some(arg => arg.startsWith('type=volume,source=domo-dev-caches,'))).toBe(true)
+    expect(runArgs.join(' ')).not.toContain('domo-other-')
+    // Its home came out of the exited container, into this Domo's volume.
+    expect(copyOutOfContainer).toHaveBeenCalledWith(expect.objectContaining({ containerId: 'old-sha', path: '/home/vscode' }))
+    expect(copyOutOfContainer.mock.calls[0]![0].consumerArgs).toContain(`type=volume,source=${HOME},target=/mnt/vscode`)
+    // pnpm's links in the checkout pointed into the other cache volume: made again before the install.
+    expect(stepAt('.modules.yaml', '/worktrees/env_1')).toBeGreaterThan(-1)
+    expect(stepAt('.modules.yaml')).toBeLessThan(stepAt('pnpm', 'install'))
+    // The old container and the other Domo's tag of its image are gone; no volume is removed.
+    expect(dockerCalls()).toContainEqual(['rm', '--force', 'old-sha'])
+    expect(dockerCalls()).toContainEqual(['image', 'rm', 'domo-other-env_1'])
+    expect(dockerCalls().some(args => args[0] === 'volume' && args[1] === 'rm')).toBe(false)
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', expect.objectContaining({ containerName: 'domo-dev-env_1' }))
+    expect(report).toMatchObject({
+      movedFrom: 'domo-other-env_1',
+      home: 'migrated',
+      releasedVolumes: ['domo-other-caches', 'domo-other-browser-b7b8']
+    })
+  })
+
+  it('leaves the checkout\'s pnpm links alone when the caches did not move', async () => {
+    await writeFile(join(fakeWorktree(repoPath, 'env_1'), 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8')
+    withContainers(oldContainer({ namedVolumes: [HOME, 'domo-dev-caches'] }))
+
+    await upgradeEnvironment('env_1')
+
+    expect(stepAt('.modules.yaml')).toBe(-1)
   })
 })

@@ -158,7 +158,7 @@ const statusColor = computed(() => {
       <USwitch
         v-model="form.autoApply"
         label="Update automatically"
-        description="Build each new version when it appears and restart onto it when no agent is working, no environment is being created, and no schedule is about to fire. Off, Domo only tells you."
+        description="Build each new version when it appears and restart onto it when no agent is working, no environment is being built, and no schedule is about to fire. Off, Domo only tells you."
       />
       <UFormField label="Automatic updates" :description="form.autoApply ? undefined : 'Applies when the switch above is on.'">
         <USelect v-model="form.minHoursBetweenApplies" :items="gaps" :disabled="!form.autoApply" class="w-full max-w-xs" />

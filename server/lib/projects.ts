@@ -1,11 +1,11 @@
 import { mkdir } from 'node:fs/promises'
 import { basename } from 'node:path'
 
-import type { AgentSession, EnvironmentLeftover, Project } from '../../shared/types'
+import type { AgentSession, DevEnvironment, EnvironmentLeftover, Project } from '../../shared/types'
 import { acpManager } from './acp/manager'
 import type { BranchOutcome } from './dev-env/host-worktree'
 import { commitInitial, initRepository } from './dev-env/host-worktree'
-import { retireEnvironment, upgradeEnvironment, type EnvironmentUpgradeReport } from './dev-environments'
+import { beginUpgrade, retireEnvironment, type EnvironmentUpgradeReport } from './dev-environments'
 import { inspectProjectPath } from './project-path'
 import {
   appendAgentEvent,
@@ -156,29 +156,41 @@ export async function retireProjectEnvironment(environmentId: string): Promise<E
 }
 
 /**
- * Upgrade an environment: its adapters are stopped, it gets a new container,
- * and each session resumes on it where it left off.
+ * Upgrade an environment (`beginUpgrade`): it gets a new container, and each
+ * session resumes on it where it left off.
  *
- * The adapters first, for a retirement's reason: one holding a `docker exec`
- * into a container being removed. Nothing starts them again. A session
- * reattaches with `session/load` the next time something is delivered to it,
- * reading its state from the home volume, so a session nobody talks to costs
- * nothing. Nothing else about them changes: schedules, subscriptions and
- * pending permissions all still apply once the environment is back.
+ * Its sessions' adapters are stopped once the image is built and the old
+ * container is about to go, for a retirement's reason: one holding a
+ * `docker exec` into a container being removed. Nothing starts them again. A
+ * session reattaches with `session/load` the next time something is
+ * delivered to it, reading its state from the home volume, so a session
+ * nobody talks to costs nothing. Nothing else about them changes: schedules,
+ * subscriptions and pending permissions all still apply once it is back.
  */
-export async function upgradeProjectEnvironment(environmentId: string): Promise<EnvironmentUpgradeReport> {
-  const sessions = await listAgentSessionsInEnvironment(environmentId)
-  for (const session of sessions) acpManager.stop(session.id)
-  const report = await upgradeEnvironment(environmentId)
-  // Where a session's next turn starting on a newer adapter came from.
-  for (const session of sessions) {
-    await appendAgentEvent(session.id, 'environment_upgraded', {
-      devEnvironmentId: environmentId,
-      runtime: report.runtime,
-      home: report.home
-    })
-  }
-  return report
+export async function beginProjectEnvironmentUpgrade(environmentId: string): Promise<{
+  environment: DevEnvironment
+  upgraded: Promise<EnvironmentUpgradeReport>
+}> {
+  let sessions: AgentSession[] = []
+  const begun = await beginUpgrade(environmentId, {
+    beforeReplace: async () => {
+      sessions = await listAgentSessionsInEnvironment(environmentId)
+      for (const session of sessions) acpManager.stop(session.id)
+    }
+  })
+  const upgraded = begun.upgraded.then(async (report) => {
+    // Where a session's next turn starting on a newer adapter came from.
+    for (const session of sessions) {
+      await appendAgentEvent(session.id, 'environment_upgraded', {
+        devEnvironmentId: environmentId,
+        adapters: report.adapters,
+        home: report.home
+      })
+    }
+    return report
+  })
+  upgraded.catch(() => {})
+  return { environment: begun.environment, upgraded }
 }
 
 /**
