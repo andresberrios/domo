@@ -261,8 +261,6 @@ describe('the agent voice runtime', () => {
   it('falls back to the bar\'s own voice when the assistant\'s will not speak', async () => {
     settings.agentVoice.speaker = 'local'
     assistantVoices.set('ag_clone', { speaker: 'pocket', voice: 'clone:abcdefabcdef' })
-    const token = process.env.HF_TOKEN
-    process.env.HF_TOKEN = 'test'
     synthesizeWith.mockImplementationOnce(async () => { throw new Error('Pocket could not load the clone') })
     const runtime = new AgentVoiceRuntime('ag_clone')
     const messages: AgentVoiceServerMessage[] = []
@@ -273,8 +271,6 @@ describe('the agent voice runtime', () => {
     expect(synthesizeWith.mock.calls[1]![0]).toMatchObject({ speaker: 'local', pocketVoice: DEFAULT_AGENT_VOICE.pocketVoice })
     expect(messages.some(message => message.type === 'error')).toBe(false)
     runtime.close()
-    if (token === undefined) delete process.env.HF_TOKEN
-    else process.env.HF_TOKEN = token
   })
 
   it('reads an assistant\'s note in its voice on another agent\'s bar', async () => {

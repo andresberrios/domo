@@ -69,7 +69,7 @@ export async function normalizeAssistantVoice(value: unknown): Promise<Assistant
  * machine that is not a Mac, or a Kyutai server nobody chose would fail the
  * first sentence; better to fall back before trying.
  */
-export function speakerUsable(speaker: AssistantVoice['speaker'], base: AgentVoiceSettings, voice?: string): boolean {
+export function speakerUsable(speaker: AssistantVoice['speaker'], base: AgentVoiceSettings): boolean {
   switch (speaker) {
     case 'gemini': return !!geminiApiKey()
     case 'openai': return !!openAiApiKey()
@@ -77,9 +77,8 @@ export function speakerUsable(speaker: AssistantVoice['speaker'], base: AgentVoi
     case 'mac': return process.platform === 'darwin'
     // A server the human runs; only when Settings already point the bar at it.
     case 'kyutai': return base.speaker === 'kyutai'
-    // Domo runs Pocket itself; a clone also needs Kyutai's gated weights,
-    // unless Settings name a Pocket server of the human's own.
-    case 'pocket': return !clonedVoiceId(voice ?? '') || !!process.env.HF_TOKEN || !!base.pocketUrl
+    // Domo runs Pocket itself, with the cloning weights from its own mirror.
+    case 'pocket': return true
   }
 }
 
@@ -93,7 +92,7 @@ export async function speechSettingsFor(
   base: AgentVoiceSettings
 ): Promise<{ settings: AgentVoiceSettings, fallback: AgentVoiceSettings | null }> {
   const voice = (await getAssistantOfSession(agentSessionId).catch(() => null))?.voice
-  if (!voice || !speakerUsable(voice.speaker, base, voice.voice)) return { settings: base, fallback: null }
+  if (!voice || !speakerUsable(voice.speaker, base)) return { settings: base, fallback: null }
   return {
     settings: { ...base, speaker: voice.speaker, [VOICE_FIELD[voice.speaker]]: voice.voice },
     fallback: base
