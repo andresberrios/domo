@@ -7,7 +7,9 @@ import {
   SPEAKERS,
   SPEECH_LANGUAGES,
   TOOL_SOUNDS,
-  TRANSCRIBERS
+  TRANSCRIBERS,
+  usesKyutai,
+  withoutKyutai
 } from '~~/shared/agent-voice'
 import type { AudioInputDevice } from '~/composables/useAgentVoice'
 
@@ -138,8 +140,8 @@ const columns = computed<Column[]>(() => {
   const described = (list: Array<{ id: string, label: string, description: string }>) =>
     list.map(entry => ({ value: entry.id, label: entry.label, description: entry.description }))
   return [
-    { key: 'transcriber', label: 'Hear with', items: described(TRANSCRIBERS), selected: current.transcriber, apply: value => setVoice({ transcriber: value as AgentVoiceSettings['transcriber'] }) },
-    { key: 'speaker', label: 'Speak with', items: described(SPEAKERS), selected: current.speaker, apply: value => setVoice({ speaker: value as AgentVoiceSettings['speaker'] }) },
+    { key: 'transcriber', label: 'Hear with', items: described(withoutKyutai(TRANSCRIBERS, usesKyutai(current))), selected: current.transcriber, apply: value => setVoice({ transcriber: value as AgentVoiceSettings['transcriber'] }) },
+    { key: 'speaker', label: 'Speak with', items: described(withoutKyutai(SPEAKERS, usesKyutai(current))), selected: current.speaker, apply: value => setVoice({ speaker: value as AgentVoiceSettings['speaker'] }) },
     ...(voiceColumn.value ? [voiceColumn.value] : []),
     {
       key: 'language',

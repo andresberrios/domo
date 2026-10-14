@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentAdapter, Assistant, SessionModeInfo } from '~~/shared/types'
 import { AGENT_ADAPTERS, agentAdapterInfo } from '~~/shared/agent-adapters'
-import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS } from '~~/shared/agent-voice'
+import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, withoutKyutai } from '~~/shared/agent-voice'
 import {
   DEFAULT_HANDOFF_THRESHOLD,
   HANDOFF_THRESHOLD_MAX,
@@ -39,7 +39,8 @@ const BAR_VOICE = 'bar-voice'
 const { data: clones } = useClonedVoices()
 const voiceSpeakerItems = computed(() => [
   { label: 'The voice bar\'s own (Settings)', value: BAR_VOICE },
-  ...SPEAKERS.filter(speaker => speaker.id !== 'browser').map(speaker => ({ label: speaker.label, value: speaker.id }))
+  // Kyutai only speaks for an assistant when the bar already uses it; kept for one that has it.
+  ...withoutKyutai(SPEAKERS, form.voiceSpeaker === 'kyutai').filter(speaker => speaker.id !== 'browser').map(speaker => ({ label: speaker.label, value: speaker.id }))
 ])
 const voiceItems = computed(() => {
   const named = (list: readonly string[]) => list.map(voice => ({ label: voice, value: voice }))

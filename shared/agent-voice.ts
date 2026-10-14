@@ -30,6 +30,19 @@ export const SPEECH_ENGINES: Array<{ id: SpeechEngine, label: string, descriptio
 
 export const SPEECH_ENGINE_IDS = SPEECH_ENGINES.map(engine => engine.id)
 
+/**
+ * Kyutai has never been run against a real server, so it is offered only to
+ * Settings that already use it; anyone else would be picking a broken engine.
+ */
+export function usesKyutai(voice: Pick<AgentVoiceSettings, 'transcriber' | 'speaker' | 'turnDetector'>): boolean {
+  return voice.transcriber === 'kyutai' || voice.speaker === 'kyutai' || voice.turnDetector === 'kyutai'
+}
+
+/** An engine or detector list, without Kyutai unless it is offered. */
+export function withoutKyutai<T extends { id: string }>(list: T[], offered: boolean): T[] {
+  return offered ? list : list.filter(entry => entry.id !== 'kyutai')
+}
+
 export function isSpeechEngine(value: unknown): value is SpeechEngine {
   return SPEECH_ENGINE_IDS.includes(value as SpeechEngine)
 }

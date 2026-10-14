@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentVoiceSettings } from '~~/shared/types'
-import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS } from '~~/shared/agent-voice'
+import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, SPEECH_LANGUAGES, TOOL_SOUNDS, TRANSCRIBE_MODELS, TRANSCRIBERS, TURN_DETECTORS, usesKyutai, withoutKyutai } from '~~/shared/agent-voice'
 
 /**
  * The cascade behind talking to a coding agent: who hears, who speaks, and
@@ -19,7 +19,11 @@ const props = defineProps<{
 const { data: clones } = useClonedVoices()
 const pocketItems = computed(() => pocketVoiceItems(clones.value ?? [], form.value.pocketVoice))
 
-const speakerItems = SPEAKERS.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
+/** Decided from Settings as saved, so switching away in the form does not hide the option being left. */
+const kyutaiOffered = ref(usesKyutai(form.value))
+watch(() => usesKyutai(form.value), uses => { if (uses) kyutaiOffered.value = true })
+
+const speakerItems = computed(() => withoutKyutai(SPEAKERS, kyutaiOffered.value).map(engine => ({ label: engine.label, value: engine.id, description: engine.description })))
 
 /** This device's voices, best first; the choice is kept in this browser, not in Settings. */
 const deviceVoices = ref<Array<{ label: string, value: string, description: string }>>([])
@@ -78,7 +82,7 @@ function chooseDeviceVoice(name: string) {
   sample.lang = voice.lang
   window.speechSynthesis.speak(sample)
 }
-const transcriberItems = TRANSCRIBERS.map(engine => ({ label: engine.label, value: engine.id, description: engine.description }))
+const transcriberItems = computed(() => withoutKyutai(TRANSCRIBERS, kyutaiOffered.value).map(engine => ({ label: engine.label, value: engine.id, description: engine.description })))
 // The select refuses an empty value, and '' is how "let the engine guess" is stored.
 const languageItems = SPEECH_LANGUAGES.map(language => ({ label: language.label, value: language.id || 'auto' }))
 const language = computed({
@@ -106,7 +110,7 @@ function modelItems(engine: keyof typeof TRANSCRIBE_MODELS, current: string) {
 
 const toolSoundItems = TOOL_SOUNDS.map(sound => ({ label: sound.label, value: sound.id, description: sound.description }))
 
-const detectorItems = TURN_DETECTORS.map(detector => ({ label: detector.label, value: detector.id, description: detector.description }))
+const detectorItems = computed(() => withoutKyutai(TURN_DETECTORS, kyutaiOffered.value).map(detector => ({ label: detector.label, value: detector.id, description: detector.description })))
 
 const uses = computed(() => new Set([
   form.value.transcriber,
