@@ -47,13 +47,21 @@ const DIND_VOLUME = 'dind-var-lib-docker-'
  * catches a Feature that names it something else). Only an environment created
  * before the host daemon, or one whose project lists the Feature itself, has
  * one.
+ *
+ * The container and its image share a name, `<prefix><id>`, under the prefix
+ * of the install that created them. A row knows that name (`containerName`),
+ * and it is what is claimed: a row copied from another install's database
+ * names that install's container and image, not this one's.
  */
-export function environmentResources(environmentId: string): Leftover[] {
-  const prefix = resourcePrefix()
+export function environmentResources(
+  environmentId: string,
+  containerName = `${resourcePrefix()}${environmentId}`
+): Leftover[] {
+  const name = containerName.toLowerCase()
   return [
-    { kind: 'container', name: `${prefix}${environmentId}`.toLowerCase(), environmentId },
+    { kind: 'container', name, environmentId },
     { kind: 'volume', name: `${DIND_VOLUME}${environmentId}`, environmentId },
-    { kind: 'image', name: `${prefix}${environmentId}`.toLowerCase(), environmentId }
+    { kind: 'image', name, environmentId }
   ]
 }
 
@@ -106,6 +114,8 @@ function flatten(present: ObservedResources): Observed[] {
 
 interface Claimant {
   id: string
+  /** The row's container name; this install's derived one when absent. */
+  containerName?: string
   retiredAt: string | null
   leftovers: Array<Pick<EnvironmentLeftover, 'kind' | 'name'>>
 }
@@ -115,7 +125,7 @@ function claims(environment: Claimant, resource: Observed): boolean {
   if (environment.leftovers.some(owed => owed.kind === resource.kind && owed.name === resource.name)) return true
   if (!environment.retiredAt) return false
   if (resource.owner === environment.id) return true
-  return environmentResources(environment.id)
+  return environmentResources(environment.id, environment.containerName)
     .some(derived => derived.kind === resource.kind && derived.name === resource.name)
 }
 
@@ -128,7 +138,7 @@ function claims(environment: Claimant, resource: Observed): boolean {
 export function claimedResources(environment: Claimant): Leftover[] {
   const claimed = new Map<string, Leftover>()
   const add = (leftover: Leftover) => claimed.set(`${leftover.kind}:${leftover.name}`, leftover)
-  if (environment.retiredAt) for (const resource of environmentResources(environment.id)) add(resource)
+  if (environment.retiredAt) for (const resource of environmentResources(environment.id, environment.containerName)) add(resource)
   for (const { kind, name } of environment.leftovers) add({ kind, name, environmentId: environment.id })
   return [...claimed.values()]
 }
@@ -207,13 +217,13 @@ function isShared(resource: Observed): boolean {
  *   anything of this one's to mention.
  */
 export function unattributedResources(input: {
-  environments: Array<{ id: string }>
+  environments: Array<{ id: string, containerName?: string }>
   present: ObservedResources
 }): string[] {
   const prefix = resourcePrefix()
   const known = new Set(input.environments.map(environment => environment.id))
   const derived = new Set(input.environments.flatMap(
-    environment => environmentResources(environment.id).map(resource => `${resource.kind} ${resource.name}`)
+    environment => environmentResources(environment.id, environment.containerName).map(resource => `${resource.kind} ${resource.name}`)
   ))
   const resources = flatten(input.present)
   const withContainer = new Set(resources
@@ -269,9 +279,9 @@ function image(line: string): ObservedResource | null {
   return owner ? { name, owner } : { name }
 }
 
-/** Only what could be an environment's: prefixed, labelled, a DinD volume or a private tag. */
-function relevant(resource: ObservedResource): boolean {
-  return !!resource.owner || resource.name.startsWith(resourcePrefix())
+/** Only what could be an environment's: prefixed, labelled, a DinD volume, a private tag, or named by a row. */
+function relevant(resource: ObservedResource, claimedNames: Set<string>): boolean {
+  return !!resource.owner || resource.name.startsWith(resourcePrefix()) || claimedNames.has(resource.name)
 }
 
 /**
@@ -287,7 +297,16 @@ function relevant(resource: ObservedResource): boolean {
  * per kind, and a private tag has no filter at all (`reference` globs one path
  * component, and `domo-<id>/docker.io/library/app` has three).
  */
-export async function observeEnvironmentResources(): Promise<ObservedResources> {
+export async function observeEnvironmentResources(
+  /**
+   * The rows' own container names, which also name their images. Under this
+   * install's prefix they are listed anyway; under another one (a row copied
+   * from another install's database) only this lists them.
+   */
+  claimedNames: Iterable<string> = []
+): Promise<ObservedResources> {
+  const claimed = new Set([...claimedNames].map(name => name.toLowerCase()))
+  const keep = (resource: ObservedResource) => relevant(resource, claimed)
   const labels = `{{.Label "${ENV_ID_LABEL}"}}\t{{.Label "${DOOD_LABEL}"}}`
   const [containers, networks, volumes, images] = await Promise.all([
     lines(['ps', '--all', '--format', `{{.Names}}\t${labels}`]),
@@ -296,10 +315,10 @@ export async function observeEnvironmentResources(): Promise<ObservedResources> 
     lines(['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'])
   ])
   return {
-    containers: containers.map(labelled).filter(relevant),
+    containers: containers.map(labelled).filter(keep),
     networks: networks.map(labelled),
-    volumes: volumes.map(labelled).filter(relevant),
-    images: images.map(image).filter((entry): entry is ObservedResource => !!entry && relevant(entry))
+    volumes: volumes.map(labelled).filter(keep),
+    images: images.map(image).filter((entry): entry is ObservedResource => !!entry && keep(entry))
   }
 }
 

@@ -108,9 +108,13 @@ export function doodSocketDir(): string {
   return join(nestedSocketRoot() ?? join(homedir(), '.domo', 's'), installId())
 }
 
+/** The socket's file name, which is the same in every install: only the directory is this one's. */
+export function doodSocketFile(environmentId: string): string {
+  return `${createHash('sha256').update(environmentId).digest('hex').slice(0, 12)}.sock`
+}
+
 export function doodSocketPath(environmentId: string): string {
-  const name = createHash('sha256').update(environmentId).digest('hex').slice(0, 12)
-  const path = join(doodSocketDir(), `${name}.sock`)
+  const path = join(doodSocketDir(), doodSocketFile(environmentId))
   if (Buffer.byteLength(path) > SUN_PATH_MAX) {
     throw new Error(
       `The Docker socket path for ${environmentId} is ${Buffer.byteLength(path)} bytes (${path}), and Docker Desktop `
@@ -138,6 +142,12 @@ export interface DoodProxyInput {
   workspaceAlias?: WorkspaceAlias
   /** A small image guaranteed to be present; the caller owns the pin. */
   helperImage: string
+  /**
+   * Where to listen, when the container already mounts a socket: its mounts
+   * were fixed by whichever Domo created it, which may not be this one
+   * (`mountedDoodSocket`). This install's own path otherwise.
+   */
+  socketPath?: string
   onDroppedPorts?(ports: PublishedPort[]): void
 }
 
@@ -186,6 +196,7 @@ async function startProxy(input: DoodProxyInput): Promise<DoodProxy> {
   if (existing) return existing
 
   const ns = namespaceFor(input.environmentId)
+  const socketPath = input.socketPath ?? doodSocketPath(input.environmentId)
   const report = (error: unknown) =>
     console.warn(`[dood] ${input.environmentId}:`, error instanceof Error ? error.message : error)
   const engine = createEngineClient(DAEMON_SOCKET)
@@ -197,7 +208,7 @@ async function startProxy(input: DoodProxyInput): Promise<DoodProxy> {
     onError: report
   })
   const proxy = await startDoodProxy({
-    socketPath: doodSocketPath(input.environmentId),
+    socketPath,
     layers: [
       scopeLayer({
         ns,
@@ -205,7 +216,7 @@ async function startProxy(input: DoodProxyInput): Promise<DoodProxy> {
           workspacePath: input.workspacePath,
           workspaceAlias: input.workspaceAlias,
           labels: doodLabels(input.environmentId),
-          dockerSocket: doodSocketPath(input.environmentId)
+          dockerSocket: socketPath
         },
         engine,
         ownContainer: input.containerReference,

@@ -14,6 +14,8 @@ export interface ContainerInspection {
   labels: Record<string, string>
   /** Names of the named (not anonymous) volumes mounted into the container. */
   namedVolumes: string[]
+  /** Host paths bind-mounted into the container. */
+  bindSources: string[]
   publishedPorts: Array<{ innerPort: number, protocol: 'tcp' | 'udp', hostPort: number }>
 }
 
@@ -108,6 +110,9 @@ export async function inspectContainer(reference: string): Promise<ContainerInsp
       namedVolumes: ((container.Mounts ?? []) as Array<{ Type?: string, Name?: string }>)
         .filter(mount => mount.Type === 'volume' && mount.Name && !/^[0-9a-f]{64}$/.test(mount.Name))
         .map(mount => mount.Name!),
+      bindSources: ((container.Mounts ?? []) as Array<{ Type?: string, Source?: string }>)
+        .filter(mount => mount.Type === 'bind' && mount.Source)
+        .map(mount => mount.Source!),
       publishedPorts
     }
   } catch {
