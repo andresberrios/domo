@@ -18,10 +18,11 @@ import { availableModes, currentModeId } from '../../server/lib/acp/mode'
  */
 
 /**
- * Shaped the way claude-agent-acp 0.81.1 really answers, read off a live
- * `session/new`. The bracketed 1M-context ids are the point: there is no bare
- * `opus`, so every row that stored one resolves by containment rather than
- * exactly — see the test that pins it below.
+ * Shaped the way claude-agent-acp 0.90.0 really answers on a `claude
+ * setup-token` login, read off a live `session/new`. 0.81.1 listed
+ * `claude-fable-5-1` where this lists `fable`, and the host's own login got
+ * bracketed 1M-context ids (`opus[1m]`, `claude-fable-5-1[1m]`) — which is what
+ * rows created before the bump still hold.
  */
 const claudeResponse = {
   sessionId: 'acp_1',
@@ -34,14 +35,26 @@ const claudeResponse = {
       currentValue: 'sonnet',
       options: [
         { value: 'default', name: 'Default (recommended)' },
-        { value: 'opus[1m]', name: 'Opus 5.5' },
-        { value: 'claude-fable-5-1[1m]', name: 'Fable 5.1' },
-        { value: 'sonnet', name: 'Sonnet 5' },
-        { value: 'haiku', name: 'Haiku 4.5' }
+        { value: 'sonnet', name: 'Sonnet 5.5' },
+        { value: 'fable', name: 'Fable 5.1' },
+        { value: 'opus', name: 'Opus 5.5' },
+        { value: 'haiku', name: 'Haiku 5.5' }
       ]
     },
     { id: 'effort', category: 'thought_level', type: 'select', currentValue: 'high', options: [] }
   ]
+}
+
+/** The same list as a login that is offered 1M context might spell it, bare and bracketed side by side. */
+function withLongContext(response: typeof claudeResponse) {
+  const [mode, model, effort] = response.configOptions
+  return {
+    ...response,
+    configOptions: [mode, {
+      ...model!,
+      options: [...model!.options!, { value: 'fable[1m]', name: 'Fable 5.1 (1M context)' }, { value: 'opus[1m]', name: 'Opus 5.5 (1M context)' }]
+    }, effort]
+  }
 }
 
 describe('reading an adapter\'s model list', () => {
@@ -50,24 +63,33 @@ describe('reading an adapter\'s model list', () => {
 
     expect(availableModelOptions(option)).toEqual([
       { id: 'default', name: 'Default (recommended)' },
-      { id: 'opus[1m]', name: 'Opus 5.5' },
-      { id: 'claude-fable-5-1[1m]', name: 'Fable 5.1' },
-      { id: 'sonnet', name: 'Sonnet 5' },
-      { id: 'haiku', name: 'Haiku 4.5' }
+      { id: 'sonnet', name: 'Sonnet 5.5' },
+      { id: 'fable', name: 'Fable 5.1' },
+      { id: 'opus', name: 'Opus 5.5' },
+      { id: 'haiku', name: 'Haiku 5.5' }
     ])
     expect(currentModel(option)?.value).toBe('sonnet')
   })
 
-  it('resolves a stored bare `opus` onto the 1M-context id', () => {
-    // Every session created before the bracketed ids appeared holds `opus`, and
-    // the adapter offers no such value: containment is the only thing that
-    // keeps those rows startable, and it must stay unambiguous.
+  it('resolves the ids rows stored before 0.90.0 onto the aliases that replaced them', () => {
+    // Long-running assistants hold `claude-fable-5-1[1m]`. Without a match the
+    // next attach would put them on the adapter's default model instead.
     const option = modelConfigOption(claudeResponse)
 
-    expect(resolveModel(option, 'opus')?.value).toBe('opus[1m]')
+    expect(resolveModel(option, 'claude-fable-5-1')?.value).toBe('fable')
+    expect(resolveModel(option, 'claude-fable-5-1[1m]')?.value).toBe('fable')
+    expect(resolveModel(option, 'opus[1m]')?.value).toBe('opus')
     // One entry means it resolved; more than one would be the refusal.
-    expect(ambiguousModelMatches(option, 'opus')).toEqual(['opus[1m]'])
-    expect(resolveModel(option, 'fable')?.value).toBe('claude-fable-5-1[1m]')
+    expect(ambiguousModelMatches(option, 'claude-fable-5-1[1m]')).toEqual(['fable'])
+  })
+
+  it('keeps a 1M-context id on the 1M-context model when one is offered', () => {
+    const option = modelConfigOption(withLongContext(claudeResponse))
+
+    expect(resolveModel(option, 'claude-fable-5-1[1m]')?.value).toBe('fable[1m]')
+    expect(resolveModel(option, 'claude-fable-5-1')?.value).toBe('fable')
+    expect(resolveModel(option, 'opus[1m]')?.value).toBe('opus[1m]')
+    expect(resolveModel(option, 'opus')?.value).toBe('opus')
   })
 
   it('flattens grouped options, which is the other shape the schema allows', () => {
@@ -128,8 +150,9 @@ const codexModes = {
   modes: {
     currentModeId: 'agent',
     availableModes: [
-      { id: 'read-only', name: 'Ask for approval', description: 'Always ask to edit external files' },
-      { id: 'agent', name: 'Approve for me', description: 'Only ask for actions detected as unsafe' },
+      { id: 'read-only', name: 'Read-only', description: 'Requires approval to edit files and access the internet.' },
+      { id: 'workspace-write', name: 'Workspace access', description: 'Edit workspace files; ask before writing outside the workspace or accessing the network.' },
+      { id: 'agent', name: 'Auto review', description: 'Only ask for actions detected as potentially unsafe' },
       { id: 'agent-full-access', name: 'Full access', description: 'Unrestricted access' }
     ]
   }
@@ -166,7 +189,7 @@ describe('reading an adapter\'s permission modes', () => {
 
   it('reads the other adapter\'s entirely different ids', () => {
     expect(availableModes(codexModes).map(mode => mode.id)).toEqual([
-      'read-only', 'agent', 'agent-full-access'
+      'read-only', 'workspace-write', 'agent', 'agent-full-access'
     ])
     expect(currentModeId(codexModes)).toBe('agent')
   })

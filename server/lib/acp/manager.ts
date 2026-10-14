@@ -1050,8 +1050,8 @@ class AgentRuntime {
    * Put the adapter in the mode the row asks for, and record which one it is in.
    *
    * `session/load` restores the *adapter's* transcript, not Domo's choices. It
-   * comes back in whatever mode it defaults to — for Claude Code that means
-   * asking for permissions again, however the session was set up — so the mode
+   * may come back in whatever mode it defaults to (Codex does; Claude Code
+   * restores the mode from its own transcript since 0.90.0) — so the mode
    * has to be re-applied from the row on every attach, exactly as the model is
    * (`applyRequestedModel`). Under `pnpm dev` this is not a rare path: every
    * edit to `server/` restarts Nitro and reattaches every session.
@@ -1360,6 +1360,14 @@ class AgentRuntime {
       if (update.cost) this.noteResult(update)
       return
     }
+    // State too, and the row has to follow it as it follows a
+    // `current_mode_update`: OpenCode sends one when it refreshes its model
+    // catalogue or another client changes the session, and left alone the row
+    // went on describing a model and options the adapter no longer had.
+    if (kind === 'config_option_update') {
+      await this.serial(() => this.takeConfigOptions(update.configOptions))
+      return
+    }
 
     // A subagent launched in the background holds the turn's `session/prompt`
     // open until it is done; see `noteResult`.
@@ -1470,6 +1478,32 @@ class AgentRuntime {
     turn.release?.()
   }
 
+  /** An adapter's unprompted report of its whole option set: the model, the mode and the rest. */
+  private async takeConfigOptions(options: unknown): Promise<void> {
+    if (!Array.isArray(options)) return
+    const response = { configOptions: options }
+    const session = await getAgentSession(this.agentSessionId)
+    if (!session) return
+    const patch: { model?: string, modeId?: string, configOptions?: SessionConfigOptionInfo[] } = {}
+
+    this.modelOption = modelConfigOption(response) ?? this.modelOption
+    const model = currentModel(this.modelOption)?.value
+    if (model && model !== session.model) patch.model = model
+
+    // Only an adapter that publishes its modes as an option; the others say
+    // so through `current_mode_update`.
+    if (this.modeOption) {
+      this.modeOption = modeConfigOption(response) ?? this.modeOption
+      const modeId = currentModeId(response)
+      if (modeId) this.reportedModeId = modeId
+      if (modeId && modeId !== session.modeId) patch.modeId = modeId
+    }
+
+    this.configOptions = adapterConfigOptions(response)
+    if (!sameConfigOptions(this.configOptions, session.configOptions)) patch.configOptions = this.configOptions
+    if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
+  }
+
   private async onPermission(params: any): Promise<any> {
     const settings = await getSettings()
     const options = (params.options ?? []).map((option: any) => ({
@@ -1489,6 +1523,7 @@ class AgentRuntime {
     }
 
     const block = this.takeStream()
+    let answer!: Promise<string | null>
     const permission = await this.serial(async () => {
       await this.closeStream(block)
       const row = await createPermission({
@@ -1497,6 +1532,13 @@ class AgentRuntime {
         title,
         options,
         toolCall: params.toolCall ?? null
+      })
+      // The moment the row exists, before anything else awaits: it can be
+      // answered from then on. An answer that arrived before the waiter was
+      // marked the row resolved and reached nobody, and the agent waited on
+      // a permission nobody would ask about again.
+      answer = new Promise<string | null>((resolvePromise) => {
+        this.waiters.set(row.id, { permission: row, resolve: resolvePromise })
       })
       await appendAgentEvent(this.agentSessionId, 'permission_request', { permissionId: row.id, ...params })
       await this.setStatus('awaiting-permission', { touch: true })
@@ -1507,15 +1549,14 @@ class AgentRuntime {
       const auto =
         options.find((o: any) => o.kind === 'allow_once') ?? options.find((o: any) => o.kind === 'allow_always')
       if (auto) {
+        this.waiters.delete(permission.id)
         await resolvePermissionRow(permission.id, auto.optionId, 'auto')
         await this.setStatus(this.turn ? 'thinking' : 'idle')
         return { outcome: { outcome: 'selected', optionId: auto.optionId } }
       }
     }
 
-    const optionId = await new Promise<string | null>((resolvePromise) => {
-      this.waiters.set(permission.id, { permission, resolve: resolvePromise })
-    })
+    const optionId = await answer
     this.waiters.delete(permission.id)
 
     if (!optionId) return { outcome: { outcome: 'cancelled' } }

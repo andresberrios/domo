@@ -1056,6 +1056,44 @@ describe('the mode a session runs in', () => {
     expect((await listAgentEvents(agent.id)).map(event => event.type)).toContain('current_mode_update')
   })
 
+  it('follows a model and options the adapter changed by itself, without a transcript line', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await createAgentSession({
+      adapter: 'opencode',
+      title: 'Catalogue',
+      cwd: workspace,
+      model: 'm1'
+    })
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'hello' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Half a sentence, '))
+      // OpenCode 2.0.29, refreshing its catalogue mid-session: a new model list,
+      // a different current model, the effort it offers on that one.
+      await send({
+        sessionUpdate: 'config_option_update',
+        configOptions: [
+          modelOption({ current: 'm3', ids: ['m1', 'm3'] }),
+          effortOption({ current: 'low', ids: ['low', 'high'] }),
+          configModeOption({ current: 'plan', ids: ['build', 'plan'] })
+        ]
+      })
+      await send(textChunk('and the rest of it.'))
+    }, {
+      models: { current: 'm1', ids: ['m1', 'm2'] },
+      configMode: { current: 'build', ids: ['build', 'plan'] }
+    })
+    await started
+
+    const row = (await getAgentSession(agent.id))!
+    expect(row).toMatchObject({ model: 'm3', modeId: 'plan' })
+    expect(row.configOptions?.map(option => [option.id, option.currentValue])).toEqual([['effort', 'low']])
+    const events = await listAgentEvents(agent.id)
+    expect(events.map(event => event.type)).not.toContain('config_option_update')
+    // State, not transcript: the sentence around it stays one message.
+    expect(textOf(events)).toEqual(['Half a sentence, and the rest of it.'])
+  })
+
   it('still writes a line for a mode the user chose, which is what the event is for', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const agent = await createAgentSession({
@@ -1786,6 +1824,46 @@ describe('subscriptions between agents', () => {
     expect(promptText(notes[0])).toBe(
       `Agent Builder (${target.id}) finished its turn (end_turn). Latest output: Fixed the build.`
     )
+  })
+
+  it('hands the adapter an answer given the instant the permission appears', async () => {
+    // The row is visible before the event and the status are written. An
+    // answer in that gap was recorded and reached nobody, and the agent waited
+    // on a permission nobody would ask about again. A loop answering as soon
+    // as the row exists — what an agent or a test does — lands in it.
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { listPermissions } = await import('../../server/lib/repo')
+    const target = await session('Builder')
+
+    const held = heldTurn()
+    void acpManager.prompt(target.id, [{ type: 'text', text: 'fix the build' }]).catch(() => {})
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    const agentSide = serve(state.adapters[0]!, held.turn)
+    await held.started
+
+    let answered = false
+    const answering = (async () => {
+      while (!answered) {
+        const [pending] = await listPermissions(target.id)
+        if (pending) {
+          answered = true
+          await acpManager.answerPermission(target.id, pending.id, 'allow', 'user')
+        }
+      }
+    })()
+    const outcome = await Promise.race([
+      agentSide.client.request(acp.methods.client.session.requestPermission, {
+        sessionId: 'acp_fake',
+        toolCall: { toolCallId: 'c1', title: 'Run `make`' },
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+      } as any),
+      sleep(5_000).then(() => 'the adapter was never answered')
+    ])
+    answered = true
+    await answering
+    held.release()
+
+    expect(outcome).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
   })
 
   it('says which permission an agent it follows is stuck on', async () => {

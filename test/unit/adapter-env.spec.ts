@@ -232,7 +232,7 @@ describe('OpenCode', () => {
     expect(env.OPENCODE_API_KEY).toBe('stored-key')
   })
 
-  it('gives a container a permission policy and leaves the host on OpenCode\'s own', async () => {
+  it('gives a container a permission policy and the host the out-of-directory prompt', async () => {
     const contained = await adapterEnv('opencode', true, noGh, noKey)
     const host = await adapterEnv('opencode', false, noGh, noKey)
 
@@ -240,7 +240,7 @@ describe('OpenCode', () => {
     // only way to stop a session asking every time a tool steps outside `cwd` —
     // which a coding agent does constantly.
     expect(JSON.parse(contained.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: 'allow' })
-    expect(host.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+    expect(JSON.parse(host.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: { external_directory: 'ask' } })
   })
 
   it('follows the setting when the user turns it round', async () => {
@@ -251,7 +251,7 @@ describe('OpenCode', () => {
     const contained = await adapterEnv('opencode', true, noGh, permissiveHost)
     const host = await adapterEnv('opencode', false, noGh, permissiveHost)
 
-    expect(contained.OPENCODE_CONFIG_CONTENT).toBeUndefined()
+    expect(JSON.parse(contained.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: { external_directory: 'ask' } })
     expect(JSON.parse(host.OPENCODE_CONFIG_CONTENT!)).toEqual({ permission: 'allow' })
   })
 

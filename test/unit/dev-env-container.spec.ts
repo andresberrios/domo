@@ -71,6 +71,7 @@ function runArgs(input: {
     browserVolume: input.browserVolume ?? null,
     ports: (input.ports ?? []).map(port => ({ ...port, appProtocol: null, label: null })),
     codexConfigDir: input.codexConfigDir ?? null,
+    seccompProfile: '/data/seccomp/environment-abc.json',
     homeOverlay: input.homeOverlay
       ?? emptyHomeOverlay({ containerHome: '/home/vscode', workspacePath: '/workspaces/api' }),
     dockerSocket: input.dockerSocket ?? null
@@ -288,6 +289,13 @@ describe('containerRunArgs', () => {
 
     expect(args).not.toContain('--privileged')
     expect(values(args, '--mount').join('\n')).not.toContain('dind-var-lib-docker')
+  })
+
+  it('runs under Domo\'s seccomp profile, unprivileged', () => {
+    const args = runArgs({ config: { docker: false } })
+
+    expect(values(args, '--security-opt')).toContain('seccomp=/data/seccomp/environment-abc.json')
+    expect(args).not.toContain('--privileged')
   })
 
   it('is privileged, with the dind volume and its entrypoint, when the metadata asks', () => {

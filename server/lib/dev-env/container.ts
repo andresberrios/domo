@@ -175,6 +175,8 @@ export interface RunContainerInput {
   browserVolume: string | null
   ports: ResolvedPortConfig[]
   codexConfigDir: string | null
+  /** A file: `ensureSeccompProfile()`. */
+  seccompProfile: string
   /** The host user's login state, projected into the container's home. */
   homeOverlay: HomeOverlay
   /**
@@ -213,6 +215,8 @@ export function containerRunArgs(input: RunContainerInput): string[] {
     // `--network host` shares its network (`hostModes` in `dood/rewrite.ts`).
     // Docker's default is `private`, which no other container can join.
     '--ipc', 'shareable',
+    // Docker's default, plus what Codex's command sandbox needs (`seccomp.ts`).
+    '--security-opt', `seccomp=${input.seccompProfile}`,
     // The environment's checkout: a bind mount of its host worktree, at a
     // canonical path — never at `workspacePath` directly, which is a symlink
     // to this, created once the container is up (`workspaceAliasArgs`).

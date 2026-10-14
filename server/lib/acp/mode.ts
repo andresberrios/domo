@@ -13,7 +13,7 @@ import { flattenOptions } from './config-options'
  * Like the model list, this is only ever in a `session/new` answer: there is no
  * "list the modes" request, and the list differs by adapter (Claude Code offers
  * `default` / `acceptEdits` / `plan` / `auto` / `bypassPermissions`, Codex
- * `read-only` / `agent` / `agent-full-access`). Hard-coding one adapter's ids
+ * `read-only` / `workspace-write` / `agent` / `agent-full-access`). Hard-coding one adapter's ids
  * is exactly what the Settings page used to do, and it was wrong for the other.
  */
 export function availableModes(response: any): SessionModeInfo[] {
