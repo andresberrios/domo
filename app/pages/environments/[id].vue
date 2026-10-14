@@ -288,7 +288,7 @@ async function retryCleanup() {
             </li>
           </ul>
           <p v-else class="rounded-lg border border-dashed border-default px-4 py-6 text-center text-sm text-muted">
-            No agents are running in this environment.
+            No agents in this environment yet.
           </p>
         </section>
 
@@ -317,7 +317,7 @@ async function retryCleanup() {
         v-if="environment"
         v-model:open="renaming"
         title="Rename environment"
-        description="Changes the name shown in Domo. The container and its worktree keep the names they were created with."
+        description="Changes the name shown in Domo, and the folder it is grouped in. The container, its worktree and its branch keep the names they were created with."
         :initial="environment.name"
         @submit="rename"
       />
@@ -326,7 +326,7 @@ async function retryCleanup() {
         v-if="environment"
         v-model:open="confirmingRetire"
         :title="`Retire ${environment.name}?`"
-        :description="`Destroys the container, its worktree and any Docker-in-Docker volume, so uncommitted work in it is lost. ${branchOnRetirement(environment)} ${agents.length === 1 ? 'The 1 coding agent session' : `All ${agents.length} coding agent sessions`} inside it stay readable and can never be started again.`"
+        :description="`Destroys the container, its worktree and everything it made in Docker, so uncommitted work in it is lost. ${branchOnRetirement(environment)} The records are kept — this environment and the full transcript of every coding agent that ran in it stay readable — but those agents can never be started again.`"
         confirm-label="Retire environment"
         :loading="busy"
         @confirm="retireEnvironment"

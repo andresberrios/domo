@@ -47,7 +47,7 @@ async function submit() {
   <UModal
     v-model:open="open"
     title="New project"
-    description="Points Domo at an existing local Git checkout. Its development environments are copied from it."
+    description="Points Domo at a git checkout on this machine. Its development environments each work on a branch of their own."
   >
     <template #body>
       <div class="space-y-4">
@@ -59,7 +59,7 @@ async function submit() {
           <DirectoryPicker v-model="repoPath" />
           <template #help>
             <span class="text-xs text-muted">
-              The checkout stays where it is. Nothing is written to it until you export a branch back.
+              The checkout stays where it is. Environments share its branches and commits, so a branch an agent makes in one shows up here at once.
             </span>
           </template>
         </UFormField>

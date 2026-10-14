@@ -253,7 +253,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     const wrapper = await mountTree()
 
     buttonLabelled('New project')!.click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Points Domo at an existing local Git checkout'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Points Domo at a git checkout on this machine'))
 
     wrapper.unmount()
   })
@@ -337,7 +337,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain('Retire feature-auth?'))
     // Nothing has gone out yet: the menu item opens a dialog, it does not act.
     expect(calls).toHaveLength(0)
-    expect(document.body.textContent).toContain('Docker-in-Docker volume')
+    expect(document.body.textContent).toContain('everything it made in Docker')
 
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find(element => element.textContent?.includes('Retire environment'))

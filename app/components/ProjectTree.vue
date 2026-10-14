@@ -94,9 +94,12 @@ function localAgentsFor(project: Project) {
   return agentSessions.value.filter(agent => !agent.devEnvironmentId && isUnderRepo(agent.cwd, project.repoPath))
 }
 
+function environmentAgentCount(project: Project) {
+  return environmentsFor(project.id).reduce((sum, environment) => sum + agentsFor(environment.id).length, 0)
+}
+
 function projectAgentCount(project: Project) {
-  return localAgentsFor(project).length
-    + environmentsFor(project.id).reduce((sum, environment) => sum + agentsFor(environment.id).length, 0)
+  return localAgentsFor(project).length + environmentAgentCount(project)
 }
 
 const attributedLocalAgentIds = computed(() => {
@@ -191,6 +194,7 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
             :project="project"
             :expanded="isExpanded(project.id)"
             :agent-count="projectAgentCount(project)"
+            :environment-agent-count="environmentAgentCount(project)"
             :environment-count="environmentsFor(project.id).length"
             @toggle="toggle(project.id)"
             @new-environment="openNewEnvironment(project)"

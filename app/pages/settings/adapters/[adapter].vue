@@ -224,7 +224,7 @@ async function removeKey() {
             OpenCode config wins over both of these.
           </p>
         </div>
-        <UFormField label="Development environments" help="A disposable checkout in a volume Domo can re-create.">
+        <UFormField label="Development environments" help="A worktree and branch of your project, inside a container.">
           <ChoiceMenu v-model="permission.environment" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
         </UFormField>
         <UFormField label="This machine" help="Your real checkout, with no container around it.">
