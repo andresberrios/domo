@@ -4,51 +4,11 @@ How an installed Domo is laid out, run and updated, and why. The code is
 `bin/domo.mjs`, `scripts/install.sh` and `server/lib/updates.ts`. Read this
 before you change any of them.
 
-## What Hermes does, and what to copy
-
-Hermes Desktop (NousResearch/hermes-agent) is the reference the user likes:
-the badge in the bottom-right corner that says "N commits behind main".
-Read from the source in `~/.hermes/hermes-agent` on this machine.
-
-How it works:
-
-- **The install is a git checkout** (`~/.hermes/hermes-agent`), not a package.
-  Hermes bundles its own runtimes next to it: a Node tarball in
-  `~/.hermes/node`, a Python venv inside the checkout, `uv` and other tools in
-  `~/.hermes/bin`. Only Docker and git come from the machine.
-- **The check** is `git fetch origin main` (scoped to the one branch, 10 s
-  timeout) and then `git rev-list --count HEAD..origin/main`. The result is
-  cached for six hours in a file and rendered by the CLI banner and the
-  desktop badge. Shallow clones cannot count, so Hermes compares tip SHAs and
-  asks the GitHub compare API for the number; a failed fetch never produces a
-  false "up to date".
-- **`hermes update`** is one sequential pipeline: snapshot of runtime state,
-  `git pull` (auto-stash of local edits, a backup ref if `main` diverged),
-  compile-check of startup files with `git reset --hard` to the previous SHA
-  on failure, dependency install, config migration, then a desktop rebuild
-  and a **drain-first restart** of the gateway: it refuses new turns and waits
-  up to thirty minutes for in-flight work before exiting.
-- **The desktop rebuild happens in a detached script** that runs after the
-  updater exits and swaps the packaged app on disk. A lock marker
-  (`.hermes-update-in-progress`) parks every new backend spawn while an update
-  owns the install. A build stamp (`commit`, `builtAt`) written into the
-  bundle lets a running instance notice that the bundle under it was swapped.
-
-What went wrong for them, from their own issue tracker:
-
-- An auto-updater that extracted a release zip over the checkout desynced
-  git from the files, and the "up to date" badge compared against a release
-  tag while the CLI compared against `origin/main`.
-- A rebuild on every boot regardless of whether the SHA changed, which killed
-  active chats in a loop.
-- The update lock expiring while the updater was still working.
-- A cache that kept showing "N commits behind" for hours after the update.
-
-Lessons for Domo: git stays the single source of truth for what is
+The rules everything below follows: git is the only record of what is
 installed; the running server never rebuilds or replaces itself, a separate
-process does; build the new version beside the running one and switch, never
-in place; rebuild only when the commit changed; a lock is held by a live pid,
-not by a timestamp; recompute the badge from the checkout after an update.
+process does; a new version is built beside the running one and switched to,
+never in place; a rebuild happens only when the commit changed; a lock is
+held by a live pid, not a timestamp.
 
 ## Layout of an installed Domo
 
@@ -72,14 +32,13 @@ Docker, git and a browser come from the machine. Everything else comes with
 Domo: Node, pnpm, Caddy, `uv` (for Pocket TTS), the ACP adapters and the
 coding-agent CLIs (already npm dependencies; Claude Code ships inside the
 Claude ACP adapter, Codex and OpenCode ship their binaries), the ONNX speech
-models (downloaded into `data/models` on first use, as today). Postgres and
+models (fetched into `data/models` at boot, see `docs/voice.md`). Postgres and
 Electric run in Docker from the checked-in `docker-compose.prod.yml`: those
 two services only, project `domo-prod`, ports 54322 and 30002, a volume of
 its own. The development stack (`docker-compose.yml`: project `domo`, ports
 54321 and 30000, plus the test layer's database) is a different stack, so a
-machine that develops Domo runs both. They once shared a project name, and
-the installed Domo's `compose up` stopped the development stack and every
-environment's as surplus replicas of its own.
+machine that develops Domo runs both. Never give the two one compose project
+name: `compose up` of one stops the other's containers as surplus replicas.
 
 A release is a worktree with a full `pnpm install`, not just the `.output`.
 Nitro's tracing carries the adapters' JavaScript but not the platform
@@ -107,7 +66,7 @@ Three processes, and no more:
    the running supervisor keeps the code it started with, so an update that
    changed the launcher restarts the whole service (`launchctl kickstart -k`
    or `systemctl --user restart`) instead of only the server.
-2. **Caddy**, as today, from the `Caddyfile` in the release.
+2. **Caddy**, from the `Caddyfile` in the release.
 3. **The Nitro server**, `node current/.output/server/index.mjs` with cwd
    `current`, `PORT`, `HOST=0.0.0.0`, `DOMO_HTTPS_ADDRESS`, `NUXT_DATA_DIR`,
    `NITRO_SHUTDOWN_TIMEOUT=5000` (Electric's long-polls would otherwise make
@@ -116,18 +75,11 @@ Three processes, and no more:
    Readiness is `GET /` answering, not `/api/health`: that route waits on
    Postgres, and a database that is down is the UI's banner, not a bad build.
 
-There is no Electron app in this plan. A web app installed as a service gives
-the user everything Hermes Desktop gives them except a dock icon, and avoids
-Hermes's most painful class of bugs (renderer and backend from different
-builds). A menu-bar tray item that opens the browser and shows the update
-badge can be added later as a tiny separate process without changing any of
-this.
-
 ## The update check
 
-A module `server/lib/updates/` in the server, started by `boot.ts` like the
-cron scheduler. It does nothing when Domo is not an installed instance
-(`DOMO_HOME` unset, which is every `pnpm dev`).
+`server/lib/updates.ts`, started by `boot.ts` like the cron scheduler. It does
+nothing when Domo is not an installed instance (`DOMO_HOME` unset, which is
+every `pnpm dev`).
 
 - Every `checkIntervalMinutes` (default 60, minimum 5), twenty seconds after
   boot, and when settings change, the server runs
@@ -211,8 +163,8 @@ only process that knows:
 `restartBlockers()` in `repo.ts` answers this, as phrases the row carries
 in `blockers` so the card can say what it is waiting for. The server
 re-checks every thirty seconds for as long as it takes; a turn started in
-that window is allowed, because refusing work the way Hermes's drain does
-is worse for the user than a later restart. "Restart now" in the UI forces
+that window is allowed, because refusing work until a restart is worse for
+the user than a later restart. "Restart now" in the UI forces
 it, and says that it interrupts whatever is running.
 
 **Auto-apply** (`shouldAutoApply()`, pure and unit-tested) starts the same
@@ -226,8 +178,8 @@ sixty seconds of starting is swapped back for `previous`.
 
 ## Installing
 
-`scripts/install.sh` in the repo, served as `https://domo.sh` or the raw
-GitHub URL, run as `curl -fsSL … | sh`:
+`scripts/install.sh` in the repo, fetched from its raw GitHub URL and run as
+`curl -fsSL … | sh`:
 
 1. Check for `docker` (running), `git`, `curl`, `tar` and a supported
    platform (macOS arm64/x64, Linux x64/arm64). Stop with one line saying
@@ -256,8 +208,7 @@ GitHub URL, run as `curl -fsSL … | sh`:
 ## Moving a machine from `pnpm dev` to an install
 
 The installed Domo gets its own stack and a copy of the data. It never runs
-on the development stack, whose Postgres is the one `pnpm test` and the
-environments' checks use.
+on the development stack, whose Postgres is the one `pnpm test` uses.
 
 1. Install (`scripts/install.sh`). The first start creates the schema in the
    empty `domo-prod` database.

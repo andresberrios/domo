@@ -34,9 +34,12 @@ Postgres. Only the first is somewhere to run Domo:
 
 | database | Electric | used by |
 | --- | --- | --- |
-| `domo` | `electric`, port 30000 | the user's own Domo. Real data. |
+| `domo` | `electric`, port 30000 | `pnpm dev`'s Domo. Real data. |
 | `domo_test` | none | the `integration` test layer, which drops its schema between runs |
 | `domo_e2e` | `electric-e2e`, port 30001 | the `electric` and `environments-live` test layers, which reset them |
+
+An installed Domo has a stack of its own (`domo-prod`: Postgres 54322, Electric
+30002), and it is real data too.
 
 `pnpm test` resets both test databases. Neither is a place to run a dev server,
 and a second dev server never points at `domo`: its boot marks every session
@@ -65,8 +68,8 @@ pnpm dev
 
 Then open `https://localhost:3866`, or add `--tunnel` to `pnpm dev` for a
 public URL to open from a phone — public and unauthenticated, so only while you
-are using it. The last four variables stop the usage poller and Claude Code
-sessions from contacting real accounts. Remove them if the check needs a real
+are using it. The last four variables keep Claude Code sessions and the Claude and Codex
+usage polls off real accounts. Remove them if the check needs a real
 agent.
 
 - Start from an empty database. Copy real data in only when the check needs

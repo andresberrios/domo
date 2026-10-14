@@ -102,6 +102,9 @@ not in the UI.
 - `docs/dev-environments.md`: read before you change the environment
   lifecycle or the Docker proxy (`server/lib/dood/`), or when `docker` in an
   environment acts in an unexpected way.
+- `docs/install-and-updates.md`: read before you change the installer, the
+  `domo` launcher or the updater (`bin/domo.mjs`, `scripts/install.sh`,
+  `server/lib/updates.ts`).
 - `docs/voice.md`: read before you change the voice bar (`agent-voice`), its
   speech engines or turn detection.
 - `test/AGENTS.md`: read before you work under `test/`.
