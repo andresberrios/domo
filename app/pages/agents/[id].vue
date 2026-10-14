@@ -311,7 +311,7 @@ const menuItems = computed(() => [
         <ConfirmModal
           v-model:open="confirmingPurge"
           :title="`Delete ${session?.title} permanently?`"
-          description="Destroys the session and every event in its transcript. This is the one action in Domo that loses a record, and it cannot be undone."
+          description="Deletes this agent and its whole transcript. This cannot be undone."
           confirm-label="Delete permanently"
           @confirm="purge"
         />
