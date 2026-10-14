@@ -5,7 +5,7 @@ import type { CronJobInput } from '../../lib/cron/input'
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
   const existing = await getCronJob(id)
-  if (!existing) throw createError({ statusCode: 404, statusMessage: 'Scheduled job not found' })
+  if (!existing) throw createError({ statusCode: 404, statusMessage: 'Scheduled task not found' })
   const patch = await readBody<Partial<CronJobInput>>(event)
   try {
     const switchesToCron = patch.cronExpression !== undefined

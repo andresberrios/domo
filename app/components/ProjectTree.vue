@@ -158,7 +158,7 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
           -->
           <UDropdownMenu
             :items="[[
-              { label: 'Show archived sessions', icon: 'i-lucide-archive', type: 'checkbox' as const, checked: showArchived, onUpdateChecked: (value: boolean) => { showArchived = value } },
+              { label: 'Show archived', icon: 'i-lucide-archive', type: 'checkbox' as const, checked: showArchived, onUpdateChecked: (value: boolean) => { showArchived = value } },
               { label: 'Show retired environments', icon: 'i-lucide-box', type: 'checkbox' as const, checked: showRetired, onUpdateChecked: (value: boolean) => { showRetired = value } }
             ]]"
             :content="{ align: 'end' }"

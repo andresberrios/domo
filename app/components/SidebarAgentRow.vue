@@ -28,9 +28,9 @@ async function rename(title: string) {
 }
 
 async function archive() {
-  // The row leaves the tree unless "Show archived sessions" is on, and its
+  // The row leaves the tree unless "Show archived" is on, and its
   // transcript is kept either way.
-  await patch({ archived: props.agent.archived ? false : true }, 'Could not archive the agent')
+  await patch({ archived: !props.agent.archived }, props.agent.archived ? 'Could not unarchive the agent' : 'Could not archive the agent')
 }
 
 async function stop() {
@@ -38,7 +38,7 @@ async function stop() {
   try {
     await $fetch(`/api/agents/${props.agent.id}/cancel`, { method: 'POST' })
   } catch (error: any) {
-    toast.add({ title: 'Could not stop the agent', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+    toast.add({ title: 'Could not stop the turn', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     busy.value = false
   }
@@ -46,7 +46,7 @@ async function stop() {
 
 const items = computed(() => [[
   { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } },
-  { label: 'Stop', icon: 'i-lucide-square', onSelect: () => stop() },
+  { label: 'Stop the turn', icon: 'i-lucide-square', onSelect: () => stop() },
   props.agent.archived
     ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: () => archive() }
     : { label: 'Archive', icon: 'i-lucide-archive', onSelect: () => archive() }

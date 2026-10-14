@@ -47,8 +47,8 @@ function choose() {
     />
     <UModal
       v-model:open="open"
-      title="Choose a working directory"
-      description="Pick the repository this agent should work in."
+      title="Choose a folder"
+      description="Any folder on this machine."
     >
       <UButton icon="i-lucide-folder-search" color="neutral" variant="subtle" aria-label="Browse" />
 

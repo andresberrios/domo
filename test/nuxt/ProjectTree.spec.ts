@@ -358,7 +358,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
       expect.objectContaining({ method: 'PATCH', path: '/api/agents/ag_1', body: { archived: true } })
     ))
 
-    await choose('Actions for Auth refactor', 'Stop')
+    await choose('Actions for Auth refactor', 'Stop the turn')
     await vi.waitFor(() => expect(calls).toContainEqual(
       expect.objectContaining({ method: 'POST', path: '/api/agents/ag_1/cancel' })
     ))

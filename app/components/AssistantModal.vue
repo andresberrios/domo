@@ -386,7 +386,7 @@ async function save() {
         </div>
         <p class="-mt-2 text-xs text-muted">
           How the voice bar sounds when it is this assistant talking, and when its notes are read out. If that engine
-          cannot speak here, the bar's own voice is used. Clone a voice in Settings › Voice, under Pocket TTS.
+          cannot speak here, the bar's own voice is used. Clone a voice in Settings › Talking to agents, under Pocket TTS.
         </p>
 
         <UFormField label="Fresh start">
