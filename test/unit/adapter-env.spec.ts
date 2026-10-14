@@ -330,8 +330,15 @@ describe('adapterEnv — credentials stored in Settings', () => {
 
   it('gives Codex and OpenCode the stored OpenAI key, and the token still wins for Claude', async () => {
     rememberSecretSettings({ ...NO_SECRETS, openAiApiKey: 'sk-stored', anthropicApiKey: 'sk-ant-stored' })
+    // Codex gets a key only when there is no ChatGPT login to lose, so the
+    // session reads a home with none, never this machine's own `~/.codex`.
+    const home = await mkdtemp(join(systemTmp, 'domo-codex-home-'))
+    process.env.HOME = home
+    delete process.env.NUXT_CODEX_CONFIG_DIR
+    delete process.env.NUXT_OPENAI_API_KEY
+    delete process.env.OPENAI_API_KEY
 
-    const codex = await adapterEnv('codex', true, noGh)
+    const codex = await adapterEnv('codex', true, noGh).finally(() => rm(home, { recursive: true, force: true }))
     expect(codex.OPENAI_API_KEY).toBe('sk-stored')
     expect(codex.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: 'api-key' }))
 

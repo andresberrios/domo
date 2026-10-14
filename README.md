@@ -278,8 +278,8 @@ lists the common variables.
 | `NUXT_GEMINI_API_KEY` | Gemini key, for the Gemini speech engines |
 | `NUXT_CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` |
 | `NUXT_ANTHROPIC_API_KEY` | Optional. Bills the API, not your subscription |
-| `NUXT_OPENAI_API_KEY` | OpenAI key, for the OpenAI speech engines, and a Codex credential |
-| `NUXT_CODEX_API_KEY` | Optional Codex credential |
+| `NUXT_OPENAI_API_KEY` | OpenAI key, for the OpenAI speech engines. Codex uses it only when there is no ChatGPT login, and it bills the API |
+| `NUXT_CODEX_API_KEY` | Optional. Codex uses it only when there is no ChatGPT login, and it bills the API |
 | `NUXT_OPENCODE_API_KEY` | OpenCode console service-account key |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
 | `NUXT_GH_TOKEN` | GitHub token for environment sessions |
