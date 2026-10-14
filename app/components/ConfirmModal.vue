@@ -9,6 +9,9 @@
  * not all of them are: reviving a retired session is worth confirming — it is
  * where the "Domo's transcript survives, the agent's own memory may not"
  * caveat is read — and painting that button red would be a lie about it.
+ *
+ * Descriptions often name a path, which has no place to break: unbroken, it
+ * pushed the whole text past the edge of a phone.
  */
 const open = defineModel<boolean>('open', { default: false })
 withDefaults(defineProps<{
@@ -27,7 +30,7 @@ const emit = defineEmits<{ confirm: [] }>()
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="title" :description="description">
+  <UModal v-model:open="open" :title="title" :description="description" :ui="{ description: '[overflow-wrap:anywhere]' }">
     <template #footer>
       <div class="flex w-full justify-end gap-2">
         <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />
