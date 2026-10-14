@@ -279,6 +279,13 @@ describe('containerRunArgs', () => {
     expect(values(args, '--mount').join('\n')).not.toContain('dind-var-lib-docker')
   })
 
+  it('lets a process make a user namespace, which Codex\'s sandbox needs, and is still not privileged', () => {
+    const args = runArgs({ config: { docker: false } })
+
+    expect(values(args, '--security-opt')).toContain('seccomp=unconfined')
+    expect(args).not.toContain('--privileged')
+  })
+
   it('is privileged, with the dind volume and its entrypoint, when the metadata asks', () => {
     const args = runArgs({ metadata: mergeImageMetadata([DIND], 'env_1') })
 

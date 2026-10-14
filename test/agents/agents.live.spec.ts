@@ -349,6 +349,26 @@ describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev e
     expect(verifyMeshToken(toolCall!.authorization.replace(/^Bearer\s+/i, ''))).toBe(session.id)
   }, HOUR / 4)
 
+  // Codex runs every command in its own sandbox, which needs a user namespace
+  // inside the container. When it cannot make one, every command fails, and in
+  // `read-only` the agent asks to run it outside the sandbox instead: asking is
+  // the symptom, not the feature.
+  it.runIf(adapter === 'codex')('runs a read in its sandbox without asking, in read-only', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const session = await start(adapter, { modeId: 'read-only' })
+
+    const answered = answerPermissions(session.id)
+    const result = await acpManager.prompt(session.id, [{
+      type: 'text',
+      text: 'Run the shell command `cat README.md` with your shell tool and reply with its first line exactly.'
+    }])
+    const asked = await answered.stop()
+
+    expect(result.stopReason).toBe('end_turn')
+    expect(await assistantText(session.id)).toContain('# fixture')
+    expect(asked, 'Codex asked to leave its sandbox for a read').toEqual([])
+  }, HOUR / 4)
+
   it('switches model on a live session, and runs the next turn on it', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const { getAgentSession } = await import('../../server/lib/repo')
