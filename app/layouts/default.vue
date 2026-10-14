@@ -27,12 +27,14 @@ const talkLabel = computed(() => assistant.value ? `Talk to ${assistant.value.na
       <template #default="{ collapsed }">
         <div v-if="!collapsed" class="flex flex-col gap-4">
           <div class="flex flex-col gap-3">
-            <div class="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-1.5">
+            <!-- Each as wide as its label needs, sharing the rest; a narrow sidebar puts them on two lines. -->
+            <div class="flex flex-wrap gap-1.5">
               <UTooltip :text="talkLabel">
                 <UButton
                   label="Talk"
                   icon="i-lucide-mic"
                   block
+                  class="flex-1"
                   :loading="creating"
                   :aria-label="talkLabel"
                   @click="talk"
@@ -44,6 +46,7 @@ const talkLabel = computed(() => assistant.value ? `Talk to ${assistant.value.na
                 color="neutral"
                 variant="subtle"
                 block
+                class="flex-1 whitespace-nowrap"
                 to="/agents/new"
               />
             </div>
