@@ -68,7 +68,9 @@ not in the UI.
   and an OpenCode console key (`NUXT_OPENCODE_API_KEY`).
 - **`ANTHROPIC_API_KEY` overrides a Claude subscription login and moves the work
   onto API billing without a prompt.** Pass it only when no subscription
-  credential exists.
+  credential exists. The same goes for Codex's `OPENAI_API_KEY` and
+  `CODEX_API_KEY` against a ChatGPT login: Codex saves an API-key login into
+  `~/.codex/auth.json`, where it stays.
 - **Never remove the provider prefix from a model id** (`openai/…` against
   `opencode/…`). The same bare name can bill two different accounts.
 - **The default `pnpm test` must stay fast, offline and unattended.** It must

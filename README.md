@@ -113,8 +113,9 @@ reason, `.claude` and `.claude.json` cannot be mounted into an environment.
 subscription**, so Domo passes it only when there is no other Claude
 credential.
 
-**Codex.** Run `codex login`, or set `NUXT_CODEX_API_KEY` or
-`NUXT_OPENAI_API_KEY`. Domo mounts `~/.codex` into environments.
+**Codex.** Run `codex login`. Domo mounts `~/.codex` into environments.
+`NUXT_CODEX_API_KEY` or `NUXT_OPENAI_API_KEY` bills the API, so Domo passes
+them to Codex only when there is no ChatGPT login.
 
 **Image generation** (assistant pictures, and the `generate_image` tool every
 agent has) uses Codex's built-in image tool on your ChatGPT login, so it counts
@@ -277,8 +278,8 @@ lists the common variables.
 | `NUXT_GEMINI_API_KEY` | Gemini key, for the Gemini speech engines |
 | `NUXT_CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` |
 | `NUXT_ANTHROPIC_API_KEY` | Optional. Bills the API, not your subscription |
-| `NUXT_OPENAI_API_KEY` | OpenAI key, for the OpenAI speech engines, and a Codex credential |
-| `NUXT_CODEX_API_KEY` | Optional Codex credential |
+| `NUXT_OPENAI_API_KEY` | OpenAI key, for the OpenAI speech engines. Codex uses it only when there is no ChatGPT login, and it bills the API |
+| `NUXT_CODEX_API_KEY` | Optional. Codex uses it only when there is no ChatGPT login, and it bills the API |
 | `NUXT_OPENCODE_API_KEY` | OpenCode console service-account key |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
 | `NUXT_GH_TOKEN` | GitHub token for environment sessions |

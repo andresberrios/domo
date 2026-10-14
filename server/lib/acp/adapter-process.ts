@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 import { anthropicApiKey, claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
+import { hasCodexSubscriptionLogin } from '../codex-credentials'
 import { storedSecret } from '../secret-settings'
 import {
   loadOpenCodeSettings,
@@ -229,6 +230,9 @@ export async function hostGhToken(): Promise<string | null> {
  *
  * Inside an environment only the token can apply: nothing copies a login into a
  * container, so there is no Keychain and no credentials file to ask about.
+ *
+ * Codex follows the same rule — a key only when there is no ChatGPT login — for
+ * the reason in `hasCodexSubscriptionLogin()`.
  */
 export async function adapterEnv(
   adapter: AgentAdapter,
@@ -257,11 +261,14 @@ export async function adapterEnv(
     if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken
     else if (apiKey && (inContainer || !await hasClaudeSubscriptionLogin())) env.ANTHROPIC_API_KEY = apiKey
   } else if (adapter === 'codex') {
+    // Both keys are only a fallback, `CODEX_API_KEY` included: Codex itself
+    // ignores either while a ChatGPT login exists, so neither can mean "bill
+    // the API on purpose" without logging that login out.
     const codexKey = process.env.NUXT_CODEX_API_KEY || process.env.CODEX_API_KEY
     const openAiKey = process.env.NUXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || storedSecret('openAiApiKey')
-    if (codexKey) env.CODEX_API_KEY = codexKey
-    if (openAiKey) env.OPENAI_API_KEY = openAiKey
-    if (codexKey || openAiKey) {
+    if ((codexKey || openAiKey) && !await hasCodexSubscriptionLogin(inContainer)) {
+      if (codexKey) env.CODEX_API_KEY = codexKey
+      if (openAiKey) env.OPENAI_API_KEY = openAiKey
       env.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
     }
   } else {

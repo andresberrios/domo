@@ -116,18 +116,71 @@ describe('the Claude credential precedence', () => {
 })
 
 describe('adapterEnv for codex', () => {
-  it('asks for api-key auth only when it has a key to use', async () => {
+  // A ChatGPT login outranks both keys inside Codex, but when it is missing the
+  // api-key fallback is written into `auth.json` and sticks. So a key is passed
+  // only when there is no login for it to replace.
+  let home: string
+  const login = (auth: object, dir = join(home, '.codex')) =>
+    mkdir(dir, { recursive: true }).then(() => writeFile(join(dir, 'auth.json'), JSON.stringify(auth)))
+  const chatgpt = { auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: { id_token: 'i', access_token: 'a', refresh_token: 'r', account_id: 'x' } }
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(systemTmp, 'domo-codex-home-'))
+    process.env.HOME = home
+    process.env.NUXT_OPENAI_API_KEY = 'sk-openai-test'
+    delete process.env.OPENAI_API_KEY
+    delete process.env.NUXT_CODEX_API_KEY
+    delete process.env.CODEX_API_KEY
+    delete process.env.NUXT_CODEX_CONFIG_DIR
+  })
+
+  afterEach(() => rm(home, { recursive: true, force: true }))
+
+  it('uses the keys with api-key auth when there is no login', async () => {
     process.env.NUXT_CODEX_API_KEY = 'codex-test'
 
-    const withKey = await adapterEnv('codex', false, noGh)
-    expect(withKey.CODEX_API_KEY).toBe('codex-test')
-    expect(JSON.parse(withKey.DEFAULT_AUTH_REQUEST!)).toEqual({ methodId: 'api-key' })
+    const env = await adapterEnv('codex', false, noGh)
 
-    delete process.env.NUXT_CODEX_API_KEY
-    const withoutKey = await adapterEnv('codex', false, noGh)
-    // No key means `codex login` is the credential, and forcing api-key would
-    // stop it being used.
-    expect(withoutKey.DEFAULT_AUTH_REQUEST).toBeUndefined()
+    expect(env.CODEX_API_KEY).toBe('codex-test')
+    expect(env.OPENAI_API_KEY).toBe('sk-openai-test')
+    expect(JSON.parse(env.DEFAULT_AUTH_REQUEST!)).toEqual({ methodId: 'api-key' })
+  })
+
+  it('passes no key and no auth request while a ChatGPT login exists', async () => {
+    process.env.NUXT_CODEX_API_KEY = 'codex-test'
+    await login(chatgpt)
+
+    const env = await adapterEnv('codex', false, noGh)
+
+    expect(env.CODEX_API_KEY).toBeUndefined()
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.DEFAULT_AUTH_REQUEST).toBeUndefined()
+  })
+
+  it('treats a stored API key as no login', async () => {
+    await login({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-stored', tokens: null })
+
+    const env = await adapterEnv('codex', false, noGh)
+
+    expect(env.OPENAI_API_KEY).toBe('sk-openai-test')
+  })
+
+  it('asks for no auth at all when there is neither key nor login', async () => {
+    delete process.env.NUXT_OPENAI_API_KEY
+
+    const env = await adapterEnv('codex', false, noGh)
+
+    expect(env.DEFAULT_AUTH_REQUEST).toBeUndefined()
+  })
+
+  it('checks the directory mounted into containers, not the host session\'s', async () => {
+    const mounted = join(home, 'mounted-codex')
+    process.env.NUXT_CODEX_CONFIG_DIR = mounted
+    await login(chatgpt, mounted)
+
+    expect((await adapterEnv('codex', true, noGh)).OPENAI_API_KEY).toBeUndefined()
+    // The host session reads `~/.codex`, which has no login here.
+    expect((await adapterEnv('codex', false, noGh)).OPENAI_API_KEY).toBe('sk-openai-test')
   })
 })
 
@@ -277,8 +330,15 @@ describe('adapterEnv — credentials stored in Settings', () => {
 
   it('gives Codex and OpenCode the stored OpenAI key, and the token still wins for Claude', async () => {
     rememberSecretSettings({ ...NO_SECRETS, openAiApiKey: 'sk-stored', anthropicApiKey: 'sk-ant-stored' })
+    // Codex gets a key only when there is no ChatGPT login to lose, so the
+    // session reads a home with none, never this machine's own `~/.codex`.
+    const home = await mkdtemp(join(systemTmp, 'domo-codex-home-'))
+    process.env.HOME = home
+    delete process.env.NUXT_CODEX_CONFIG_DIR
+    delete process.env.NUXT_OPENAI_API_KEY
+    delete process.env.OPENAI_API_KEY
 
-    const codex = await adapterEnv('codex', true, noGh)
+    const codex = await adapterEnv('codex', true, noGh).finally(() => rm(home, { recursive: true, force: true }))
     expect(codex.OPENAI_API_KEY).toBe('sk-stored')
     expect(codex.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: 'api-key' }))
 

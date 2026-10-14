@@ -31,7 +31,7 @@ const credentials: Credential[] = [
   {
     key: 'openAiApiKey',
     label: 'OpenAI API key',
-    help: 'For the voice bar\'s OpenAI speech engines, and a Codex credential.',
+    help: 'For the voice bar\'s OpenAI speech engines. Codex uses it only when there is no ChatGPT login, because it bills the API.',
     placeholder: 'sk-…',
     configured: settings => settings.hasOpenAiKey
   },
