@@ -1,10 +1,18 @@
 import { access, rm, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 import { branchNameProblem, environmentSlug } from '../../shared/dev-environments'
 import type { AgentAdapter, DevEnvironment, Project, WorkspaceSeedReport } from '../../shared/types'
 import { newId } from './db'
 import { refreshEnvironmentPorts, stopEnvironmentForwarders } from './dev-environment-ports'
+import {
+  findEnvironmentContainer,
+  listEnvironmentContainers,
+  MISSING_CONTAINER_ERROR,
+  nextEnvironmentStatus,
+  watchEnvironmentContainers,
+  type ContainerWatcher
+} from './dev-env/container-state'
 import { canonicalBaseGitPath, canonicalWorkspacePath, workspaceAliasArgs } from './dev-env/canonical-mounts'
 import { seedClaudeHome } from './dev-env/claude-home'
 import { resolveEnvironmentConfig, resolveForwardPorts, usesHostDaemon } from './dev-env/config'
@@ -46,6 +54,7 @@ import {
   RUNTIME_ROOT
 } from './dev-env/runtime-volume'
 import {
+  doodSocketFile,
   doodSocketPath,
   ensureDoodProxy,
   ensureEnvironmentNetwork,
@@ -131,14 +140,29 @@ function ensureDockerProxy(environment: {
   id: string
   containerReference: string
   workspacePath: string
+  socketPath?: string
 }) {
   return ensureDoodProxy({
     environmentId: environment.id,
     containerReference: environment.containerReference,
     workspacePath: environment.workspacePath,
+    socketPath: environment.socketPath,
     workspaceAlias: { legacyPath: environment.workspacePath, canonicalPath: canonicalWorkspacePath(environment.id) },
     helperImage: HELPER_IMAGE
   })
+}
+
+/**
+ * The proxy socket the container mounts, by its file name, which every install
+ * derives the same way. The directory is the install that created the
+ * container's, and an environment whose row was copied into another install's
+ * database still mounts the first one's: listening at this install's own path
+ * would leave its `docker` refused, and its start failing on a missing bind
+ * source.
+ */
+function mountedDoodSocket(environmentId: string, inspection: ContainerInspection | null): string | undefined {
+  const file = doodSocketFile(environmentId)
+  return (inspection?.bindSources ?? []).find(source => basename(source) === file)
 }
 
 /** Whether the container was created with the proxy mounted — fixed at creation, so it is on a label. */
@@ -686,9 +710,9 @@ async function start(id: string): Promise<DevEnvironment> {
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (!inspection) {
-    throw await breakEnvironment(id, 'The environment container no longer exists. Delete and recreate the environment.')
+    throw await breakEnvironment(id, MISSING_CONTAINER_ERROR)
   }
-  if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment))
+  if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment, inspection))
   if (!inspection.running) {
     await run('docker', ['start', inspection.id]).catch(async (error) => {
       throw await breakEnvironment(
@@ -736,13 +760,100 @@ async function ensureRunning(id: string): Promise<DevEnvironment> {
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (inspection?.running) {
-    if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment))
+    if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment, inspection))
     if (environment.status !== 'running') {
       return (await updateDevEnvironment(id, { status: 'running', lastError: null }))!
     }
     return environment
   }
   return start(id)
+}
+
+/**
+ * Bring one row in line with what Docker says its container is doing
+ * (`dev-env/container-state.ts`). In the lifecycle queue, so it reads the
+ * container only after a start, stop, build or retirement under way is done,
+ * and never undoes one: a `docker start` raises the event that queues this,
+ * and by the time it runs the row already says `running`.
+ *
+ * A container that stopped on its own — the machine or Docker Desktop
+ * restarted — is `stopped`, not `error`: nothing is lost, the next prompt to
+ * one of its agents starts it again (`ensureEnvironmentRunning`), and so does
+ * Start. Nothing restarts it before somebody asks. One that came back from
+ * outside Domo (Docker Desktop's own button) gets its proxy, published ports
+ * and forwards back, which a start through Domo would have done.
+ */
+export function reconcileEnvironmentStatus(id: string): Promise<void> {
+  return lifecycle(id, async () => {
+    const environment = await getDevEnvironment(id)
+    if (!environment) return
+    const patch = nextEnvironmentStatus(environment, findEnvironmentContainer(environment, await listEnvironmentContainers()))
+    if (!patch) return
+    await updateDevEnvironment(id, patch)
+    if (patch.status === 'running') {
+      const inspection = await inspectContainer(containerReference(environment))
+      if (hasDockerProxy(inspection)) {
+        await ensureDockerProxy(proxyTarget(environment, inspection))
+        await ensureEnvironmentNetwork(id)
+      }
+      await refreshEnvironmentPorts(id)
+    } else {
+      stopEnvironmentForwarders(id)
+    }
+  })
+}
+
+/**
+ * Every row against one listing. Only the rows that disagree are looked at
+ * again, each in its own queue: the listing was taken outside them, and one
+ * of them may be mid-start.
+ */
+export async function reconcileEnvironmentStatuses(): Promise<void> {
+  const environments = (await listDevEnvironments()).filter(environment => !environment.retiredAt)
+  if (!environments.length) return
+  const containers = await listEnvironmentContainers()
+  await Promise.all(environments
+    .filter(environment => nextEnvironmentStatus(environment, findEnvironmentContainer(environment, containers)))
+    .map(environment => reconcileEnvironmentStatus(environment.id)))
+}
+
+let containerWatcher: ContainerWatcher | null = null
+
+/**
+ * Keep every environment's `status` to what Docker reports, from boot until
+ * shutdown: one `docker events` stream, a full look whenever it (re)opens,
+ * and a poll while it is down. Events for one environment are coalesced, so a
+ * `die` and a `stop` together are one look.
+ */
+export function watchEnvironmentStatuses(): void {
+  if (containerWatcher) return
+  const queued = new Set<string>()
+  // Once per outage: while Docker is down, the poll fails every time.
+  let failing = false
+  const warn = (error: unknown) => {
+    if (failing) return
+    failing = true
+    console.warn('[dev-env] could not read environment containers:', error instanceof Error ? error.message : error)
+  }
+  const ok = () => {
+    failing = false
+  }
+  containerWatcher = watchEnvironmentContainers({
+    onChange(id) {
+      if (queued.has(id)) return
+      queued.add(id)
+      // Taken off before the look starts, so an event during it queues another.
+      void lifecycle(id, async () => queued.delete(id))
+        .then(() => reconcileEnvironmentStatus(id))
+        .then(ok, warn)
+    },
+    onReconcile: () => void reconcileEnvironmentStatuses().then(ok, warn)
+  })
+}
+
+export function stopWatchingEnvironmentStatuses(): void {
+  containerWatcher?.stop()
+  containerWatcher = null
 }
 
 /**
@@ -800,7 +911,7 @@ async function retire(id: string): Promise<CleanupReport> {
   // exit code — `docker volume rm` fails the same way for a volume something
   // still has mounted and for one that was never created, and only the first
   // of those is a leftover.
-  const report = await settle(id, await sweepEnvironmentResources())
+  const report = await settle(environment, await sweepEnvironmentResources())
   // After the environment's container is gone, or its runtime volume is still
   // in use.
   await collectRuntimeVolumes().catch(() => {})
@@ -821,10 +932,11 @@ async function retire(id: string): Promise<CleanupReport> {
  * `error`, and the next pass — at boot, or when somebody presses the button —
  * rewrites them from what Docker actually has.
  */
-async function settle(id: string, report: CleanupReport): Promise<CleanupReport> {
+async function settle(environment: DevEnvironment, report: CleanupReport): Promise<CleanupReport> {
+  const id = environment.id
   if (report.unreachable) {
     const error = `Docker could not be reached to confirm it was removed (${report.unreachable}).`
-    const owed = environmentResources(id).map(resource => ({ ...resource, error }))
+    const owed = environmentResources(id, environment.containerName).map(resource => ({ ...resource, error }))
     await setEnvironmentLeftovers(id, owed.map(({ kind, name }) => ({ kind, name, error })), {
       status: 'error',
       lastError: `Docker could not be reached to confirm this environment was removed: ${report.unreachable}`
@@ -859,14 +971,15 @@ export async function cleanupEnvironment(id: string): Promise<CleanupReport> {
   if (!environment) throw new Error('Development environment not found')
   const report = await sweepEnvironmentResources()
   if (report.unreachable) throw new Error(`Docker could not be reached: ${report.unreachable}`)
-  return settle(id, report)
+  return settle(environment, report)
 }
 
-function proxyTarget(environment: DevEnvironment) {
+function proxyTarget(environment: DevEnvironment, inspection: ContainerInspection | null) {
   return {
     id: environment.id,
     containerReference: containerReference(environment),
-    workspacePath: environment.workspacePath
+    workspacePath: environment.workspacePath,
+    socketPath: mountedDoodSocket(environment.id, inspection)
   }
 }
 
@@ -882,7 +995,7 @@ export async function restoreDockerProxies(): Promise<void> {
     await lifecycle(environment.id, async () => {
       const inspection = await inspectContainer(containerReference(environment)).catch(() => null)
       if (!hasDockerProxy(inspection)) return
-      await ensureDockerProxy(proxyTarget(environment))
+      await ensureDockerProxy(proxyTarget(environment, inspection))
       // A running environment's published ports and its host.docker.internal
       // redirect died with the Domo that held them.
       if (inspection?.running) await ensureEnvironmentNetwork(environment.id)

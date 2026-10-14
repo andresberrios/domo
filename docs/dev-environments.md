@@ -77,6 +77,9 @@ unexpected way.
   reason (`doodSocketPath`); the id is made once into `<data>/install-id`.
   Changing how the path is derived breaks every existing environment until it
   is recreated, because the path is fixed into its mounts.
+  Domo listens where the container's mount says, matched by file name, so an
+  environment another install created (a copied database) still finds its
+  proxy.
 - **Docker Desktop cannot `docker restart` a container that mounts a host
   socket.** Stop and start it instead, as Domo does (`restartAsStop`).
 
@@ -138,6 +141,13 @@ Every environment gets a locked git worktree in
   Docker Desktop maps ownership and needs nothing.
 
 ## Lifecycle
+
+- **`status` follows Docker** (`dev-env/container-state.ts`): a `docker events`
+  stream on `domo.envId` asks for a re-read inside the lifecycle queue, with a
+  full listing at boot and on every reconnect, and a poll while the stream is
+  down. A dead container reads `stopped` (an agent's next prompt or Start brings
+  it back); a missing one is `error`. `creating`, `error` and retired rows are
+  never rewritten by it.
 
 - **Retirement is done when Docker no longer has the resources, not when
   `docker` exited.** A failed `volume rm` looks the same for a volume in use

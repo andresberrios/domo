@@ -86,7 +86,7 @@ export async function reconcileEnvironmentResources(): Promise<CleanupReport> {
 
   let present
   try {
-    present = await observeEnvironmentResources()
+    present = await observeEnvironmentResources(environments.map(environment => environment.containerName))
   } catch (error) {
     return { ...EMPTY, unreachable: error instanceof Error ? error.message : String(error) }
   }

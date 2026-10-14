@@ -31,6 +31,7 @@ const collectRuntimeVolumes = vi.fn(async () => undefined)
 // only a step in the order of things.
 const dood = {
   doodSocketPath: (environmentId: string) => `/sockets/${environmentId}.sock`,
+  doodSocketFile: (environmentId: string) => `${environmentId}.sock`,
   ensureDoodProxy: vi.fn(async ({ environmentId }: { environmentId: string }) =>
     ({ socketPath: `/sockets/${environmentId}.sock`, close: async () => {} })),
   stopDoodProxy: vi.fn(async () => undefined),
@@ -108,10 +109,11 @@ vi.mock('../../server/lib/dev-env/runtime-volume', async (importOriginal) => ({
   ensureRuntimeVolume,
   collectRuntimeVolumes
 }))
-vi.mock('../../server/lib/dev-environment-ports', () => ({
+const ports = vi.hoisted(() => ({
   refreshEnvironmentPorts: vi.fn(async () => []),
   stopEnvironmentForwarders: vi.fn()
 }))
+vi.mock('../../server/lib/dev-environment-ports', () => ports)
 vi.mock('../../server/lib/repo', () => repo)
 vi.mock('../../server/lib/dood/manager', () => dood)
 vi.mock('../../server/lib/dev-env/host-worktree', () => hostWorktree)
@@ -126,6 +128,8 @@ const {
   containerExecArgs,
   createEnvironment,
   readEnvironmentFile,
+  reconcileEnvironmentStatus,
+  reconcileEnvironmentStatuses,
   retireEnvironment,
   startEnvironment,
   stopEnvironment,
@@ -782,6 +786,146 @@ describe('start, stop and remove', () => {
  * *keeps state*: it answers `volume ls` with what it still has, so the sweep is
  * tested the way it really works — by observation, never by an exit code.
  */
+describe('the container\'s real state', () => {
+  /** What `docker ps --all` answers for environment containers: `[id, name, state, envId]`. */
+  let containers: string[][] = []
+  let row: DevEnvironment
+  beforeEach(() => {
+    containers = [['container-sha', 'domo-dev-env_1', 'exited', 'env_1']]
+    row = environment()
+    repo.getDevEnvironment.mockImplementation(async () => row)
+    repo.listDevEnvironments.mockImplementation(async () => [row])
+    repo.updateDevEnvironment.mockImplementation(async (_id: string, patch: Partial<DevEnvironment>) => {
+      row = { ...row, ...patch }
+      return row
+    })
+    run.mockImplementation(async (_program: string, args: string[]) => {
+      if (args[0] === 'ps' && args.includes('label=domo.envId')) {
+        return { stdout: containers.map(line => line.join('\t')).join('\n'), stderr: '' }
+      }
+      if (args[0] === 'start') containers = containers.map(([id, name, , env]) => [id!, name!, 'running', env!])
+      return { stdout: '', stderr: '' }
+    })
+  })
+
+  it('calls an environment whose container exited stopped, and drops its forwards', async () => {
+    await reconcileEnvironmentStatus('env_1')
+
+    expect(repo.updateDevEnvironment).toHaveBeenCalledWith('env_1', { status: 'stopped', lastError: null })
+    expect(ports.stopEnvironmentForwarders).toHaveBeenCalledWith('env_1')
+  })
+
+  it('asks for a recreate when the container is gone', async () => {
+    containers = []
+
+    await reconcileEnvironmentStatus('env_1')
+
+    expect(row).toMatchObject({ status: 'error', lastError: expect.stringContaining('no longer exists') })
+  })
+
+  it('finds the container by the row\'s own name when it has no id, whatever this install\'s prefix', async () => {
+    row = environment({ containerId: null, containerName: 'domo-prod-env_1' })
+    containers = [['other-sha', 'domo-prod-env_1', 'running', 'env_1']]
+
+    await reconcileEnvironmentStatus('env_1')
+
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalled()
+  })
+
+  it('changes nothing when Docker cannot be asked', async () => {
+    run.mockRejectedValue(new Error('docker ps failed: Cannot connect to the Docker daemon'))
+
+    await expect(reconcileEnvironmentStatus('env_1')).rejects.toThrow(/Cannot connect/)
+    await expect(reconcileEnvironmentStatuses()).rejects.toThrow(/Cannot connect/)
+
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalled()
+  })
+
+  it('gives a container started outside Domo its proxy, network and ports back', async () => {
+    row = environment({ status: 'stopped' })
+    containers = [['container-sha', 'domo-dev-env_1', 'running', 'env_1']]
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha', running: true, labels: { 'domo.dood': 'true' }, publishedPorts: [], bindSources: []
+    })
+
+    await reconcileEnvironmentStatus('env_1')
+
+    expect(row.status).toBe('running')
+    expect(dood.ensureDoodProxy).toHaveBeenCalledWith(expect.objectContaining({ environmentId: 'env_1' }))
+    expect(dood.ensureEnvironmentNetwork).toHaveBeenCalledWith('env_1')
+    expect(ports.refreshEnvironmentPorts).toHaveBeenCalledWith('env_1')
+  })
+
+  it('looks only after a start in flight, and never undoes it from a listing taken before', async () => {
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha', running: false, labels: { 'domo.dood': 'true' }, publishedPorts: [], bindSources: []
+    })
+    let release!: () => void
+    dood.ensureDoodProxy.mockImplementationOnce(({ environmentId }) =>
+      new Promise((resolve) => { release = () => resolve({ socketPath: `/sockets/${environmentId}.sock`, close: async () => {} }) }))
+
+    const starting = startEnvironment('env_1')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    // The listing says exited and the row says running: a mismatch, queued.
+    const reconciling = reconcileEnvironmentStatuses()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    release()
+    await starting
+    await reconciling
+
+    expect(row.status).toBe('running')
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalledWith('env_1', expect.objectContaining({ status: 'stopped' }))
+  })
+
+  it('leaves a row alone while it is being built', async () => {
+    row = environment({ status: 'creating' })
+    containers = []
+
+    await reconcileEnvironmentStatuses()
+
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalled()
+  })
+})
+
+describe('an environment another install created', () => {
+  it('listens where the container mounts its socket, not where this install would put it', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ status: 'stopped' }))
+    repo.updateDevEnvironment.mockResolvedValue(environment())
+    inspectContainer.mockResolvedValue({
+      id: 'container-sha',
+      running: false,
+      labels: { 'domo.dood': 'true' },
+      publishedPorts: [],
+      bindSources: ['/Users/me/src/api/.wt/env_1', '/Users/me/.domo/s/0000aaaa/env_1.sock']
+    })
+
+    await startEnvironment('env_1')
+
+    expect(dood.ensureDoodProxy).toHaveBeenCalledWith(expect.objectContaining({
+      environmentId: 'env_1',
+      socketPath: '/Users/me/.domo/s/0000aaaa/env_1.sock'
+    }))
+  })
+
+  it('retires its container and image by the name its row holds', async () => {
+    const own = environment({ containerName: 'domo-prod-env_1' })
+    repo.getDevEnvironment.mockResolvedValue(own)
+    repo.listDevEnvironments.mockResolvedValue([{ ...own, retiredAt: '2026-01-02T00:00:00.000Z' }])
+    const fake = daemon({
+      containers: ['domo-prod-env_1'],
+      images: ['domo-prod-env_1'],
+      labels: { 'domo-prod-env_1': { envId: 'env_1' } }
+    })
+    inspectContainer.mockResolvedValue(null)
+
+    const report = await retireEnvironment('env_1')
+
+    expect(dockerCalls()).toContainEqual(['image', 'rm', 'domo-prod-env_1'])
+    expect(fake.images).toEqual([])
+    expect(report.leftovers).toEqual([])
+  })
+})
+
 describe('a cleanup that Docker refuses', () => {
   const RETIRED = environment({ retiredAt: '2026-01-03T00:00:00.000Z' })
 

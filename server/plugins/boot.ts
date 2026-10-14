@@ -8,7 +8,12 @@ import {
   rebuildEnvironmentForwarders,
   stopAllEnvironmentForwarders
 } from '../lib/dev-environment-ports'
-import { restoreDockerProxies } from '../lib/dev-environments'
+import {
+  reconcileEnvironmentStatuses,
+  restoreDockerProxies,
+  stopWatchingEnvironmentStatuses,
+  watchEnvironmentStatuses
+} from '../lib/dev-environments'
 import { sweepEnvironmentResources } from '../lib/dev-env/reconcile'
 import { stopAllDoodProxies } from '../lib/dood/manager'
 import { stopPocket } from '../lib/agent-voice/pocket-speech'
@@ -52,6 +57,12 @@ export default defineNitroPlugin(async (nitro) => {
   // Subscriptions are rows, so they outlive the process that made them.
   await startSubscriptionNotifier().catch(error => console.error('[domo] subscriptions', error))
 
+  // What every environment's container is really doing, before anything acts
+  // on `status`: a machine that restarted left every row saying `running`
+  // over a container that exited. Then kept so (`watchEnvironmentStatuses`).
+  await reconcileEnvironmentStatuses().catch(error => console.error('[domo] environment status', error))
+  watchEnvironmentStatuses()
+
   // Before the ports: detecting a stack's services goes through the daemon,
   // and an environment's agent may be mid-`docker compose` right now.
   await restoreDockerProxies().catch(error => console.error('[domo] docker proxy restore failed', error))
@@ -82,6 +93,7 @@ export default defineNitroPlugin(async (nitro) => {
     usagePoller.stop()
     updater.stop()
     cronScheduler.stop()
+    stopWatchingEnvironmentStatuses()
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()
     await stopAllDoodProxies().catch(() => {})
