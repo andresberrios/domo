@@ -97,7 +97,7 @@ describe('install.sh and git', () => {
     const { status, output } = install('Darwin')
 
     expect(output).toContain('Downloading git (2.53.0-4)')
-    expect(await logged()).toMatch(/curl .*dugite-native-v2\.53\.0-4-4098283-macOS-arm64\.tar\.gz/)
+    expect(await logged()).toMatch(/curl .*releases\/download\/v2\.53\.0-4\/dugite-native-v2\.53\.0-4098283-macOS-arm64\.tar\.gz/)
     // The fake download is not the pinned file.
     expect(status).toBe(1)
     expect(output).toContain('does not match its checksum')

@@ -86,7 +86,7 @@ bundle_git() {
   esac
   if [ "$(cat "$DOMO_HOME/git/VERSION" 2>/dev/null)" != "$GIT_RELEASE" ]; then
     say "Downloading git (${GIT_RELEASE#v})"
-    curl -fsSL "https://github.com/desktop/dugite-native/releases/download/$GIT_RELEASE/dugite-native-$GIT_RELEASE-$GIT_BUILD-$asset.tar.gz" -o "$tmp/git.tgz"
+    curl -fsSL "https://github.com/desktop/dugite-native/releases/download/$GIT_RELEASE/dugite-native-${GIT_RELEASE%-*}-$GIT_BUILD-$asset.tar.gz" -o "$tmp/git.tgz"
     [ "$(sha256 "$tmp/git.tgz")" = "$sum" ] || die "the git download does not match its checksum"
     rm -rf "$DOMO_HOME/git.new"
     mkdir -p "$DOMO_HOME/git.new"

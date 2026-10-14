@@ -56,6 +56,12 @@ echo "== new project"
 curl -sk https://localhost:3766/api/projects -H 'content-type: application/json' \
   -d '{"repoPath":"/tmp/projects/fresh","initialize":true}' | head -c 300; echo
 echo "branch: $(PATH="$DOMO_HOME/bin:$PATH" git -C /tmp/projects/fresh branch --show-current), log: $(PATH="$DOMO_HOME/bin:$PATH" git -C /tmp/projects/fresh log --format=%s)"
+if [ -n "${DOMO_BUNDLE_GIT:-}" ]; then
+  echo "== launcher moves a bundled git to the pinned version"
+  echo v0 > "$DOMO_HOME/git/VERSION"
+  "$DOMO_HOME/bin/domo" update --force --no-restart 2>&1 | grep -E "git|current is now|domo:" || true
+  echo "version: $(cat "$DOMO_HOME/git/VERSION"), runs: $("$DOMO_HOME/bin/git" --version)"
+fi
 "$DOMO_HOME/bin/domo" stop 2>/dev/null || true
 pkill -TERM -f "domo.mjs run" || true
 sleep 3

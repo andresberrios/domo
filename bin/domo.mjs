@@ -350,7 +350,7 @@ async function ensureBundledGit(tmp, platformKey) {
   if (installed !== BUNDLED_GIT.release) {
     log(`downloading git ${BUNDLED_GIT.release.slice(1)}`)
     const tgz = join(tmp, 'git.tgz')
-    await download(`https://github.com/desktop/dugite-native/releases/download/${BUNDLED_GIT.release}/dugite-native-${BUNDLED_GIT.release}-${BUNDLED_GIT.build}-${asset[0]}.tar.gz`, tgz)
+    await download(`https://github.com/desktop/dugite-native/releases/download/${BUNDLED_GIT.release}/dugite-native-${BUNDLED_GIT.release.replace(/-[^-]*$/, '')}-${BUNDLED_GIT.build}-${asset[0]}.tar.gz`, tgz)
     if (createHash('sha256').update(readFileSync(tgz)).digest('hex') !== asset[1]) throw new Error('the git download does not match its checksum')
     const fresh = `${P.gitDir}.new`
     rmSync(fresh, { recursive: true, force: true })
