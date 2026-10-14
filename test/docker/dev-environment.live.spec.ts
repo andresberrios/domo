@@ -499,7 +499,7 @@ describe('an environment\'s stack on the shared daemon, through stop, start and 
       'Dockerfile.app': 'FROM fixture-base:dev\nCMD ["cat", "/base"]\n'
     })
     state.project = { id: 'prj_live', name: 'fixture', repoPath: repo }
-    const environment = await create('Live Stack')
+    const environment = await create('live-stack')
     const id = environment.id
     const sh = (script: string) => run('docker', [
       'exec', '--user', environment.remoteUser!, '--workdir', environment.workspacePath,
