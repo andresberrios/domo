@@ -96,6 +96,6 @@ describe('AgentErrorBanner', () => {
   it('says so when the row is in error with no message at all', async () => {
     const component = await mountSuspended(Harness, { props: { session: session({ lastError: null }) } })
 
-    expect(component.text()).toContain('no details')
+    expect(component.text()).toContain('No details were given')
   })
 })

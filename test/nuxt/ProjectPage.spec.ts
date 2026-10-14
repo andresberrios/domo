@@ -254,7 +254,7 @@ describe('project details page', { timeout: 30_000 }, () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain('Retire Domo?'))
     const text = document.body.textContent ?? ''
     expect(text).toContain('1 development environment')
-    expect(text).toContain('1 coding agent session')
+    expect(text).toContain('and 1 coding agent inside them')
     expect(text).toContain('/work/domo')
     // What goes and what stays, both named: the containers are destroyed and
     // the transcripts are not.

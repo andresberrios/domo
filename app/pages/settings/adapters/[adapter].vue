@@ -6,7 +6,7 @@ const route = useRoute()
 const toast = useToast()
 const adapterId = computed(() => String(route.params.adapter))
 if (!isAgentAdapter(adapterId.value)) {
-  throw createError({ statusCode: 404, statusMessage: 'Unknown ACP adapter' })
+  throw createError({ statusCode: 404, statusMessage: 'Unknown coding agent' })
 }
 const adapter = computed(() => agentAdapterInfo(adapterId.value as any))
 
@@ -70,7 +70,7 @@ const ADAPTER_DEFAULT = 'adapter-default'
  */
 const modelItems = computed(() => {
   const items = [
-    { label: 'Adapter default', value: ADAPTER_DEFAULT },
+    { label: 'Default', value: ADAPTER_DEFAULT },
     ...(probe.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id }))
   ]
   if (model.value && !items.some(item => item.value === model.value)) {
@@ -86,7 +86,7 @@ const modelValue = computed({
 
 function configItems(option: SessionConfigOptionInfo) {
   return [
-    { label: 'Adapter default', value: ADAPTER_DEFAULT },
+    { label: 'Default', value: ADAPTER_DEFAULT },
     ...option.options.map(entry => ({ label: entry.name, value: entry.value }))
   ]
 }
@@ -159,7 +159,7 @@ async function removeKey() {
 <template>
   <SettingsShell
     :title="adapter.label"
-    description="Defaults and capabilities reported by this ACP adapter."
+    description="Its defaults, and the models, modes and options it offers."
     :saving="saving"
     :save="save"
   >
@@ -178,7 +178,7 @@ async function removeKey() {
       variant="subtle"
       :icon="adapter.icon"
       :title="probe?.models.length === 1 ? '1 model available' : `${probe?.models.length ?? 0} models available`"
-      :description="probe?.current ? `Adapter default: ${probe.current}` : 'The adapter chooses its default model.'"
+      :description="probe?.current ? `Default model: ${probe.current}` : 'It chooses its own default model.'"
     />
 
     <UFormField
@@ -262,7 +262,7 @@ async function removeKey() {
       <USeparator />
       <section class="space-y-4">
         <div>
-          <h2 class="text-sm font-semibold">Adapter options</h2>
+          <h2 class="text-sm font-semibold">{{ adapter.label }} options</h2>
           <p class="text-xs text-muted">These come directly from {{ adapter.label }} and apply to new sessions. Options may change with the selected model.</p>
         </div>
         <UFormField

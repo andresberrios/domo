@@ -216,7 +216,7 @@ async function start() {
     await $fetch(`/api/agents/${agentId.value}/start`, { method: 'POST' })
   } catch (error: any) {
     toast.add({
-      title: 'Could not start the adapter',
+      title: 'Could not start the agent',
       description: error?.data?.statusMessage ?? error?.message,
       color: 'error'
     })
@@ -260,7 +260,7 @@ async function purge() {
 const menuItems = computed(() => [
   { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
   // A session that cannot start has nothing to restart.
-  ...closed.value ? [] : [{ label: 'Restart adapter', icon: 'i-lucide-rotate-ccw', onSelect: start }],
+  ...closed.value ? [] : [{ label: 'Restart agent', icon: 'i-lucide-rotate-ccw', onSelect: start }],
   session.value?.archived
     ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: unarchive }
     : { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
@@ -329,7 +329,7 @@ const menuItems = computed(() => [
             color="neutral"
             variant="subtle"
             size="sm"
-            :label="`${adapter?.label ?? (draft ? agentAdapterInfo(draft.adapter).label : 'Coding agent')} · ACP`"
+            :label="adapter?.label ?? (draft ? agentAdapterInfo(draft.adapter).label : 'Coding agent')"
           />
           <UBadge
             v-if="!session && draftEnvironment"
@@ -365,7 +365,7 @@ const menuItems = computed(() => [
             color="neutral"
             variant="subtle"
             size="sm"
-            :label="`Spawned by ${spawner.title}`"
+            :label="`Started by ${spawner.title}`"
             as="NuxtLink"
             :to="`/agents/${spawner.id}`"
           >

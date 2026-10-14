@@ -386,7 +386,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     await choose('Actions for Domo', 'Retire')
     await vi.waitFor(() => expect(document.body.textContent).toContain('Retire Domo?'))
     expect(document.body.textContent).toContain('1 development environment')
-    expect(document.body.textContent).toContain('1 coding agent session')
+    expect(document.body.textContent).toContain('and 1 coding agent inside them')
 
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find(element => element.textContent?.includes('Retire project'))

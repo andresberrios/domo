@@ -1078,7 +1078,7 @@ describe('the mode a session runs in', () => {
     // Starting a session is not a mode change; somebody choosing one is.
     expect(asked).toEqual([{ sessionId: 'acp_fake', modeId: 'plan' }])
     expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed'))
-      .toEqual([expect.objectContaining({ payload: { modeId: 'plan' } })])
+      .toEqual([expect.objectContaining({ payload: { modeId: 'plan', name: 'plan' } })])
     await expect(getAgentSession(agent.id).then(row => row!.modeId)).resolves.toBe('plan')
   })
 
@@ -1265,7 +1265,7 @@ describe('changing a setting on a session that is not running', () => {
     // Somebody did change it, so the log says so — and says only what it can
     // honestly claim, which is that no adapter has taken it yet.
     expect((await listAgentEvents(agent.id)).filter(event => event.type === 'mode_changed'))
-      .toEqual([expect.objectContaining({ payload: { modeId: 'plan', pending: true } })])
+      .toEqual([expect.objectContaining({ payload: { modeId: 'plan', name: 'plan', pending: true } })])
   })
 
   it('records a model on the row and starts nothing', async () => {

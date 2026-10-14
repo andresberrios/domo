@@ -19,7 +19,7 @@ const voice = useAgentVoice(() => props.session.id, {
 })
 
 const modeItems = [
-  { value: 'click', label: 'Click to talk', icon: 'i-lucide-mouse-pointer-click' },
+  { value: 'click', label: 'Tap to talk', icon: 'i-lucide-mouse-pointer-click' },
   { value: 'handsfree', label: 'Hands-free', icon: 'i-lucide-radio' }
 ] as const
 

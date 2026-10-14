@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentAdapter, Assistant, AssistantVoice, SessionModeInfo } from '~~/shared/types'
 import { AGENT_ADAPTERS, agentAdapterInfo } from '~~/shared/agent-adapters'
-import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS } from '~~/shared/agent-voice'
+import { GEMINI_VOICES, KOKORO_VOICES, OPENAI_SPEECH_VOICES, SPEAKERS, withoutKyutai } from '~~/shared/agent-voice'
 import {
   DEFAULT_HANDOFF_THRESHOLD,
   HANDOFF_THRESHOLD_MAX,
@@ -39,7 +39,8 @@ const BAR_VOICE = 'bar-voice'
 const { data: clones } = useClonedVoices()
 const voiceSpeakerItems = computed(() => [
   { label: 'The voice bar\'s own (Settings)', value: BAR_VOICE },
-  ...SPEAKERS.filter(speaker => speaker.id !== 'browser').map(speaker => ({ label: speaker.label, value: speaker.id }))
+  // Kyutai only speaks for an assistant when the bar already uses it; kept for one that has it.
+  ...withoutKyutai(SPEAKERS, form.voiceSpeaker === 'kyutai').filter(speaker => speaker.id !== 'browser').map(speaker => ({ label: speaker.label, value: speaker.id }))
 ])
 const voiceItems = computed(() => {
   const named = (list: readonly string[]) => list.map(voice => ({ label: voice, value: voice }))
@@ -99,7 +100,7 @@ const { data: modelData, status: modelStatus, refresh: refreshModels } = await u
 
 const modelItems = computed(() => {
   const items = [
-    { label: 'Adapter default', value: ADAPTER_DEFAULT },
+    { label: 'Default', value: ADAPTER_DEFAULT },
     ...(modelData.value?.models ?? []).map(entry => ({ label: entry.name, value: entry.id }))
   ]
   for (const id of [form.model, ...typedModels.value]) {
@@ -280,7 +281,7 @@ async function save() {
     v-model:open="open"
     :title="editing ? `Edit ${assistant?.name}` : 'New assistant'"
     :description="editing
-      ? 'Name, picture, persona and voice change now. Harness, model and workspace apply from its next session.'
+      ? 'Name, picture, persona and voice change now. Coding agent, model and folder apply from its next session.'
       : 'An assistant keeps one conversation with you for as long as you like. When its context fills up it writes itself a note and carries on in a fresh session.'"
     :ui="{ content: 'sm:max-w-xl' }"
   >
@@ -342,7 +343,7 @@ async function save() {
         </UFormField>
 
         <div class="grid gap-3 sm:grid-cols-2">
-          <UFormField label="Harness">
+          <UFormField label="Coding agent">
             <ChoiceMenu v-model="form.adapter" :items="adapterItems" value-key="value" class="w-full" />
           </UFormField>
           <UFormField label="Model">
@@ -365,7 +366,7 @@ async function save() {
             value-key="value"
             :loading="modelStatus === 'pending'"
             class="w-full"
-            placeholder="Agent default"
+            placeholder="Default"
           />
           <template #help>
             <span class="text-xs text-muted">{{ selectedAdapter.modeDescription }}</span>
@@ -418,7 +419,7 @@ async function save() {
         </div>
         <p class="-mt-2 text-xs text-muted">
           How the voice bar sounds when it is this assistant talking, and when its notes are read out. If that engine
-          cannot speak here, the bar's own voice is used. Clone a voice in Settings › Talking to agents, under Pocket TTS.
+          cannot speak here, the bar's own voice is used. Clone a voice in Settings › Voice, under Pocket TTS.
         </p>
 
         <UFormField label="Fresh start">

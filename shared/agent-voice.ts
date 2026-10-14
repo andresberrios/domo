@@ -23,12 +23,25 @@ export type AgentVoiceMode = 'click' | 'handsfree'
 export const SPEECH_ENGINES: Array<{ id: SpeechEngine, label: string, description: string }> = [
   { id: 'local', label: 'Open models', description: 'Whisper or Moonshine, and Kokoro, on the server\'s CPU. Free, offline, no key.' },
   { id: 'gemini', label: 'Gemini', description: 'Google\'s transcription and speech models. Needs the Gemini key.' },
-  { id: 'openai', label: 'OpenAI', description: 'The transcribe and speech endpoints. Needs the OpenAI key.' },
-  { id: 'kyutai', label: 'Kyutai server (untested)', description: 'A moshi-server you run, as Unmute does. Needs a GPU. Never yet run against a real server.' },
-  { id: 'mac', label: 'macOS', description: 'Apple\'s own voices and recogniser, when Domo runs on a Mac with macOS 26. Free, local, the fastest: 16.9% errors in 0.2 s, but weaker on names.' }
+  { id: 'openai', label: 'OpenAI', description: 'OpenAI\'s transcription and speech models. Needs the OpenAI key.' },
+  { id: 'kyutai', label: 'Kyutai server (untested)', description: 'Kyutai\'s speech server, which you run yourself on a GPU. Not yet tried with Domo.' },
+  { id: 'mac', label: 'macOS', description: 'Apple\'s own voices and dictation, when Domo runs on a Mac with macOS 26. Free, local and the fastest, but weaker on names.' }
 ]
 
 export const SPEECH_ENGINE_IDS = SPEECH_ENGINES.map(engine => engine.id)
+
+/**
+ * Kyutai has never been run against a real server, so it is offered only to
+ * Settings that already use it; anyone else would be picking a broken engine.
+ */
+export function usesKyutai(voice: Pick<AgentVoiceSettings, 'transcriber' | 'speaker' | 'turnDetector'>): boolean {
+  return voice.transcriber === 'kyutai' || voice.speaker === 'kyutai' || voice.turnDetector === 'kyutai'
+}
+
+/** An engine or detector list, without Kyutai unless it is offered. */
+export function withoutKyutai<T extends { id: string }>(list: T[], offered: boolean): T[] {
+  return offered ? list : list.filter(entry => entry.id !== 'kyutai')
+}
 
 export function isSpeechEngine(value: unknown): value is SpeechEngine {
   return SPEECH_ENGINE_IDS.includes(value as SpeechEngine)
@@ -51,7 +64,7 @@ export function isTranscriber(value: unknown): value is Transcriber {
 /** Who can speak: the engines, and the device's own voices. */
 export const SPEAKERS: Array<{ id: Speaker, label: string, description: string }> = [
   ...SPEECH_ENGINES,
-  { id: 'pocket', label: 'Pocket TTS', description: 'Kyutai\'s open model on the server\'s CPU: natural, and starts in 0.2 s. Domo runs it with uv.' },
+  { id: 'pocket', label: 'Pocket TTS', description: 'Kyutai\'s open model on the server\'s CPU: natural, starts at once, and can clone a voice.' },
   { id: 'browser', label: 'This device', description: 'The device\'s own voices: instant and free. Siri voices on Apple, natural voices in Edge.' }
 ]
 

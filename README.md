@@ -287,7 +287,7 @@ server starts. `.env.example` lists the common ones.
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
 | `NUXT_GH_TOKEN` | GitHub token for environment sessions |
 | `DATABASE_URL`, `ELECTRIC_URL` | Default to the compose services |
-| `NUXT_DEFAULT_CWD` | Default for **Settings → Coding agents → Default workspace**, where new sessions start |
+| `NUXT_DEFAULT_CWD` | Default for **Settings → Coding agents → Default folder**, where new sessions start |
 | `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
 | `NUXT_DEV_ENV_IMAGE` | Base image when a project has no `.domo.json` |
 | `NUXT_DEV_ENV_RUNTIME_IMAGE` | Image that provides Node and the adapters to environments (default `node:22-bookworm-slim`) |

@@ -95,6 +95,7 @@ const working = computed(() => agents.value.filter(agent => agent.status === 'th
               v-for="permission in pending"
               :key="permission.id"
               :permission="permission"
+              :agent-title="agents.find(agent => agent.id === permission.agentSessionId)?.title"
             />
           </div>
         </section>

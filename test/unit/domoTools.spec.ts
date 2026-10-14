@@ -105,6 +105,13 @@ describe('describeDomoCall', () => {
     expect(describe_('get_agent', { agentId: 'ag_peer1' }, { title: 'Builder', status: 'thinking' }).outcome).toBe('thinking')
   })
 
+  it('names a permission answer by its option, and by the id before the result says it', () => {
+    const args = { agentId: 'ag_peer1', permissionId: 'p1', optionId: 'allow_always' }
+    expect(describe_('answer_permission_request', args, { answered: true, optionId: 'allow_always', optionName: 'Always allow' }))
+      .toMatchObject({ label: 'Answer a permission for', subject: 'Builder', outcome: 'Always allow' })
+    expect(describe_('answer_permission_request', args).outcome).toBe('allow_always')
+  })
+
   it('says what it is changing', () => {
     expect(describe_('manage_agent_session', { agentId: 'ag_peer1', archived: true })).toMatchObject({ label: 'Archive', subject: 'Builder' })
     expect(describe_('manage_agent_session', { title: 'New name' })).toMatchObject({ label: 'Rename', subject: 'itself to "New name"' })

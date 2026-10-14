@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { PendingPermission } from '~~/shared/types'
 
-const props = defineProps<{ permission: PendingPermission }>()
+/** `agentTitle` where several agents' requests share a list, so each says who is asking. */
+const props = defineProps<{ permission: PendingPermission, agentTitle?: string }>()
 
 const busy = ref<string | null>(null)
 const toast = useToast()
@@ -50,7 +51,7 @@ async function choose(optionId: string) {
             {{ permission.title }}
           </p>
           <p class="text-xs text-muted">
-            The coding agent is asking for permission
+            {{ agentTitle ? `${agentTitle} is asking for permission` : 'The coding agent is asking for permission' }}
           </p>
         </div>
 

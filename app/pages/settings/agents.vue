@@ -26,11 +26,11 @@ async function save() {
 <template>
   <SettingsShell
     title="Coding agents"
-    description="Defaults shared by every ACP adapter. Adapter-specific modes and options live on their own pages."
+    description="Defaults for every coding agent. Each one's own models, modes and options are on its page."
     :saving="saving"
     :save="save"
   >
-    <UFormField label="Default workspace" hint="Where local agents start">
+    <UFormField label="Default folder" hint="Where agents on this machine start">
       <DirectoryPicker v-model="form.defaultCwd" />
     </UFormField>
     <USwitch

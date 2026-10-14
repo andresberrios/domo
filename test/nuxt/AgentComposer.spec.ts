@@ -299,7 +299,7 @@ describe('AgentComposer', () => {
     })
 
     expect(component.find('textarea').attributes('placeholder'))
-      .toContain('cannot be steered')
+      .toContain('cannot take a message mid-turn')
 
     // Read off the items the dropdown was handed, for the reason the test
     // above gives: Reka will not open a menu on a synthesised click.
@@ -330,7 +330,7 @@ describe('AgentComposer', () => {
     })
 
     expect(component.find('textarea').attributes('placeholder'))
-      .not.toContain('cannot be steered')
+      .not.toContain('cannot take a message mid-turn')
     expect(steerItem(component).description).toBe('Put it into the turn it is running now')
   })
 })

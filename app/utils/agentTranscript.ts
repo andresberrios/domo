@@ -72,6 +72,13 @@ export interface MeshItem {
  * otherwise a transcript would claim a mode took effect on a session that has
  * not run since.
  */
+/** How a scheduled prompt reached the agent, completing "Scheduled task "x" …". */
+const CRON_OUTCOMES: Record<string, string> = {
+  prompted: 'ran',
+  steered: 'ran, joining the turn in progress',
+  queued: 'is waiting for the turn to end'
+}
+
 const whenPending = (payload: any) => (payload?.pending ? ' (when it next starts)' : '')
 
 const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
@@ -94,14 +101,15 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
       ? `Turn ended: ${String(payload.stopReason).replace(/_/g, ' ')}`
       : null,
   cancelled: () => 'Turn cancelled',
-  mode_changed: payload => `Mode set to ${payload?.modeId}${whenPending(payload)}`,
+  // Events from before the name was recorded fall back to the adapter's id.
+  mode_changed: payload => `Mode set to ${payload?.name || payload?.modeId}${whenPending(payload)}`,
   model_changed: payload => `Model: ${payload?.name || payload?.modelId}${whenPending(payload)}`,
   // The adapter's own settings, whose names are the adapter's too:
   // "Effort: High" on Claude Code, "Reasoning effort: High" on Codex.
   config_changed: payload => `${payload?.name || payload?.configId}: ${payload?.value}${whenPending(payload)}`,
   'adapter-exit': payload =>
-    `ACP adapter exited${payload?.code != null ? ` (code ${payload.code})` : ''}`,
-  cron_triggered: payload => `Scheduled task "${payload?.name}" triggered (${payload?.outcome})`,
+    `The agent's process stopped${payload?.code != null ? ` (exit code ${payload.code})` : ''}`,
+  cron_triggered: payload => `Scheduled task "${payload?.name}" ${CRON_OUTCOMES[payload?.outcome] ?? 'ran'}`,
   handed_off: () => 'Handed off to a new session',
   environment_retired: () =>
     'Its development environment was retired — this session can no longer be started'

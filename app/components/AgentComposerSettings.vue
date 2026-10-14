@@ -210,7 +210,7 @@ const modelColumn = computed<Column>(() => {
     patch: (value: string) => ({ model: value }),
     loading: modelStatus.value === 'pending',
     error: modelError.value
-      ? (modelError.value.statusMessage ?? modelError.value.message ?? 'The probe failed')
+      ? (modelError.value.statusMessage ?? modelError.value.message ?? 'Could not load the models')
       : null,
     onRetry: () => { void refreshModels() }
   }

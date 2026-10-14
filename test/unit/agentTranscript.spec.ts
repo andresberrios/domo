@@ -291,7 +291,16 @@ describe('buildTranscript', () => {
         agentEvent('adapter-exit', { code: 1 })
       ])
 
-      expect(items.map(item => (item as any).text)).toEqual(['ACP adapter exited (code 1)'])
+      expect(items.map(item => (item as any).text)).toEqual(['The agent\'s process stopped (exit code 1)'])
+    })
+
+    it('names a mode in words, and falls back to the id for older events', () => {
+      const items = buildTranscript([
+        agentEvent('mode_changed', { modeId: 'bypassPermissions', name: 'Bypass Permissions' }),
+        agentEvent('mode_changed', { modeId: 'plan' })
+      ])
+
+      expect(items.map(item => (item as any).text)).toEqual(['Mode set to Bypass Permissions', 'Mode set to plan'])
     })
 
     it('ignores event types with nothing to say', () => {

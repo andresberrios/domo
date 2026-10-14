@@ -64,7 +64,7 @@ const deliveryModes = computed(() => [
     icon: 'i-lucide-git-branch',
     description: steers.value
       ? 'Put it into the turn it is running now'
-      : 'This adapter cannot be steered — it stops the current turn instead'
+      : 'This agent cannot take a message mid-turn — it stops the current turn instead'
   },
   { value: 'queue' as const, label: 'Queue', icon: 'i-lucide-inbox', description: 'Wait for the current turn to finish' },
   { value: 'interrupt' as const, label: 'Interrupt', icon: 'i-lucide-octagon-x', description: 'Stop the current turn first' }
@@ -107,7 +107,7 @@ const placeholder = computed(() => {
   if (!busy.value) return 'Message this agent…'
   if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
   if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'
-  if (!steers.value) return 'The agent is working — this adapter cannot be steered, so this stops its turn first…'
+  if (!steers.value) return 'The agent is working — it cannot take a message mid-turn, so this stops its turn first…'
   return 'The agent is working — this goes into the turn it is running…'
 })
 

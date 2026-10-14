@@ -181,7 +181,7 @@ export const DOMO_TOOLS: Record<string, DomoToolView> = {
     icon: 'i-lucide-shield-check',
     label: call => (call.args.reject ? 'Reject a permission for' : 'Answer a permission for'),
     subject: onAgent,
-    outcome: call => call.args.optionId ?? null
+    outcome: call => call.result?.optionName ?? call.args.optionId ?? null
   },
   spawn_agent: {
     icon: 'i-lucide-bot',
