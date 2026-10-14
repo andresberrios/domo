@@ -1,0 +1,877 @@
+#!/usr/bin/env node
+// Domo's launcher: the supervisor that runs an installed Domo, the service
+// commands around it, and the updater. One plain JavaScript file with no
+// dependencies, so it runs on the bundled Node before anything is built, and
+// so that replacing it is copying a file.
+//
+// An installed Domo lives under DOMO_HOME (default ~/.domo); see
+// docs/install-and-updates.md for the layout. Development uses `pnpm dev`
+// and never this file.
+import { spawn, spawnSync } from 'node:child_process'
+import {
+  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+  renameSync, rmSync, symlinkSync, writeFileSync
+} from 'node:fs'
+import { arch, homedir, platform, tmpdir, userInfo } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const HOME = resolve(process.env.DOMO_HOME || join(homedir(), '.domo'))
+const P = {
+  app: join(HOME, 'app'),
+  releases: join(HOME, 'releases'),
+  current: join(HOME, 'current'),
+  previous: join(HOME, 'previous'),
+  nodeDir: join(HOME, 'node'),
+  node: join(HOME, 'node', 'bin', 'node'),
+  pnpm: join(HOME, 'bin', 'pnpm'),
+  caddy: join(HOME, 'bin', 'caddy'),
+  uv: join(HOME, 'bin', 'uv'),
+  caddySocket: join(HOME, 'caddy.sock'),
+  bin: join(HOME, 'bin'),
+  launcher: join(HOME, 'bin', 'domo.mjs'),
+  data: join(HOME, 'data'),
+  env: join(HOME, '.env'),
+  logs: join(HOME, 'logs'),
+  log: join(HOME, 'logs', 'domo.log'),
+  supervisorPid: join(HOME, 'supervisor.pid'),
+  updateLock: join(HOME, 'update.lock'),
+  updateFailed: join(HOME, 'update-failed.json'),
+  // The server writes this before it stops when it wants to come back on
+  // `current`; the supervisor reads and removes it. See RESTART_EXIT_CODE.
+  restartRequested: join(HOME, 'restart-requested'),
+  state: join(HOME, 'state.json')
+}
+
+/**
+ * The server exits with this when it wants the supervisor to start it again
+ * from `current`. Nitro's own shutdown always exits 0, so the server usually
+ * asks with the `restart-requested` file instead and stops normally.
+ */
+export const RESTART_EXIT_CODE = 75
+const SERVICE_LABEL = 'com.domo.app'
+const HEALTH_TIMEOUT_MS = 60_000
+
+// --------------------------------------------------------------------------
+// Small helpers
+// --------------------------------------------------------------------------
+
+function log(...parts) {
+  console.log(`${new Date().toISOString()} [domo] ${parts.join(' ')}`)
+}
+
+function fail(message) {
+  console.error(`domo: ${message}`)
+  process.exit(1)
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms))
+}
+
+function readJson(file, fallback = null) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+function writeJson(file, value) {
+  writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+function alive(pid) {
+  if (!pid) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
+}
+
+/** `KEY=value` lines of `.env`, without touching what the caller already has. */
+function readDotenv(file = P.env) {
+  const out = {}
+  if (!existsSync(file)) return out
+  for (const raw of readFileSync(file, 'utf8').split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const key = line.slice(0, eq).trim().replace(/^export\s+/, '')
+    let value = line.slice(eq + 1).trim()
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith('\'') && value.endsWith('\''))) {
+      value = value.slice(1, -1)
+    }
+    out[key] = value
+  }
+  return out
+}
+
+/**
+ * The PATH the user's own shell would have. A launchd or systemd service
+ * starts with a bare PATH, and the coding agents Domo spawns need git, docker
+ * and whatever the user installed with Homebrew or in their home directory.
+ */
+function loginPath() {
+  const shell = process.env.SHELL || '/bin/sh'
+  const probe = spawnSync(shell, ['-ilc', 'printf %s "$PATH"'], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] })
+  const found = probe.status === 0 ? probe.stdout.trim().split('\n').pop() : ''
+  const base = found && found.includes('/') ? found : (process.env.PATH || '/usr/bin:/bin')
+  const extra = ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local', 'bin')]
+  const parts = [P.bin, dirname(P.node), ...base.split(':'), ...extra]
+  return [...new Set(parts.filter(Boolean))].join(':')
+}
+
+/** The environment the server, Caddy and the updater run with. */
+function serverEnv() {
+  const dotenv = readDotenv()
+  const env = { ...dotenv, ...process.env }
+  env.DOMO_HOME = HOME
+  env.PATH = loginPath()
+  env.PORT = env.DOMO_PORT || '3667'
+  // The Caddyfile is the one `pnpm dev` uses and names the upstream port after
+  // the dev variable.
+  env.DOMO_DEV_PORT = env.PORT
+  env.HOST = '0.0.0.0'
+  env.DOMO_HTTPS_ADDRESS ||= 'localhost:3666'
+  env.DOMO_HTTPS_PORT = env.DOMO_HTTPS_ADDRESS.split(':').pop() || '3666'
+  // Caddy's admin API, on a socket of this install's own: what `domo trust` asks
+  // for the root certificate.
+  env.DOMO_CADDY_ADMIN ||= `unix/${P.caddySocket}`
+  env.NUXT_DATA_DIR ||= P.data
+  // Not `domo-dev-`, which `pnpm dev` uses, nor a prefix of it: the leftover
+  // report attributes by prefix, and both may run on one daemon.
+  env.NUXT_DEV_ENV_RESOURCE_PREFIX ||= 'domo-prod-'
+  // The production stack's ports (docker-compose.prod.yml), not the development stack's.
+  env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54322/domo'
+  env.ELECTRIC_URL ||= 'http://localhost:30002'
+  env.NODE_ENV = 'production'
+  // What the installer was told to follow, which is the server's default
+  // channel until Settings says otherwise.
+  env.DOMO_CHANNEL ||= readState().channel
+  // Nitro waits this long for open connections on SIGTERM. Electric's shape
+  // long-polls are always open, so the default thirty seconds is a restart
+  // that takes thirty seconds; the browser reconnects anyway.
+  env.NITRO_SHUTDOWN_TIMEOUT ||= '5000'
+  return env
+}
+
+function currentRelease() {
+  try {
+    return realpathSync(P.current)
+  } catch {
+    return null
+  }
+}
+
+function releaseInfo(dir) {
+  return dir ? readJson(join(dir, 'build.json'), { commit: basename(dir) }) : null
+}
+
+/** Point `link` at `target` atomically: a symlink that is never missing. */
+function relink(link, target) {
+  const tmp = `${link}.tmp-${process.pid}`
+  rmSync(tmp, { force: true })
+  symlinkSync(target, tmp)
+  renameSync(tmp, link)
+}
+
+function git(args, options = {}) {
+  const result = spawnSync('git', ['-C', P.app, ...args], { encoding: 'utf8', timeout: options.timeout ?? 60_000, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+  if (result.status !== 0) {
+    if (options.lenient) return null
+    throw new Error(`git ${args.join(' ')}: ${(result.stderr || result.stdout || '').trim() || `exit ${result.status}`}`)
+  }
+  return result.stdout.trim()
+}
+
+function runStreaming(command, args, options) {
+  return new Promise((done, reject) => {
+    const child = spawn(command, args, { stdio: 'inherit', ...options })
+    child.on('error', reject)
+    child.on('exit', code => (code === 0 ? done() : reject(new Error(`${basename(command)} ${args.join(' ')} exited ${code}`))))
+  })
+}
+
+/**
+ * Is the server up? The app shell, not `/api/health`: that route waits on
+ * Postgres for fifteen seconds, and a database that is down is the UI's
+ * banner to show, not a reason to roll a release back.
+ */
+async function healthy(env, timeoutMs, abort = () => false) {
+  const url = `http://127.0.0.1:${env.PORT}/`
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (abort()) return false
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(2000) })
+      if (response.ok) return true
+    } catch {
+      // Not listening yet.
+    }
+    await sleep(500)
+  }
+  return false
+}
+
+// --------------------------------------------------------------------------
+// The bundled tools: Node, pnpm, Caddy and uv at the versions a checkout's
+// `.tool-versions` names, so a release can move any of them.
+// --------------------------------------------------------------------------
+
+function toolVersions(dir) {
+  const out = {}
+  for (const line of readFileSync(join(dir, '.tool-versions'), 'utf8').split('\n')) {
+    const [tool, version] = line.trim().split(/\s+/)
+    if (tool && version && !tool.startsWith('#')) out[tool] = version
+  }
+  return out
+}
+
+function installedVersion(file, args, pattern) {
+  if (!existsSync(file)) return null
+  const result = spawnSync(file, args, { encoding: 'utf8', timeout: 20_000 })
+  return result.status === 0 ? (result.stdout.match(pattern)?.[1] ?? null) : null
+}
+
+async function download(url, file) {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`${url}: ${response.status}`)
+  writeFileSync(file, Buffer.from(await response.arrayBuffer()))
+}
+
+function untar(file, dir, ...args) {
+  const result = spawnSync('tar', ['-xzf', file, '-C', dir, ...args], { encoding: 'utf8' })
+  if (result.status !== 0) throw new Error(`tar ${file}: ${(result.stderr || '').trim()}`)
+}
+
+/**
+ * Each tool fetched only when its version differs from the pin. Node is
+ * replaced as a directory swap: the launcher that runs on the old one keeps
+ * its binary's inode until it exits, and the next server starts on the new.
+ * uv is optional (Pocket TTS), so its failure is a line, not an error.
+ */
+async function ensureTools(dir) {
+  const wanted = toolVersions(dir)
+  const os = platform() === 'darwin' ? 'darwin' : 'linux'
+  const cpu = arch() === 'arm64' ? 'arm64' : 'x64'
+  const tmp = mkdtempSync(join(tmpdir(), 'domo-tools-'))
+  mkdirSync(P.bin, { recursive: true })
+  try {
+    if (wanted.nodejs && installedVersion(P.node, ['-v'], /v(\S+)/) !== wanted.nodejs) {
+      log(`downloading Node ${wanted.nodejs}`)
+      const tgz = join(tmp, 'node.tgz')
+      await download(`https://nodejs.org/dist/v${wanted.nodejs}/node-v${wanted.nodejs}-${os}-${cpu}.tar.gz`, tgz)
+      const fresh = `${P.nodeDir}.new`
+      rmSync(fresh, { recursive: true, force: true })
+      mkdirSync(fresh, { recursive: true })
+      untar(tgz, fresh, '--strip-components=1')
+      const old = `${P.nodeDir}.old`
+      rmSync(old, { recursive: true, force: true })
+      if (existsSync(P.nodeDir)) renameSync(P.nodeDir, old)
+      renameSync(fresh, P.nodeDir)
+      rmSync(old, { recursive: true, force: true })
+    }
+    if (wanted.pnpm && installedVersion(P.pnpm, ['-v'], /(\S+)/) !== wanted.pnpm) {
+      log(`downloading pnpm ${wanted.pnpm}`)
+      const tgz = join(tmp, 'pnpm.tgz')
+      await download(`https://github.com/pnpm/pnpm/releases/download/v${wanted.pnpm}/pnpm-${os}-${cpu}.tar.gz`, tgz)
+      const into = join(tmp, 'pnpm')
+      mkdirSync(into)
+      untar(tgz, into)
+      const binary = readdirSync(into).find(name => name.startsWith('pnpm'))
+      if (!binary) throw new Error('the pnpm archive holds no pnpm binary')
+      cpSync(join(into, binary), P.pnpm)
+    }
+    if (wanted.caddy && installedVersion(P.caddy, ['version'], /v?(\d+\.\d+\.\d+)/) !== wanted.caddy) {
+      log(`downloading Caddy ${wanted.caddy}`)
+      const tgz = join(tmp, 'caddy.tgz')
+      await download(`https://github.com/caddyserver/caddy/releases/download/v${wanted.caddy}/caddy_${wanted.caddy}_${os === 'darwin' ? 'mac' : 'linux'}_${cpu === 'arm64' ? 'arm64' : 'amd64'}.tar.gz`, tgz)
+      untar(tgz, tmp, 'caddy')
+      cpSync(join(tmp, 'caddy'), P.caddy)
+    }
+    if (wanted.uv && installedVersion(P.uv, ['--version'], /uv (\S+)/) !== wanted.uv) {
+      try {
+        log(`downloading uv ${wanted.uv} (for the Pocket TTS voice; optional)`)
+        const triple = `${cpu === 'arm64' ? 'aarch64' : 'x86_64'}-${os === 'darwin' ? 'apple-darwin' : 'unknown-linux-gnu'}`
+        const tgz = join(tmp, 'uv.tgz')
+        await download(`https://github.com/astral-sh/uv/releases/download/${wanted.uv}/uv-${triple}.tar.gz`, tgz)
+        untar(tgz, tmp)
+        for (const name of ['uv', 'uvx']) cpSync(join(tmp, `uv-${triple}`, name), join(P.bin, name))
+      } catch (error) {
+        log(`uv could not be installed (${error.message}); Pocket TTS will say so if you pick it`)
+      }
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+// --------------------------------------------------------------------------
+// run: the supervisor
+// --------------------------------------------------------------------------
+
+async function run() {
+  mkdirSync(P.logs, { recursive: true })
+  mkdirSync(P.data, { recursive: true })
+  if (!currentRelease()) fail(`nothing to run: ${P.current} does not point at a release. Run the installer, or \`domo update\`.`)
+  const other = supervisorPid()
+  if (other && other !== process.pid) fail(`a supervisor is already running (pid ${other})`)
+  writeFileSync(P.supervisorPid, String(process.pid))
+
+  // Read again at every server start, so `domo restart` picks up an edit to `.env`.
+  let env = serverEnv()
+  log(`home ${HOME}, https://${env.DOMO_HTTPS_ADDRESS}, upstream :${env.PORT}`)
+
+  let stopping = false
+  let server = null
+  let caddy = null
+  // Set when the server was asked to restart (exit 75, or SIGHUP): the next
+  // start is a candidate for rollback, and gets no backoff.
+  let restartRequested = false
+  // One rollback per swap, so a release that is broken in both directions
+  // does not flip for ever.
+  let rolledBack = false
+
+  const stop = (signal) => {
+    if (stopping) return
+    stopping = true
+    log(`${signal}: stopping`)
+    server?.kill('SIGTERM')
+    caddy?.kill('SIGTERM')
+    setTimeout(() => {
+      server?.kill('SIGKILL')
+      caddy?.kill('SIGKILL')
+    }, 25_000).unref()
+  }
+  process.on('SIGTERM', () => stop('SIGTERM'))
+  process.on('SIGINT', () => stop('SIGINT'))
+  process.on('SIGHUP', () => {
+    // `domo restart`: the server only, onto whatever `current` is now.
+    log('SIGHUP: restarting the server')
+    restartRequested = true
+    server?.kill('SIGTERM')
+  })
+
+  await composeUp(env)
+
+  const startCaddy = () => {
+    const release = currentRelease()
+    caddy = spawn(P.caddy, ['run', '--config', join(release, 'Caddyfile'), '--adapter', 'caddyfile'], { env, stdio: 'inherit' })
+    caddy.on('exit', (code, signal) => {
+      caddy = null
+      if (stopping) return
+      log(`caddy exited (${signal || code}); starting it again in 3s`)
+      setTimeout(startCaddy, 3000)
+    })
+  }
+  startCaddy()
+
+  let crashes = 0
+  while (!stopping) {
+    env = serverEnv()
+    const release = currentRelease()
+    const info = releaseInfo(release)
+    log(`starting ${basename(release)} (${info?.commit?.slice(0, 7) ?? '?'}, built ${info?.builtAt ?? '?'})`)
+    const candidate = restartRequested
+    restartRequested = false
+    const child = spawn(P.node, [join(release, '.output', 'server', 'index.mjs')], { env, stdio: 'inherit', cwd: release })
+    server = child
+    let exited = null
+    const exit = new Promise(r => child.on('exit', (code, signal) => r((exited = { code, signal }))))
+    child.on('error', error => log(`server failed to start: ${error.message}`))
+
+    const ok = await healthy(env, HEALTH_TIMEOUT_MS, () => exited !== null || stopping)
+    if (ok) {
+      crashes = 0
+      rolledBack = false
+      log(`up at http://127.0.0.1:${env.PORT}`)
+      // A later release that comes up clears the record; the one that was
+      // rolled back to must not, or the failure is never seen.
+      const failed = readJson(P.updateFailed)
+      if (failed && failed.release !== basename(release) && failed.rolledBackTo !== basename(release)) rmSync(P.updateFailed, { force: true })
+    } else if (!stopping && candidate && !rolledBack && existsSync(P.previous)) {
+      const previous = realpathSync(P.previous)
+      if (previous !== release) {
+        rolledBack = true
+        const reason = exited ? `exited ${exited.signal || exited.code} before answering` : `no answer on /api/health within ${HEALTH_TIMEOUT_MS / 1000}s`
+        log(`release ${basename(release)} ${reason}; rolling back to ${basename(previous)}`)
+        writeJson(P.updateFailed, { release: basename(release), rolledBackTo: basename(previous), reason, at: new Date().toISOString() })
+        relink(P.current, previous)
+        relink(P.previous, release)
+        restartRequested = true
+        if (!exited) child.kill('SIGTERM')
+      }
+    }
+
+    const result = await exit
+    server = null
+    if (stopping) break
+    if (existsSync(P.restartRequested)) {
+      rmSync(P.restartRequested, { force: true })
+      restartRequested = true
+    }
+    if (result.code === RESTART_EXIT_CODE || restartRequested) {
+      restartRequested = true
+      log(`server asked for a restart (${result.signal || result.code})`)
+      continue
+    }
+    crashes += 1
+    const wait = Math.min(30_000, 2000 * 2 ** Math.min(crashes, 4))
+    log(`server exited (${result.signal || result.code}); starting it again in ${wait / 1000}s`)
+    await sleep(wait)
+  }
+
+  if (caddy) await new Promise(r => caddy.on('exit', r))
+  rmSync(P.supervisorPid, { force: true })
+  log('stopped')
+}
+
+/**
+ * Postgres and Electric, from the release's production compose file: its own
+ * project, volume and ports, never the development stack's. Failure is
+ * reported in the UI, not here.
+ */
+async function composeUp(env) {
+  const release = currentRelease()
+  const file = join(release, 'docker-compose.prod.yml')
+  if (!existsSync(file)) return
+  log('docker compose -f docker-compose.prod.yml up -d')
+  const result = spawnSync('docker', ['compose', '-f', file, 'up', '-d'], { env, encoding: 'utf8', timeout: 120_000 })
+  if (result.status !== 0) log(`compose failed: ${(result.stderr || result.error?.message || '').trim().split('\n').pop()}`)
+}
+
+// --------------------------------------------------------------------------
+// Service management (launchd on macOS, systemd --user on Linux)
+// --------------------------------------------------------------------------
+
+function servicePaths() {
+  if (platform() === 'darwin') {
+    return { kind: 'launchd', file: join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`), domain: `gui/${userInfo().uid}` }
+  }
+  return { kind: 'systemd', file: join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', 'domo.service') }
+}
+
+function writeService() {
+  const service = servicePaths()
+  mkdirSync(dirname(service.file), { recursive: true })
+  mkdirSync(P.logs, { recursive: true })
+  if (service.kind === 'launchd') {
+    writeFileSync(service.file, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${SERVICE_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${P.node}</string>
+    <string>${P.launcher}</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DOMO_HOME</key><string>${HOME}</string>
+  </dict>
+  <key>WorkingDirectory</key><string>${HOME}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>StandardOutPath</key><string>${P.log}</string>
+  <key>StandardErrorPath</key><string>${P.log}</string>
+</dict>
+</plist>
+`)
+  } else {
+    writeFileSync(service.file, `[Unit]
+Description=Domo
+After=network-online.target docker.service
+
+[Service]
+Environment=DOMO_HOME=${HOME}
+WorkingDirectory=${HOME}
+ExecStart=${P.node} ${P.launcher} run
+Restart=always
+RestartSec=5
+StandardOutput=append:${P.log}
+StandardError=append:${P.log}
+
+[Install]
+WantedBy=default.target
+`)
+  }
+  return service
+}
+
+function sh(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options })
+  return { ok: result.status === 0, out: (result.stdout || '').trim(), err: (result.stderr || '').trim() }
+}
+
+function serviceStart() {
+  const service = writeService()
+  if (service.kind === 'launchd') {
+    sh('launchctl', ['bootout', `${service.domain}/${SERVICE_LABEL}`])
+    const result = sh('launchctl', ['bootstrap', service.domain, service.file])
+    if (!result.ok) fail(`launchctl bootstrap: ${result.err}`)
+  } else {
+    sh('systemctl', ['--user', 'daemon-reload'])
+    const result = sh('systemctl', ['--user', 'enable', '--now', 'domo'])
+    if (!result.ok) fail(`systemctl: ${result.err}`)
+  }
+  log(`service started (${service.kind})`)
+}
+
+function serviceStop() {
+  const service = servicePaths()
+  if (service.kind === 'launchd') sh('launchctl', ['bootout', `${service.domain}/${SERVICE_LABEL}`])
+  else sh('systemctl', ['--user', 'stop', 'domo'])
+  const pid = supervisorPid()
+  if (pid) process.kill(pid, 'SIGTERM')
+  log('service stopped')
+}
+
+function serviceUninstall() {
+  serviceStop()
+  const service = servicePaths()
+  if (service.kind === 'systemd') sh('systemctl', ['--user', 'disable', 'domo'])
+  rmSync(service.file, { force: true })
+  if (service.kind === 'systemd') sh('systemctl', ['--user', 'daemon-reload'])
+  console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p domo-prod down\` stops them, add \`-v\` to delete the database.`)
+}
+
+function supervisorPid() {
+  const pid = Number(existsSync(P.supervisorPid) ? readFileSync(P.supervisorPid, 'utf8') : 0)
+  return alive(pid) ? pid : null
+}
+
+function restart() {
+  const pid = supervisorPid()
+  if (!pid) {
+    log('no supervisor running; starting the service')
+    return serviceStart()
+  }
+  process.kill(pid, 'SIGHUP')
+  log('asked the supervisor to restart the server')
+}
+
+async function status() {
+  const env = serverEnv()
+  const release = currentRelease()
+  const info = releaseInfo(release)
+  const pid = supervisorPid()
+  const ok = release && pid ? await healthy(env, 2500) : false
+  console.log(`home       ${HOME}`)
+  console.log(`release    ${release ? `${basename(release)} (built ${info?.builtAt ?? '?'})` : 'none'}`)
+  console.log(`channel    ${readState().channel}`)
+  console.log(`supervisor ${pid ? `running (pid ${pid})` : 'not running'}`)
+  console.log(`server     ${ok ? `answering at https://${env.DOMO_HTTPS_ADDRESS}` : 'not answering'}`)
+  const failed = readJson(P.updateFailed)
+  if (failed) console.log(`last update ${failed.release} failed (${failed.reason}) and was rolled back to ${failed.rolledBackTo} at ${failed.at}`)
+  const lock = readJson(P.updateLock)
+  if (lock && alive(lock.pid)) console.log(`update     in progress (pid ${lock.pid}, since ${lock.at})`)
+}
+
+function logs() {
+  spawn('tail', ['-n', '200', '-f', P.log], { stdio: 'inherit' })
+}
+
+// --------------------------------------------------------------------------
+// Updates
+// --------------------------------------------------------------------------
+
+function readState() {
+  return { channel: 'release', ...readJson(P.state, {}) }
+}
+
+function writeState(patch) {
+  writeJson(P.state, { ...readState(), ...patch })
+}
+
+/** The lock is a live pid, never a timestamp: a dead holder's lock is taken over. */
+function takeUpdateLock() {
+  const held = readJson(P.updateLock)
+  if (held && held.pid !== process.pid && alive(held.pid)) fail(`an update is already running (pid ${held.pid}, since ${held.at})`)
+  writeJson(P.updateLock, { pid: process.pid, at: new Date().toISOString() })
+  const release = () => rmSync(P.updateLock, { force: true })
+  process.on('exit', release)
+  return release
+}
+
+/**
+ * The clone is shallow (`--depth 1` at install) and stays so: a plain fetch
+ * brings only what is new between the installed commit and the channel's
+ * tip, which is exactly the history the count needs. (`--depth` on the fetch
+ * would be the wrong tool: it re-measures from the tip and, over some
+ * transports, pulls the whole history.) The refspec is explicit because a
+ * single-branch clone's default refspec names only the branch it was made
+ * from, and the channel is a setting that can change.
+ */
+function fetchChannel(channel) {
+  git(['fetch', '--quiet', 'origin', `+refs/heads/${channel}:refs/remotes/origin/${channel}`], { timeout: 120_000 })
+  return git(['rev-parse', `origin/${channel}`])
+}
+
+function updateCheck(channel) {
+  const target = fetchChannel(channel)
+  const installed = releaseInfo(currentRelease())?.commit ?? git(['rev-parse', 'HEAD'])
+  if (installed === target) return { installed, target, behind: 0, commits: [] }
+  const countable = git(['merge-base', '--is-ancestor', installed, target], { lenient: true }) !== null
+  // Not an ancestor: the branch was rewritten, or the installed commit is
+  // older than the clone's history. "An update, count unknown", never a number.
+  if (!countable) return { installed, target, behind: null, commits: [] }
+  const behind = Number(git(['rev-list', '--count', `${installed}..${target}`]))
+  const commits = git(['log', '--format=%H%x1f%s%x1f%aI', `${installed}..${target}`])
+    .split('\n').filter(Boolean)
+    .map((line) => {
+      const [sha, subject, date] = line.split('\x1f')
+      return { sha, subject, date }
+    })
+  return { installed, target, behind, commits }
+}
+
+/**
+ * Build `commit` into releases/<commit>: a git worktree of the checkout at
+ * that commit, with its own `node_modules` and `.output`. The server runs
+ * from the worktree, so the native adapter binaries (Claude Code, Codex,
+ * OpenCode) resolve from a full install, which Nitro's tracing does not
+ * carry, and `pnpm` hard-links every package from one store, so a second
+ * release costs little disk. A worktree without `build.json` did not finish
+ * and is built again.
+ */
+async function buildRelease(commit, env) {
+  const dir = join(P.releases, commit)
+  if (existsSync(join(dir, 'build.json'))) {
+    log(`release ${commit.slice(0, 7)} is already built`)
+    return dir
+  }
+  mkdirSync(P.releases, { recursive: true })
+  removeRelease(dir)
+
+  log(`checking out ${commit.slice(0, 7)}`)
+  git(['worktree', 'add', '--quiet', '--detach', dir, commit])
+  await ensureTools(dir)
+  const buildEnv = { ...env, CI: '1', COREPACK_ENABLE_STRICT: '0' }
+  delete buildEnv.NODE_ENV
+  log('pnpm install --frozen-lockfile')
+  await runStreaming(P.pnpm, ['install', '--frozen-lockfile'], { cwd: dir, env: buildEnv })
+  log('pnpm build')
+  await runStreaming(P.pnpm, ['build'], { cwd: dir, env: buildEnv })
+
+  writeJson(join(dir, 'build.json'), {
+    commit,
+    builtAt: new Date().toISOString(),
+    nodeVersion: process.version,
+    subject: git(['log', '-1', '--format=%s', commit])
+  })
+  return dir
+}
+
+function removeRelease(dir) {
+  if (!existsSync(dir)) return
+  git(['worktree', 'remove', '--force', dir], { lenient: true })
+  rmSync(dir, { recursive: true, force: true })
+  git(['worktree', 'prune'], { lenient: true })
+}
+
+/** Start the release on a spare port against no database: proves the bundle loads and serves. */
+async function smokeTest(dir, env) {
+  const port = String(40_000 + Math.floor(Math.random() * 10_000))
+  const testEnv = {
+    ...env,
+    PORT: port,
+    HOST: '127.0.0.1',
+    DATABASE_URL: 'postgresql://postgres:none@127.0.0.1:1/none',
+    ELECTRIC_URL: 'http://127.0.0.1:1',
+    NUXT_DATA_DIR: join(dir, '.smoke-data'),
+    NUXT_CLAUDE_CODE_OAUTH_TOKEN: '',
+    NUXT_OPENCODE_API_KEY: ''
+  }
+  log(`smoke test on :${port}`)
+  const child = spawn(P.node, [join(dir, '.output', 'server', 'index.mjs')], { env: testEnv, cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+  let output = ''
+  child.stdout.on('data', d => (output += d))
+  child.stderr.on('data', d => (output += d))
+  let exited = false
+  child.on('exit', () => (exited = true))
+  const ok = await healthy(testEnv, 30_000, () => exited)
+  child.kill('SIGTERM')
+  await Promise.race([new Promise(r => child.on('exit', r)), sleep(10_000)])
+  if (!exited) child.kill('SIGKILL')
+  rmSync(testEnv.NUXT_DATA_DIR, { recursive: true, force: true })
+  if (!ok) throw new Error(`the new release did not come up:\n${output.trim().split('\n').slice(-20).join('\n')}`)
+}
+
+function pruneReleases(keep) {
+  if (!existsSync(P.releases)) return
+  // By real path: on macOS /tmp is /private/tmp, and `current` resolves to the latter.
+  const kept = keep.map(dir => realpathSync(dir))
+  for (const name of readdirSync(P.releases)) {
+    const dir = join(P.releases, name)
+    if (kept.includes(realpathSync(dir))) continue
+    log(`removing old release ${name}`)
+    removeRelease(dir)
+  }
+}
+
+/** Replace the launcher with the one in `dir` when it differs. Safe while running: Node has it in memory. */
+function refreshLauncher(dir) {
+  const source = join(dir, 'bin', 'domo.mjs')
+  if (!existsSync(source)) return false
+  if (existsSync(P.launcher) && readFileSync(source, 'utf8') === readFileSync(P.launcher, 'utf8')) return false
+  const tmp = `${P.launcher}.new`
+  cpSync(source, tmp)
+  renameSync(tmp, P.launcher)
+  return true
+}
+
+/** Restart the whole service, supervisor included: what a new launcher needs. */
+function serviceRestart() {
+  const service = servicePaths()
+  if (!supervisorPid()) return serviceStart()
+  if (service.kind === 'launchd') {
+    const result = sh('launchctl', ['kickstart', '-k', `${service.domain}/${SERVICE_LABEL}`])
+    if (!result.ok) fail(`launchctl kickstart: ${result.err}`)
+  } else {
+    const result = sh('systemctl', ['--user', 'restart', 'domo'])
+    if (!result.ok) fail(`systemctl restart: ${result.err}`)
+  }
+  log('service restarted')
+}
+
+async function update(args) {
+  const checkOnly = args.includes('--check')
+  const channelFlag = args.indexOf('--channel')
+  const channel = channelFlag >= 0 ? args[channelFlag + 1] : readState().channel
+  if (!channel) fail('--channel needs a branch name')
+  if (!existsSync(join(P.app, '.git'))) fail(`${P.app} is not a git checkout; run the installer`)
+  if (channelFlag >= 0) writeState({ channel })
+
+  const json = args.includes('--json')
+  const check = updateCheck(channel)
+  if (checkOnly) {
+    if (json) console.log(JSON.stringify({ channel, ...check }))
+    else if (check.behind === 0) console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
+    else if (check.behind === null) console.log(`${channel} has moved (${check.installed.slice(0, 7)} -> ${check.target.slice(0, 7)}); the commits between cannot be counted`)
+    else console.log(`${check.behind} commit${check.behind === 1 ? '' : 's'} behind ${channel}:\n  ${check.commits.map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n  ')}`)
+    return
+  }
+  if (check.behind === 0 && !args.includes('--force') && currentRelease()) {
+    console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
+    return
+  }
+
+  const releaseLock = takeUpdateLock()
+  const env = serverEnv()
+  const started = Date.now()
+  try {
+    rmSync(P.updateFailed, { force: true })
+    const dir = await buildRelease(check.target, env)
+    await smokeTest(dir, env)
+    const old = currentRelease()
+    if (old && old !== dir) relink(P.previous, old)
+    relink(P.current, dir)
+    writeState({ channel, lastAppliedAt: new Date().toISOString() })
+    pruneReleases([dir, old].filter(Boolean))
+    const launcherChanged = refreshLauncher(dir)
+    log(`current is now ${check.target.slice(0, 7)} (${Math.round((Date.now() - started) / 1000)}s)`)
+    if (!args.includes('--no-restart')) {
+      if (!supervisorPid()) log('the service is not running; start it with `domo start`')
+      // The supervisor runs the launcher it started with, so a new one needs
+      // the service restarted, Caddy and all; otherwise only the server.
+      else if (launcherChanged) serviceRestart()
+      else restart()
+    }
+  } finally {
+    releaseLock()
+  }
+}
+
+// --------------------------------------------------------------------------
+// install: the part of the installer that is not downloading binaries
+// --------------------------------------------------------------------------
+
+async function install(args) {
+  const channel = (args.indexOf('--channel') >= 0 ? args[args.indexOf('--channel') + 1] : null) || readState().channel
+  writeState({ channel })
+  if (!existsSync(join(P.app, '.git'))) fail(`there is no checkout at ${P.app}; run scripts/install.sh`)
+  mkdirSync(P.bin, { recursive: true })
+  // The installer brought Node, which this runs on; the rest come here, as they do on every update.
+  await ensureTools(P.app)
+  mkdirSync(P.data, { recursive: true })
+  mkdirSync(P.logs, { recursive: true })
+  if (!existsSync(P.env)) {
+    cpSync(join(P.app, '.env.example'), P.env)
+    log(`wrote ${P.env}; add your keys there or in Settings`)
+  }
+  if (!existsSync(P.launcher)) cpSync(fileURLToPath(import.meta.url), P.launcher)
+
+  await update(['--no-restart', '--force', ...(channel ? ['--channel', channel] : [])])
+  if (args.includes('--no-service')) {
+    console.log(`\n  Built. Start Domo with \`${P.bin}/domo run\` (no login service was installed).\n`)
+    return
+  }
+
+  serviceStart()
+  const env = serverEnv()
+  const ok = await healthy(env, HEALTH_TIMEOUT_MS)
+  const url = `https://${env.DOMO_HTTPS_ADDRESS}`
+  if (!ok) fail(`Domo did not come up within a minute; see ${P.log}`)
+  // After the start: the certificate is made by the running server, and it is
+  // the running server `caddy trust` asks for it.
+  if (!args.includes('--skip-trust')) trust()
+  console.log(`\n  Domo is running at ${url}\n`)
+  if (!args.includes('--no-open')) sh(platform() === 'darwin' ? 'open' : 'xdg-open', [url])
+}
+
+/**
+ * Install Caddy's root certificate into the system trust stores, so the browser
+ * accepts `https://localhost`. Asks for the password: macOS and Linux both
+ * guard their stores. Needs the service running, which holds the certificate.
+ */
+function trust() {
+  if (!supervisorPid()) fail('the service is not running; start it with `domo start`, then run `domo trust`')
+  log('caddy trust (so the browser accepts the local certificate; this may ask for your password)')
+  const result = sh(P.caddy, ['trust', '--address', serverEnv().DOMO_CADDY_ADMIN], { stdio: 'inherit' })
+  if (!result.ok) log('caddy trust failed; the browser will warn about the certificate until `domo trust` succeeds')
+}
+
+// --------------------------------------------------------------------------
+
+const HELP = `domo <command>
+
+  run                 run Domo in the foreground (what the service runs)
+  start | stop        start or stop the login service
+  restart             restart the server onto the current release
+  status              what is installed and whether it answers
+  trust               make the browser accept the local certificate (asks for your password)
+  logs                follow the log
+  update [--check] [--json] [--channel <branch>] [--force] [--no-restart]
+                      fetch, build and switch to the newest commit of the channel
+  install [--no-service] [--skip-trust] [--no-open]
+                      finish an installation (used by scripts/install.sh)
+  uninstall           remove the login service (keeps ${HOME})
+
+Environment: DOMO_HOME (${HOME}). Settings live in ${P.env}.`
+
+const [command, ...args] = process.argv.slice(2)
+try {
+  switch (command) {
+    case 'run': await run(); break
+    case 'start': serviceStart(); break
+    case 'stop': serviceStop(); break
+    case 'restart': restart(); break
+    case 'status': await status(); break
+    case 'trust': trust(); break
+    case 'logs': logs(); break
+    case 'update': await update(args); break
+    case 'install': await install(args); break
+    case 'uninstall': serviceUninstall(); break
+    case undefined: case 'help': case '--help': case '-h': console.log(HELP); break
+    default: fail(`unknown command "${command}"\n\n${HELP}`)
+  }
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error))
+}

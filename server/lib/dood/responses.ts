@@ -8,7 +8,7 @@ import {
 } from './rewrite'
 import { portListFromBindings, portsFromBindings, REQUESTED_HOSTS_LABEL, type Binding } from './publish'
 import { BUILTIN_NETWORKS } from './scope'
-import { clientLabelKey, clientLabels } from './labels'
+import { clientLabelKey, clientLabels, clientLabelValue } from './labels'
 
 /**
  * What the agent is shown: the daemon's answers with the environment's
@@ -38,8 +38,8 @@ type Json = Record<string, any>
 const isObject = (value: unknown): value is Json => !!value && typeof value === 'object' && !Array.isArray(value)
 
 /** `domo.*` labels are Domo's bookkeeping, not the agent's; a nested Domo's own come back as it wrote them (`labels.ts`). */
-export function hideDomoLabels(labels: unknown): unknown {
-  return clientLabels(labels)
+export function hideDomoLabels(labels: unknown, prefix = ''): unknown {
+  return clientLabels(labels, prefix)
 }
 
 function parseLabel<T>(labels: unknown, key: string): T | null {
@@ -171,7 +171,7 @@ export function containerInspectForAgent(body: unknown, scope: ResponseScope): u
   const bindings = typeof body.Id === 'string' ? scope.published?.(body.Id) : undefined
   const out: Json = { ...body }
   if (typeof out.Name === 'string') out.Name = agentName(scope.ns, out.Name)
-  if (isObject(out.Config)) out.Config = { ...out.Config, Labels: hideDomoLabels(out.Config.Labels) }
+  if (isObject(out.Config)) out.Config = { ...out.Config, Labels: hideDomoLabels(out.Config.Labels, scope.ns.prefix) }
   const modes = parseLabel<Json>(labels, REQUESTED_MODES_LABEL)
   out.HostConfig = hostConfigForAgent(out.HostConfig, scope, binds, publishing, hosts, modes)
   out.Mounts = mountPointsForAgent(out.Mounts, scope, binds)
@@ -190,7 +190,7 @@ export function containerSummaryForAgent(entry: unknown, scope: ResponseScope): 
   if (!isObject(entry)) return entry
   const binds = parseLabel<RequestedBinds>(entry.Labels, REQUESTED_BINDS_LABEL)
   const publishing = parseLabel<RequestedPublishing>(entry.Labels, REQUESTED_PUBLISHING_LABEL)
-  const out: Json = { ...entry, Labels: hideDomoLabels(entry.Labels) }
+  const out: Json = { ...entry, Labels: hideDomoLabels(entry.Labels, scope.ns.prefix) }
   if (Array.isArray(out.Names)) out.Names = out.Names.map((name: string) => stripNames(scope.ns, String(name)))
   out.Mounts = mountPointsForAgent(out.Mounts, scope, binds)
   out.Ports = reportedPortList(out.Ports, publishing, typeof entry.Id === 'string' ? scope.published?.(entry.Id) : undefined)
@@ -220,7 +220,7 @@ export function containerListForAgent(body: unknown, scope: ResponseScope): unkn
  */
 export function networkForAgent(body: unknown, scope: ResponseScope, visible?: (id: string) => boolean): unknown {
   if (!isObject(body)) return body
-  const out: Json = { ...body, Labels: hideDomoLabels(body.Labels) }
+  const out: Json = { ...body, Labels: hideDomoLabels(body.Labels, scope.ns.prefix) }
   if (typeof out.Name === 'string') out.Name = agentName(scope.ns, out.Name)
   if (isObject(out.Containers)) {
     out.Containers = Object.fromEntries(Object.entries(out.Containers)
@@ -252,7 +252,7 @@ export function networkListForAgent(
 /** `GET /volumes/{name}`, `POST /volumes/create`, and each entry of the list. */
 export function volumeForAgent(body: unknown, scope: ResponseScope): unknown {
   if (!isObject(body)) return body
-  const out: Json = { ...body, Labels: hideDomoLabels(body.Labels) }
+  const out: Json = { ...body, Labels: hideDomoLabels(body.Labels, scope.ns.prefix) }
   if (typeof out.Name === 'string') out.Name = agentName(scope.ns, out.Name)
   if (typeof out.Mountpoint === 'string') out.Mountpoint = stripNames(scope.ns, out.Mountpoint)
   return out
@@ -341,7 +341,9 @@ export function eventForAgent(event: unknown, scope: EventScope): unknown | null
   const strippedAttributes = Object.fromEntries(Object.entries(attributes)
     .flatMap(([key, value]) => {
       const visible = clientLabelKey(key)
-      return visible === null ? [] : [[visible, key === 'name' || key === 'container' ? agentName(scope.ns, String(value)) : value]]
+      if (visible === null) return []
+      if (key === 'name' || key === 'container') return [[visible, agentName(scope.ns, String(value))]]
+      return [[visible, typeof value === 'string' ? clientLabelValue(visible, value, scope.ns.prefix) : value]]
     }))
   out.Actor = { ...actor, ID: type === 'volume' ? agentName(scope.ns, id) : actor.ID, Attributes: strippedAttributes }
   if (type === 'volume' && typeof out.id === 'string') out.id = agentName(scope.ns, out.id)

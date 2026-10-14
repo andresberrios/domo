@@ -1,11 +1,11 @@
 /**
  * The OpenAI key and API base, for the voice bar's speech engines.
  *
- * Like `gemini.ts` beside it, the key only ever comes from the environment and
- * never from the `settings` table — that table is streamed to the browser
- * through Electric, and a credential in it would be readable by anything
- * holding a shape.
+ * Like `gemini.ts` beside it, the key is read from the environment first and
+ * then from Settings (`secret-settings.ts`), which is never streamed to the
+ * browser.
  */
+import { storedSecret } from './secret-settings'
 
 /**
  * The OpenAI key, in the order a self-hosted install is likely to have set one.
@@ -20,7 +20,7 @@ export function openAiApiKey(): string | null {
     || process.env.OPENAI_API_KEY
     || process.env.NUXT_CODEX_API_KEY
     || process.env.CODEX_API_KEY
-    || null
+    || storedSecret('openAiApiKey')
 }
 
 /**

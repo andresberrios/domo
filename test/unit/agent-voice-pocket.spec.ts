@@ -71,7 +71,8 @@ describe('synthesizePocket', () => {
     })
     expect(rate).toBe(24000)
     expect(out).toEqual(Array.from(samples))
-    expect(form[0]!.get('voice_url')).toBe('mary')
+    // By path, not name: Domo's own Pocket config knows no language to resolve a name under.
+    expect(form[0]!.get('voice_url')).toBe('hf://kyutai/pocket-tts-without-voice-cloning/languages/english/embeddings/mary.safetensors@4e1e0a3e611c51c0b4ed8174fc10f32a54644303')
     expect(form[0]!.get('text')).toBe('Hello there.')
   })
 
@@ -105,7 +106,7 @@ describe('synthesizePocket', () => {
     const { voice } = await clonedVoice()
     vi.stubGlobal('fetch', answering(500, 'Internal Server Error', []))
     await expect(synthesizePocket('Hi.', `clone:${voice.id}`, 'http://pocket.lan:8000', () => {}))
-      .rejects.toThrow(/accept Kyutai's terms on huggingface\.co\/kyutai\/pocket-tts and give it HF_TOKEN/)
+      .rejects.toThrow(/leave the server field empty and let Domo run its own/)
     // A built-in voice failing is not about cloning.
     await expect(synthesizePocket('Hi.', 'alba', 'http://pocket.lan:8000', () => {})).rejects.toThrow(/^Pocket TTS: 500/)
     await expect(synthesizePocket('Hi.', 'clone:aaaaaaaaaaaa', 'http://pocket.lan:8000', () => {})).rejects.toThrow(/no longer exists/)

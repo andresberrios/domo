@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -83,11 +83,29 @@ function nestedSocketRoot(): string | null {
   return process.env.DOMO_DEV_ENVIRONMENT_ID && existsSync(CACHES_ROOT) ? join(CACHES_ROOT, '.domo-sockets') : null
 }
 
+/**
+ * This install's id: eight hex characters in `<data>/install-id`, made once
+ * and kept. It names the socket directory, so two Domos sharing one home
+ * (an install and `pnpm dev`) never share one, and it travels with the data
+ * directory. It was a hash of the data directory's path, and the one time
+ * that directory moved, every environment's `docker` was refused.
+ */
+function installId(): string {
+  const file = join(dataDir(), 'install-id')
+  if (existsSync(file)) {
+    const id = readFileSync(file, 'utf8').trim()
+    if (/^[0-9a-f]{8}$/.test(id)) return id
+  }
+  const id = randomBytes(4).toString('hex')
+  mkdirSync(dataDir(), { recursive: true })
+  writeFileSync(file, `${id}\n`)
+  return id
+}
+
 export function doodSocketDir(): string {
   const configured = process.env.NUXT_DOOD_SOCKET_DIR
   if (configured) return configured
-  const install = createHash('sha256').update(dataDir()).digest('hex').slice(0, 8)
-  return join(nestedSocketRoot() ?? join(homedir(), '.domo', 's'), install)
+  return join(nestedSocketRoot() ?? join(homedir(), '.domo', 's'), installId())
 }
 
 export function doodSocketPath(environmentId: string): string {

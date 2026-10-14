@@ -3,22 +3,28 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { connect } from 'node:net'
 
-// 3666 is the address you open ("domo" on a phone keypad); Nuxt sits on the
-// next port up, behind it. Both are away from 3000 and the rest of the crowded
-// dev range: another project's server on the same port does not announce
-// itself, it just answers some of the requests (see the preflight below).
-const port = process.env.DOMO_DEV_PORT ??= '3667'
-const address = process.env.DOMO_HTTPS_ADDRESS ??= 'localhost:3666'
+// 3666 ("domo" on a phone keypad) is an installed Domo's address; development
+// is one hundred up, so both run on one machine. Nuxt sits on the next port,
+// behind Caddy. All are away from 3000 and the rest of the crowded dev range:
+// another project's server on the same port does not announce itself, it just
+// answers some of the requests (see the preflight below).
+const port = process.env.DOMO_DEV_PORT ??= '3767'
+const address = process.env.DOMO_HTTPS_ADDRESS ??= 'localhost:3766'
 
 // The Caddyfile names `host.docker.internal` as a second site address so an
 // agent in a dev environment can open Domo, and it has to be on the same port
 // as the first however that was overridden.
-process.env.DOMO_HTTPS_PORT = address.split(':').pop() || '3666'
+process.env.DOMO_HTTPS_PORT = address.split(':').pop() || '3766'
 
 // Nitro reads PORT, and `internalBaseUrl()` (server/lib/internal-url.ts) builds
 // the agent-mesh URL handed to every coding agent from it. `nuxt dev --port`
 // leaves PORT unset, so agents dialled 3000 whatever the flag said.
 process.env.PORT = port
+
+// Caddy's admin API, which `caddy trust --address unix//tmp/domo-dev-caddy.sock`
+// asks for the root certificate (once, while this runs). A second dev server
+// sets its own, or `off`.
+process.env.DOMO_CADDY_ADMIN ??= 'unix//tmp/domo-dev-caddy.sock'
 
 if (spawnSync('caddy', ['version']).error) {
   console.error('caddy not found on PATH — install it (e.g. `brew install caddy`).')
@@ -48,8 +54,11 @@ if (taken.length) {
   process.exit(1)
 }
 
+// Each child leads its own process group, so stopping kills the group: `nuxt
+// dev` runs Nitro in a worker of its own, which outlived its parent and kept
+// the port.
 const children = [
-  spawn('caddy', ['run', '--config', 'Caddyfile', '--adapter', 'caddyfile'], { stdio: 'inherit' }),
+  spawn('caddy', ['run', '--config', 'Caddyfile', '--adapter', 'caddyfile'], { stdio: 'inherit', detached: true }),
   // All interfaces, explicitly. Left to `localhost`, Nuxt binds `[::1]` only, and
   // Docker Desktop forwards `host.docker.internal` to 127.0.0.1: every agent in a
   // dev environment then gets `connection refused` from the mesh. (On a Linux
@@ -57,7 +66,7 @@ const children = [
   // answers on either.)
   // Anything else on the command line is Nuxt's: `pnpm dev --tunnel` is the
   // one that gets used, which puts the dev server behind a public URL.
-  spawn('nuxt', ['dev', '--port', port, '--public', ...process.argv.slice(2)], { stdio: 'inherit' })
+  spawn('nuxt', ['dev', '--port', port, '--public', ...process.argv.slice(2)], { stdio: 'inherit', detached: true })
 ]
 
 console.log(`\n  ➜ HTTPS: https://${address}/\n`)
@@ -69,7 +78,12 @@ function stop(code) {
   stopping = true
   exitCode = code
   for (const child of children) {
-    if (child.exitCode === null) child.kill('SIGTERM')
+    if (child.exitCode !== null) continue
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+    } catch {
+      child.kill('SIGTERM')
+    }
   }
 }
 

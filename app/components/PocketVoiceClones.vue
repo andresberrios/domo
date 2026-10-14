@@ -240,6 +240,7 @@ onBeforeUnmount(() => {
       <p class="text-sm font-medium">Your voices</p>
       <p class="text-xs text-muted">
         Pocket TTS can speak in a voice cloned from 10-15 s of speech. It copies the recording too, so record somewhere quiet, close to the microphone.
+        Clone only a voice whose owner agreed: the model is Kyutai's (CC BY 4.0), and their terms forbid impersonation without consent.
       </p>
     </div>
 

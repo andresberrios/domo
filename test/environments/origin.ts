@@ -1,7 +1,8 @@
 /**
- * The origin the `environments-live` layer serves the app on: its own port,
- * for the reason `test/voice/origin.ts` gives. Its own module so the setup and
- * the spec share it without importing each other.
+ * The origin the `environments-live` layer serves the app on: its own port, so
+ * a server from another opt-in layer still letting go of its port is not a bind
+ * failure here. Its own module so the setup and the spec share it without
+ * importing each other.
  */
 export const ENVIRONMENTS_SERVER_PORT = Number(process.env.DOMO_ENVIRONMENTS_SERVER_PORT || 43119)
 

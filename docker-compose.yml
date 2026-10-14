@@ -1,15 +1,13 @@
-# Backing services for Domo: Postgres (source of truth) and ElectricSQL
-# (real-time sync to the browser).
+# Backing services for developing Domo: Postgres (source of truth) and
+# ElectricSQL (real-time sync to the browser), plus the test layer's second
+# database and Electric.
 #
 #   docker compose up -d
 #
-# A second, fully separate stack — its own containers, volume and database, for
-# running a checkout whose code is not trusted with the real data yet — is the
-# same file under another project name and other host ports:
-#
-#   COMPOSE_PROJECT_NAME=domo-perf DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
-#     docker compose up -d postgres electric
-#
+# An installed Domo runs its own stack from `docker-compose.prod.yml`, with
+# another project name, volume and ports, so both run on one machine. A second
+# development stack is this file under another project name and other ports
+# (docs/working-on-domo.md, "A second dev server").
 name: domo
 
 services:

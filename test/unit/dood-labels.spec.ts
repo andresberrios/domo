@@ -34,3 +34,33 @@ describe('the domo.* label namespace, per level', () => {
     expect(escapeLabelFilter('com.docker.compose.project=s')).toBe('com.docker.compose.project=s')
   })
 })
+
+/**
+ * Compose finds a stack by its project label, so the value is namespaced like
+ * a name. Otherwise the host's `docker compose up` treats every environment's
+ * stack of the same name as its own, and stops them as surplus replicas.
+ */
+describe('the compose project label, per environment', () => {
+  it('stores the project with the prefix and hands it back without', () => {
+    const stored = escapeLabels({ 'com.docker.compose.project': 'stack', 'com.docker.compose.service': 'db' }, 'env_1-')
+    expect(stored).toEqual({ 'com.docker.compose.project': 'env_1-stack', 'com.docker.compose.service': 'db' })
+    expect(clientLabels({ ...stored, 'domo.env': 'env_1' }, 'env_1-')).toEqual({ 'com.docker.compose.project': 'stack', 'com.docker.compose.service': 'db' })
+  })
+
+  it('matches the filter compose asks with, and leaves a key-only filter alone', () => {
+    expect(escapeLabelFilter('com.docker.compose.project=stack', 'env_1-')).toBe('com.docker.compose.project=env_1-stack')
+    expect(escapeLabelFilter('com.docker.compose.project', 'env_1-')).toBe('com.docker.compose.project')
+    expect(escapeLabelFilter('com.docker.compose.service=db', 'env_1-')).toBe('com.docker.compose.service=db')
+  })
+
+  it('shows the host its own projects as they are', () => {
+    expect(clientLabels({ 'com.docker.compose.project': 'domo' }, 'env_1-')).toEqual({ 'com.docker.compose.project': 'domo' })
+  })
+
+  it('works at any depth: each level adds and removes its own prefix', () => {
+    const inner = escapeLabels({ 'com.docker.compose.project': 'stack' }, 'env_in-')
+    const outer = escapeLabels(inner, 'env_out-')
+    expect(outer).toEqual({ 'com.docker.compose.project': 'env_out-env_in-stack' })
+    expect(clientLabels(clientLabels(outer, 'env_out-'), 'env_in-')).toEqual({ 'com.docker.compose.project': 'stack' })
+  })
+})

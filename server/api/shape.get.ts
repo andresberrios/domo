@@ -19,7 +19,9 @@ const ALLOWED_TABLES = new Set([
   'usage_limits',
   'usage_providers',
   // Attachment files are not in the row, only their names and sizes.
-  'notifications'
+  'notifications',
+  // Commit ids and subjects; nothing from the machine.
+  'app_update'
 ])
 
 /**

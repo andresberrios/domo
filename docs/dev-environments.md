@@ -18,8 +18,10 @@ unexpected way.
 - **Each environment sees the daemon as its own.** Names it gives are created
   as `<envId>-<name>` and shown back without the prefix everywhere, including
   error messages. Everything it makes carries `domo.env=<id>`, and lists,
-  events and prunes are narrowed to that label. What cannot be translated is
-  refused as `{"message":"Domo: …"}`.
+  events and prunes are narrowed to that label. Compose's project label gets
+  the same prefix, so a stack in an environment is never part of the host's
+  project of the same name. What cannot be translated is refused as
+  `{"message":"Domo: …"}`.
 - **The proxy is a byte splice, not an HTTP server.** Docker clients reuse one
   connection, and `POST /containers/{id}/wait` is a long poll. An in-order
   HTTP server queues the `start` behind the wait, and every `docker run`
@@ -71,9 +73,10 @@ unexpected way.
   fails on Docker Desktop.
 - **Docker Desktop forwards a socket only if its host path is at most 88
   bytes, and fails silently past that.** The mount succeeds and every
-  connection is refused. Sockets live at `~/.domo/s/…` for this reason
-  (`doodSocketPath`). Changing how the path is derived breaks every existing
-  environment until it is recreated, because the path is fixed into its mounts.
+  connection is refused. Sockets live at `~/.domo/s/<install id>/…` for this
+  reason (`doodSocketPath`); the id is made once into `<data>/install-id`.
+  Changing how the path is derived breaks every existing environment until it
+  is recreated, because the path is fixed into its mounts.
 - **Docker Desktop cannot `docker restart` a container that mounts a host
   socket.** Stop and start it instead, as Domo does (`restartAsStop`).
 

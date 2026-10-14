@@ -2,7 +2,20 @@ import { query } from './db'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
 import { AGENT_ADAPTERS } from '../../shared/agent-adapters'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector } from '../../shared/agent-voice'
-import type { AgentVoiceSettings, AppSettings } from '../../shared/types'
+import { rememberSecretSettings } from './secret-settings'
+import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type UpdateSettings } from '../../shared/types'
+
+/**
+ * Follow `release`, look every hour, and never switch by itself: an unasked
+ * restart is the one thing an update must not do until the operator says so.
+ */
+export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
+  // The launcher passes the channel the installer was given.
+  channel: process.env.DOMO_CHANNEL || 'release',
+  checkIntervalMinutes: 60,
+  autoApply: false,
+  minHoursBetweenApplies: 1
+}
 
 export const DEFAULTS: AppSettings = {
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
@@ -25,6 +38,11 @@ export const DEFAULTS: AppSettings = {
   // the row by the first save, and the operator's variable would stop being the
   // thing in charge.
   openCodeApiKey: '',
+  // The same for the rest: empty, with the environment read ahead of the row.
+  geminiApiKey: '',
+  openAiApiKey: '',
+  anthropicApiKey: '',
+  claudeCodeOauthToken: '',
   // Environments permissive, the host as OpenCode has it. See
   // `AppSettings.openCodePermission` for why the two differ.
   openCodePermission: { host: 'ask', environment: 'allow' },
@@ -34,22 +52,41 @@ export const DEFAULTS: AppSettings = {
   // agent that cannot open a page can only say a change "should" render. The
   // cost is one several-hundred-megabyte volume per machine, built once.
   browserTools: true,
-  agentVoice: { ...DEFAULT_AGENT_VOICE }
+  agentVoice: { ...DEFAULT_AGENT_VOICE },
+  updates: { ...DEFAULT_UPDATE_SETTINGS }
 }
 
 export async function getSettings(): Promise<AppSettings> {
   const rows = await query<{ key: string, value: any }>('select key, value from settings')
   const stored: Record<string, any> = {}
   for (const row of rows) stored[row.key] = row.value?.v ?? row.value
-  return {
+  const settings = {
     ...DEFAULTS,
     ...stored,
     defaultAgentModes: storedAgentModes(stored),
     defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored),
     openCodePermission: storedOpenCodePermission(stored),
-    agentVoice: storedAgentVoice(stored)
+    agentVoice: storedAgentVoice(stored),
+    updates: storedUpdates(stored)
   } as AppSettings
+  // The synchronous key readers (`secret-settings.ts`) see what was just read.
+  rememberSecretSettings(settings)
+  return settings
+}
+
+const isSecretKey = (key: string): key is SecretSettingKey => (SECRET_SETTING_KEYS as readonly string[]).includes(key)
+
+/** The update settings, each field kept in a range the updater can act on. */
+function storedUpdates(stored: Record<string, any>): UpdateSettings {
+  const updates = { ...DEFAULT_UPDATE_SETTINGS }
+  const current = stored.updates
+  if (!current || typeof current !== 'object') return updates
+  if (typeof current.channel === 'string' && /^[\w./-]+$/.test(current.channel.trim())) updates.channel = current.channel.trim()
+  if (Number.isFinite(current.checkIntervalMinutes)) updates.checkIntervalMinutes = Math.max(5, Math.round(current.checkIntervalMinutes))
+  if (typeof current.autoApply === 'boolean') updates.autoApply = current.autoApply
+  if (Number.isFinite(current.minHoursBetweenApplies)) updates.minHoursBetweenApplies = Math.max(0, current.minHoursBetweenApplies)
+  return updates
 }
 
 /**
@@ -168,18 +205,18 @@ function storedAgentModes(stored: Record<string, any>): AppSettings['defaultAgen
 export async function patchSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue
-    // An empty key is a removal, not a stored empty string, so the row goes
-    // rather than shadowing whatever `NUXT_OPENCODE_API_KEY` says. The page
-    // never sends this field on an ordinary save — it cannot, since the key is
-    // never sent *to* it — so an empty value here is always deliberate.
-    if (key === 'openCodeApiKey' && typeof value === 'string' && !value.trim()) {
+    // An empty credential is a removal, not a stored empty string, so the row
+    // goes rather than shadowing whatever the environment says. A page never
+    // sends these fields on an ordinary save — it cannot, since a key is never
+    // sent *to* it — so an empty value here is always deliberate.
+    if (isSecretKey(key) && typeof value === 'string' && !value.trim()) {
       await query('delete from settings where key = $1', [key])
       continue
     }
     await query(
       `insert into settings (key, value) values ($1, $2::jsonb)
        on conflict (key) do update set value = excluded.value`,
-      [key, JSON.stringify({ v: value })]
+      [key, JSON.stringify({ v: isSecretKey(key) && typeof value === 'string' ? value.trim() : value })]
     )
   }
   return getSettings()

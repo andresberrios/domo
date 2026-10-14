@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
  * `manager.ts` without a daemon: where an environment's socket lives, and that
@@ -87,22 +87,47 @@ afterAll(() => {
 })
 
 describe('the socket path', () => {
+  // Two data directories: two installs on one machine.
+  let dataA: string
+  let dataB: string
+  beforeEach(() => {
+    dataA = mkdtempSync(join(tmpdir(), 'domo-install-a-'))
+    dataB = mkdtempSync(join(tmpdir(), 'domo-install-b-'))
+  })
+  afterEach(() => {
+    for (const dir of [dataA, dataB]) rmSync(dir, { recursive: true, force: true })
+  })
+
   it('is short, derived from the id, and different per install', () => {
     delete process.env.NUXT_DOOD_SOCKET_DIR
     process.env.HOME = '/Users/dev'
-    process.env.NUXT_DATA_DIR = '/tmp/domo-install-a'
+    process.env.NUXT_DATA_DIR = dataA
     const path = doodSocketPath('env_0123456789abcdefghij')
     expect(path).toMatch(/^\/Users\/dev\/\.domo\/s\/[0-9a-f]{8}\/[0-9a-f]{12}\.sock$/)
     expect(path.length - '/Users/dev'.length).toBe(35)
     expect(doodSocketPath('env_0123456789abcdefghij')).toBe(path)
     expect(doodSocketPath('env_other')).not.toBe(path)
-    process.env.NUXT_DATA_DIR = '/tmp/domo-install-b'
+    process.env.NUXT_DATA_DIR = dataB
     expect(doodSocketDir()).not.toBe(path.slice(0, path.lastIndexOf('/')))
+  })
+
+  // The id is the install's and not its path's: the data directory can move,
+  // and every environment's mounts name the directory it had at creation.
+  it('keeps the install id in the data directory, so the directory survives a move', () => {
+    delete process.env.NUXT_DOOD_SOCKET_DIR
+    process.env.HOME = '/Users/dev'
+    process.env.NUXT_DATA_DIR = dataA
+    const dir = doodSocketDir()
+    const id = readFileSync(join(dataA, 'install-id'), 'utf8').trim()
+    expect(dir).toBe(`/Users/dev/.domo/s/${id}`)
+    writeFileSync(join(dataB, 'install-id'), `${id}\n`)
+    process.env.NUXT_DATA_DIR = dataB
+    expect(doodSocketDir()).toBe(dir)
   })
 
   it('fits Docker Desktop\'s 88 bytes under a 53-character home directory, and says what to do past it', () => {
     delete process.env.NUXT_DOOD_SOCKET_DIR
-    process.env.NUXT_DATA_DIR = '/tmp/domo-install-a'
+    process.env.NUXT_DATA_DIR = dataA
     process.env.HOME = `/Users/${'a'.repeat(53 - '/Users/'.length)}`
     expect(doodSocketPath('env_x')).toHaveLength(88)
     process.env.HOME += 'a'

@@ -32,24 +32,59 @@ With Domo you can:
 
 ## Requirements
 
-- Node 22+ and pnpm 10+
-- Docker
-- [Caddy](https://caddyserver.com) on your `PATH` (`brew install caddy`).
-  Browsers allow the microphone only on HTTPS.
+- Docker and git
 - For the default speech engines, a Gemini API key
   ([AI Studio](https://aistudio.google.com/apikey)). The local and on-device
   engines need no key.
 - At least one coding agent account. See [Authentication](#authentication).
 
-## Quick start
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andresberrios/domo/release/scripts/install.sh | sh
+```
+
+This puts Domo under `~/.domo` with its own Node, pnpm and Caddy, builds it,
+starts it as a login service (launchd on macOS, systemd on Linux) and opens
+`https://localhost:3666`. Keys go in `~/.domo/.env` or in Settings. Then:
+
+```bash
+~/.domo/bin/domo status    # what is installed, and is it answering
+~/.domo/bin/domo update    # build and switch to the newest commit; --check only looks
+~/.domo/bin/domo restart   # after editing .env
+~/.domo/bin/domo trust     # if the browser warns about the certificate; asks for your password
+~/.domo/bin/domo logs
+~/.domo/bin/domo uninstall # stop starting at login; keeps ~/.domo
+```
+
+`DOMO_HOME` moves the directory. `DOMO_CHANNEL` picks the branch to follow
+(default `release`). `DOMO_PORT` and `DOMO_HTTPS_ADDRESS` in `.env` change the
+addresses.
+
+Domo looks at its branch every hour and says in the sidebar how many commits
+behind it is. **Settings → Updates** shows what is new, updates on request,
+and can update by itself: it builds the new version beside the running one
+and restarts onto it when no agent is working, no environment is being created
+and no schedule is about to fire, no more often than you choose. A version that does
+not start is rolled back.
+
+## Quick start (development)
+
+Needs Node 22+, pnpm 10+ and [Caddy](https://caddyserver.com) on your `PATH`
+(`brew install caddy`); browsers allow the microphone only on HTTPS.
 
 ```bash
 cp .env.example .env     # add your Gemini key
 docker compose up -d     # Postgres :54321, Electric :30000
 pnpm install
-caddy trust              # once, so the browser accepts Caddy's certificate
-pnpm dev                 # open https://localhost:3666
+pnpm dev                 # open https://localhost:3766
+caddy trust --address unix//tmp/domo-dev-caddy.sock   # once, while it runs: the browser accepts Caddy's certificate
 ```
+
+An installed Domo and `pnpm dev` run side by side: the install is at `:3666`
+with the `domo-prod` stack (54322, 30002), development at `:3766` with the
+`domo` stack above, and each names its Docker resources under its own prefix
+(`domo-prod-`, `domo-dev-`).
 
 Domo creates the database schema on first boot. Press **Talk**, turn on the
 mic, and say *"start an agent in ~/code/my-project and have it fix the failing
@@ -59,13 +94,13 @@ To use isolated environments, add a project from the sidebar, create a
 development environment for it, and choose that environment when you start an
 agent.
 
-To change the addresses, set `DOMO_HTTPS_ADDRESS` (default `localhost:3666`) or
-`DOMO_DEV_PORT` (default `3667`). Always open the HTTPS address.
+To change the addresses, set `DOMO_HTTPS_ADDRESS` (default `localhost:3766`) or
+`DOMO_DEV_PORT` (default `3767`). Always open the HTTPS address.
 
 ## Authentication
 
-**Claude Code.** Run `claude setup-token` once and put the token in `.env` as
-`NUXT_CLAUDE_CODE_OAUTH_TOKEN`. Claude Code needs it to run inside development
+**Claude Code.** Run `claude setup-token` once and put the token in Settings →
+General (or in `.env` as `NUXT_CLAUDE_CODE_OAUTH_TOKEN`). Claude Code needs it to run inside development
 environments, and Domo needs it to show your Claude plan limits. Host sessions
 can also use your local Claude login.
 
@@ -233,8 +268,9 @@ is `.ssh`, `.gitconfig`, `.config/gh`, `.config/gcloud`, `.aws` and `.kube`.
 
 ## Configuration
 
-Secrets go in `.env`. Everything else is in **Settings**. `.env.example` lists
-the common variables.
+Keys go in **Settings → General**, or in `.env`, which wins over Settings and
+is read when the server starts. Everything else is in Settings. `.env.example`
+lists the common variables.
 
 | Variable | Purpose |
 | --- | --- |
@@ -252,7 +288,7 @@ the common variables.
 | `NUXT_DEV_ENV_IMAGE` | Base image when a project has no `.domo.json` |
 | `NUXT_DEV_ENV_RUNTIME_IMAGE` | Image that provides Node and the adapters to environments (default `node:22-bookworm-slim`) |
 | `NUXT_DEV_ENV_HELPER_IMAGE` | Image that copies a checkout into its volume (default `busybox:1.37`) |
-| `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix for Docker resources Domo creates (default `domo-dev-`) |
+| `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix for Docker resources Domo creates (default `domo-dev-` under `pnpm dev`, `domo-prod-` when installed) |
 | `NUXT_DEV_ENV_DOCKER_READY_MS` | How long Docker in a new environment has to answer before creation fails (default `30000`) |
 | `NUXT_DOOD_SOCKET_DIR` | Where each environment's Docker socket is created (default `~/.domo/s/<install>`). Docker Desktop forwards a socket only if its path is at most 88 bytes, so set this if your home directory is longer than 53 characters. Do not use `/tmp`: macOS cleans it |
 | `NUXT_CLAUDE_CONFIG_DIR` | Where the Claude config copied into a new environment is read from (default `~/.claude`). Only `CLAUDE.md`, `settings.json`, `skills/`, `commands/` and `agents/` are copied |

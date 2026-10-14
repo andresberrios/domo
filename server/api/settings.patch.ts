@@ -1,11 +1,17 @@
 import { bus } from '../lib/bus'
 import { normalizeHomeMount, validateHomeMounts } from '../lib/dev-env/home-overlay'
 import { patchSettings } from '../lib/settings'
-import type { AppSettings } from '../../shared/types'
+import { SECRET_SETTING_KEYS, type AppSettings } from '../../shared/types'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<Partial<AppSettings>>(event)
   const patch = { ...(body ?? {}) }
+
+  for (const key of SECRET_SETTING_KEYS) {
+    if (patch[key] !== undefined && typeof patch[key] !== 'string') {
+      throw createError({ statusCode: 400, message: `${key} must be a string; empty removes it.` })
+    }
+  }
 
   if (patch.homeMounts !== undefined) {
     if (!Array.isArray(patch.homeMounts) || patch.homeMounts.some(entry => typeof entry !== 'string')) {

@@ -594,6 +594,19 @@ export interface AppSettings {
    */
   openCodeApiKey: string
   /**
+   * The other credentials, kept under the same rule as `openCodeApiKey`: never
+   * returned by `GET /api/settings`, and the environment variable for the same
+   * purpose wins when it is set. Empty means none. See `SECRET_SETTING_KEYS`.
+   */
+  /** Gemini, for the voice bar's Gemini speech engines (`NUXT_GEMINI_API_KEY`). */
+  geminiApiKey: string
+  /** OpenAI, for the voice bar's OpenAI speech engines and as a Codex credential (`NUXT_OPENAI_API_KEY`). */
+  openAiApiKey: string
+  /** Anthropic. Bills the API, so it is passed only when no subscription credential exists (`NUXT_ANTHROPIC_API_KEY`). */
+  anthropicApiKey: string
+  /** From `claude setup-token`: how Claude Code authenticates in an environment (`NUXT_CLAUDE_CODE_OAUTH_TOKEN`). */
+  claudeCodeOauthToken: string
+  /**
    * Whether OpenCode asks before touching a path outside the session's working
    * directory, per surface. `ask` is OpenCode's own behaviour and Domo then
    * writes no policy at all; `allow` suppresses it.
@@ -625,6 +638,64 @@ export interface AppSettings {
   browserTools: boolean
   /** Who hears and who speaks when talking to a coding agent. See `AgentVoiceSettings`. */
   agentVoice: AgentVoiceSettings
+  /** How an installed Domo looks for and applies new versions. See `UpdateSettings`. */
+  updates: UpdateSettings
+}
+
+/**
+ * Updates of an installed Domo (`docs/install-and-updates.md`). Ignored under
+ * `pnpm dev`, which has no release to update.
+ */
+export interface UpdateSettings {
+  /** The branch the install follows. */
+  channel: string
+  /** How often to look, in minutes. */
+  checkIntervalMinutes: number
+  /** Build and switch to a new version by itself, when no agent is working. */
+  autoApply: boolean
+  /** The least time between two automatic switches, in hours. */
+  minHoursBetweenApplies: number
+}
+
+/**
+ * Where an installed Domo stands against its channel, and what the updater
+ * is doing. One row, written by the server, which is the only process that
+ * knows whether a restart would interrupt anything.
+ *
+ * - `idle`: nothing in progress; `behind` says whether there is anything new.
+ * - `checking`: fetching the channel.
+ * - `building`: the updater is building the new release beside this one.
+ * - `ready`: the new release is built and `current` points at it; this
+ *   server restarts onto it at the first quiet moment (`blockers` says what
+ *   it is waiting for).
+ * - `restarting`: stopping now.
+ * - `failed`: the last attempt did not work; `lastError` says why.
+ */
+export type AppUpdateState = 'idle' | 'checking' | 'building' | 'ready' | 'restarting' | 'failed'
+
+export interface AppUpdateCommit {
+  sha: string
+  subject: string
+  date: string
+}
+
+export interface AppUpdate {
+  installedCommit: string
+  installedAt: string
+  channel: string
+  /** The channel's tip the last time it was fetched; null before the first check. */
+  targetCommit: string | null
+  /** Commits behind the channel. Null when a fetch has not succeeded yet, or the gap is deeper than the fetched history. */
+  behind: number | null
+  /** The commits between installed and target, newest first, when they could be listed. */
+  commits: AppUpdateCommit[]
+  checkedAt: string | null
+  state: AppUpdateState
+  /** What a pending restart is waiting for: "2 agents are working", "a schedule fires within two minutes". */
+  blockers: string[]
+  lastError: string | null
+  lastAppliedAt: string | null
+  updatedAt: string
 }
 
 /** An engine that can transcribe speech and synthesise it. */
@@ -706,18 +777,26 @@ export interface AgentVoiceSettings {
   macVoice: string
 }
 
+/** The credentials in `AppSettings`: stored, never answered, each reported as a boolean in `AppSettingsView`. */
+export const SECRET_SETTING_KEYS = [
+  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey'
+] as const
+export type SecretSettingKey = typeof SECRET_SETTING_KEYS[number]
+
 /**
  * What `GET /api/settings` answers, and the only shape of settings the browser
  * ever sees.
  *
- * The one secret stored in `AppSettings` is subtracted here rather than
- * described in a comment, so a response that forgets to take it out no longer
- * compiles; each credential is reported as "configured or not" instead.
+ * The secrets stored in `AppSettings` are subtracted here rather than
+ * described in a comment, so a response that forgets to take them out no
+ * longer compiles; each credential is reported as "configured or not" instead.
  */
-export interface AppSettingsView extends Omit<AppSettings, 'openCodeApiKey'> {
+export interface AppSettingsView extends Omit<AppSettings, SecretSettingKey> {
   hasGeminiKey: boolean
   hasAnthropicKey: boolean
   hasOpenAiKey: boolean
+  /** A `claude setup-token` token, which is what an environment session and the plan-limit poll use. */
+  hasClaudeCodeToken: boolean
   /** A console key, which is what a container session and the usage poll use. */
   hasOpenCodeKey: boolean
   /** A login on this machine, which is all a host session needs and all Domo can see. */

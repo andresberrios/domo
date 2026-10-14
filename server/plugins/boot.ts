@@ -13,10 +13,15 @@ import { sweepEnvironmentResources } from '../lib/dev-env/reconcile'
 import { stopAllDoodProxies } from '../lib/dood/manager'
 import { stopPocket } from '../lib/agent-voice/pocket-speech'
 import { stopLocalModels } from '../lib/agent-voice/local-models'
+import { updater } from '../lib/updates'
+import { getSettings } from '../lib/settings'
+import { warmAgentVoice } from '../lib/agent-voice/warm'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
     await getDb()
+    // Fills the credentials mirror (`secret-settings.ts`) before anything reads a key.
+    await getSettings()
     // Nothing survives a restart: adapters were child processes of the old
     // server, so any "running" row is a lie until it is started again.
     await query(
@@ -65,8 +70,17 @@ export default defineNitroPlugin(async (nitro) => {
   // half, and it arrives without this.
   usagePoller.start()
 
+  // An installed Domo looks for new versions; a development server has none.
+  await updater.start().catch(error => console.error('[domo] updater', error))
+
+  // An installed Domo fetches the speech models its settings call for now, not
+  // on the first spoken turn. Not under `pnpm dev`: a developer's reload must
+  // not start downloads or a Pocket server.
+  if (process.env.DOMO_HOME) void warmAgentVoice().catch(error => console.error('[agent-voice] warm-up', error))
+
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()
+    updater.stop()
     cronScheduler.stop()
     await acpManager.shutdown().catch(() => {})
     stopAllEnvironmentForwarders()

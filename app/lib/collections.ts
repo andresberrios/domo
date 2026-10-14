@@ -119,6 +119,9 @@ export const usageProvidersCollection = () => collection('usage_providers', {
   key: row => row.provider as string
 })
 
+/** One row: where an installed Domo stands against its update channel. Empty under `pnpm dev`. */
+export const appUpdateCollection = () => collection('app_update', { table: 'app_update' })
+
 /**
  * Per-session shapes: only the session on screen is synced, and only for as
  * long as it is being read. See `SESSION_SHAPE_GC_MS`.

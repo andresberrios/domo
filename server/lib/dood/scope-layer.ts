@@ -298,14 +298,14 @@ export function scopeLayer(options: ScopeLayerOptions): DoodLayer {
               Name: replacement,
               ...(volume.driver && { Driver: volume.driver }),
               ...(volume.driverOptions && { DriverOpts: volume.driverOptions }),
-              Labels: { ...escapeLabels(volume.labels), ...options.scope.labels }
+              Labels: { ...escapeLabels(volume.labels, ns.prefix), ...options.scope.labels }
             })
           }
         })
       ])
       const lookupName = (kind: ObjectKind) => (ref: string) => replacements.get(key(kind, ref)) ?? `${ns.prefix}${ref}`
       const own = await ownContainer()
-      const result = rewriteContainerCreate(spec, { ...options.scope, ...(own && { mounts: own.mounts }) }, {
+      const result = rewriteContainerCreate(spec, { ...options.scope, prefix: ns.prefix, ...(own && { mounts: own.mounts }) }, {
         name,
         container: lookupName('container'),
         network: lookupName('network'),
