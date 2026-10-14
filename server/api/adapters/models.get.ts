@@ -18,10 +18,12 @@ import { isAgentAdapter } from '../../../shared/agent-adapters'
  * and the page says so.
  */
 export default defineEventHandler(async (event) => {
-  const asked = getQuery(event).adapter
-  const adapter = isAgentAdapter(asked) ? asked : 'claude-code'
+  const query = getQuery(event)
+  const adapter = isAgentAdapter(query.adapter) ? query.adapter : 'claude-code'
+  // A model's own settings (effort and the like), for a draft that picked one.
+  const model = typeof query.model === 'string' && query.model.trim() ? query.model.trim() : null
   try {
-    return await listAdapterModels(adapter)
+    return await listAdapterModels(adapter, model)
   } catch (error) {
     throw createError({
       statusCode: 502,

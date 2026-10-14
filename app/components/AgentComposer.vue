@@ -146,10 +146,12 @@ const status = computed(() => (busy.value ? ('streaming' as const) : ('ready' as
 const placeholder = computed(() => {
   if (!props.session) return 'What should it do? Sending this starts the session…'
   if (!busy.value) return 'Message this agent…'
-  if (delivery.value === 'queue') return 'The agent is working — this waits for its turn to end…'
-  if (delivery.value === 'interrupt') return 'The agent is working — this stops it first…'
-  if (!steers.value) return 'The agent is working — this adapter cannot be steered, so this stops its turn first…'
-  return 'The agent is working — this goes into the turn it is running…'
+  // One line on a phone: a placeholder that wraps is cut off by the box, which
+  // keeps its height. The send button's tooltip has the longer version.
+  if (delivery.value === 'queue') return 'Waits for this turn to end…'
+  if (delivery.value === 'interrupt') return 'Stops the turn, then sends…'
+  if (!steers.value) return 'Can’t steer — this stops the turn…'
+  return 'Joins the turn it is running…'
 })
 
 /** Never rejects: a failed upload is a toast, not something a caller handles. */
@@ -375,7 +377,7 @@ async function stop() {
     >
       <template #footer>
         <div class="flex w-full items-start justify-between gap-2">
-          <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          <div class="flex min-w-0 flex-1 items-center gap-1.5">
             <UTooltip text="Attach files — or paste them in">
               <UButton
                 icon="i-lucide-paperclip"

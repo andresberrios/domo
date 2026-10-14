@@ -81,12 +81,14 @@ registerEndpoint('/api/adapters/models', {
     }
     // A draft has no row, so it reads the modes and settings off the probe too.
     if (getQuery(event).adapter === 'codex') {
+      // Luna has no reasoning effort: asked about it, the probe says so.
+      const onLuna = getQuery(event).model === 'gpt-5.6-luna'
       return {
         models: [{ id: 'gpt-5.6', name: 'GPT-5.6' }, { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
         current: 'gpt-5.6',
         modes: [{ id: 'agent', name: 'Approve for me', description: null }, { id: 'read-only', name: 'Read only', description: null }],
         currentMode: 'agent',
-        configOptions: [{
+        configOptions: onLuna ? [] : [{
           id: 'reasoning_effort',
           name: 'Reasoning effort',
           description: null,
@@ -294,7 +296,7 @@ describe('AgentComposer', () => {
     })
 
     expect(component.find('textarea').attributes('placeholder'))
-      .toContain('cannot be steered')
+      .toContain('Can’t steer')
 
     // Read off the items the dropdown was handed, for the reason the test
     // above gives: Reka will not open a menu on a synthesised click.
@@ -310,7 +312,7 @@ describe('AgentComposer', () => {
     })
 
     expect(component.find('textarea').attributes('placeholder'))
-      .toContain('goes into the turn it is running')
+      .toContain('Joins the turn it is running')
 
     expect(steerItem(component).description).toBe('Put it into the turn it is running now')
   })
@@ -325,7 +327,7 @@ describe('AgentComposer', () => {
     })
 
     expect(component.find('textarea').attributes('placeholder'))
-      .not.toContain('cannot be steered')
+      .not.toContain('Can’t steer')
     expect(steerItem(component).description).toBe('Put it into the turn it is running now')
   })
 })
@@ -757,6 +759,22 @@ describe('AgentComposer on a draft', () => {
     ]))
   })
 
+  it('shows only the settings the chosen model offers, and drops a remembered one it lacks', async () => {
+    const { component, draft } = await mountDraft(async () => true, {
+      ...blank,
+      adapter: 'codex',
+      model: 'gpt-5.6-luna',
+      config: { reasoning_effort: 'high' }
+    })
+
+    await vi.waitFor(() => expect(draft.value?.config).toEqual({}))
+    await vi.waitFor(() => expect(component.text()).toContain('Codex · GPT-5.6 Luna'))
+    // The default model's effort is not this model's.
+    expect(component.text()).not.toContain('High')
+    await openSettings(component)
+    expect(() => column('Reasoning effort')).toThrow()
+  })
+
   it('drops a remembered choice the adapter no longer offers, and keeps the rest', async () => {
     const { draft } = await mountDraft(async () => true, {
       ...blank,
@@ -789,16 +807,17 @@ describe('AgentComposer on a draft', () => {
     // The harness's own modes and settings, preselected to its defaults.
     await vi.waitFor(() => expect(option('Permission mode', 'Approve for me').getAttribute('aria-selected')).toBe('true'))
     // One at a time, as a person clicks: each lands before the next.
-    option('Model', 'GPT-5.6 Luna').click()
-    await vi.waitFor(() => expect(draft.value?.model).toBe('gpt-5.6-luna'))
     option('Reasoning effort', 'High').click()
     await vi.waitFor(() => expect(draft.value?.config).toEqual({ reasoning_effort: 'high' }))
     option('Permission mode', 'Read only').click()
+    await vi.waitFor(() => expect(draft.value?.modeId).toBe('read-only'))
+    // Luna has no effort, so the effort picked for the default model goes.
+    option('Model', 'GPT-5.6 Luna').click()
 
     await vi.waitFor(() => expect(draft.value).toMatchObject({
       adapter: 'codex',
       model: 'gpt-5.6-luna',
-      config: { reasoning_effort: 'high' },
+      config: {},
       modeId: 'read-only'
     }))
     expect(patched).not.toHaveBeenCalled()
