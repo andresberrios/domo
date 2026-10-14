@@ -589,7 +589,14 @@ describe('create_project', () => {
 
     await expect(voiceTools.create_project!.handler({ repoPath: '/repo/domo' }, ctx))
       .resolves.toEqual({ id: 'prj_1', name: 'Domo', repoPath: '/repo/domo' })
-    expect(projects.createProjectFromPath).toHaveBeenCalledWith({ name: undefined, repoPath: '/repo/domo' })
+    expect(projects.createProjectFromPath).toHaveBeenCalledWith({ name: undefined, repoPath: '/repo/domo', initialize: false })
+  })
+
+  it('passes initialize on, for a folder that is not a repository yet', async () => {
+    projects.createProjectFromPath.mockResolvedValue(project())
+
+    await voiceTools.create_project!.handler({ repoPath: '/repo/new', initialize: true }, ctx)
+    expect(projects.createProjectFromPath).toHaveBeenCalledWith({ name: undefined, repoPath: '/repo/new', initialize: true })
   })
 })
 

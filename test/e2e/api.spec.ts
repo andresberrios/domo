@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 
 import { $fetch, fetch, setup } from '@nuxt/test-utils/e2e'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -29,6 +31,7 @@ import type {
   AppSettings,
   PendingPermission,
   Project,
+  ProjectPathState,
   VoiceSession
 } from '~~/shared/types'
 
@@ -43,6 +46,9 @@ import type {
  * exercised end to end, because a permission is a row — `answerPermission`
  * resolves it whether or not an adapter is listening.
  */
+
+const git = async (cwd: string, ...args: string[]) =>
+  (await promisify(execFile)('git', ['-C', cwd, ...args])).stdout.trim()
 
 const electric = await startElectricStub()
 const checkout = await mkdtemp(join(tmpdir(), 'domo-e2e-repo-'))
@@ -110,17 +116,59 @@ describe('projects', () => {
     await expect(listProjects()).resolves.toEqual([expect.objectContaining({ id: project.id })])
   })
 
-  it('refuses a path that is not a Git checkout', async () => {
-    const response = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repoPath: tmpdir() })
-    })
+  it('refuses a path that is not a Git checkout unless asked to initialise it, and writes nothing', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'domo-e2e-plain-'))
+    try {
+      for (const repoPath of [folder, join(folder, 'new')]) {
+        const response = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ repoPath })
+        })
+        expect(response.status).toBe(400)
+        await expect(response.json()).resolves.toMatchObject({ statusMessage: expect.stringMatching(/Domo can (run git init|create it)/) })
+      }
+      await expect(readdir(folder)).resolves.toEqual([])
+    } finally {
+      await rm(folder, { recursive: true, force: true })
+    }
+  })
 
-    expect(response.status).toBe(400)
-    await expect(response.json()).resolves.toMatchObject({
-      statusMessage: 'Repository path must be a local Git checkout.'
-    })
+  it('creates a missing folder as a repository on main with an empty first commit', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'domo-e2e-parent-'))
+    const repoPath = join(parent, 'fresh', 'app')
+    try {
+      await expect($fetch<ProjectPathState>('/api/projects/inspect-path', { query: { path: repoPath } }))
+        .resolves.toMatchObject({ kind: 'missing', toCreate: [join(parent, 'fresh'), repoPath] })
+
+      const project = await $fetch<Project>('/api/projects', { method: 'POST', body: { repoPath, initialize: true } })
+
+      expect(project).toMatchObject({ repoPath, name: 'app' })
+      expect(await git(repoPath, 'branch', '--show-current')).toBe('main')
+      expect(await git(repoPath, 'log', '--format=%s')).toBe('Initial commit')
+      expect(await git(repoPath, 'ls-tree', '-r', 'HEAD')).toBe('')
+      // So an environment can be cut from it at once.
+      await expect($fetch(`/api/projects/${project.id}/repository`)).resolves.toMatchObject({ repository: true, hasCommits: true })
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('initialises a folder with files but leaves the first commit to the user', async () => {
+    const repoPath = await mkdtemp(join(tmpdir(), 'domo-e2e-files-'))
+    try {
+      await writeFile(join(repoPath, 'index.ts'), 'export {}\n')
+      await expect($fetch<ProjectPathState>('/api/projects/inspect-path', { query: { path: repoPath } }))
+        .resolves.toMatchObject({ kind: 'directory', empty: false })
+
+      const project = await $fetch<Project>('/api/projects', { method: 'POST', body: { repoPath, initialize: true } })
+
+      await expect($fetch(`/api/projects/${project.id}/repository`))
+        .resolves.toMatchObject({ repository: true, hasCommits: false, filesToCommit: 1 })
+      expect(await git(repoPath, 'symbolic-ref', 'HEAD')).toBe('refs/heads/main')
+    } finally {
+      await rm(repoPath, { recursive: true, force: true })
+    }
   })
 
   it('requires a path at all', async () => {

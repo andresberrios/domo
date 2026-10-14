@@ -525,12 +525,16 @@ export const MESH_TOOLS = [
   },
   {
     name: 'create_project',
-    description: 'Add a project backed by a local git checkout on the host, so development environments can be created from it.',
+    description:
+      'Add a project backed by a local git checkout on the host, so development environments can be created from it. '
+      + 'With initialize, a folder that is not a git repository gets `git init` (branch main), and a path that does not '
+      + 'exist is created first; a new or empty folder also gets an empty first commit.',
     inputSchema: {
       type: 'object',
       properties: {
-        repoPath: { type: 'string', description: 'Absolute path to a git checkout on the host.' },
-        name: { type: 'string', description: 'Display name. Defaults to the directory name.' }
+        repoPath: { type: 'string', description: 'Absolute path on the host: a git checkout, or with initialize any folder or a path to create.' },
+        name: { type: 'string', description: 'Display name. Defaults to the directory name.' },
+        initialize: { type: 'boolean', description: 'Create the folder and run git init when the path is not a git checkout yet. Default false: such a path is refused.' }
       },
       required: ['repoPath'],
       additionalProperties: false
@@ -1102,7 +1106,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'create_project': {
-      const project = await createProjectFromPath({ name: args.name, repoPath: args.repoPath })
+      const project = await createProjectFromPath({ name: args.name, repoPath: args.repoPath, initialize: args.initialize === true })
       return { id: project.id, name: project.name, repoPath: project.repoPath }
     }
 

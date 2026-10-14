@@ -1,11 +1,12 @@
-import { access, stat } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { mkdir } from 'node:fs/promises'
+import { basename } from 'node:path'
 
 import type { AgentSession, EnvironmentLeftover, Project } from '../../shared/types'
 import { acpManager } from './acp/manager'
 import type { BranchOutcome } from './dev-env/host-worktree'
+import { commitInitial, initRepository } from './dev-env/host-worktree'
 import { retireEnvironment } from './dev-environments'
-import { normalizeCwd } from './paths'
+import { inspectProjectPath } from './project-path'
 import {
   appendAgentEvent,
   cancelPendingPermissions,
@@ -40,15 +41,35 @@ import {
  * through it.
  */
 
-export async function createProjectFromPath(input: { name?: string, repoPath: string }): Promise<Project> {
-  const repoPath = normalizeCwd(input.repoPath)
-  try {
-    if (!(await stat(repoPath)).isDirectory()) throw new Error('not a directory')
-    await access(join(repoPath, '.git'))
-  } catch {
-    throw new Error('Repository path must be a local Git checkout.')
+/**
+ * Add a project. A git checkout is used as it is. With `initialize`, a folder
+ * that is not one gets `git init` (on `main`), and a path that does not exist
+ * is created first; a folder that is new or empty also gets an empty first
+ * commit, because an environment is cut from a commit. A folder with files in
+ * it does not: what goes into its first commit is the user's call, which the
+ * new-environment form offers with a count of the files.
+ */
+export async function createProjectFromPath(input: { name?: string, repoPath: string, initialize?: boolean }): Promise<Project> {
+  const state = await inspectProjectPath(input.repoPath)
+  if (state.problem) throw new Error(state.problem)
+  if (state.kind !== 'repository') {
+    if (!input.initialize) {
+      throw new Error(state.kind === 'missing'
+        ? `${state.path} does not exist. Domo can create it as a new git repository.`
+        : `${state.path} is not a git repository. Domo can run git init in it.`)
+    }
+    try {
+      if (state.kind === 'missing') await mkdir(state.path, { recursive: true })
+      await initRepository(state.path)
+      if (state.kind === 'missing' || state.empty) await commitInitial(state.path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && (error as NodeJS.ErrnoException).path === 'git') {
+        throw new Error('git is not installed on this machine, so Domo cannot create a repository.', { cause: error })
+      }
+      throw error
+    }
   }
-  return createProject({ name: input.name?.trim() || basename(repoPath), repoPath })
+  return createProject({ name: input.name?.trim() || basename(state.path), repoPath: state.path })
 }
 
 export interface EnvironmentRetirement {

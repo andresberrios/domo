@@ -414,18 +414,20 @@ export const voiceTools: Record<string, VoiceTool> = {
     declaration: {
       name: 'create_project',
       description:
-        'Add a new project backed by a local Git checkout, so development environments can be created from it. Use list_directories first to find the path if the user has not given an absolute one.',
+        'Add a new project backed by a local Git checkout, so development environments can be created from it. Use list_directories first to find the path if the user has not given an absolute one. '
+        + 'If the user wants a new project in a folder that does not exist or is not a Git repository yet, set initialize: Domo creates the folder and runs git init.',
       parameters: {
         type: Type.OBJECT,
         properties: {
-          repoPath: { type: Type.STRING, description: 'Absolute path to a local Git checkout.' },
-          name: { type: Type.STRING, description: 'Display name for the project. Defaults to the directory name.' }
+          repoPath: { type: Type.STRING, description: 'Absolute path: a local Git checkout, or with initialize any folder or a path to create.' },
+          name: { type: Type.STRING, description: 'Display name for the project. Defaults to the directory name.' },
+          initialize: { type: Type.BOOLEAN, description: 'Create the folder and run git init when it is not a Git checkout yet.' }
         },
         required: ['repoPath']
       }
     },
     handler: async (args) => {
-      const project = await createProjectFromPath({ name: args.name, repoPath: args.repoPath })
+      const project = await createProjectFromPath({ name: args.name, repoPath: args.repoPath, initialize: args.initialize === true })
       return { id: project.id, name: project.name, repoPath: project.repoPath }
     }
   },

@@ -328,6 +328,31 @@ export async function repositoryState(repoPath: string): Promise<RepositoryState
 }
 
 /**
+ * `git init` on branch `main`, whatever `init.defaultBranch` says or the git
+ * version supports: `--initial-branch` needs git 2.28, and Ubuntu 20.04 ships
+ * 2.25. HEAD can name a branch that has no commit yet.
+ */
+export async function initRepository(repoPath: string): Promise<void> {
+  await run('git', ['-C', repoPath, 'init', '--quiet'])
+  await run('git', ['-C', repoPath, 'symbolic-ref', 'HEAD', 'refs/heads/main'])
+}
+
+/**
+ * Commit what is staged as the repository's first commit, empty if nothing
+ * is. The user's own identity when git has one, otherwise Domo's, so a
+ * machine where git was never configured can still have environments.
+ */
+export async function commitInitial(repoPath: string): Promise<string> {
+  const identity: string[] = []
+  const email = await run('git', ['-C', repoPath, 'config', 'user.email'], { allowFailure: true })
+  if (!email.stdout.trim()) identity.push('-c', 'user.email=domo@localhost')
+  const name = await run('git', ['-C', repoPath, 'config', 'user.name'], { allowFailure: true })
+  if (!name.stdout.trim()) identity.push('-c', 'user.name=Domo')
+  await run('git', [...identity, '-C', repoPath, 'commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '-m', 'Initial commit'])
+  return (await run('git', ['-C', repoPath, 'rev-parse', 'HEAD'])).stdout.trim()
+}
+
+/**
  * Make the checkout ready for worktrees: initialise it if it is not a
  * repository, and commit everything `.gitignore` allows as the first commit.
  * Refuses a repository that already has a commit — nothing is ever committed
@@ -336,13 +361,7 @@ export async function repositoryState(repoPath: string): Promise<RepositoryState
 export async function createInitialCommit(repoPath: string): Promise<string> {
   const state = await repositoryState(repoPath)
   if (state.hasCommits) throw new Error('This project already has commits.')
-  if (!state.repository) await run('git', ['-C', repoPath, 'init', '--quiet'])
+  if (!state.repository) await initRepository(repoPath)
   await run('git', ['-C', repoPath, 'add', '--all'])
-  const identity: string[] = []
-  const email = await run('git', ['-C', repoPath, 'config', 'user.email'], { allowFailure: true })
-  if (!email.stdout.trim()) identity.push('-c', 'user.email=domo@localhost')
-  const name = await run('git', ['-C', repoPath, 'config', 'user.name'], { allowFailure: true })
-  if (!name.stdout.trim()) identity.push('-c', 'user.name=Domo')
-  await run('git', [...identity, '-C', repoPath, 'commit', '--quiet', '--no-verify', '--allow-empty', '-m', 'Initial commit'])
-  return (await run('git', ['-C', repoPath, 'rev-parse', 'HEAD'])).stdout.trim()
+  return commitInitial(repoPath)
 }

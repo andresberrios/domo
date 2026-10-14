@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -636,14 +636,19 @@ describe('projects and dev environments', () => {
     expect(body).toMatchObject({ name: expect.any(String), repoPath })
   })
 
-  it('refuses a repo path that is not a git checkout', async () => {
+  it('refuses a repo path that is not a git checkout, unless told to initialise it', async () => {
     const caller = await session('caller')
     const notGit = await mkdtemp(join(tmpdir(), 'domo-mesh-not-git-'))
 
     const { body } = await callTool(mintMeshToken(caller.id), 'create_project', { repoPath: notGit })
 
     expect(body.result.isError).toBe(true)
-    expect(body.result.content[0].text).toMatch(/local Git checkout/)
+    expect(body.result.content[0].text).toMatch(/is not a git repository/)
+    await expect(access(join(notGit, '.git'))).rejects.toThrow()
+
+    const created = resultOf((await callTool(mintMeshToken(caller.id), 'create_project', { repoPath: join(notGit, 'new'), initialize: true })).body)
+    expect(created).toMatchObject({ name: 'new', repoPath: join(notGit, 'new') })
+    await expect(access(join(notGit, 'new', '.git'))).resolves.toBeUndefined()
     await rm(notGit, { recursive: true, force: true })
   })
 

@@ -13,6 +13,7 @@ import {
   deleteMergedBranch,
   listBranches,
   hostCommonGitDir,
+  initRepository,
   removeHostWorktree,
   repositoryState,
   worktreeAdminPath
@@ -244,6 +245,21 @@ describe('repositoryState and createInitialCommit', () => {
     expect(await repositoryState(plain)).toEqual({ repository: false, hasCommits: false, filesToCommit: null, branches: [] })
     await createInitialCommit(plain)
     expect(await git(plain, 'log', '--format=%s')).toBe('Initial commit')
+    expect(await git(plain, 'branch', '--show-current')).toBe('main')
+  })
+
+  it('initialises on main whatever init.defaultBranch says', async () => {
+    const fresh = join(root, 'fresh')
+    await mkdir(fresh)
+    Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'init.defaultBranch', GIT_CONFIG_VALUE_0: 'master' })
+    try {
+      await initRepository(fresh)
+    } finally {
+      delete process.env.GIT_CONFIG_COUNT
+      delete process.env.GIT_CONFIG_KEY_0
+      delete process.env.GIT_CONFIG_VALUE_0
+    }
+    expect(await git(fresh, 'symbolic-ref', 'HEAD')).toBe('refs/heads/main')
   })
 })
 
