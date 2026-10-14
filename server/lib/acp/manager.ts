@@ -174,6 +174,32 @@ interface Turn {
    * that sees it queues instead: the drain right behind it is what sends it.
    */
   settled: boolean
+  /** The agent launched a subagent in the background during this Domo turn. */
+  backgroundAgents?: boolean
+  /** End a Domo turn without waiting for its `session/prompt`; see `noteResult`. */
+  release?: () => void
+}
+
+/**
+ * The `_claude/origin` kinds of a result Claude Code produced on its own rather
+ * than for the prompt in flight — a background task reporting back, above all.
+ * claude-agent-acp keeps the same list as `AUTONOMOUS_RESULT_ORIGINS`.
+ */
+const AUTONOMOUS_ORIGINS = new Set(['task-notification', 'peer', 'coordinator', 'observer', 'observer-activity'])
+
+/**
+ * The tool call a Claude Code subagent's update belongs to, or null when the
+ * session's own agent sent it.
+ *
+ * claude-agent-acp forwards a subagent's work on the parent's session, stamped
+ * with the id of the `Agent` call that spawned it. A background subagent keeps
+ * sending after the parent has finished writing, so read as the parent's own,
+ * its tool calls cut the parent's message into pieces and held the session at
+ * `thinking` after its turn was over.
+ */
+function subagentParent(update: any): string | null {
+  const id = update?._meta?.claudeCode?.parentToolUseId
+  return typeof id === 'string' && id ? id : null
 }
 
 /** What a delivery ended up doing, after the fallbacks. */
@@ -1305,6 +1331,15 @@ class AgentRuntime {
     // have, and `boot()` has already picked the row's own reading back up.
     if (this.restoring) return
 
+    // Before anything that reads it as the agent's: a subagent's work neither
+    // opens a turn nor keeps one going, and must not end the message the agent
+    // is writing.
+    const parent = subagentParent(update)
+    if (parent) {
+      await this.onSubagentUpdate(kind, update, parent)
+      return
+    }
+
     // Before the branches below, because what this decides is whether there is
     // a turn at all. An update arriving with the slot empty is the agent having
     // woken itself; see `noteAdapterActivity`.
@@ -1315,7 +1350,14 @@ class AgentRuntime {
     // message the agent is still writing.
     if (kind === 'usage_update') {
       this.noteUsage(update)
+      if (update.cost) this.noteResult(update)
       return
+    }
+
+    // A subagent launched in the background holds the turn's `session/prompt`
+    // open until it is done; see `noteResult`.
+    if (this.turn?.origin === 'domo' && kind === 'tool_call_update' && update._meta?.claudeCode?.toolResponse?.isAsync === true) {
+      this.turn.backgroundAgents = true
     }
 
     const streamType: AgentStreamType | null
@@ -1374,6 +1416,53 @@ class AgentRuntime {
     })
   }
 
+  /**
+   * Record a subagent's tool call without treating it as the agent's.
+   *
+   * It goes in the log as it came, `parentToolUseId` and all, so the transcript
+   * can draw it inside the `Agent` call that spawned it. It does not end the
+   * agent's open message — the subagent's card renders inside an earlier one,
+   * so the message reads on in one piece — and it does not say the session is
+   * working: a background subagent outlives the turn that launched it.
+   *
+   * Everything else a subagent sends is dropped. Its prose and thoughts are
+   * not forwarded by claude-agent-acp in practice (checked on 0.81.1), and its
+   * answer reaches the agent, which says what it needs to; its plan would
+   * replace the agent's own. A progress beat on the `Agent` call itself only
+   * counts seconds, and would flip a finished card back to running for good.
+   */
+  private async onSubagentUpdate(kind: string, update: any, parent: string): Promise<void> {
+    if (kind !== 'tool_call' && kind !== 'tool_call_update') return
+    if (update.toolCallId === parent) return
+    await this.serial(async () => {
+      await appendAgentEvent(this.agentSessionId, kind, update)
+      if (this.turn) await this.touchIfStale()
+    })
+  }
+
+  /**
+   * A result arrived: the `usage_update` carrying the cost is the one
+   * claude-agent-acp sends when Claude Code finishes a run of the model.
+   *
+   * With a subagent running in the background, that is where the agent's turn
+   * ends, but not where its `session/prompt` is answered: claude-agent-acp
+   * holds the prompt open until every background subagent the turn launched
+   * is done, and Claude Code has answered what they report — minutes later,
+   * and the turn would sit at `thinking` with its inbox stranded the whole
+   * time. So the turn is released here instead. A prompt sent while the
+   * adapter still holds the old one is safe: it settles the old one and runs.
+   *
+   * Only a result for the prompt itself, never one Claude Code produced on its
+   * own: a queued task notification gets a placeholder result before its
+   * follow-up runs (see docs/acp-adapters.md).
+   */
+  private noteResult(update: any): void {
+    const turn = this.turn
+    if (turn?.origin !== 'domo' || !turn.backgroundAgents) return
+    if (AUTONOMOUS_ORIGINS.has(update._meta?.['_claude/origin']?.kind)) return
+    turn.release?.()
+  }
+
   private async onPermission(params: any): Promise<any> {
     const settings = await getSettings()
     const options = (params.options ?? []).map((option: any) => ({
@@ -1412,7 +1501,7 @@ class AgentRuntime {
         options.find((o: any) => o.kind === 'allow_once') ?? options.find((o: any) => o.kind === 'allow_always')
       if (auto) {
         await resolvePermissionRow(permission.id, auto.optionId, 'auto')
-        await this.setStatus('thinking')
+        await this.setStatus(this.turn ? 'thinking' : 'idle')
         return { outcome: { outcome: 'selected', optionId: auto.optionId } }
       }
     }
@@ -1423,7 +1512,9 @@ class AgentRuntime {
     this.waiters.delete(permission.id)
 
     if (!optionId) return { outcome: { outcome: 'cancelled' } }
-    await this.setStatus('thinking')
+    // A background subagent asks with no turn open, and getting its answer
+    // does not make the agent busy.
+    await this.setStatus(this.turn ? 'thinking' : 'idle')
     return { outcome: { outcome: 'selected', optionId } }
   }
 
@@ -1706,11 +1797,23 @@ class AgentRuntime {
     })
 
     try {
-      const response = (await this.connection.agent.request(
+      const request = this.connection.agent.request(
         acp.methods.agent.session.prompt,
         { sessionId: this.acpSessionId, prompt: content } as any,
         { signal: controller.signal } as any
-      )) as any
+      )
+      const released = new Promise<null>((resolve) => { turn.release = () => resolve(null) })
+      const response = (await Promise.race([request, released])) as any
+      // Released at its result while the adapter holds the prompt for a
+      // background subagent (see `noteResult`). When the adapter answers at
+      // last, Claude Code has answered the subagent too, so the turn it
+      // started for that is over.
+      if (response === null) {
+        request.then(() => {
+          if (this.turn?.origin === 'adapter' && !this.waiters.size) return this.endAdapterTurn(this.turn)
+        }).catch(error =>
+          console.error(`[acp:${this.agentSessionId}] a released turn failed`, error))
+      }
       // The adapter is done; everything below is Domo's own bookkeeping, and
       // for its duration this turn must not be steered into. See `Turn.settled`.
       turn.settled = true
@@ -1718,7 +1821,7 @@ class AgentRuntime {
       const block = this.takeStream()
       await this.serial(async () => {
         await this.closeStream(block)
-        await appendAgentEvent(this.agentSessionId, 'turn_end', { stopReason: response?.stopReason, usage: response?.usage })
+        await appendAgentEvent(this.agentSessionId, 'turn_end', { stopReason: response?.stopReason ?? 'end_turn', usage: response?.usage })
         await this.setStatus('idle', {
           touch: true,
           summary: this.textBuffer.trim().slice(-1200) || undefined

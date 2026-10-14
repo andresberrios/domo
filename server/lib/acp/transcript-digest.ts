@@ -118,6 +118,15 @@ function fold(events: AgentEvent[], messageChars: number): TranscriptPageItem[] 
         if (event.payload?.content?.type === 'text') addThought(seq, event.payload.content.text)
         break
       case 'tool_call':
+        // A subagent's call, which runs beside the agent's text and does not end it.
+        if (event.payload?._meta?.claudeCode?.parentToolUseId) {
+          items.push({
+            seq,
+            kind: 'tool',
+            text: summarise(`subagent: ${event.payload?.title ?? 'tool'} (${event.payload?.status ?? 'pending'})`, 400)
+          })
+          break
+        }
         flushText()
         items.push({
           seq,
@@ -155,7 +164,8 @@ function fold(events: AgentEvent[], messageChars: number): TranscriptPageItem[] 
     }
   }
   flushText()
-  return items
+  // A subagent's call is pushed while the text it ran beside is still open.
+  return items.sort((a, b) => a.seq - b.seq)
 }
 
 /**

@@ -16,7 +16,17 @@ const domoResult = computed(() => {
 })
 
 const icon = computed(() => described.value?.icon ?? TOOL_KIND_ICONS[props.tool.kind] ?? TOOL_KIND_ICONS.other!)
-const status = computed(() => TOOL_STATUS_META[props.tool.status] ?? TOOL_STATUS_META.pending!)
+
+const children = computed(() => props.tool.children ?? [])
+
+// An `Agent` call that launched its subagent in the background is done the
+// moment it launches; the subagent is still working while its calls are.
+const shownStatus = computed(() =>
+  children.value.some(child => child.status === 'pending' || child.status === 'in_progress')
+    ? 'in_progress'
+    : props.tool.status
+)
+const status = computed(() => TOOL_STATUS_META[shownStatus.value] ?? TOOL_STATUS_META.pending!)
 
 const diffs = computed(() =>
   (props.tool.content ?? []).filter((part: any) => part?.type === 'diff')
@@ -41,7 +51,7 @@ const command = computed(() => {
 })
 
 const hasDetail = computed(() =>
-  !!(diffs.value.length || textOutput.value || terminals.value.length || props.tool.rawInput || props.tool.rawOutput)
+  !!(children.value.length || diffs.value.length || textOutput.value || terminals.value.length || props.tool.rawInput || props.tool.rawOutput)
 )
 </script>
 
@@ -62,14 +72,15 @@ const hasDetail = computed(() =>
       <span v-else class="min-w-0 flex-1 truncate text-sm">
         {{ tool.title }}
         <span v-if="command" class="ms-1 font-mono text-xs text-muted">{{ truncate(String(command), 60) }}</span>
+        <span v-if="children.length" class="ms-1 text-xs text-muted">· {{ children.length }} tool call{{ children.length === 1 ? '' : 's' }}</span>
       </span>
       <UBadge
         :color="status.color"
         variant="subtle"
         size="sm"
         :label="status.label"
-        :icon="tool.status === 'in_progress' ? 'i-lucide-loader-circle' : undefined"
-        :ui="{ leadingIcon: tool.status === 'in_progress' ? 'animate-spin' : '' }"
+        :icon="shownStatus === 'in_progress' ? 'i-lucide-loader-circle' : undefined"
+        :ui="{ leadingIcon: shownStatus === 'in_progress' ? 'animate-spin' : '' }"
       />
       <UIcon
         v-if="hasDetail"
@@ -89,6 +100,14 @@ const hasDetail = computed(() =>
           size="sm"
           class="font-mono"
           :label="location.line ? `${shortPath(location.path, 3)}:${location.line}` : shortPath(location.path, 3)"
+        />
+      </div>
+
+      <div v-if="children.length" class="space-y-2 border-s-2 border-accented ps-3">
+        <ToolCallCard
+          v-for="child in children"
+          :key="child.toolCallId"
+          :tool="child"
         />
       </div>
 

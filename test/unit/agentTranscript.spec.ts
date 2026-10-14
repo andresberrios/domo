@@ -636,3 +636,44 @@ describe('messages between agents', () => {
     expect(items.map(item => item.kind)).toEqual(['activity', 'mesh', 'activity'])
   })
 })
+
+/**
+ * Claude Code's background subagent: its calls arrive on the parent's session
+ * marked with the `Agent` call that started it. They belong inside that card,
+ * and must not split the message the agent is writing or start a row of their
+ * own that a later update would move.
+ */
+describe('a background subagent', () => {
+  const sub = (toolCallId: string, status = 'pending') => agentEvent('tool_call', {
+    toolCallId, title: 'Bash', kind: 'execute', status, _meta: { claudeCode: { parentToolUseId: 'agent_1' } }
+  })
+
+  it('nests its calls in the Agent card and leaves the agent\'s message whole', () => {
+    const items = buildTranscript([
+      agentEvent('tool_call', { toolCallId: 'agent_1', title: 'Agent', kind: 'think', status: 'completed' }),
+      textChunk('Started it in the background, '),
+      sub('s1'),
+      textChunk('and meanwhile '),
+      sub('s2'),
+      agentEvent('tool_call_update', { toolCallId: 's1', status: 'completed' }),
+      textChunk('I carry on.')
+    ])
+
+    expect(kinds(items)).toEqual(['tool', 'assistant'])
+    expect(items[1]).toMatchObject({ text: 'Started it in the background, and meanwhile I carry on.' })
+    const agent = (items[0] as Extract<TranscriptItem, { kind: 'tool' }>).tool
+    expect(agent.children!.map(child => [child.toolCallId, child.status])).toEqual([['s1', 'completed'], ['s2', 'pending']])
+  })
+
+  it('keeps the Agent card where it is in its group while its subagent works', () => {
+    const before = [
+      agentEvent('tool_call', { toolCallId: 'read_1', title: 'Read', kind: 'read', status: 'completed' }),
+      agentEvent('tool_call', { toolCallId: 'agent_1', title: 'Agent', kind: 'think', status: 'completed' })
+    ]
+    const rows = (events: any[]) => condenseTranscript(buildTranscript(events), { live: true })
+      .map(item => [item.id, item.kind === 'activity' ? item.items.length : 1])
+
+    // Same group, same two rows in it: the subagent's calls are inside the card.
+    expect(rows([...before, sub('s1'), sub('s2', 'in_progress')])).toEqual(rows(before))
+  })
+})

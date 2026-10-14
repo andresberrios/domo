@@ -2681,3 +2681,125 @@ describe('a turn the agent starts for itself', () => {
     expect(await statusOf(agent.id)).toBe('idle')
   })
 })
+
+/**
+ * Claude Code's `Agent` tool with `run_in_background: true`, in the shapes
+ * claude-agent-acp 0.81.1 sent on a recorded run: the subagent's calls arrive
+ * on the parent's session stamped with the `Agent` call's id, and the
+ * `session/prompt` is held open until the subagent is done and Claude Code has
+ * answered it — while the cost-bearing `usage_update` marks where the turn
+ * itself ended.
+ */
+describe('a subagent launched in the background', () => {
+  const AGENT_CALL = 'toolu_agent'
+
+  const launch = async (send: (update: any) => Promise<void>) => {
+    await send({ sessionUpdate: 'tool_call', toolCallId: AGENT_CALL, name: 'Agent', title: 'Task', kind: 'think', status: 'pending', rawInput: {}, _meta: { claudeCode: { toolName: 'Agent', subagent: true } } })
+    await send({ sessionUpdate: 'tool_call_update', toolCallId: AGENT_CALL, _meta: { claudeCode: { toolName: 'Agent', toolResponse: { isAsync: true, status: 'async_launched', agentId: 'a1' } } } })
+    await send({ sessionUpdate: 'tool_call_update', toolCallId: AGENT_CALL, status: 'completed', _meta: { claudeCode: { toolName: 'Agent' } } })
+  }
+  const subagentCall = (id: string, command: string) => [
+    { sessionUpdate: 'tool_call', toolCallId: id, name: 'Bash', title: command, kind: 'execute', status: 'pending', rawInput: { command }, _meta: { claudeCode: { toolName: 'Bash', parentToolUseId: AGENT_CALL } } },
+    { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput: 'ok', _meta: { claudeCode: { toolName: 'Bash', parentToolUseId: AGENT_CALL } } }
+  ]
+  const gate = () => {
+    let open!: () => void
+    const passed = new Promise<void>((resolve) => { open = resolve })
+    return { passed, open }
+  }
+  const result = (origin: string) => ({ sessionUpdate: 'usage_update', used: 29097, size: 200000, cost: { amount: 0.05, currency: 'USD' }, _meta: { '_claude/origin': { kind: origin } } })
+
+  it('records its calls without cutting the agent\'s message, and nests them under the Agent call', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'start it and tell me about the weather' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await launch(send)
+      await send(textChunk('It is mild '))
+      const [call, done] = subagentCall('toolu_bash', 'cd /tmp/acp-research && ls')
+      await send(call)
+      await send(textChunk('and '))
+      await send(done)
+      await send(textChunk('dry today.'))
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+    // One message, in one piece, with the subagent's calls logged beside it.
+    expect(textOf(events)).toEqual(['It is mild and dry today.'])
+    expect((await getAgentSession(agent.id))!.summary).toBe('It is mild and dry today.')
+    const nested = events.filter(event => event.payload?._meta?.claudeCode?.parentToolUseId === AGENT_CALL)
+    expect(nested.map(event => event.type)).toEqual(['tool_call', 'tool_call_update'])
+
+    const { buildTranscript } = await import('../../app/utils/agentTranscript')
+    const items = buildTranscript(events)
+    expect(items.map(item => item.kind)).toEqual(['user', 'tool', 'assistant'])
+    const card = items[1] as Extract<typeof items[number], { kind: 'tool' }>
+    expect(card.tool.children?.map(child => [child.toolCallId, child.status])).toEqual([['toolu_bash', 'completed']])
+  })
+
+  it('ends the turn at its result, drains the inbox, and stays idle while the subagent works', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const subagent = gate()
+    const finish = gate()
+    const prompts: any[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'start it' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      if (prompts.length > 1) {
+        await send(textChunk('PONG'))
+        return
+      }
+      await launch(send)
+      await send(textChunk('Launched it.'))
+      await send(result('human'))
+      // The adapter holds the prompt from here on. The subagent works…
+      await subagent.passed
+      for (const update of subagentCall('toolu_one', 'sleep 5; echo one')) await send(update)
+      // …and when it is done, Claude Code answers it by itself.
+      await finish.passed
+      await send(textChunk('The subagent finished.'))
+      await send(result('task-notification'))
+    }, { onPrompt: params => prompts.push(params) })
+
+    // The turn ends at the result, not when the adapter lets go of the prompt.
+    await started
+    let row = (await getAgentSession(agent.id))!
+    expect(row.status).toBe('idle')
+    expect(row.summary).toBe('Launched it.')
+    expect(acpManager.isBusy(agent.id)).toBe(false)
+
+    // A message for the agent goes straight in rather than waiting on the subagent.
+    await acpManager.deliver(agent.id, { content: [{ type: 'text', text: 'ping' }], delivery: 'queue', origin: 'user' })
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    await vi.waitFor(async () => expect((await getAgentSession(agent.id))!.summary).toBe('PONG'))
+    expect((await getAgentSession(agent.id))!.status).toBe('idle')
+
+    // The subagent's calls are recorded, and do not make the session busy.
+    subagent.open()
+    await vi.waitFor(async () => {
+      const events = await listAgentEvents(agent.id)
+      expect(events.some(event => event.payload?.toolCallId === 'toolu_one' && event.payload?.status === 'completed')).toBe(true)
+    })
+    row = (await getAgentSession(agent.id))!
+    expect(row.status).toBe('idle')
+    // Nor are they the agent starting a turn by itself.
+    expect(acpManager.isBusy(agent.id)).toBe(false)
+    expect((await listAgentEvents(agent.id)).some(event => event.type === 'turn_start')).toBe(false)
+
+    // Claude Code answering the subagent is a turn it started.
+    finish.open()
+    await vi.waitFor(async () => {
+      const row = (await getAgentSession(agent.id))!
+      expect(row.summary).toContain('The subagent finished.')
+      expect(row.status).toBe('idle')
+    })
+    const events = await listAgentEvents(agent.id)
+    expect(textOf(events)).toEqual(['Launched it.', 'PONG', 'The subagent finished.'])
+    // That one is a turn it started, ended when the adapter let go of the prompt, not after a minute of quiet.
+    expect(events.filter(event => event.type === 'turn_start')).toHaveLength(1)
+    expect(events.at(-1)).toMatchObject({ type: 'turn_end', payload: { origin: 'adapter' } })
+  })
+})

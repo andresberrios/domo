@@ -32,7 +32,8 @@ const current = computed(() => {
   }
   if (item.kind !== 'tool') return null
   const { tool } = item
-  const running = tool.status === 'pending' || tool.status === 'in_progress'
+  // A background `Agent` call is done at launch; its subagent's calls are what still run (as on its card).
+  const running = [tool, ...tool.children ?? []].some(call => call.status === 'pending' || call.status === 'in_progress')
   const domo = domoCall(tool)
   const described = domo ? describeDomoCall(domo, names) : null
   const command = tool.rawInput?.command ?? tool.rawInput?.cmd
