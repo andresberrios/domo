@@ -18,6 +18,8 @@ export interface ToolCallView {
   rawInput?: any
   rawOutput?: any
   content: any[]
+  /** The tool calls of the subagent this call spawned, in order. */
+  children?: ToolCallView[]
 }
 
 export type TranscriptItem =
@@ -101,7 +103,7 @@ export function buildTranscript(
   permissions: PendingPermission[] = []
 ): TranscriptItem[] {
   const items: TranscriptItem[] = []
-  const toolIndex = new Map<string, number>()
+  const tools = new Map<string, ToolCallView>()
   let assistantIndex: number | null = null
   let thoughtIndex: number | null = null
 
@@ -189,8 +191,10 @@ export function buildTranscript(
       }
 
       case 'tool_call': {
-        closeText()
         const payload = event.payload ?? {}
+        // A subagent's call goes inside the `Agent` call that spawned it, and
+        // does not end the message the agent is writing alongside it.
+        const parent = tools.get(payload._meta?.claudeCode?.parentToolUseId)
         const tool: ToolCallView = {
           toolCallId: payload.toolCallId,
           title: payload.title ?? payload.name ?? 'Tool call',
@@ -202,17 +206,20 @@ export function buildTranscript(
           rawOutput: payload.rawOutput,
           content: payload.content ?? []
         }
+        tools.set(tool.toolCallId, tool)
+        if (parent && parent !== tool) {
+          parent.children = [...(parent.children ?? []), tool]
+          break
+        }
+        closeText()
         items.push({ ...base, kind: 'tool', tool })
-        toolIndex.set(tool.toolCallId, items.length - 1)
         break
       }
 
       case 'tool_call_update': {
         const payload = event.payload ?? {}
-        const index = toolIndex.get(payload.toolCallId)
-        if (index == null) break
-        const item = items[index] as Extract<TranscriptItem, { kind: 'tool' }>
-        const tool = item.tool
+        const tool = tools.get(payload.toolCallId)
+        if (!tool) break
         if (payload.title) tool.title = payload.title
         if (payload.kind) tool.kind = payload.kind
         if (payload.status) tool.status = payload.status
@@ -464,6 +471,13 @@ export function activityBreakdown(group: ActivityGroup): string {
  * title and status are edited in place by later updates, and streamed text is
  * concatenated.
  */
+function sameChildren(a: ToolCallView[] = [], b: ToolCallView[] = []): boolean {
+  return a.length === b.length && a.every((child, index) => {
+    const other = b[index]!
+    return child.status === other.status && child.title === other.title && child.content === other.content
+  })
+}
+
 function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
   if (a === b) return true
   if (a.id !== b.id || a.kind !== b.kind) return false
@@ -493,6 +507,7 @@ function sameItem(a: TranscriptItem, b: TranscriptItem): boolean {
         && mine.rawInput === theirs.rawInput
         && mine.rawOutput === theirs.rawOutput
         && mine.locations === theirs.locations
+        && sameChildren(mine.children, theirs.children)
     }
     case 'plan': {
       const other = b as typeof a

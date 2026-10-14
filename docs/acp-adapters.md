@@ -48,3 +48,8 @@ or when an adapter acts in an unexpected way. Everything else is in
   notification gets a placeholder result before its follow-up runs. Its real
   one, a `state_update` that goes `idle`, is on its experimental ACP v2
   surface only (0.90).
+- **claude-agent-acp answers a `session/prompt` only after every subagent the
+  turn launched in the background is done** (still so on 0.90 over ACP v1).
+  Domo ends its turn at that prompt's own result instead, the cost
+  `usage_update` with origin `human`. A prompt sent while one is held settles
+  the held one. A subagent's updates carry `_meta.claudeCode.parentToolUseId`.
