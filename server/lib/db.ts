@@ -540,6 +540,27 @@ create table if not exists app_update (
   updated_at text not null
 );
 
+-- How full the disk under Docker is, and what the shared environment caches
+-- on it hold: one row, written by server/lib/dev-env/cache-maintenance.ts
+-- when something changed, never on a timer alone.
+create table if not exists docker_disk (
+  id text primary key,
+  total_bytes double precision not null,
+  free_bytes double precision not null,
+  level text not null,
+  caches jsonb not null default '[]'::jsonb,
+  docker jsonb not null default '[]'::jsonb,
+  reclaimable_bytes double precision not null default 0,
+  measured_at text,
+  checked_at text not null,
+  cleaning boolean not null default false,
+  last_cleanup_at text,
+  last_cleanup_level text,
+  last_freed_bytes double precision,
+  last_error text,
+  updated_at text not null
+);
+
 -- Electric replays updates from the WAL: FULL replica identity makes sure a
 -- changed row arrives complete, not just its key + changed columns.
 alter table agent_sessions replica identity full;
@@ -557,6 +578,7 @@ alter table usage_limits replica identity full;
 alter table usage_providers replica identity full;
 alter table notifications replica identity full;
 alter table app_update replica identity full;
+alter table docker_disk replica identity full;
 `
 
 let pool: pg.Pool | null = null

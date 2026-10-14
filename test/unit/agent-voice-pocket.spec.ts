@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { synthesizePocket } from '../../server/lib/agent-voice/pocket-speech'
+import { pocketEnv, synthesizePocket } from '../../server/lib/agent-voice/pocket-speech'
 import { createClonedVoice } from '../../server/lib/agent-voice/voice-store'
 import { sampleWav } from './wav-fixture'
 
@@ -110,5 +110,13 @@ describe('synthesizePocket', () => {
     // A built-in voice failing is not about cloning.
     await expect(synthesizePocket('Hi.', 'alba', 'http://pocket.lan:8000', () => {})).rejects.toThrow(/^Pocket TTS: 500/)
     await expect(synthesizePocket('Hi.', 'clone:aaaaaaaaaaaa', 'http://pocket.lan:8000', () => {})).rejects.toThrow(/no longer exists/)
+  })
+})
+
+describe('pocketEnv', () => {
+  it('fetches the CPU build of torch on Linux, where PyPI\'s is CUDA, unless the user chose a backend', () => {
+    expect(pocketEnv({}, 'linux', '/data')).toMatchObject({ UV_TORCH_BACKEND: 'cpu', HF_HOME: '/data/models/hf' })
+    expect(pocketEnv({ UV_TORCH_BACKEND: 'cu128' }, 'linux', '/data').UV_TORCH_BACKEND).toBe('cu128')
+    expect(pocketEnv({}, 'darwin', '/data')).not.toHaveProperty('UV_TORCH_BACKEND')
   })
 })

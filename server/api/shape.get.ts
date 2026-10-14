@@ -21,7 +21,9 @@ const ALLOWED_TABLES = new Set([
   // Attachment files are not in the row, only their names and sizes.
   'notifications',
   // Commit ids and subjects; nothing from the machine.
-  'app_update'
+  'app_update',
+  // Sizes in bytes and the names of Domo's own caches.
+  'docker_disk'
 ])
 
 /**

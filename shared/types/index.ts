@@ -698,6 +698,48 @@ export interface AppUpdate {
   updatedAt: string
 }
 
+/** How full the disk under Docker is: `low` warns, `critical` cleans up whatever is running. */
+export type DockerDiskLevel = 'ok' | 'low' | 'critical'
+
+/** How much a cleanup removes: `routine` only what nothing uses, `pressure` also the download caches. */
+export type CacheCleanupLevel = 'routine' | 'pressure'
+
+/** One of the shared environment caches, measured by inode, so a hardlink counts once. */
+export interface DockerDiskCache {
+  key: string
+  label: string
+  bytes: number
+  /** What a `pressure` cleanup would free of it now. */
+  reclaimable: number
+}
+
+/** One line of `docker system df`: what Docker itself holds, which Domo never removes. */
+export interface DockerDiskUsage {
+  type: string
+  bytes: number
+  reclaimable: number
+}
+
+export interface DockerDisk {
+  totalBytes: number
+  freeBytes: number
+  level: DockerDiskLevel
+  caches: DockerDiskCache[]
+  docker: DockerDiskUsage[]
+  /** What "Free space" would free now: the sum of the caches' `reclaimable`. */
+  reclaimableBytes: number
+  /** Measured when the caches were last walked; the free space is measured more often. */
+  measuredAt: string | null
+  checkedAt: string
+  cleaning: boolean
+  lastCleanupAt: string | null
+  lastCleanupLevel: CacheCleanupLevel | null
+  lastFreedBytes: number | null
+  /** What the last cleanup could not do, one line per step. */
+  lastError: string | null
+  updatedAt: string
+}
+
 /** An engine that can transcribe speech and synthesise it. */
 export type SpeechEngine = 'gemini' | 'openai' | 'local' | 'kyutai' | 'mac'
 

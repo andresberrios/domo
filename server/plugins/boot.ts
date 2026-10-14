@@ -10,6 +10,7 @@ import {
 } from '../lib/dev-environment-ports'
 import { restoreDockerProxies } from '../lib/dev-environments'
 import { sweepEnvironmentResources } from '../lib/dev-env/reconcile'
+import { cacheMaintenance } from '../lib/dev-env/cache-maintenance'
 import { stopAllDoodProxies } from '../lib/dood/manager'
 import { stopPocket } from '../lib/agent-voice/pocket-speech'
 import { stopLocalModels } from '../lib/agent-voice/local-models'
@@ -65,6 +66,10 @@ export default defineNitroPlugin(async (nitro) => {
   // asks Docker nothing at all on an install that has never made an environment.
   void sweepEnvironmentResources().catch(error => console.error('[domo] leftover sweep', error))
 
+  // The disk under Docker, and the shared caches on it: measured, cleaned up
+  // when it runs low or once a day, and shown in the UI before it is full.
+  cacheMaintenance.start()
+
   // Plan limits are account-wide, so they have to be current on a dashboard
   // nobody has run an agent on today. What a working agent reports is the other
   // half, and it arrives without this.
@@ -80,6 +85,7 @@ export default defineNitroPlugin(async (nitro) => {
 
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()
+    cacheMaintenance.stop()
     updater.stop()
     cronScheduler.stop()
     await acpManager.shutdown().catch(() => {})

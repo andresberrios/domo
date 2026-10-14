@@ -27,7 +27,8 @@ const TABLES = [
   'usage_limits',
   'usage_providers',
   'notifications',
-  'app_update'
+  'app_update',
+  'docker_disk'
 ]
 
 /**

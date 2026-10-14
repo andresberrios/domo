@@ -2,7 +2,7 @@ import { BROWSER_ROOT } from './browser-volume'
 import { canonicalBaseGitPath, canonicalWorkspacePath } from './canonical-mounts'
 import { run } from './docker'
 import { CONTAINER_SSH_AUTH_SOCK, type HomeOverlay } from './home-overlay'
-import { CACHES_ROOT, type ResolvedCaches } from './caches'
+import { CACHES_ROOT, CPU_ONLY_ENV, type ResolvedCaches } from './caches'
 import { DOOD_FEATURE } from './config'
 import type {
   DevEnvironmentConfig,
@@ -275,6 +275,7 @@ export function containerRunArgs(input: RunContainerInput): string[] {
   }
   args.push('--env', `DOMO_DEV_ENVIRONMENT_ID=${input.environmentId}`)
   for (const [key, value] of Object.entries(input.homeOverlay.env)) args.push('--env', `${key}=${value}`)
+  for (const [key, value] of Object.entries(CPU_ONLY_ENV)) args.push('--env', `${key}=${value}`)
   // Before the image's and the project's own, which win: a later `--env` of the same name replaces it.
   for (const [key, value] of Object.entries(input.caches.env)) args.push('--env', `${key}=${value}`)
   // The project's own containerEnv wins over anything a Feature contributed.

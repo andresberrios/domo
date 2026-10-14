@@ -51,5 +51,6 @@ async function save() {
     <UFormField label="VS Code SSH host" help="Leave empty when VS Code and Docker are on the same machine. Otherwise use an SSH target such as you@server.">
       <UInput v-model="vscodeSshHost" class="w-full font-mono text-xs" placeholder="you@server" />
     </UFormField>
+    <DockerDiskCard />
   </SettingsShell>
 </template>
