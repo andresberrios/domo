@@ -1942,7 +1942,7 @@ class AcpManager {
   /**
    * Send a message to an agent that may already be working.
    *
-   * Every way of reaching a coding agent — the prompt endpoint, the voice tool,
+   * Every way of reaching a coding agent — the prompt endpoint, the voice bar,
    * the mesh tool, a subscription note — comes through here, so "what happens
    * to a message that arrives mid-turn" is decided in one place.
    */

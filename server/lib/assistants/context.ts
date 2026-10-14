@@ -9,7 +9,6 @@ import { isSpokenNote } from '../../../shared/agent-voice'
 import {
   ASSISTANT_CONTEXT_CLOSE,
   ASSISTANT_CONTEXT_OPEN,
-  HANDOFF_REASON_LABELS,
   isAssistantContext,
   isHandoffContinuation,
   isHandoffRequest,
@@ -52,11 +51,21 @@ function identity(assistant: Assistant): string {
   ].join('\n')
 }
 
+/** Why a session began, as the assistant itself reads it: the UI's labels say "you" for the human. */
+const HANDOFF_REASONS: Record<HandoffReason, string> = {
+  user: 'the human asked for a fresh start',
+  context: 'your context window was filling up',
+  agent: 'you chose to start fresh',
+  unavailable: 'it could no longer run'
+}
+
 function whereYouLeftOff(handoff: HandoffPayload, at: string): string {
   const lines = [
     '# Where you left off',
-    `Your previous session handed off to this one at ${at} because ${HANDOFF_REASON_LABELS[handoff.reason]}. `
-    + 'The note it wrote for you:',
+    handoff.reason === 'unavailable'
+      ? `Domo started this session at ${at} because your previous one could no longer run:`
+      : `Your previous session handed off to this one at ${at} because ${HANDOFF_REASONS[handoff.reason]}. `
+        + 'The note it wrote for you:',
     '',
     handoff.note.trim()
   ]

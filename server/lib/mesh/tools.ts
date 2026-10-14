@@ -83,10 +83,10 @@ const ADAPTERS = ['claude-code', 'codex', 'opencode'] as const
  * tool descriptions are the whole of their documentation.
  */
 export const MESH_INSTRUCTIONS = [
-  'Domo runs coding agents (Claude Code, Codex, OpenCode) for one human, who watches them in a web UI and may talk to one of them out loud.',
+  'Domo runs coding agents (Claude Code, Codex, OpenCode) for one human, who watches them in a web UI and can talk to any of them out loud through its voice bar.',
   'You are one of those agents. These tools are how you see and act on the rest of Domo.',
-  'An agent session has an id (ag_…); most tools default to your own session when agentId is omitted.',
-  'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own copy of it. Agents run either on the host or inside an environment.',
+  'An agent session has an id (ag_…); the tools that read or change one session default to your own when agentId is omitted.',
+  'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own branch and worktree of it. Agents run either on the host or inside an environment.',
   'You cannot wait for another agent: its turn ends long after yours. Use spawn_agent or subscribe_to_agent and Domo will message you when it finishes.',
   'To reach the human, use notify_supervisor: it stays in the UI until they have seen it.',
   'An assistant (as_…) is a named agent the human keeps talking to: it lives across many sessions chained by handoffs, so message it by its assistant id, not a session id.'
@@ -200,7 +200,7 @@ async function assertOwns(caller: AgentSession, target: AgentSession, doing: str
   if (await isSpawnedBy(target.id, caller.assistantId ? await assistantSessionIds(caller.assistantId) : caller.id)) return
   throw new Error(
     `Refusing ${doing}: agent "${target.title}" (${target.id}) was not spawned by you. `
-    + 'You can only do this for your own session and agents you spawned; ask the human or the agent\'s owner.'
+    + 'You can only do this for your own session and agents you spawned; ask the human, or the agent that spawned it.'
   )
 }
 
@@ -391,7 +391,8 @@ export const MESH_TOOLS = [
     description:
       'List other agent sessions, most recently active first, with status (thinking = mid-turn, '
       + 'awaiting-permission = blocked on a decision), environment, model and a short summary of their latest output. '
-      + 'Hides archived sessions and ones that can no longer run (their environment was retired) unless asked. '
+      + 'Hides archived sessions, an assistant\'s earlier sessions (it has handed off since) and sessions that can no '
+      + 'longer run (their environment was retired) unless asked. '
       + 'Your own session is not listed; get_agent describes it.',
     inputSchema: {
       type: 'object',
@@ -404,7 +405,7 @@ export const MESH_TOOLS = [
         environmentId: { type: 'string', description: 'Only agents in this development environment.' },
         projectId: { type: 'string', description: 'Only agents in environments of this project.' },
         spawnedByMe: { type: 'boolean', description: 'Only agents you spawned, directly or through agents you spawned.' },
-        includeArchived: { type: 'boolean', description: 'Include archived sessions. Default false.' },
+        includeArchived: { type: 'boolean', description: 'Include archived sessions and assistants\' earlier sessions. Default false.' },
         includeUnstartable: {
           type: 'boolean',
           description: 'Include sessions that can no longer run because their environment was retired. Their transcripts are still readable. Default false.'
@@ -591,7 +592,7 @@ export const MESH_TOOLS = [
   {
     name: 'list_assistants',
     description:
-      'List the assistants: named agents the human set up, each with a persona, that live across many sessions '
+      'List the assistants: named agents set up by the human or by an agent, each with a persona, that live across many sessions '
       + 'chained by handoffs. Each has an id (as_…), the session it is in now and that session\'s status. Message one '
       + 'with message_agent and its assistant id.',
     inputSchema: {
@@ -605,25 +606,25 @@ export const MESH_TOOLS = [
     description:
       'Create an assistant for the human: a named agent with a persona that keeps one conversation going across '
       + 'many sessions, handing off to a fresh one when its context fills. Starts its first session at once. '
-      + 'Settings other than name, persona and picture apply from its next session when changed later. '
+      + 'When changed later, name, picture, voice and handoff threshold apply at once; the rest from its next session. '
       + 'Talk to it with message_agent and its id.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'What it is called, e.g. "Inbox organizer".' },
         persona: { type: 'string', description: 'Who it is and how it works, in the second person ("You keep my inbox tidy…"). Goes into every session it has.' },
-        adapter: { type: 'string', enum: [...ADAPTERS], description: 'Harness its sessions run on.' },
+        adapter: { type: 'string', enum: [...ADAPTERS], description: 'Harness its sessions run on. Defaults to your own.' },
         model: { type: ['string', 'null'], description: 'Model id from list_models, for that harness. null for the harness default.' },
         modeId: { type: ['string', 'null'], description: 'Permission mode id from list_models, for that harness. null for the default.' },
         devEnvironmentId: { type: ['string', 'null'], description: 'Development environment to work in, from list_projects. null or omitted for the host.' },
-        cwd: { type: 'string', description: 'Absolute working directory on the host, when not in an environment.' },
+        cwd: { type: 'string', description: 'Absolute working directory on the host, when not in an environment. Defaults to yours, or your environment\'s project checkout.' },
         handoffThreshold: {
           type: ['number', 'null'],
-          description: 'Context-window percent (30-95) at which it starts a fresh session by itself. null turns that off; it can still be asked.'
+          description: 'Context-window percent (30-95) at which it starts a fresh session by itself. Default 75. null turns that off; it can still be asked.'
         },
         voice: {
           type: ['object', 'null'],
-          description: 'The voice the voice bar speaks as it with: an engine and one of its voices, from list_voices '
+          description: 'The voice the voice bar uses for it: an engine and one of its voices, from list_voices '
             + '(e.g. {"speaker": "pocket", "voice": "mary"}, or a cloned "clone:<id>"). null for the bar\'s own voice.',
           properties: { speaker: { type: 'string' }, voice: { type: 'string' } },
           required: ['speaker', 'voice']
@@ -645,10 +646,11 @@ export const MESH_TOOLS = [
   {
     name: 'update_assistant',
     description:
-      'Change an assistant: name, persona, picture, harness, model, mode, workspace or handoff threshold, or retire '
+      'Change an assistant: name, persona, picture, voice, harness, model, mode, workspace or handoff threshold, or retire '
       + 'it with archived: true (its current session stops and its schedules pause; its sessions stay readable; '
       + 'archived: false brings it back). Allowed for your own assistant and ones you created. Pass only what changes; '
-      + 'harness, model and workspace apply from its next session.',
+      + 'name, picture, voice and handoff threshold apply at once; persona, harness, model, mode and workspace from its '
+      + 'next session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -658,15 +660,15 @@ export const MESH_TOOLS = [
         adapter: { type: 'string', enum: [...ADAPTERS], description: 'Harness its sessions run on.' },
         model: { type: ['string', 'null'], description: 'Model id from list_models, for that harness. null for the harness default.' },
         modeId: { type: ['string', 'null'], description: 'Permission mode id from list_models, for that harness. null for the default.' },
-        devEnvironmentId: { type: ['string', 'null'], description: 'Development environment to work in, from list_projects. null or omitted for the host.' },
-        cwd: { type: 'string', description: 'Absolute working directory on the host, when not in an environment.' },
+        devEnvironmentId: { type: ['string', 'null'], description: 'Development environment to work in, from list_projects. null moves it to the host; omit to leave it as is.' },
+        cwd: { type: 'string', description: 'Absolute working directory on the host. Passing it moves the assistant out of its environment.' },
         handoffThreshold: {
           type: ['number', 'null'],
           description: 'Context-window percent (30-95) at which it starts a fresh session by itself. null turns that off; it can still be asked.'
         },
         voice: {
           type: ['object', 'null'],
-          description: 'The voice the voice bar speaks as it with: an engine and one of its voices, from list_voices '
+          description: 'The voice the voice bar uses for it: an engine and one of its voices, from list_voices '
             + '(e.g. {"speaker": "pocket", "voice": "mary"}, or a cloned "clone:<id>"). null for the bar\'s own voice.',
           properties: { speaker: { type: 'string' }, voice: { type: 'string' } },
           required: ['speaker', 'voice']
@@ -709,7 +711,7 @@ export const MESH_TOOLS = [
         sample: { type: 'string', description: 'Path to an audio file you can see, or an http(s) URL of one.' },
         startSeconds: { type: 'number', description: 'Where in the audio the speech to use starts. Default 0.' },
         seconds: { type: 'number', description: 'How much of it to use, at most 30. Default 20.' },
-        assistantId: { type: 'string', description: 'The assistant to give it to (as_…). Defaults to yours, if you are one; omit both to only create it.' }
+        assistantId: { type: 'string', description: 'The assistant to give it to (as_…). Defaults to yours if you are one; otherwise omit it to only create the voice.' }
       },
       required: ['name', 'sample'],
       additionalProperties: false
@@ -726,7 +728,7 @@ export const MESH_TOOLS = [
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'What to draw: subject, style, composition, colours, any exact text.' },
-        path: { type: 'string', description: 'Where to save it, relative to your working directory or absolute. Default generated-images/<name>-<time>.png.' }
+        path: { type: 'string', description: 'Where to save it, relative to your working directory or absolute. Default generated-images/<words-from-prompt>-<time>.png.' }
       },
       required: ['prompt'],
       additionalProperties: false
@@ -847,7 +849,7 @@ export const MESH_TOOLS = [
       'Create a new isolated development environment for a project: a container with its own git worktree of the '
       + 'repository, on a branch whose name is the environment\'s, verbatim, made from the project\'s last commit. If a '
       + 'branch of that name already exists it is checked out instead, with its commits, and the message saying it '
-      + 'is running says so: tell the user, since it may not be what they meant. Uncommitted work on the host stays there; gitignored '
+      + 'is running says so: tell the human, since it may not be what they meant. Uncommitted work on the host stays there; gitignored '
       + '`.env` files are copied. Returns at once with status "creating"; building takes minutes. You are messaged '
       + 'when it is running or has failed, and get_dev_environment shows status and lastError at any time.',
     inputSchema: {
@@ -868,7 +870,7 @@ export const MESH_TOOLS = [
   {
     name: 'get_dev_environment',
     description:
-      'Details of a development environment: status (creating, running, stopped, error), lastError, workspace path, '
+      'Details of a development environment: status (creating, running, stopped, error, retired), lastError, workspace path, '
       + 'the adapter versions it runs against the ones Domo installs today, what `docker` reaches from inside it '
       + '(host: the host\'s daemon, shared; own: a private daemon; none), any Docker resources a cleanup could not '
       + 'remove, the branch it was made on, and the agents in it.',
@@ -1039,13 +1041,13 @@ export const MESH_TOOLS = [
     name: 'notify_supervisor',
     description:
       'Tell the human something: a result, a blocker, a question that needs their decision. It appears in Domo\'s '
-      + 'notifications panel and stays until they have seen it, and is read out if they are talking to an agent. '
+      + 'notifications panel and stays until they have seen it, and is read out at once if they have a voice bar open. '
       + 'Attach files (screenshots, logs, reports) by path.',
     inputSchema: {
       type: 'object',
       properties: {
         message: { type: 'string', description: 'What to tell them. Self-contained: they may read it hours later.' },
-        urgent: { type: 'boolean', description: 'They should be interrupted now.' },
+        urgent: { type: 'boolean', description: 'They should be interrupted now: a red toast that stays until they dismiss it.' },
         files: {
           type: 'array',
           items: { type: 'string' },
@@ -1095,6 +1097,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         listAssistants(true)
       ])
       const assistantOf = new Map(assistants.map(assistant => [assistant.id, assistant]))
+      // An assistant spawned what any of its sessions spawned.
+      const spawners = caller.assistantId ? await assistantSessionIds(caller.assistantId) : caller.id
       const environmentOf = (session: AgentSession) =>
         environments.find(environment => environment.id === session.devEnvironmentId) ?? null
       const statuses = Array.isArray(args.status) ? new Set<string>(args.status) : null
@@ -1111,7 +1115,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         // nothing can be handed to it, so it is shown only when asked for.
         const state = sessionStartability(session, environment)
         if (!state.startable && args.includeUnstartable !== true) continue
-        if (args.spawnedByMe === true && !(await isSpawnedBy(session.id, caller.id))) continue
+        if (args.spawnedByMe === true && !(await isSpawnedBy(session.id, spawners))) continue
         // A session of an assistant that has handed off is a closed chapter,
         // listed with the archived ones; the current one says whose it is.
         const assistant = session.assistantId ? assistantOf.get(session.assistantId) : undefined
@@ -1228,15 +1232,16 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         delivery,
         origin: `agent:${caller.id}`
       })
-      await appendAgentEvent(target.id, 'mesh_inbound', {
+      // A handed-off assistant session passes the message to the current one.
+      await appendAgentEvent(result.agentSessionId, 'mesh_inbound', {
         from: caller.id, fromTitle: from, message: args.message, delivery: result.delivery
       })
       await appendAgentEvent(caller.id, 'mesh_outbound', {
-        to: target.id, toTitle: target.title, message: args.message, delivery: result.delivery
+        to: result.agentSessionId, toTitle: target.title, message: args.message, delivery: result.delivery
       })
       return {
         delivered: true,
-        agentId: target.id,
+        agentId: result.agentSessionId,
         title: target.title,
         delivery: result.delivery,
         outcome: result.outcome
@@ -1331,7 +1336,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       // Same hazard as `retire_dev_environment`: stopping the adapter process
       // handling this very tool call would leave its own response undelivered.
       if (args.archived && target.id === caller.id) {
-        throw new Error('Refusing to archive the session this agent is running in. Ask the user or another agent to do it.')
+        throw new Error('Refusing to archive the session this agent is running in. Ask the human or another agent to do it.')
       }
       const managedEnvironment = target.devEnvironmentId
         ? await getDevEnvironment(target.devEnvironmentId)
@@ -1535,7 +1540,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     case 'retire_project': {
       const environments = await listDevEnvironments(args.projectId)
       if (caller.devEnvironmentId && environments.some(environment => environment.id === caller.devEnvironmentId)) {
-        throw new Error('Refusing to retire the project this agent session is running in. Ask the user or another agent to do it.')
+        throw new Error('Refusing to retire the project this agent session is running in. Ask the human or another agent to do it.')
       }
       const { leftovers } = await retireProjectCascade(args.projectId)
       return { id: args.projectId, retired: true, leftovers }
@@ -1626,7 +1631,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
 
     case 'retire_dev_environment': {
       if (caller.devEnvironmentId === args.environmentId) {
-        throw new Error('Refusing to retire the environment this agent session is running in. Ask the user or another agent to do it.')
+        throw new Error('Refusing to retire the environment this agent session is running in. Ask the human or another agent to do it.')
       }
       const retirement = await retireProjectEnvironment(args.environmentId)
       return {
