@@ -17,11 +17,12 @@ const textOf = (content: any[]) => content.map(block => block.text).join('')
 
 describe('inboxDivider', () => {
   it.each([
-    ['user' as const, '[From you]'],
+    ['user' as const, '[From the human]'],
     // A spoken turn is the human too, heard through the voice bar.
-    ['voice' as const, '[From you]'],
+    ['voice' as const, '[From the human]'],
     // A subscription note is Domo talking too, not the agent it is about.
     ['system' as const, '[From Domo]'],
+    ['cron:cj_1' as const, '[From a scheduled task]'],
     ['agent:ag_7f3' as const, '[Message from agent ag_7f3]']
   ])('names %s as %s', (origin, expected) => {
     expect(inboxDivider(origin)).toBe(expected)
@@ -57,7 +58,7 @@ describe('combineInboxContent', () => {
     expect(combineInboxContent([first, second])).toEqual([
       { type: 'text', text: '[From Domo]\n' },
       ...first.content,
-      { type: 'text', text: '\n[From you]\n' },
+      { type: 'text', text: '\n[From the human]\n' },
       ...second.content
     ])
   })

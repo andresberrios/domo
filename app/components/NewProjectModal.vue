@@ -67,7 +67,7 @@ const plan = computed<{ icon: string, color: string, text: string } | null>(() =
   const value = state.value
   if (!value || value.problem) return null
   if (value.kind === 'repository') {
-    return { icon: 'i-lucide-git-branch', color: 'text-success', text: 'A git checkout. It stays where it is; nothing is written to it.' }
+    return { icon: 'i-lucide-git-branch', color: 'text-success', text: 'A git checkout. It stays where it is. Environments share its branches and commits, so a branch an agent makes in one shows up here at once.' }
   }
   if (value.kind === 'missing') {
     const folders = value.toCreate.length > 1
@@ -107,7 +107,7 @@ async function submit() {
   <UModal
     v-model:open="open"
     title="New project"
-    description="A local git checkout, or a folder Domo makes into one. Its development environments are cut from it."
+    description="A git checkout on this machine, or a folder Domo makes into one. Its development environments each work on a branch of their own."
   >
     <template #body>
       <div class="space-y-4">

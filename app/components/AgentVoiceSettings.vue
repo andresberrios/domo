@@ -261,7 +261,7 @@ const uses = computed(() => new Set([
         <UFormField label="Pocket TTS voice" description="Yours first, then the built-in ones, the most natural first.">
           <ChoiceMenu v-model="form.pocketVoice" :items="pocketItems" value-key="value" class="w-full" />
         </UFormField>
-        <UFormField label="Pocket TTS server" description="Empty: Domo runs it itself with uv (brew install uv). Or the URL of one you run.">
+        <UFormField label="Pocket TTS server" description="Leave empty and Domo runs it for you. Or the URL of a Pocket TTS server you run.">
           <UInput v-model="form.pocketUrl" class="w-full font-mono text-xs" placeholder="http://127.0.0.1:8000" />
         </UFormField>
       </div>

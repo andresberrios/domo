@@ -129,7 +129,7 @@ async function save() {
     await refreshSettings()
     toast.add({ title: `${adapter.value.label} settings saved`, color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
-    toast.add({ title: 'Could not save', description: error?.message, color: 'error' })
+    toast.add({ title: 'Could not save', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     saving.value = false
   }
@@ -149,7 +149,7 @@ async function removeKey() {
     await refreshSettings()
     toast.add({ title: 'Console key removed', color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
-    toast.add({ title: 'Could not remove the key', description: error?.message, color: 'error' })
+    toast.add({ title: 'Could not remove the key', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     removing.value = false
   }
@@ -177,7 +177,7 @@ async function removeKey() {
       color="neutral"
       variant="subtle"
       :icon="adapter.icon"
-      :title="`${probe?.models.length ?? 0} models available`"
+      :title="probe?.models.length === 1 ? '1 model available' : `${probe?.models.length ?? 0} models available`"
       :description="probe?.current ? `Adapter default: ${probe.current}` : 'The adapter chooses its default model.'"
     />
 
@@ -223,7 +223,7 @@ async function removeKey() {
             OpenCode config wins over both of these.
           </p>
         </div>
-        <UFormField label="Development environments" help="A disposable checkout in a volume Domo can re-create.">
+        <UFormField label="Development environments" help="A worktree and branch of your project, inside a container.">
           <ChoiceMenu v-model="permission.environment" :items="PERMISSION_ITEMS" value-key="value" class="w-full" />
         </UFormField>
         <UFormField label="This machine" help="Your real checkout, with no container around it.">

@@ -9,8 +9,7 @@ unexpected way.
 
 - **Each environment gets its own unix socket onto the host daemon**, mounted
   at `/var/run/docker.sock`. The socket a request arrives on is its only
-  identity. This replaced a daemon per environment (DinD), whose volumes
-  filled the Docker VM. A project that lists the docker-in-docker Feature
+  identity. A project that lists the docker-in-docker Feature
   itself still gets DinD, and only then does an environment run
   `--privileged`.
 - **It is not a security boundary.** Anything that reaches the host daemon can
@@ -119,7 +118,7 @@ Every environment gets a locked git worktree in
   every sibling's admin directory.
 - **Dependency folders never cross from the host**: they hold the host's
   platform's binaries. Installs run in the container against the shared
-  `domo-dev-caches` volume (`caches.ts`). Tools find it by environment
+  `<prefix>caches` volume (`caches.ts`). Tools find it by environment
   variable, except pnpm, which is set in the remote user's global
   `config.yaml`: a variable would outrank the project's `pnpm-workspace.yaml`.
   A hardlink cannot cross mounts, so each environment's virtual store is on

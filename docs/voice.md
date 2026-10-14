@@ -9,8 +9,10 @@ delivered to the agent as an ordinary spoken turn, and the agent's streamed
 text is read out sentence by sentence by an engine. The agent is the only
 thing that thinks. Engines are chosen in Settings (`AgentVoiceSettings`),
 separately for hearing and speaking: Gemini, OpenAI, open models on the CPU
-(Moonshine or Whisper, and Kokoro, through transformers.js, fetched on first
-use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
+(Moonshine or Whisper, and Kokoro, through transformers.js), Pocket TTS, macOS,
+a Kyutai moshi-server, or the device's own dictation and voices. An installed
+Domo fetches the models Settings chose at boot (`warm.ts`); `pnpm dev` fetches
+them on first use.
 
 - **Each turn is heard with context** (`agent-voice/context.ts`): the last
   few messages, and a vocabulary from the conversation, the tool calls' file
@@ -105,7 +107,7 @@ use), a Kyutai moshi-server, or, for hearing only, the device's own dictation.
   twice at most, and waits. Only a complete-sounding pause, a sign-off
   ("over" after punctuation, "that's it", "go ahead"), a Send, or a spoken
   command ends it. The model file is fetched from Hugging Face into the data
-  directory on first use, or read from `NUXT_SMART_TURN_MODEL`; without it a
+  directory (see `warm.ts` for when), or read from `NUXT_SMART_TURN_MODEL`; without it a
   pause ends the turn. The `kyutai` detector reads the Kyutai transcriber's
   two-second pause head instead, and `silence` waits `silenceSeconds`.
 - **The echo canceller is the browser's, and it is told everything.** The

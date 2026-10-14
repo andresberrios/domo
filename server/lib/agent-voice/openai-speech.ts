@@ -10,7 +10,7 @@ import { wavFromPcm16, type SpeechChunk } from './speech'
 
 function headers(): Record<string, string> {
   const key = openAiApiKey()
-  if (!key) throw new Error('No OpenAI API key: set NUXT_OPENAI_API_KEY')
+  if (!key) throw new Error('No OpenAI API key. Add one in Settings → General.')
   return { Authorization: `Bearer ${key}` }
 }
 

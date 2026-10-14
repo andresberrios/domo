@@ -150,7 +150,7 @@ const items = computed(() => retired.value
     <ConfirmModal
       v-model:open="confirmingRetire"
       :title="`Retire ${environment.name}?`"
-      :description="`Destroys the container, its worktree and any Docker-in-Docker volume, so uncommitted work in it is lost. ${branchOnRetirement(environment)} The records are kept — this environment and the full transcript of every coding agent that ran in it stay readable — but those agents can never be started again.`"
+      :description="`Destroys the container, its worktree and everything it made in Docker, so uncommitted work in it is lost. ${branchOnRetirement(environment)} The records are kept — this environment and the full transcript of every coding agent that ran in it stay readable — but those agents can never be started again.`"
       confirm-label="Retire environment"
       :loading="busy"
       @confirm="retire"

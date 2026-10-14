@@ -31,21 +31,21 @@ const credentials: Credential[] = [
   {
     key: 'openAiApiKey',
     label: 'OpenAI API key',
-    help: 'For the voice bar\'s OpenAI speech engines. Codex uses it only when there is no ChatGPT login, because it bills the API.',
+    help: 'For the voice bar\'s OpenAI speech engines, and OpenCode uses it for OpenAI models. Codex uses it only when there is no ChatGPT login, because it bills the API.',
     placeholder: 'sk-…',
     configured: settings => settings.hasOpenAiKey
   },
   {
     key: 'claudeCodeOauthToken',
     label: 'Claude Code token',
-    help: 'From `claude setup-token`, billed to your Claude subscription. How Claude Code runs inside development environments, and what shows your Claude plan limits.',
+    help: 'From `claude setup-token`, billed to your Claude subscription. Claude Code signs in with it, development environments included, and Domo reads your Claude plan limits with it.',
     placeholder: 'sk-ant-oat…',
     configured: settings => settings.hasClaudeCodeToken
   },
   {
     key: 'anthropicApiKey',
     label: 'Anthropic API key',
-    help: 'Optional. Bills the API, not your subscription, so it is used only when there is no Claude login or token.',
+    help: 'Optional, and bills the API, not your subscription. Claude Code uses it only when there is no Claude login or token; OpenCode uses it for Anthropic models.',
     placeholder: 'sk-ant-api…',
     configured: settings => settings.hasAnthropicKey
   }
@@ -64,7 +64,7 @@ async function write(credential: Credential, value: string) {
     emit('saved')
     toast.add({ title: value ? `${credential.label} saved` : `${credential.label} removed`, color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
-    toast.add({ title: `Could not ${value ? 'save' : 'remove'} the ${credential.label.toLowerCase()}`, description: error?.message, color: 'error' })
+    toast.add({ title: `Could not ${value ? 'save' : 'remove'} the ${credential.label.toLowerCase()}`, description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   } finally {
     busy[credential.key] = false
   }

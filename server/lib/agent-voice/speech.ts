@@ -42,7 +42,7 @@ export interface SpeechChunk {
 
 function gemini(): GoogleGenAI {
   const apiKey = geminiApiKey()
-  if (!apiKey) throw new Error('No Gemini API key: set NUXT_GEMINI_API_KEY')
+  if (!apiKey) throw new Error('No Gemini API key. Add one in Settings → General.')
   return new GoogleGenAI({ apiKey })
 }
 

@@ -222,7 +222,7 @@ async function archive() {
   await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { archived: true } })
   toast.add({
     title: 'Agent archived',
-    description: 'Turn on "Show archived" in the sidebar to find it again.',
+    description: 'Choose "Show archived" in the eye menu beside Projects to find it again.',
     color: 'neutral'
   })
   await router.push('/')
@@ -404,7 +404,7 @@ const menuItems = computed(() => [
             <p class="mt-1 text-sm text-muted">
               {{ blocked
                 ? 'It never did anything, and it can no longer be started.'
-                : 'Send this agent a task below, or tell Domo out loud what you want it to do.' }}
+                : 'Send this agent a task below, or open the voice bar and say it.' }}
             </p>
           </div>
         </div>
@@ -487,7 +487,7 @@ const menuItems = computed(() => [
         <ConfirmModal
           v-model:open="confirmingPurge"
           :title="`Delete ${session?.title} permanently?`"
-          description="Destroys the session and every event in its transcript. This is the one action in Domo that loses a record, and it cannot be undone."
+          description="Deletes this agent and its whole transcript. This cannot be undone."
           confirm-label="Delete permanently"
           @confirm="purge"
         />

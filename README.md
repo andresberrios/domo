@@ -11,7 +11,7 @@ real time.
 
 With Domo you can:
 
-- Run coding agents on your machine, or in isolated dev environments
+- Run coding agents on your machine, or in isolated development environments
   (containers) made from a project checkout.
 - Let agents talk to each other, start new agents, and follow each other's
   progress through a built-in `domo` MCP server. Agents can also leave you
@@ -19,7 +19,8 @@ With Domo you can:
   seen them.
 - Send a message to a busy agent. You choose how it arrives: *steer* it into
   the running turn, *queue* it until the turn ends, or *interrupt* the turn.
-- Keep assistants: named agents with a picture and a persona that you talk to
+- Keep assistants: named agents with a picture, a persona and a voice of their
+  own that you talk to
   for as long as you like. When one's context fills up, or you ask it to start
   fresh, it writes itself a note and carries on in a new session; its page
   reads as one conversation, and its journal lists the sessions underneath.
@@ -27,8 +28,9 @@ With Domo you can:
 - See context usage for each session, and your Claude, Codex and OpenCode Go
   plan limits.
 - Talk to any agent from its page. One engine hears you and one speaks the
-  replies, chosen in Settings: Gemini, OpenAI, open models on your CPU, or
-  your device's own dictation and voices.
+  replies, chosen in Settings: Gemini, OpenAI, open models on your CPU
+  (Pocket TTS among them, which can clone a voice), macOS's own on a Mac, or
+  your device's dictation and voices.
 
 ## Requirements
 
@@ -70,11 +72,11 @@ not start is rolled back.
 
 ## Quick start (development)
 
-Needs Node 22+, pnpm 10+ and [Caddy](https://caddyserver.com) on your `PATH`
+Needs the Node and pnpm in `.tool-versions` and [Caddy](https://caddyserver.com) on your `PATH`
 (`brew install caddy`); browsers allow the microphone only on HTTPS.
 
 ```bash
-cp .env.example .env     # add your Gemini key
+cp .env.example .env     # keys can also go in Settings later
 docker compose up -d     # Postgres :54321, Electric :30000
 pnpm install
 pnpm dev                 # open https://localhost:3766
@@ -100,9 +102,9 @@ To change the addresses, set `DOMO_HTTPS_ADDRESS` (default `localhost:3766`) or
 ## Authentication
 
 **Claude Code.** Run `claude setup-token` once and put the token in Settings →
-General (or in `.env` as `NUXT_CLAUDE_CODE_OAUTH_TOKEN`). Claude Code needs it to run inside development
-environments, and Domo needs it to show your Claude plan limits. Host sessions
-can also use your local Claude login.
+General (or in `.env` as `NUXT_CLAUDE_CODE_OAUTH_TOKEN`). Claude Code signs in
+with it, and needs it inside development environments; Domo needs it to show
+your Claude plan limits. Without it, host sessions use your local Claude login.
 
 Domo never copies your Claude login into a container. Claude Code rotates its
 refresh token every time it refreshes, so two copies of one login log each
@@ -269,9 +271,10 @@ is `.ssh`, `.gitconfig`, `.config/gh`, `.config/gcloud`, `.aws` and `.kube`.
 
 ## Configuration
 
-Keys go in **Settings → General**, or in `.env`, which wins over Settings and
-is read when the server starts. Everything else is in Settings. `.env.example`
-lists the common variables.
+The Gemini, OpenAI and Anthropic keys and the Claude Code token can be set in
+**Settings → General**, and the OpenCode key in **Settings → OpenCode**. Every
+variable below can go in `.env`, which wins over Settings and is read when the
+server starts. `.env.example` lists the common ones.
 
 | Variable | Purpose |
 | --- | --- |
@@ -284,11 +287,11 @@ lists the common variables.
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
 | `NUXT_GH_TOKEN` | GitHub token for environment sessions |
 | `DATABASE_URL`, `ELECTRIC_URL` | Default to the compose services |
-| `NUXT_DEFAULT_CWD` | Default working directory for new agents |
+| `NUXT_DEFAULT_CWD` | Default for **Settings → Coding agents → Default workspace** |
 | `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
 | `NUXT_DEV_ENV_IMAGE` | Base image when a project has no `.domo.json` |
 | `NUXT_DEV_ENV_RUNTIME_IMAGE` | Image that provides Node and the adapters to environments (default `node:22-bookworm-slim`) |
-| `NUXT_DEV_ENV_HELPER_IMAGE` | Image that copies a checkout into its volume (default `busybox:1.37`) |
+| `NUXT_DEV_ENV_HELPER_IMAGE` | Small image Domo runs for chores on environment volumes (default `busybox:1.37`) |
 | `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix for Docker resources Domo creates (default `domo-dev-` under `pnpm dev`, `domo-prod-` when installed) |
 | `NUXT_DEV_ENV_DOCKER_READY_MS` | How long Docker in a new environment has to answer before creation fails (default `30000`) |
 | `NUXT_DOOD_SOCKET_DIR` | Where each environment's Docker socket is created (default `~/.domo/s/<install>`). Docker Desktop forwards a socket only if its path is at most 88 bytes, so set this if your home directory is longer than 53 characters. Do not use `/tmp`: macOS cleans it |
@@ -309,11 +312,12 @@ See `AGENTS.md` and `test/AGENTS.md`.
 
 ## Caveats
 
-- Single user, no auth. Bind Domo to localhost.
+- Single user, no login: anyone who can reach this machine's Domo ports can
+  drive your agents. Keep them off networks you do not trust.
 - Coding agents run with your files and your accounts. **Auto-approve
   permission requests** in Settings lets an agent edit and run things with no
   one watching.
-- A dev environment is a trusted development machine, not a sandbox. With
+- A development environment is a trusted development machine, not a sandbox. With
   `"docker": true`, its agents drive the host's Docker daemon, which gives
   them the host.
 

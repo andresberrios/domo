@@ -9,8 +9,9 @@ import type { AgentInboxMessage, MessageOrigin } from '../../../shared/types'
  */
 export function inboxDivider(origin: MessageOrigin): string {
   if (origin.startsWith('agent:')) return `[Message from agent ${origin.slice('agent:'.length)}]`
+  if (origin.startsWith('cron:')) return '[From a scheduled task]'
   if (origin === 'system') return '[From Domo]'
-  return '[From you]'
+  return '[From the human]'
 }
 
 /**

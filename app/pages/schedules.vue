@@ -61,7 +61,7 @@ function when(job: CronJob) {
   }
   if (!job.enabled) return 'Paused'
   if (!job.nextRunAt) return 'No next run'
-  return new Date(job.nextRunAt).toLocaleString()
+  return `Next: ${new Date(job.nextRunAt).toLocaleString()}`
 }
 
 async function createJob() {
@@ -126,7 +126,7 @@ async function remove() {
           color="primary"
           variant="subtle"
           title="Wake an agent with a prompt"
-          description="Schedules are stored in Postgres and survive server or agent restarts. If an agent is busy, queued delivery waits visibly in its inbox."
+          description="Schedules keep running across Domo restarts. If the agent is busy when one fires, “If busy” decides: wait in its inbox, join the turn it is on, or stop that turn."
         />
 
         <section class="space-y-4 rounded-lg border border-default p-4">
@@ -194,8 +194,8 @@ async function remove() {
                 <p class="mt-1 line-clamp-2 text-sm text-muted">{{ job.prompt }}</p>
                 <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-dimmed">
                   <span v-if="job.scheduleType === 'cron'" class="font-mono">{{ job.cronExpression }} · {{ job.timezone }}</span>
-                  <span>Next: {{ when(job) }}</span>
-                  <span>{{ job.runCount }} runs</span>
+                  <span>{{ when(job) }}</span>
+                  <span>{{ job.runCount === 1 ? '1 run' : `${job.runCount} runs` }}</span>
                 </div>
                 <p v-if="job.lastError" class="mt-2 text-xs text-error">{{ job.lastError }}</p>
               </div>

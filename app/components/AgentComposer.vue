@@ -124,7 +124,7 @@ async function upload(files: File[]) {
     })
     attachments.value = [...attachments.value, ...result.files]
   } catch (error: any) {
-    toast.add({ title: 'Upload failed', description: error?.message, color: 'error' })
+    toast.add({ title: 'Upload failed', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   }
 }
 
@@ -271,7 +271,7 @@ async function stop() {
   try {
     await $fetch(`/api/agents/${props.session.id}/cancel`, { method: 'POST' })
   } catch (error: any) {
-    toast.add({ title: 'Could not stop', description: error?.message, color: 'error' })
+    toast.add({ title: 'Could not stop', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
   }
 }
 </script>

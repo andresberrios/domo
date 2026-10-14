@@ -103,7 +103,7 @@ const cascade = computed(() => {
   const environmentsText = count === 1 ? '1 development environment' : `${count} development environments`
   const agents = environmentAgentCount.value
   const agentsText = agents === 1 ? '1 coding agent session' : `${agents} coding agent sessions`
-  return `Destroys ${environmentsText}: each container, its worktree and any Docker-in-Docker volume. `
+  return `Destroys ${environmentsText}: each container, its worktree and everything it made in Docker. `
     + 'Commits stay in your repository; each of their branches is deleted if every commit on it is also on another branch. '
     + `The records are kept — this project, those environments and ${agentsText} inside them stay readable — `
     + `but those agents can never be started again. The checkout at ${project.value?.repoPath} is left on disk; `
@@ -239,7 +239,7 @@ const cascade = computed(() => {
             </li>
           </ul>
           <p v-else class="rounded-lg border border-dashed border-default px-4 py-6 text-center text-sm text-muted">
-            Nothing is running directly in {{ project.repoPath }}.
+            No agents in {{ project.repoPath }} yet.
           </p>
         </section>
       </div>

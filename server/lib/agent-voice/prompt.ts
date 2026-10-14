@@ -17,7 +17,7 @@ import { SPOKEN_NOTE_PREFIX } from '../../../shared/agent-voice'
  * with the rest, so the agent is neither told the same thing twenty times nor
  * left to remember it across a long typed stretch.
  */
-export const SPOKEN_CHANNEL_INSTRUCTIONS = `The developer is talking to you out loud, and your reply is read to them by
+export const SPOKEN_CHANNEL_INSTRUCTIONS = `The human is talking to you out loud, and your reply is read to them by
 text-to-speech as it streams.
 
 Their message was transcribed by speech recognition, which gets ordinary words

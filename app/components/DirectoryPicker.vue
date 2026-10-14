@@ -7,8 +7,8 @@ const props = withDefaults(defineProps<{
   /** Offers a folder that does not exist yet: the browsed folder plus a typed name. Nothing is created here. */
   allowNew?: boolean
 }>(), {
-  title: 'Choose a working directory',
-  description: 'Pick the repository this agent should work in.',
+  title: 'Choose a folder',
+  description: 'Any folder on this machine.',
   placeholder: '/path/to/repository',
   allowNew: false
 })

@@ -92,7 +92,7 @@ async function setArchived(archived: boolean) {
   try {
     await $fetch(`/api/assistants/${assistantId.value}`, { method: 'PATCH', body: { archived } })
     if (archived) {
-      toast.add({ title: `${assistant.value?.name} archived`, description: 'Turn on "Show archived" in the sidebar to find it again.', color: 'neutral' })
+      toast.add({ title: `${assistant.value?.name} archived`, description: 'Choose "Show archived" in the eye menu beside Projects to find it again.', color: 'neutral' })
       await router.push('/')
     }
   } catch (error: any) {

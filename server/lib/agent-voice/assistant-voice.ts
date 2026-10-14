@@ -74,12 +74,12 @@ export async function normalizeAssistantVoice(value: unknown): Promise<Assistant
  */
 export function speakerUnavailable(speaker: AssistantVoice['speaker'], base: AgentVoiceSettings): string | null {
   switch (speaker) {
-    case 'gemini': return geminiApiKey() ? null : 'No Gemini key is set (Settings, Keys).'
-    case 'openai': return openAiApiKey() ? null : 'No OpenAI key is set (Settings, Keys).'
+    case 'gemini': return geminiApiKey() ? null : 'No Gemini API key. Add one in Settings → General.'
+    case 'openai': return openAiApiKey() ? null : 'No OpenAI API key. Add one in Settings → General.'
     case 'local': return null
     case 'mac': return process.platform === 'darwin' ? null : 'Domo is not running on a Mac.'
     // A server the human runs; only when Settings already point the bar at it.
-    case 'kyutai': return base.speaker === 'kyutai' ? null : 'Kyutai speaks only when the voice bar\'s own speaker in Settings is Kyutai.'
+    case 'kyutai': return base.speaker === 'kyutai' ? null : 'Kyutai speaks only when the voice bar\'s own speaker in Settings → Talking to agents is Kyutai.'
     case 'pocket': return null
   }
 }
