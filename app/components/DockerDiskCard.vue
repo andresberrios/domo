@@ -14,7 +14,11 @@ async function act(action: 'check' | 'clean') {
   try {
     await $fetch(`/api/docker-disk/${action}`, { method: 'POST' })
   } catch (error: any) {
-    toast.add({ title: 'Could not do that', description: error?.data?.message ?? error?.message, color: 'error' })
+    toast.add({
+      title: action === 'check' ? 'Could not measure the disk' : 'Could not free space',
+      description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message,
+      color: 'error'
+    })
   } finally {
     busy.value = null
   }
