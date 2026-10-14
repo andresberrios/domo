@@ -103,12 +103,12 @@ describe('UsageLimitRows', () => {
         limits: [],
         provider: provider({
           state: 'unconfigured',
-          message: 'Set NUXT_CLAUDE_CODE_OAUTH_TOKEN (run `claude setup-token`) to see plan limits.'
+          message: 'Add a Claude Code token (from `claude setup-token`) in Settings → General to see plan limits.'
         })
       }
     })
 
-    expect(component.text()).toContain('NUXT_CLAUDE_CODE_OAUTH_TOKEN')
+    expect(component.text()).toContain('Settings → General')
     expect(component.text()).not.toContain('0%')
   })
 

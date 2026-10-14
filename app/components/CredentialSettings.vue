@@ -31,21 +31,21 @@ const credentials: Credential[] = [
   {
     key: 'openAiApiKey',
     label: 'OpenAI API key',
-    help: 'For the voice bar\'s OpenAI speech engines, and a Codex credential.',
+    help: 'For the voice bar\'s OpenAI speech engines. Codex and OpenCode use it too, and Codex then signs in with it instead of your ChatGPT login, so it bills the API.',
     placeholder: 'sk-…',
     configured: settings => settings.hasOpenAiKey
   },
   {
     key: 'claudeCodeOauthToken',
     label: 'Claude Code token',
-    help: 'From `claude setup-token`, billed to your Claude subscription. How Claude Code runs inside development environments, and what shows your Claude plan limits.',
+    help: 'From `claude setup-token`, billed to your Claude subscription. Claude Code signs in with it, development environments included, and Domo reads your Claude plan limits with it.',
     placeholder: 'sk-ant-oat…',
     configured: settings => settings.hasClaudeCodeToken
   },
   {
     key: 'anthropicApiKey',
     label: 'Anthropic API key',
-    help: 'Optional. Bills the API, not your subscription, so it is used only when there is no Claude login or token.',
+    help: 'Optional, and bills the API, not your subscription. Claude Code uses it only when there is no Claude login or token; OpenCode uses it for Anthropic models.',
     placeholder: 'sk-ant-api…',
     configured: settings => settings.hasAnthropicKey
   }

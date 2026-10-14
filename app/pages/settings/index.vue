@@ -19,7 +19,7 @@ const openCodeAuthSummary = computed(() => {
 <template>
   <SettingsShell
     title="General"
-    description="The credentials Domo found."
+    description="The keys and logins Domo uses."
   >
     <section class="space-y-3">
       <div>

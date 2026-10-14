@@ -340,7 +340,7 @@ describe('nothing configured', () => {
       claudeEndpoint: async () => ({
         outcome: 'unconfigured',
         limits: [],
-        message: 'Set NUXT_CLAUDE_CODE_OAUTH_TOKEN (run `claude setup-token`) to see plan limits.'
+        message: 'Add a Claude Code token (from `claude setup-token`) in Settings → General to see plan limits.'
       })
     })
     h.poller.start()

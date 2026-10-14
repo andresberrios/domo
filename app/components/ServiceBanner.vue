@@ -25,7 +25,7 @@ const description = computed(() => {
     !health.value.db ? 'Postgres' : null,
     !health.value.electric ? 'Electric' : null
   ].filter(Boolean).join(' and ')
-  return `${missing} ${missing.includes('and') ? 'are' : 'is'} not reachable. Run \`docker compose up -d\` in the Domo directory — without them the UI cannot sync.`
+  return `${missing} ${missing.includes('and') ? 'are' : 'is'} not reachable, so the UI cannot sync. Make sure Docker is running: an installed Domo's containers start again with it. In a development checkout, run \`docker compose up -d\`.`
 })
 </script>
 
@@ -35,7 +35,7 @@ const description = computed(() => {
     color="warning"
     variant="subtle"
     icon="i-lucide-plug-zap"
-    title="Backing services are down"
+    title="Domo cannot reach its database"
     :description="description"
     class="mb-3"
     :actions="[{ label: 'Re-check', color: 'neutral', variant: 'subtle', onClick: check }]"
