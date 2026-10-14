@@ -703,7 +703,7 @@ export const MESH_TOOLS = [
       + 'need ffmpeg on the human\'s machine), cloned with Pocket TTS, and give it to an assistant. 10-20 s of one person '
       + 'speaking clearly, without music, works best. The voice is only ever spoken by Domo\'s voice bar for that '
       + 'assistant, to the human; nothing exports audio in it. Use the sample the human gives or asks for. When you '
-      + 'pick one yourself, prefer a generic voice (a voice dataset, a stock narrator) over a recognisable real person.',
+      + 'pick one yourself, tell the human whose voice it is.',
     inputSchema: {
       type: 'object',
       properties: {
