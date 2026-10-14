@@ -213,7 +213,7 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
                   color="neutral"
                   variant="ghost"
                   size="xs"
-                  :aria-label="`New agent in the ${project.name} checkout`"
+                  :aria-label="`New session in the ${project.name} checkout`"
                   :class="ROW_MENU_CLASS"
                   @click="openNewAgent({ projectId: project.id })"
                 />

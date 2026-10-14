@@ -225,7 +225,7 @@ const cascade = computed(() => {
         <section class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold">Agents in the local checkout</h2>
-            <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" :to="newAgentPath({ projectId })" />
+            <UButton label="New session here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" :to="newAgentPath({ projectId })" />
           </div>
 
           <ul v-if="localAgents.length" class="divide-y divide-default overflow-hidden rounded-lg border border-default">

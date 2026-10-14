@@ -33,6 +33,12 @@ describe('the draft a new-session page opens with', () => {
     expect(draft).toMatchObject({ projectId: null, devEnvironmentId: null, cwd: '/home' })
   })
 
+  it('starts from the harness and settings the last session used, wherever it is', () => {
+    const remembered = { adapter: 'codex' as const, model: 'gpt-5.6-luna', modeId: 'read-only', config: { reasoning_effort: 'high' } }
+    const draft = initialDraft({ project: 'p2' }, projects, [], '/home', remembered)
+    expect(draft).toMatchObject({ ...remembered, projectId: 'p2', cwd: '/work/two', title: '' })
+  })
+
   it('with no target, prefers a running environment, then the first project', () => {
     expect(initialDraft({}, projects, [environment('env_a', 'p2', 'stopped'), environment('env_c', 'p2', 'running')], '/home'))
       .toMatchObject({ projectId: 'p2', devEnvironmentId: 'env_c' })

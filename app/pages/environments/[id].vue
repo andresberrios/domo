@@ -152,7 +152,7 @@ async function retryCleanup() {
         <template #right>
           <UButton
             v-if="environment && !retired"
-            label="New agent"
+            label="New session"
             icon="i-lucide-plus"
             size="sm"
             :ui="{ label: 'hidden sm:inline' }"
@@ -271,7 +271,7 @@ async function retryCleanup() {
         <section v-if="!retired" class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold">Agents</h2>
-            <UButton label="New agent here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" :to="newAgentPath({ environmentId })" />
+            <UButton label="New session here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" :to="newAgentPath({ environmentId })" />
           </div>
 
           <ul v-if="agents.length" class="divide-y divide-default overflow-hidden rounded-lg border border-default">

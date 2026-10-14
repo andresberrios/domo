@@ -39,7 +39,7 @@ const talkLabel = computed(() => assistant.value ? `Talk to ${assistant.value.na
                 />
               </UTooltip>
               <UButton
-                label="New agent"
+                label="New session"
                 icon="i-lucide-plus"
                 color="neutral"
                 variant="subtle"
@@ -68,7 +68,7 @@ const talkLabel = computed(() => assistant.value ? `Talk to ${assistant.value.na
 
         <div v-else class="flex flex-col items-center gap-2">
           <UButton icon="i-lucide-mic" :loading="creating" :aria-label="talkLabel" @click="talk" />
-          <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New coding agent" to="/agents/new" />
+          <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New session" to="/agents/new" />
           <UButton to="/schedules" icon="i-lucide-clock-3" color="neutral" variant="ghost" aria-label="Schedules" />
           <NotificationsButton collapsed />
         </div>
