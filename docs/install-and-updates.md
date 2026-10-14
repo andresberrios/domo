@@ -265,7 +265,7 @@ them needs a compiler or anything else from the Xcode Command Line Tools.
   Homebrew and MacPorts both require them. So Domo downloads GitHub Desktop's
   relocatable build, `desktop/dugite-native` (pinned with checksums as
   `GIT_RELEASE` in `install.sh` and `BUNDLED_GIT` in `bin/domo.mjs`): 62 MB
-  download, about 35 MB on disk once its Git Credential Manager and .NET
+  download, about 39 MB on disk once its Git Credential Manager and .NET
   runtime are removed. Every binary is ad-hoc signed and links only system
   libraries, and a file curl or Node downloads carries no quarantine
   attribute, so Gatekeeper never sees it. No osxkeychain helper: HTTPS
