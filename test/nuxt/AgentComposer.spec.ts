@@ -222,6 +222,7 @@ function pointer(kind: 'coarse' | 'fine') {
 let restorePointer: (() => void) | null = null
 
 beforeEach(() => {
+  window.localStorage.clear()
   sent.mockClear()
   uploaded.mockClear()
   patched.mockClear()
@@ -805,5 +806,79 @@ describe('AgentComposer on a draft', () => {
     // Another harness starts the rest over: its models and modes are its own.
     option('Agent', 'Claude Code').click()
     await vi.waitFor(() => expect(draft.value).toMatchObject({ adapter: 'claude-code', model: '', modeId: '', config: {} }))
+  })
+})
+
+/**
+ * Unsent text belongs to the session it was typed at: it outlives leaving the
+ * page and a reload, never shows up anywhere else, and goes only once the
+ * message has actually gone.
+ */
+describe('AgentComposer keeping what was typed', () => {
+  const textarea = (component: any) => component.find('textarea').element as HTMLTextAreaElement
+
+  it('finds it again on the same session, with the cursor at the end, and nowhere else', async () => {
+    const first = await mountSuspended(Harness, { props: { session: session('idle') } })
+    await first.find('textarea').setValue('half a thought')
+    first.unmount()
+
+    const other = await mountSuspended(Harness, { props: { session: session('idle', { id: 'ag_2' }) } })
+    expect(textarea(other).value).toBe('')
+    other.unmount()
+
+    const again = await mountSuspended(Harness, { props: { session: session('idle') } })
+    await vi.waitFor(() => expect(textarea(again).value).toBe('half a thought'))
+    await vi.waitFor(() => expect(textarea(again).selectionStart).toBe('half a thought'.length))
+  })
+
+  it('keeps attachments with it', async () => {
+    const first = await mountSuspended(Harness, { props: { session: session('idle') } })
+    paste(first, [image('shot.png')])
+    await vi.waitFor(() => expect(first.text()).toContain('shot.png'))
+    first.unmount()
+
+    const again = await mountSuspended(Harness, { props: { session: session('idle') } })
+    await vi.waitFor(() => expect(again.text()).toContain('shot.png'))
+  })
+
+  it('forgets it once the message has gone', async () => {
+    const component = await mountSuspended(Harness, { props: { session: session('idle') } })
+    await type(component, 'ship it')
+    await vi.waitFor(() => expect(sent).toHaveBeenCalled())
+    // Left before the send had answered: it still has to be forgotten.
+    component.unmount()
+
+    await vi.waitFor(() => expect(window.localStorage.getItem('domo:composer:ag_1')).toBeNull())
+    const again = await mountSuspended(Harness, { props: { session: session('idle') } })
+    expect(textarea(again).value).toBe('')
+  })
+
+  it('holds a draft\'s first message until the session exists, and keeps it if it never does', async () => {
+    let finish!: (ok: boolean) => void
+    const Draft = defineComponent({
+      setup: () => () => h(UApp, null, {
+        default: () => h(AgentComposer, {
+          session: null,
+          start: () => new Promise<boolean>((resolve) => { finish = resolve }),
+          draft: { adapter: 'claude-code', model: '', modeId: '', config: {}, projectId: null, devEnvironmentId: null, cwd: '/tmp', title: '' }
+        })
+      })
+    })
+    const component = await mountSuspended(Draft)
+    await type(component, 'start here')
+    await vi.waitFor(() => expect(textarea(component).value).toBe(''))
+    // Out of the box, but not out of storage: the session does not exist yet.
+    expect(window.localStorage.getItem('domo:composer:new')).toContain('start here')
+
+    finish(false)
+    await vi.waitFor(() => expect(textarea(component).value).toBe('start here'))
+    expect(window.localStorage.getItem('domo:composer:new')).toContain('start here')
+
+    // Sent again, and this time the session is made: now it is forgotten.
+    await component.find('textarea').trigger('keydown', { key: 'Enter' })
+    await vi.waitFor(() => expect(textarea(component).value).toBe(''))
+    expect(window.localStorage.getItem('domo:composer:new')).toContain('start here')
+    finish(true)
+    await vi.waitFor(() => expect(window.localStorage.getItem('domo:composer:new')).toBeNull())
   })
 })
