@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { clockTime, dayKey, dayLabel, fullTime, relativeTime, shortPath, truncate } from '~/utils/format'
+import { clockParts, clockTime, dayKey, dayLabel, fullTime, relativeTime, shortPath, truncate } from '~/utils/format'
 
 describe('relativeTime', () => {
   afterEach(() => vi.useRealTimers())
@@ -84,8 +84,8 @@ describe('truncate', () => {
 
 describe('transcript times', () => {
   // Local wall-clock instants, so the day boundaries hold in any time zone.
-  const local = (year: number, month: number, day: number, hour = 12, minute = 0) =>
-    new Date(year, month - 1, day, hour, minute).toISOString()
+  const local = (year: number, month: number, day: number, hour = 12, minute = 0, second = 0) =>
+    new Date(year, month - 1, day, hour, minute, second).toISOString()
   const today = dayKey(new Date(2026, 9, 14, 9))
 
   it('names today and yesterday, and dates the rest', () => {
@@ -105,8 +105,15 @@ describe('transcript times', () => {
   })
 
   it('gives a clock time, and the whole instant for a tooltip', () => {
-    expect(clockTime(local(2026, 10, 14, 14, 5))).toMatch(/(14|2):05/)
+    expect(clockTime(local(2026, 10, 14, 14, 5, 9))).toMatch(/(14|2):05:09/)
     expect(fullTime(local(2026, 10, 14, 14, 5))).toMatch(/2026/)
+  })
+
+  it('splits a clock time into the time and its day period, for a narrow column', () => {
+    const { time, period } = clockParts(local(2026, 10, 14, 14, 5, 9))
+    expect(time).toMatch(/^(14|2):05:09$/)
+    expect(`${time} ${period}`.trim()).toBe(clockTime(local(2026, 10, 14, 14, 5, 9)).replace(/\s+/g, ' '))
+    expect(clockParts(null)).toEqual({ time: '', period: '' })
   })
 
   it('is empty rather than "Invalid Date"', () => {

@@ -17,7 +17,6 @@ const { assistant } = useAssistant(assistantId)
 const { all: allSessions } = useAgentSessions()
 const { all: allEnvironments } = useDevEnvironments()
 const { permissions: allPermissions } = usePermissions()
-const condensed = useCondensedTranscript()
 const voiceOpen = useAgentVoiceOpen()
 
 /** Its sessions, oldest first. */
@@ -40,7 +39,7 @@ const shown = ref(2)
 watch(assistantId, () => { shown.value = 2 })
 const shownSessions = computed(() => sessions.value.slice(-shown.value))
 const earlier = computed(() => Math.max(0, sessions.value.length - shown.value))
-const { events: merged } = useSessionsEvents(() => shownSessions.value.map(session => session.id))
+const { events: merged, complete, loadingEarlier, loadEarlier } = useSessionsEvents(() => shownSessions.value.map(session => session.id))
 
 /**
  * What an earlier session said about its own ending — that it handed off,
@@ -178,9 +177,6 @@ const menuItems = computed(() => [
             @click="journalOpen = true"
           />
         </template>
-        <template #right>
-          <USwitch v-model="condensed" size="xs" label="Condensed" :ui="{ label: 'text-xs text-muted' }" />
-        </template>
       </UDashboardToolbar>
     </template>
 
@@ -219,8 +215,10 @@ const menuItems = computed(() => [
           :session="current"
           :events="events"
           :permissions="permissions"
-          :condensed="condensed"
           :avatar="avatar"
+          :complete="complete"
+          :loading-earlier="loadingEarlier"
+          @load-earlier="loadEarlier"
         />
 
         <div v-if="pending.length && !blocked" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">

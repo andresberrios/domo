@@ -14,13 +14,6 @@ const props = defineProps<{
 
 const item = computed(() => props.item)
 
-/** Only on a coding agent's or an assistant's page, which is where the voice bar lives. */
-const route = useRoute()
-const replayable = computed(() => /^\/(agents|assistants)\//.test(route.path) && props.item.kind === 'assistant')
-const { replay } = useAgentVoiceReplay()
-/** A tap on the message shows its replay button; there is no hover on a phone. */
-const revealed = ref(false)
-
 const permissionPending = computed(() =>
   props.item.kind === 'permission'
   && (props.pendingPermissionIds ?? []).includes(props.item.permissionId)
@@ -49,28 +42,8 @@ const permissionPending = computed(() =>
     </div>
   </template>
 
-  <!--
-    The replay button stays out of the way: shown on hover, or once the
-    message is tapped (it takes focus), and faint even then.
-  -->
-  <div
-    v-else-if="item.kind === 'assistant'"
-    class="group/reply relative"
-    @click="revealed = true"
-  >
-    <MarkdownView :text="item.text" />
-    <UButton
-      v-if="replayable"
-      icon="i-lucide-volume-2"
-      color="neutral"
-      variant="ghost"
-      size="xs"
-      aria-label="Read this aloud"
-      class="absolute -bottom-6 left-0 text-dimmed transition-opacity group-hover/reply:opacity-70 focus-visible:opacity-100"
-      :class="revealed ? 'opacity-70' : 'opacity-0'"
-      @click.stop="replay(item.text)"
-    />
-  </div>
+  <!-- Its read-aloud button is in the strip under the row (`TranscriptRowMeta`). -->
+  <MarkdownView v-else-if="item.kind === 'assistant'" :text="item.text" />
 
   <UCollapsible v-else-if="item.kind === 'thought'" class="w-full">
     <UButton

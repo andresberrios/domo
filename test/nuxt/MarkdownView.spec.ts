@@ -27,4 +27,25 @@ describe('MarkdownView', () => {
     expect([...seen].some(text => text.startsWith('one two') && text !== words.join(' '))).toBe(true)
     await expect.poll(() => view.text()).toBe(words.join(' '))
   })
+
+  /**
+   * A virtual transcript mounts a row as it scrolls into view. A view that
+   * drew nothing until its markdown arrived grew a moment later and moved
+   * every row under it.
+   */
+  it('draws its text in the frame it mounts in, and the highlighted render from then on', async () => {
+    const text = '**bold** and\n\n```ts\nconst a = 1\n```'
+    const view = await mountSuspended(MarkdownView, { props: { text } })
+
+    // Before the (mocked, 60 ms) highlighted render could have landed.
+    expect(view.html()).toContain('<strong>bold</strong>')
+    expect(view.html()).toContain('<pre><code>const a = 1')
+
+    // The mock renders the source as it is, asterisks and all.
+    await expect.poll(() => view.text()).toContain('**bold**')
+
+    // Mounted again, it is the highlighted render at once.
+    const again = await mountSuspended(MarkdownView, { props: { text } })
+    expect(again.text()).toContain('**bold**')
+  })
 })

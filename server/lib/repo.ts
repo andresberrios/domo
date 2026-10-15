@@ -1199,6 +1199,31 @@ export async function listAgentEventsWindow(
   return rows.map(mapAgentEvent)
 }
 
+/**
+ * Where the transcript page below `beforeSeq` starts, across one or more
+ * sessions read as one log: the `seq` to load from, or null when fewer than
+ * `size` rows are left and the page is the rest of the log. The browser loads
+ * the rows themselves through Electric; this only spares it downloading a
+ * page to learn where the page begins.
+ *
+ * A page opens on the first prompt in it, so a window never starts halfway
+ * through a turn, unless that would give up most of the page.
+ */
+export async function agentEventsPageFloor(
+  agentSessionIds: string[],
+  input: { beforeSeq?: number, size: number }
+): Promise<number | null> {
+  const rows = await query<{ seq: string, type: string }>(
+    `select seq, type from agent_events
+      where agent_session_id = any($1::text[]) and seq < $2
+      order by seq desc limit $3`,
+    [agentSessionIds, input.beforeSeq ?? Number.MAX_SAFE_INTEGER, input.size]
+  )
+  if (rows.length < input.size) return null
+  const opens = rows.findLastIndex(row => row.type === 'user_message')
+  return Number(rows[opens >= input.size / 2 ? opens : rows.length - 1]!.seq)
+}
+
 export async function appendAgentEvent(
   agentSessionId: string,
   type: string,

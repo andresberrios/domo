@@ -23,6 +23,8 @@ const label = computed(() => activityLabel(props.group))
 const breakdown = computed(() => activityBreakdown(props.group))
 
 const names = useDomoNames()
+const alwaysShowTimes = useAlwaysShowTimes()
+const { revealed, reveal } = useRevealedRow()
 
 /** One item as a line: what the agent is doing, or did. */
 function line(item: TranscriptItem) {
@@ -89,21 +91,32 @@ const current = computed(() => {
     </UButton>
 
     <template #content>
-      <!-- Each item's time in a narrow column of its own, level with its first line. -->
+      <!--
+        Each item's time hangs in the gutter to its left, level with its first
+        line: the space under the row's avatar, which is empty. Like a row's
+        own time it shows on hover, after a tap, or always, and takes no room.
+      -->
       <div class="mt-2 space-y-2 border-s-2 border-accented ps-3">
         <div
           v-for="item in group.items"
           :key="item.id"
-          class="flex items-start gap-2"
+          class="group/item relative"
+          @pointerup="reveal(item.id, $event)"
         >
           <time
             :datetime="item.at"
             :title="fullTime(item.at)"
-            class="w-12 shrink-0 text-end text-[10px] leading-none text-dimmed tabular-nums"
-            :class="item.kind === 'thought' ? 'pt-2' : 'pt-3.5'"
+            class="pointer-events-none absolute right-full top-0 me-4 flex flex-col items-end justify-center text-[10px] leading-3 text-dimmed tabular-nums transition-opacity"
+            :class="[
+              item.kind === 'thought' ? 'h-6' : 'h-9',
+              alwaysShowTimes || revealed === item.id ? 'opacity-100' : 'opacity-0 group-hover/item:opacity-100'
+            ]"
             data-testid="item-time"
-          >{{ clockTime(item.at) }}</time>
-          <TranscriptItemView class="min-w-0 flex-1" :item="item" />
+          >
+            <span>{{ clockParts(item.at).time }}</span>
+            <span v-if="clockParts(item.at).period">{{ clockParts(item.at).period }}</span>
+          </time>
+          <TranscriptItemView :item="item" />
         </div>
       </div>
     </template>

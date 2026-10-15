@@ -1,7 +1,9 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import AgentTranscript from '~/components/AgentTranscript.vue'
+import { useAlwaysShowTimes } from '~/composables/useRecordVisibility'
+import { useRevealedRow } from '~/composables/useRevealedRow'
 import type { AgentEvent, AgentSession, PendingPermission } from '~~/shared/types'
 import { agentEvent, permission, textChunk, thoughtChunk, userMessage } from '../helpers/events'
 
@@ -30,8 +32,8 @@ const session: AgentSession = {
   assistantId: null
 }
 
-function render(events: AgentEvent[], permissions: PendingPermission[] = [], condensed = false) {
-  return mountSuspended(AgentTranscript, { props: { session, events, permissions, condensed } })
+function render(events: AgentEvent[], permissions: PendingPermission[] = []) {
+  return mountSuspended(AgentTranscript, { props: { session, events, permissions } })
 }
 
 /** MarkdownView renders asynchronously (Shiki), so message bodies land a tick late. */
@@ -59,7 +61,7 @@ describe('AgentTranscript', () => {
 
     await text(component).toContain('fix the build')
     await text(component).toContain('Looking at it.')
-    await text(component).toContain('Thought')
+    await text(component).toContain('1 thought')
     await text(component).toContain('Bash')
     await text(component).toContain('Refresh the lockfile')
     await text(component).toContain('Run pnpm install')
@@ -71,9 +73,7 @@ describe('AgentTranscript', () => {
    * (the banner keys on `status` and goes), so it has to stay visible, in
    * error tone, at the point in the turn where it happened — a message of its
    * own between the text before it and the text after, never folded into
-   * either. There is no condensed/uncondensed switch in this component: it
-   * renders one item per transcript item and nothing groups them, so "outside
-   * any activity group" is the only mode there is.
+   * either: an error is never part of a run of tool activity.
    */
   it('renders an error as its own error-toned notice, between the text around it', async () => {
     const component = await render([
@@ -158,11 +158,10 @@ describe('AgentTranscript', () => {
   })
 
   /**
-   * Condensing is a render choice, not a change to the log: the same events
-   * draw as one row or as every card, and the things the user has to act on
-   * stay on screen either way.
+   * Runs of tool activity draw as one row each — there is no other way to see
+   * a transcript — and the things the user has to act on stay on screen.
    */
-  describe('condensed', () => {
+  describe('tool activity', () => {
     const toolCall = (id: string, name: string) =>
       agentEvent('tool_call', { toolCallId: id, title: name, name, kind: 'execute', status: 'completed' })
 
@@ -174,28 +173,12 @@ describe('AgentTranscript', () => {
     ]
 
     it('draws a run as one row and none of its cards', async () => {
-      const component = await render(run, [], true)
+      const component = await render(run)
 
       await text(component).toContain('3 tool calls')
       expect(component.text()).toContain('Read ×2, Bash ×1')
       expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(0)
       await text(component).toContain('All set.')
-    })
-
-    it('draws every card when it is off', async () => {
-      const component = await render(run, [], false)
-
-      await text(component).toContain('Read')
-      expect(component.text()).not.toContain('3 tool calls')
-      expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(3)
-    })
-
-    it('is on unless the page says otherwise', async () => {
-      const component = await mountSuspended(AgentTranscript, {
-        props: { session, events: run, permissions: [] }
-      })
-
-      await text(component).toContain('3 tool calls')
     })
 
     it('never hides a permission that is still waiting for an answer', async () => {
@@ -206,7 +189,7 @@ describe('AgentTranscript', () => {
         agentEvent('permission_request', { permissionId: pending.id, toolCall: { title: 'Run pnpm install' } }),
         toolCall('c3', 'Bash'),
         toolCall('c4', 'Bash')
-      ], [pending], true)
+      ], [pending])
 
       await text(component).toContain('Waiting for permission: Run pnpm install')
       expect(component.text()).toContain('2 tool calls')
@@ -217,7 +200,7 @@ describe('AgentTranscript', () => {
         toolCall('c1', 'Read'),
         toolCall('c2', 'Read'),
         agentEvent('tool_call', { toolCallId: 'c3', title: 'Bash', name: 'Bash', kind: 'execute', status: 'in_progress' })
-      ], [], true)
+      ])
 
       await text(component).toContain('3 tool calls')
       expect(component.findAllComponents({ name: 'ToolCallCard' })).toHaveLength(0)
@@ -257,5 +240,103 @@ describe('AgentTranscript', () => {
       expect(days).toHaveLength(2)
       expect(days.map(day => day.find('time').attributes('datetime'))).toEqual([day1, day2])
     })
+
+    /**
+     * A time takes the strip under its row whether it shows or not, so the
+     * only thing that changes is its opacity: nothing can move.
+     */
+    describe('showing them', () => {
+      beforeEach(() => {
+        useAlwaysShowTimes().value = false
+        useRevealedRow().revealed.value = null
+        window.localStorage.removeItem('domo:transcript:times')
+      })
+
+      const shown = (time: { classes: () => string[] }) => time.classes().includes('opacity-100')
+      const rows = [
+        said('fix the build', day1),
+        agentEvent('agent_message', { text: 'On it.', streaming: false }, at(day1Later))
+      ]
+
+      it('gives the time to the second', async () => {
+        const component = await render(rows)
+
+        expect(component.find('[data-testid="row-time"]').text()).toMatch(/\d:\d\d:\d\d/)
+      })
+
+      it('shows them on hover only, until the clock button keeps them all showing, everywhere', async () => {
+        const component = await render(rows)
+        const times = () => component.findAll('[data-testid="row-time"]')
+        expect(times().some(shown)).toBe(false)
+
+        await component.find('[data-testid="times-toggle"]').trigger('click')
+
+        expect(times().every(shown)).toBe(true)
+        expect(window.localStorage.getItem('domo:transcript:times')).toBe('true')
+        // Another transcript reads the same setting.
+        const other = await render(rows)
+        expect(other.findAll('[data-testid="row-time"]').every(shown)).toBe(true)
+
+        await component.find('[data-testid="times-toggle"]').trigger('click')
+        expect(times().some(shown)).toBe(false)
+        expect(window.localStorage.getItem('domo:transcript:times')).toBe('false')
+      })
+
+      it('shows the time of the row a finger taps, and of that row only; a mouse click shows nothing', async () => {
+        const component = await render(rows)
+        const [first, second] = component.findAll('article')
+        const times = () => component.findAll('[data-testid="row-time"]').map(shown)
+
+        await first!.trigger('pointerup', { pointerType: 'mouse' })
+        expect(times()).toEqual([false, false])
+
+        await first!.trigger('pointerup', { pointerType: 'touch' })
+        expect(times()).toEqual([true, false])
+
+        await second!.trigger('pointerup', { pointerType: 'touch' })
+        expect(times()).toEqual([false, true])
+      })
+
+      it('offers to read aloud what the agent said, and nothing else', async () => {
+        const component = await render([...rows, agentEvent('error', { message: 'adapter crashed' })])
+
+        expect(component.findAll('[aria-label="Read this aloud"]')).toHaveLength(1)
+      })
+    })
+  })
+
+  /**
+   * A long transcript arrives a page at a time; the page asks for the one
+   * before when the reader nears the top of what it has.
+   */
+  describe('earlier pages', () => {
+    const events = [userMessage('fix the build'), textChunk('on it')]
+
+    it('asks for the page before when the reader is near the top, and says there is one', async () => {
+      const component = await mountSuspended(AgentTranscript, { props: { session, events, permissions: [], complete: false } })
+
+      await component.find('[data-testid="transcript-scroller"]').trigger('scroll')
+
+      expect(component.emitted('loadEarlier')).toBeTruthy()
+      expect(component.find('[data-testid="transcript-history"]').text()).toContain('Earlier messages')
+    })
+
+    it('asks for nothing once it has the whole log, or while a page is on its way', async () => {
+      const whole = await mountSuspended(AgentTranscript, { props: { session, events, permissions: [], complete: true } })
+      await whole.find('[data-testid="transcript-scroller"]').trigger('scroll')
+      expect(whole.emitted('loadEarlier')).toBeFalsy()
+      expect(whole.find('[data-testid="transcript-history"]').text()).toBe('')
+
+      const loading = await mountSuspended(AgentTranscript, { props: { session, events, permissions: [], complete: false, loadingEarlier: true } })
+      await loading.find('[data-testid="transcript-scroller"]').trigger('scroll')
+      expect(loading.emitted('loadEarlier')).toBeFalsy()
+    })
+  })
+
+  /** Scrolled to the very bottom, the newest row ends a quarter of the way down: three quarters of the box are left empty. */
+  it('leaves three quarters of the box empty under the last row', async () => {
+    const component = await render([userMessage('fix the build')])
+
+    expect(component.find('[data-testid="transcript-tail"]').classes()).toContain('h-[75cqh]')
   })
 })

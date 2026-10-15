@@ -33,6 +33,8 @@ interface ShapeDef {
    * default — five minutes — when this is unset.
    */
   gcTime?: number
+  /** Load rows only when a reader asks for them. See `useSyncedLog`. */
+  onDemand?: boolean
 }
 
 /**
@@ -92,7 +94,8 @@ function collection(key: string, def: ShapeDef): any {
         }
       },
       getKey: rawKey(def.key ?? ((row: Row) => row.id as string)),
-      ...(def.gcTime === undefined ? {} : { gcTime: def.gcTime })
+      ...(def.gcTime === undefined ? {} : { gcTime: def.gcTime }),
+      ...(def.onDemand ? { syncMode: 'on-demand' as const } : {})
     })
   )
   cache.set(key, created)
@@ -132,7 +135,8 @@ export const agentEventsCollection = (agentSessionId: string) =>
     table: 'agent_events',
     where: 'agent_session_id = $1',
     params: [agentSessionId],
-    gcTime: SESSION_SHAPE_GC_MS
+    gcTime: SESSION_SHAPE_GC_MS,
+    onDemand: true
   })
 
 export const agentInboxCollection = (agentSessionId: string) =>

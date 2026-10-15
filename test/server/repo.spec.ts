@@ -4,6 +4,7 @@ import { query } from '../../server/lib/db'
 import {
   addAgentSubscription,
   addMessageWatch,
+  agentEventsPageFloor,
   appendAgentEvent,
   armMessageWatches,
   claimInboxMessages,
@@ -383,6 +384,68 @@ describe('agent events', () => {
     await deleteAgentSession(session.id)
 
     await expect(query('select 1 from agent_events')).resolves.toEqual([])
+  })
+})
+
+/**
+ * A transcript is loaded a page at a time, newest first, and the server only
+ * says where each page begins; the rows themselves come through Electric.
+ */
+describe('where a page of transcript begins', () => {
+  /** `turns` turns of a prompt and `perTurn - 1` events after it; the seqs, in order. */
+  async function log(sessionId: string, turns: number, perTurn: number) {
+    const seqs: Array<{ seq: number, type: string }> = []
+    for (let turn = 0; turn < turns; turn++) {
+      for (let index = 0; index < perTurn; index++) {
+        const type = index === 0 ? 'user_message' : 'agent_message'
+        const event = await appendAgentEvent(sessionId, type, { text: `${turn}.${index}` })
+        seqs.push({ seq: event.seq, type })
+      }
+    }
+    return seqs
+  }
+
+  it('opens on the first prompt in the newest page', async () => {
+    const session = await agent()
+    const seqs = await log(session.id, 6, 5)
+
+    // The newest 12 are the last two turns and two events of the third-last;
+    // the page starts at the earliest prompt among them.
+    const floor = await agentEventsPageFloor([session.id], { size: 12 })
+
+    expect(floor).toBe(seqs[20]!.seq)
+    expect(seqs[20]!.type).toBe('user_message')
+  })
+
+  it('pages back from a ceiling, and says null once the rest is less than a page', async () => {
+    const session = await agent()
+    const seqs = await log(session.id, 6, 5)
+
+    const second = await agentEventsPageFloor([session.id], { size: 12, beforeSeq: seqs[20]!.seq })
+    expect(second).toBe(seqs[10]!.seq)
+
+    await expect(agentEventsPageFloor([session.id], { size: 12, beforeSeq: seqs[10]!.seq })).resolves.toBeNull()
+    await expect(agentEventsPageFloor([session.id], { size: 100 })).resolves.toBeNull()
+  })
+
+  it('cuts mid-turn rather than give up most of a page to reach a prompt', async () => {
+    const session = await agent()
+    const seqs = await log(session.id, 2, 20)
+
+    // The newest 10 hold no prompt at all.
+    await expect(agentEventsPageFloor([session.id], { size: 10 })).resolves.toBe(seqs[30]!.seq)
+  })
+
+  it('reads several sessions as one log, as an assistant\'s page does', async () => {
+    const earlier = await agent()
+    const later = await agent()
+    const before = await log(earlier.id, 2, 5)
+    await log(later.id, 1, 5)
+
+    // Five from the later session and five from the earlier one: its last turn.
+    await expect(agentEventsPageFloor([earlier.id, later.id], { size: 10 })).resolves.toBe(before[5]!.seq)
+    // Another session's log is not counted.
+    await expect(agentEventsPageFloor([later.id], { size: 10 })).resolves.toBeNull()
   })
 })
 
