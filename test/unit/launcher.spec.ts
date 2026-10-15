@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -36,7 +36,9 @@ describe('the supervisor and the compose stack', () => {
       'createServer((_, res) => res.end("ok")).listen(Number(process.env.PORT), "127.0.0.1")',
       'process.on("SIGTERM", () => process.exit(0))'
     ].join('\n'))
-    await writeFile(join(home, 'bin', 'caddy'), '#!/bin/sh\nprintf "%s\\n" "$DOMO_CADDY_ADMIN" > "$DOMO_TEST_DOCKER_LOG.caddy-admin"\nexec sleep 300\n')
+    // Written whole, by a rename, so that a reader never sees it half there.
+    await writeFile(join(home, 'bin', 'caddy'), '#!/bin/sh\nprintf "%s\\n" "$DOMO_CADDY_ADMIN" > "$DOMO_TEST_DOCKER_LOG.caddy-admin.tmp"\n'
+      + 'mv "$DOMO_TEST_DOCKER_LOG.caddy-admin.tmp" "$DOMO_TEST_DOCKER_LOG.caddy-admin"\nexec sleep 300\n')
     await writeFile(join(home, 'bin', 'docker'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOMO_TEST_DOCKER_LOG"\n')
     await chmod(join(home, 'bin', 'caddy'), 0o755)
     await chmod(join(home, 'bin', 'docker'), 0o755)
@@ -54,7 +56,12 @@ describe('the supervisor and the compose stack', () => {
     })
   }
 
-  /** Runs the supervisor until the server is up, then stops it; the docker calls it made, one per line. */
+  /**
+   * Runs the supervisor until the server is up and Caddy has started, then
+   * stops it; the docker calls it made, one per line. Caddy is spawned before
+   * the server, but nothing orders its first line against the server's health
+   * check, so "up" alone can come before Caddy has run at all.
+   */
   async function dockerCallsOfARun(): Promise<string[]> {
     const port = await freePort()
     const child = spawn(process.execPath, [LAUNCHER, 'run'], {
@@ -67,6 +74,7 @@ describe('the supervisor and the compose stack', () => {
     const exited = new Promise<void>(resolve => child.on('exit', () => resolve()))
     try {
       await expect.poll(() => output, { timeout: 20_000, interval: 100 }).toMatch(/up at http/)
+      await expect.poll(() => access(`${dockerLog}.caddy-admin`).then(() => true, () => false), { timeout: 20_000, interval: 100 }).toBe(true)
     } finally {
       child.kill('SIGTERM')
       await Promise.race([exited, new Promise(r => setTimeout(r, 10_000))])
