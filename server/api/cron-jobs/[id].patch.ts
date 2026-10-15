@@ -1,4 +1,4 @@
-import { normalizeCronJobInput } from '../../lib/cron/input'
+import { cronJobState, normalizeCronJobInput } from '../../lib/cron/input'
 import { getAgentSession, getAssistant, getCronJob, replaceCronJob } from '../../lib/repo'
 import type { CronJobInput } from '../../lib/cron/input'
 
@@ -24,7 +24,7 @@ export default defineEventHandler(async (event) => {
       runAt: switchesToCron ? null : (patch.runAt ?? existing.runAt),
       timezone: patch.timezone ?? existing.timezone,
       delivery: patch.delivery ?? existing.delivery,
-      enabled: patch.enabled ?? existing.enabled,
+      ...cronJobState(existing, patch),
       createdBy: existing.createdBy
     })
     if (input.assistantId ? !await getAssistant(input.assistantId) : !await getAgentSession(input.agentSessionId!)) {

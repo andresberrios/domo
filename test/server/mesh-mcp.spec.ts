@@ -491,12 +491,34 @@ describe('self-scheduled tasks', () => {
     const listed = resultOf((await callTool(token, 'list_scheduled_tasks')).body)
     expect(listed.jobs.map((job: any) => job.id)).toEqual([created.id])
 
-    const paused = resultOf((await callTool(token, 'update_scheduled_task', {
+    // Stopping puts the task away unless the agent asks to keep it listed.
+    const kept = resultOf((await callTool(token, 'update_scheduled_task', {
+      jobId: created.id, enabled: false, archived: false
+    })).body)
+    expect(kept).toMatchObject({ enabled: false, nextRunAt: null })
+    expect(kept.archived).toBeUndefined()
+    expect(resultOf((await callTool(token, 'list_scheduled_tasks')).body).jobs).toHaveLength(1)
+
+    const resumed = resultOf((await callTool(token, 'update_scheduled_task', { jobId: created.id, enabled: true })).body)
+    expect(resumed.nextRunAt).not.toBeNull()
+
+    const stopped = resultOf((await callTool(token, 'update_scheduled_task', {
       jobId: created.id,
       enabled: false,
       prompt: 'Inspect CI, fix regressions, and report the result.'
     })).body)
-    expect(paused).toMatchObject({ enabled: false, nextRunAt: null })
+    expect(stopped).toMatchObject({ enabled: false, archived: true, nextRunAt: null })
+    expect(resultOf((await callTool(token, 'list_scheduled_tasks')).body).jobs).toEqual([])
+    const everything = resultOf((await callTool(token, 'list_scheduled_tasks', { includeArchived: true })).body)
+    expect(everything.jobs.map((job: any) => job.id)).toEqual([created.id])
+
+    const refused = await callTool(token, 'run_scheduled_task', { jobId: created.id })
+    expect(refused.body.result.isError).toBe(true)
+    expect(refused.body.result.content[0].text).toContain('is archived. Unarchive it to run it.')
+
+    const unarchived = resultOf((await callTool(token, 'update_scheduled_task', { jobId: created.id, archived: false })).body)
+    expect(unarchived).toMatchObject({ enabled: false, nextRunAt: null })
+    expect(unarchived.archived).toBeUndefined()
 
     const deleted = resultOf((await callTool(token, 'delete_scheduled_task', { jobId: created.id })).body)
     expect(deleted).toEqual({ id: created.id, deleted: true })

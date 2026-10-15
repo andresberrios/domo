@@ -36,6 +36,7 @@ function job(patch: Partial<CronJob> = {}): CronJob {
     timezone: 'UTC',
     runAt: null,
     enabled: true,
+    archived: false,
     delivery: 'queue',
     nextRunAt: '2026-09-21T10:00:00.000Z',
     lastRunAt: null,
@@ -129,6 +130,13 @@ describe('running a scheduled task now', () => {
     expect(repo.startManualCronRun).toHaveBeenCalledWith('cron_1')
     expect(repo.claimCronJob).not.toHaveBeenCalled()
     expect(repo.finishCronRun).toHaveBeenCalledWith('crun_manual', 'delivered', 'prompted')
+  })
+
+  it('refuses an archived task before it records a run', async () => {
+    await expect(runCronJobNow(job({ archived: true, enabled: false, nextRunAt: null })))
+      .rejects.toThrow('Scheduled task "Check CI" is archived. Unarchive it to run it.')
+    expect(repo.startManualCronRun).not.toHaveBeenCalled()
+    expect(acp.deliver).not.toHaveBeenCalled()
   })
 
   it('records a failed run and still throws, so the caller hears why', async () => {

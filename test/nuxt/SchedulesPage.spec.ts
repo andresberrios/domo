@@ -71,6 +71,7 @@ function job(overrides: Partial<CronJob> = {}): CronJob {
     timezone: 'UTC',
     runAt: null,
     enabled: true,
+    archived: false,
     delivery: 'queue',
     nextRunAt: '2026-09-23T09:00:00.000Z',
     lastRunAt: null,
@@ -132,6 +133,40 @@ describe('schedules page', () => {
 
     expect(document.body.textContent).toContain('Paused')
     expect(document.body.textContent).toContain('Ran ')
+    wrapper.unmount()
+  })
+
+  it('hides archived tasks until "Show archived" is on, and archives only a paused one', async () => {
+    useShowArchivedSchedules().value = false
+    jobRows = [
+      job({ id: 'cron_1', name: 'Paused task', enabled: false, nextRunAt: null }),
+      job({ id: 'cron_live', name: 'Live task' }),
+      job({ id: 'cron_gone', name: 'Archived task', enabled: false, archived: true, nextRunAt: null })
+    ]
+    const wrapper = await mountPage()
+    const labels = () => wrapper.findAll('button').map(button => button.attributes('aria-label'))
+
+    expect(document.body.textContent).not.toContain('Archived task')
+    // Archive is offered on the paused task only.
+    expect(labels().filter(label => label === 'Archive')).toHaveLength(1)
+    await wrapper.find('button[aria-label="Archive"]').trigger('click')
+    await vi.waitFor(() => expect(patched.at(-1)).toEqual({ archived: true }))
+
+    useShowArchivedSchedules().value = true
+    await nextTick()
+    expect(document.body.textContent).toContain('Archived task')
+    // An archived task cannot run; it can come back, still paused.
+    expect(labels().filter(label => label === 'Run now')).toHaveLength(2)
+    expect(labels()).toContain('Unarchive')
+    useShowArchivedSchedules().value = false
+    wrapper.unmount()
+  })
+
+  it('says how many are archived when nothing else is scheduled', async () => {
+    useShowArchivedSchedules().value = false
+    jobRows = [job({ enabled: false, archived: true, nextRunAt: null })]
+    const wrapper = await mountPage()
+    expect(document.body.textContent).toContain('1 is archived')
     wrapper.unmount()
   })
 

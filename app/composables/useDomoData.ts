@@ -244,6 +244,7 @@ export function useCronJobs() {
       timezone: row.timezone,
       runAt: row.run_at ?? null,
       enabled: !!row.enabled,
+      archived: !!row.archived,
       delivery: row.delivery,
       nextRunAt: row.next_run_at ?? null,
       lastRunAt: row.last_run_at ?? null,

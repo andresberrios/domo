@@ -580,6 +580,8 @@ export interface CronJob {
   /** Original requested instant for a one-time job. */
   runAt: string | null
   enabled: boolean
+  /** Put away: never fires, hidden from the lists by default. Always paused. */
+  archived: boolean
   delivery: MessageDelivery
   nextRunAt: string | null
   lastRunAt: string | null

@@ -23,10 +23,11 @@ function toggle(id: string) {
   expanded.value = next
 }
 
-const jobs = computed(() => allJobs.value.filter(job =>
+// Archived tasks are put away: the Schedules page shows them on request.
+const jobs = computed(() => allJobs.value.filter(job => !job.archived && (
   (!!props.agentSessionId && job.agentSessionId === props.agentSessionId)
   || (!!props.assistantId && job.assistantId === props.assistantId)
-))
+)))
 const active = computed(() => jobs.value.filter(job => job.enabled).length)
 // A new schedule for an assistant's session is for the assistant, so it
 // outlives the session.

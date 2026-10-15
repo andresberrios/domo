@@ -38,4 +38,5 @@ function persistedFlag(key: string, stateKey: string) {
 
 export const useShowArchivedSessions = persistedFlag('domo:show:archived-sessions', 'show-archived-sessions')
 export const useShowRetiredEnvironments = persistedFlag('domo:show:retired-environments', 'show-retired-environments')
+export const useShowArchivedSchedules = persistedFlag('domo:show:archived-schedules', 'show-archived-schedules')
 export const useAlwaysShowTimes = persistedFlag('domo:transcript:times', 'transcript-times')

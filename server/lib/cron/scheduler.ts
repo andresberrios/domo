@@ -36,6 +36,7 @@ export function deliverCronJob(job: CronJob) {
  * setting decides what happens to a turn already running, as it would on time.
  */
 export async function runCronJobNow(job: CronJob): Promise<CronRunNowResult> {
+  if (job.archived) throw new Error(`Scheduled task "${job.name}" is archived. Unarchive it to run it.`)
   const run = await startManualCronRun(job.id)
   try {
     const result = await deliverCronJob(job)
