@@ -11,6 +11,9 @@ import { query } from '../../server/lib/db'
 import {
   addAgentSubscription,
   createAgentSession,
+  createDevEnvironmentRow,
+  createProject,
+  getDevEnvironment,
   enqueueInboxMessage,
   getAgentSession,
   listAgentEvents,
@@ -45,6 +48,18 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
+// The titler is its own spawn, tested in `session-title.spec.ts`; here only
+// whether a session asks for one.
+const titles = vi.hoisted(() => ({ nameSessionInBackground: vi.fn() }))
+vi.mock('../../server/lib/acp/session-title', () => titles)
+
+// An environment session runs its adapter through `docker exec`; with `spawn`
+// faked, all that is left to fake is the container being up.
+vi.mock('../../server/lib/dev-environments', async importOriginal => ({
+  ...await importOriginal<typeof import('../../server/lib/dev-environments')>(),
+  ensureEnvironmentRunning: async (id: string) => (await getDevEnvironment(id))!
+}))
+
 /** A child process, minus the child. */
 class FakeAdapter extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -52,6 +67,9 @@ class FakeAdapter extends EventEmitter {
   readonly stderr = new PassThrough()
   readonly pid = 4242
   killed = false
+
+  /** A container session's stop spawns a `docker exec kill` it does not wait for. */
+  unref(): void {}
 
   kill(): boolean {
     if (this.killed) return false
@@ -2578,6 +2596,100 @@ describe('a session started by its first message', () => {
     // An adapter that exits reads as stopped, one that fails to start as error; either way it is not starting.
     await vi.waitFor(async () => expect(['stopped', 'error']).toContain((await getAgentSession(created.id))!.status))
     expect((await listInboxMessages(created.id)).map(message => message.content)).toEqual([[{ type: 'text', text: 'still here?' }]])
+  })
+})
+
+describe('titles', () => {
+  beforeEach(() => titles.nameSessionInBackground.mockClear())
+
+  it('asks for a title for a session started without one, from its first message, and for no other', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const created = await acpManager.create({ adapter: 'claude-code', cwd: workspace, firstMessage: [{ type: 'text', text: 'Fix the login page\nIt 500s' }] })
+    expect(created.title).toBe('Fix the login page')
+    expect(titles.nameSessionInBackground).toHaveBeenCalledWith(created.id, 'Fix the login page\nIt 500s')
+
+    titles.nameSessionInBackground.mockClear()
+    await acpManager.create({ adapter: 'claude-code', title: 'Login', cwd: workspace, firstMessage: [{ type: 'text', text: 'Fix it' }] })
+    expect(titles.nameSessionInBackground).not.toHaveBeenCalled()
+  })
+
+  it('names a session started with nothing by the first thing a person says to it, once', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const { UNTITLED_AGENT_TITLE } = await import('../../server/lib/repo')
+    const agent = await createAgentSession({ adapter: 'claude-code', title: UNTITLED_AGENT_TITLE, cwd: workspace, titlePlaceholder: true })
+    const starting = acpManager.start(agent.id)
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async () => {})
+    await starting
+
+    // An agent's note does not name it; the person's first words do.
+    await acpManager.deliver(agent.id, { content: [{ type: 'text', text: 'note' }], delivery: 'queue', origin: 'system' })
+    expect(titles.nameSessionInBackground).not.toHaveBeenCalled()
+    await acpManager.deliver(agent.id, { content: [{ type: 'text', text: 'Plan the release' }], delivery: 'queue', origin: 'voice' })
+    await acpManager.deliver(agent.id, { content: [{ type: 'text', text: 'and then ship it' }], delivery: 'queue', origin: 'user' })
+
+    expect(titles.nameSessionInBackground.mock.calls).toEqual([[agent.id, 'Plan the release']])
+    expect((await getAgentSession(agent.id))!.title).toBe('Plan the release')
+  })
+})
+
+describe('a session waiting for the environment it is spawned into', () => {
+  async function creating(name: string) {
+    const project = await createProject({ name: `${name}-project`, repoPath: workspace })
+    return createDevEnvironmentRow({ projectId: project.id, name, containerName: `domo-${name}`, workspacePath: `/workspaces/${name}` })
+  }
+
+  it('is written at once with its prompt waiting, and starts and takes it once the environment is up', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const environment = await creating('feature-x')
+    let built!: () => void
+    const caller = await session('caller')
+
+    const created = await acpManager.create({
+      adapter: 'claude-code',
+      devEnvironmentId: environment.id,
+      initialPrompt: 'add the feature',
+      spawnedBy: caller.id,
+      environmentBuilt: new Promise<void>(resolve => (built = resolve))
+    })
+
+    expect(created).toMatchObject({ status: 'starting', devEnvironmentId: environment.id, cwd: '/workspaces/feature-x' })
+    expect((await listInboxMessages(created.id)).map(message => [message.content, message.origin]))
+      .toEqual([[[{ type: 'text', text: 'add the feature' }], `agent:${caller.id}`]])
+    expect((await listAgentEvents(created.id)).map(event => [event.type, event.payload]))
+      .toEqual([['environment_pending', { environmentId: environment.id, name: 'feature-x' }]])
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(state.adapters).toHaveLength(0)
+
+    built()
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    const prompts: string[] = []
+    serve(state.adapters[0]!, async (send) => { await send(textChunk('On it.')) }, { onPrompt: params => prompts.push(promptText(params)) })
+    await vi.waitFor(async () => {
+      expect((await listAgentEvents(created.id)).map(event => event.type)).toContain('turn_end')
+    })
+    expect(prompts).toEqual(['add the feature'])
+    expect(await listInboxMessages(created.id)).toEqual([])
+  })
+
+  it('shows the failed build as its error, and never starts', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const environment = await creating('broken')
+    let fail!: (error: Error) => void
+
+    const created = await acpManager.create({
+      adapter: 'claude-code',
+      devEnvironmentId: environment.id,
+      initialPrompt: 'go',
+      environmentBuilt: new Promise<void>((_, reject) => (fail = reject))
+    })
+    fail(new Error('postCreateCommand failed: exit 1'))
+
+    const message = 'Its development environment "broken" could not be created: postCreateCommand failed: exit 1'
+    await vi.waitFor(async () => expect(await getAgentSession(created.id)).toMatchObject({ status: 'error', lastError: message }))
+    // An `error` event is what tells whoever follows it.
+    expect((await listAgentEvents(created.id)).map(event => [event.type, event.payload]).at(-1)).toEqual(['error', { message }])
+    expect(state.adapters).toHaveLength(0)
   })
 })
 

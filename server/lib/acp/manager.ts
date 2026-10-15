@@ -39,6 +39,7 @@ import {
   resolveModel
 } from './model'
 import { availableModes, currentModeId, modeConfigOption } from './mode'
+import { nameSessionInBackground } from './session-title'
 import {
   appendAgentEvent,
   claimInboxMessages,
@@ -2507,13 +2508,19 @@ class AcpManager {
     assistantId?: string | null
     /** Written before the adapter starts, so a system prompt built at attach can read it. */
     firstEvent?: { type: string, payload: any }
+    /**
+     * Settles when `devEnvironmentId`, still being created, is running or has
+     * failed. The session is written at once, waiting for it with its first
+     * message in the inbox, and starts when it is up; a failed build is its error.
+     */
+    environmentBuilt?: Promise<unknown>
   }): Promise<AgentSession> {
     const settings = await getSettings()
     const firstMessage = input.firstMessage?.length ? input.firstMessage : null
     // Starting the container is the boot's job too, so a session started by its
     // first message does not wait for it here: the row is all the page needs.
     const environment = input.devEnvironmentId
-      ? firstMessage
+      ? firstMessage || input.environmentBuilt
         ? await environmentForNewSession(input.devEnvironmentId)
         : await ensureEnvironmentRunning(input.devEnvironmentId)
       : null
@@ -2524,10 +2531,14 @@ class AcpManager {
     // directory as a reason to refuse instead of silently making an empty one.
     if (!environment) await mkdir(cwd, { recursive: true }).catch(() => {})
     const words = firstMessage?.find(block => block?.type === 'text' && typeof block.text === 'string')?.text
-    const title = titleFrom(input.title?.trim() || input.initialPrompt || words?.trim() || UNTITLED_AGENT_TITLE)
+    // Without a title of its own the session is called by its first words
+    // until a generated title replaces them.
+    const named = input.title?.trim()
+    const opening = input.initialPrompt?.trim() || words?.trim()
     const session = await createAgentSession({
       adapter: input.adapter ?? 'claude-code',
-      title,
+      title: titleFrom(named || opening || UNTITLED_AGENT_TITLE),
+      titlePlaceholder: !named,
       cwd,
       modeId: input.modeId ?? settings.defaultAgentModes[input.adapter ?? 'claude-code'],
       model: input.model?.trim() || null,
@@ -2536,6 +2547,30 @@ class AcpManager {
       assistantId: input.assistantId ?? null,
       config: input.config ?? null
     })
+    if (!named && opening) nameSessionInBackground(session.id, opening)
+    if (input.environmentBuilt) {
+      const content = firstMessage ?? (input.initialPrompt ? [{ type: 'text', text: input.initialPrompt }] : null)
+      if (content) {
+        await enqueueInboxMessage({
+          agentSessionId: session.id,
+          content,
+          delivery: 'queue',
+          origin: input.spawnedBy ? `agent:${input.spawnedBy}` : 'user'
+        })
+      }
+      await appendAgentEvent(session.id, 'environment_pending', { environmentId: environment!.id, name: environment!.name })
+      void input.environmentBuilt.then(
+        // The attach drains the inbox, which delivers the first message.
+        () => this.runtime(session.id).ensureStarted(),
+        async (error) => {
+          const message = `Its development environment "${environment!.name}" could not be created: `
+            + `${error instanceof Error ? error.message : String(error)}`
+          await updateAgentSession(session.id, { status: 'error', lastError: message })
+          await appendAgentEvent(session.id, 'error', { message })
+        }
+      ).catch(error => console.error(`[acp:${session.id}] could not start in its new environment`, error))
+      return session
+    }
     if (firstMessage) {
       await enqueueInboxMessage({ agentSessionId: session.id, content: firstMessage, delivery: 'queue', origin: 'user' })
       // A failed boot is on the row and in the transcript; the caller has its session either way.
@@ -2602,7 +2637,8 @@ class AcpManager {
     const origin = input.origin ?? 'user'
     const words = input.content.find(block => block?.type === 'text' && typeof block.text === 'string')?.text
     if ((origin === 'user' || origin === 'voice') && words?.trim()) {
-      await titleUntitledAgentSession(agentSessionId, titleFrom(words)).catch(() => {})
+      const first = await titleUntitledAgentSession(agentSessionId, titleFrom(words)).catch(() => false)
+      if (first) nameSessionInBackground(agentSessionId, words)
     }
     const result = await this.runtime(agentSessionId).deliver({
       content: input.content,

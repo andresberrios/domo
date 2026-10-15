@@ -201,7 +201,7 @@ beforeEach(async () => {
   // the new session — a subscription — needs that row to exist.
   acp.create.mockImplementation(async (input: any) => createAgentSession({
     adapter: input.adapter,
-    title: input.title,
+    title: input.title ?? input.initialPrompt,
     cwd: input.cwd ?? '/workspace',
     devEnvironmentId: input.devEnvironmentId ?? null,
     model: input.model ?? null,
@@ -1431,6 +1431,83 @@ describe('development environments, asynchronously', () => {
     await expect.poll(async () => (await listInboxMessages(caller.id)).length).toBe(2)
     expect((await listInboxMessages(caller.id))[1]!.content[0].text)
       .toContain('"bad" (env_new) failed to build: postCreateCommand failed: exit 1')
+  })
+
+  /** `beginEnvironment` with a real row behind it, settling as `built` says. */
+  function beginsReal(built: Promise<any>) {
+    built.catch(() => {})
+    devEnvironments.beginEnvironment.mockImplementationOnce(async (input: any) => {
+      const environment = await createDevEnvironmentRow({
+        projectId: input.projectId, name: input.name, containerName: `domo-${input.name}`, workspacePath: `/workspaces/${input.name}`
+      })
+      return { environment, built }
+    })
+  }
+
+  it('spawns into an environment it creates, in one call that does not wait for the build', async () => {
+    const project = await createProject({ name: 'domo', repoPath })
+    // On the host, inside the project's checkout: the project is the default.
+    const caller = await session('caller', { cwd: join(repoPath, 'server') })
+    let finish!: (value: any) => void
+    beginsReal(new Promise(resolve => (finish = resolve)))
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      prompt: 'add the feature',
+      newDevEnvironment: { name: 'feature-x' }
+    })).body)
+
+    expect(devEnvironments.beginEnvironment).toHaveBeenCalledWith({ projectId: project.id, name: 'feature-x' })
+    const input = acp.create.mock.calls[0]![0] as any
+    expect(input).toMatchObject({ devEnvironmentId: body.environment.id, initialPrompt: 'add the feature', title: undefined })
+    expect(input.environmentBuilt).toBeInstanceOf(Promise)
+    expect(body).toMatchObject({ environment: { name: 'feature-x', status: 'creating' }, notifyWhenDone: 1 })
+    expect(body.note).toContain('the prompt is delivered when it is running')
+
+    // A branch that already existed is worth a word; a new one is not.
+    finish({
+      id: body.environment.id,
+      name: 'feature-x',
+      workspaceSeed: { paths: [], total: 0, copied: [], install: null, branch: { name: 'feature-x', created: false } }
+    })
+    await expect.poll(async () => (await listInboxMessages(caller.id)).map(message => message.content[0].text))
+      .toEqual([expect.stringContaining('feature-x, which already existed')])
+  })
+
+  it('takes the caller\'s own environment\'s project, and refuses an id and a new environment together', async () => {
+    const project = await createProject({ name: 'domo', repoPath })
+    const own = await createDevEnvironmentRow({ projectId: project.id, name: 'own', containerName: 'domo-own', workspacePath: '/workspaces/own' })
+    const caller = await session('caller', { devEnvironmentId: own.id })
+    beginsReal(Promise.resolve({ workspaceSeed: { branch: { name: 'b', created: true }, install: null } }))
+
+    await callTool(mintMeshToken(caller.id), 'spawn_agent', { prompt: 'go', newDevEnvironment: { name: 'b' } })
+    expect(devEnvironments.beginEnvironment).toHaveBeenCalledWith({ projectId: project.id, name: 'b' })
+
+    const { body } = await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      prompt: 'go', devEnvironmentId: own.id, newDevEnvironment: { name: 'c' }
+    })
+    expect(text(body)).toContain('not both')
+    expect(devEnvironments.beginEnvironment).toHaveBeenCalledTimes(1)
+  })
+
+  it('needs a project when the caller works in none', async () => {
+    const caller = await session('caller', { cwd: '/tmp/nowhere' })
+    const { body } = await callTool(mintMeshToken(caller.id), 'spawn_agent', { prompt: 'go', newDevEnvironment: { name: 'x' } })
+    expect(text(body)).toContain('newDevEnvironment.projectId')
+    expect(devEnvironments.beginEnvironment).not.toHaveBeenCalled()
+    expect(acp.create).not.toHaveBeenCalled()
+  })
+
+  it('tells a caller that does not follow the agent when the build fails', async () => {
+    const project = await createProject({ name: 'domo', repoPath })
+    const caller = await session('caller')
+    beginsReal(Promise.reject(new Error('postCreateCommand failed: exit 1')))
+
+    const body = resultOf((await callTool(mintMeshToken(caller.id), 'spawn_agent', {
+      prompt: 'go', notifyWhenDone: false, newDevEnvironment: { name: 'broken', projectId: project.id }
+    })).body)
+
+    await expect.poll(async () => (await listInboxMessages(caller.id)).map(message => message.content[0].text))
+      .toEqual([expect.stringContaining(`so agent ${body.id} did not start: postCreateCommand failed: exit 1`)])
   })
 
   it('describes an environment: status, error, adapter versions against Domo\'s, agents', async () => {

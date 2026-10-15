@@ -1,6 +1,7 @@
 import { bus } from '../lib/bus'
 import { normalizeHomeMount, validateHomeMounts } from '../lib/dev-env/home-overlay'
 import { patchSettings } from '../lib/settings'
+import { isAgentAdapter } from '../../shared/agent-adapters'
 import { SECRET_SETTING_KEYS, type AppSettings } from '../../shared/types'
 
 export default defineEventHandler(async (event) => {
@@ -15,6 +16,15 @@ export default defineEventHandler(async (event) => {
 
   if (patch.defaultAssistantId !== undefined && typeof patch.defaultAssistantId !== 'string') {
     throw createError({ statusCode: 400, message: 'defaultAssistantId must be an assistant id; empty means the most recent.' })
+  }
+
+  if (patch.sessionTitles !== undefined) {
+    const titles = patch.sessionTitles as any
+    if (!titles || typeof titles !== 'object' || typeof titles.enabled !== 'boolean'
+      || (titles.adapter !== '' && !isAgentAdapter(titles.adapter)) || typeof titles.model !== 'string') {
+      throw createError({ statusCode: 400, message: 'sessionTitles needs enabled, an adapter (empty for the default) and a model.' })
+    }
+    patch.sessionTitles = { enabled: titles.enabled, adapter: titles.adapter, model: titles.model.trim() }
   }
 
   if (patch.homeMounts !== undefined) {

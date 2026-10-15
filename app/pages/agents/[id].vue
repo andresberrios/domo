@@ -225,6 +225,15 @@ async function start() {
   }
 }
 
+/** The header's own rename: the same PATCH as the menu's, so the title is the user's from then on. */
+async function renameTo(title: string) {
+  try {
+    await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { title } })
+  } catch (error: any) {
+    toast.add({ title: 'Could not rename the agent', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  }
+}
+
 async function saveTitle() {
   if (!titleDraft.value.trim()) return
   await $fetch(`/api/agents/${agentId.value}`, { method: 'PATCH', body: { title: titleDraft.value.trim() } })
@@ -276,7 +285,8 @@ const menuItems = computed(() => [
     <template #header>
       <UDashboardNavbar icon="i-lucide-bot">
         <template #title>
-          <span class="truncate">{{ session?.title ?? (isDraft ? 'New session' : 'Agent') }}</span>
+          <InlineTitle v-if="session" :value="session.title" label="Session title" @save="renameTo" />
+          <span v-else class="truncate">{{ isDraft ? 'New session' : 'Agent' }}</span>
         </template>
 
         <template #trailing>

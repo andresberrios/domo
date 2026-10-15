@@ -49,3 +49,10 @@ export function isAgentAdapter(value: unknown): value is AgentAdapter {
 export function agentAdapterInfo(adapter: AgentAdapter) {
   return AGENT_ADAPTERS.find(entry => entry.id === adapter)!
 }
+
+/** Each harness's cheap model, which writes session titles unless Settings names another. */
+export const TITLE_MODELS: Record<AgentAdapter, string> = {
+  'claude-code': 'haiku',
+  codex: 'gpt-5.6-luna',
+  opencode: 'opencode-go/glm-5.3-flash'
+}
