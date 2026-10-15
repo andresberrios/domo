@@ -241,8 +241,6 @@ export async function synthesizeWith(
       return synthesizeMac(text, settings.macVoice, settings.language, onChunk, signal)
     case 'pocket':
       return synthesizePocket(text, settings.pocketVoice, settings.pocketUrl, onChunk, signal)
-    case 'browser':
-      throw new Error('the browser speaks for itself')
   }
   const stream = await gemini().models.generateContentStream({
     model: settings.geminiSpeechModel,

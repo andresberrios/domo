@@ -164,13 +164,6 @@ export function useAgentVoice(
   let dictatedInterim = ''
   let lastResultAt = 0
   let lastSegmentEndAt = 0
-  /** The language in Settings, for the device's recogniser and its voices. */
-  let deviceLanguage = 'en'
-
-  // device speech
-  let deviceUtterances = 0
-  let deviceSpeechUnlocked = false
-
   // hands-free segmentation
   let silentMs = 0
   let segmentMs = 0
@@ -379,65 +372,7 @@ export function useAgentVoice(
   }
   watch([awaitingReply, speaking, synthesizing, () => toValue(options.busy)], syncWorking)
 
-  /**
-   * "This device" as the speaker: the browser says each piece itself, in the
-   * voice chosen on this device (`deviceVoice`). It starts at once and costs
-   * nothing, but it does not go through the media element, so an echo
-   * canceller may not know it is playing; the barge-in guard still applies.
-   */
-  function sayOnDevice(text: string) {
-    if (!('speechSynthesis' in window)) {
-      errorMessage.value = 'This browser cannot speak. Pick another speaker in Settings.'
-      return
-    }
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.volume = volume('speech')
-    const voice = deviceVoice(deviceLanguage)
-    if (voice) {
-      utterance.voice = voice
-      utterance.lang = voice.lang
-    }
-    const done = () => {
-      deviceUtterances = Math.max(0, deviceUtterances - 1)
-      if (!deviceUtterances) {
-        speaking.value = false
-        lastPlaybackEndedAt = Date.now()
-      }
-    }
-    utterance.onstart = () => { speaking.value = true }
-    utterance.onend = done
-    utterance.onerror = (event: any) => {
-      done()
-      if (event?.error === 'interrupted' || event?.error === 'canceled') return
-      logDevice(`speech error ${event?.error} (voice ${voice?.name ?? 'default'})`)
-      errorMessage.value = event?.error === 'not-allowed'
-        ? 'The browser will not speak until the microphone has been tapped.'
-        : `The device could not speak: ${event?.error}`
-    }
-    // Chrome can leave its queue paused after a tab was in the background,
-    // and then says nothing at all until told to go on.
-    if (window.speechSynthesis.paused) window.speechSynthesis.resume()
-    if (!deviceUtterances) logDevice(`speaking with ${voice ? `${voice.name} (${voice.lang})` : 'the default voice'}`)
-    deviceUtterances += 1
-    window.speechSynthesis.speak(utterance)
-  }
-
-  /** iOS only lets a page speak once a tap has made it speak something. */
-  function unlockDeviceSpeech() {
-    if (deviceSpeechUnlocked || !('speechSynthesis' in window)) return
-    deviceSpeechUnlocked = true
-    // A space, not nothing: some browsers skip an empty utterance, and it does
-    // not count as the page having spoken.
-    const silent = new SpeechSynthesisUtterance(' ')
-    silent.volume = 0
-    window.speechSynthesis.speak(silent)
-  }
-
   function stopPlayback() {
-    if (deviceUtterances && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel()
-      deviceUtterances = 0
-    }
     for (const source of scheduled) {
       try {
         source.stop()
@@ -637,7 +572,6 @@ export function useAgentVoice(
 
   /** What a tap is allowed to do that nothing else is: get the audio graphs running. */
   async function resumeAudio() {
-    unlockDeviceSpeech()
     await ensurePlayback()
     const context = captureContext
     if (context && context.state !== 'running') {
@@ -909,7 +843,6 @@ export function useAgentVoice(
   }
 
   function configureDictation(enabled: boolean, language: string, phrases: string[]) {
-    deviceLanguage = language
     const changed = enabled !== dictationWanted || language !== dictationLanguage || phrases.join('\n') !== dictationPhrases.join('\n')
     dictationWanted = enabled
     dictationLanguage = language
@@ -980,9 +913,6 @@ export function useAgentVoice(
         break
       case 'audio':
         if (speakEnabled.value) void playChunk(message.data, message.sampleRate)
-        break
-      case 'say':
-        if (speakEnabled.value) sayOnDevice(message.text)
         break
       case 'speaking':
         spokenText.value = message.text

@@ -11,7 +11,7 @@ text is read out sentence by sentence by an engine. The agent is the only
 thing that thinks. Engines are chosen in Settings (`AgentVoiceSettings`),
 separately for hearing and speaking: Gemini, OpenAI, open models on the CPU
 (Moonshine or Whisper, and Kokoro, through transformers.js), Pocket TTS, macOS,
-a Kyutai moshi-server, or the device's own dictation and voices. An installed
+a Kyutai moshi-server, or the device's own dictation for hearing. An installed
 Domo fetches the models Settings chose at boot (`warm.ts`); `pnpm dev` fetches
 them on first use.
 
@@ -40,10 +40,12 @@ them on first use.
   `segment-end` they belong to, which waits for the recogniser to finalise;
   the audio still goes up, because the turn detector listens to it. Words
   heard outside a segment are dropped, so the agent's own voice is not a turn.
-- **"This device" can also speak** (`speechSynthesis`, voice chosen per
-  device in Settings and kept in the browser). It starts at once, but it does
-  not play through the media element, so the echo canceller may not know about
-  it; the barge-in guard is all that stands between it and a false turn.
+- **Every voice is the server's, played through the page.** The device's
+  own voices (`speechSynthesis`) were dropped: they never pass through the
+  page, so with `echoCancellation: true` the agent heard itself. A speaker
+  that cannot speak here (no key on a new install) gives way to the closest
+  free one (`freeSpeaker`: macOS, then Pocket, then Kokoro), and the bar
+  says so once.
 - **The "macOS" engine is two Swift helpers** (`agent-voice/mac-speech.ts`),
   compiled with `swiftc` into the data directory on first use and kept
   running: AVSpeechSynthesizer for speech, SpeechAnalyzer's SpeechTranscriber
@@ -75,8 +77,7 @@ them on first use.
   any bar. It wins over Settings when that engine can speak here (a key, a
   Mac, Kyutai only when Settings use it; `speakerUnavailable` says why not,
   and the assistant form shows it); otherwise, or when a piece fails in it,
-  the bar's own voice speaks, and the bar says so once. The device's voices are never an assistant's: each device
-  has different ones. `create_voice` turns any WAV into a Pocket sample
+  the bar's own voice speaks, and the bar says so once. `create_voice` turns any WAV into a Pocket sample
   itself (`agent-voice/sample.ts`) and other formats only through `ffmpeg`.
   Cloned voices are only ever spoken by the voice bar; nothing exports audio.
 - **Kokoro speaks every piece with one style row** (`KOKORO_OPTIONS`).
@@ -124,9 +125,8 @@ them on first use.
   two-second pause head instead, and `silence` waits `silenceSeconds`.
 - **The echo canceller is the browser's, and it is told everything.** The
   microphone asks for `echoCancellation: true` on desktop, like call apps,
-  and `"all"` on Android (`micEchoCancellation`). On desktop `"all"` cancels
-  only the device's own voices beyond what `true` does, delays the
-  microphone, and in Dia gives only silence. The agent's voice reaches the speaker through a WebRTC loopback inside the page,
+  and `"all"` on Android (`micEchoCancellation`). On desktop `"all"` delays
+  the microphone, and in Dia gives only silence. The agent's voice reaches the speaker through a WebRTC loopback inside the page,
   because audio received over a peer connection is what Chrome's canceller
   reliably subtracts; a media element was not enough, and a phone's
   loudspeaker made the agent interrupt itself. The bar logs what the

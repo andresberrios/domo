@@ -42,6 +42,12 @@ const talkItems = computed(() => [
 const usesOpenAi = computed(() => form.value.transcriber === 'openai' || form.value.speaker === 'openai')
 const showKyutaiKey = computed(() => usesKyutai(form.value))
 
+/** Said once: gone when closed. */
+async function dismissNotice() {
+  await $fetch('/api/settings', { method: 'PATCH', body: { agentVoiceNotice: '' } }).catch(() => {})
+  await refresh()
+}
+
 const saving = ref(false)
 async function save() {
   saving.value = true
@@ -67,6 +73,15 @@ async function save() {
     :saving="saving"
     :save="save"
   >
+    <UAlert
+      v-if="settings?.agentVoiceNotice"
+      color="info"
+      variant="subtle"
+      icon="i-lucide-info"
+      :description="settings.agentVoiceNotice"
+      close
+      @update:open="dismissNotice"
+    />
     <UFormField
       label="Talk opens"
       description="The Talk button opens this assistant in voice mode. With no assistant at all, it starts a fresh session instead."
@@ -76,7 +91,7 @@ async function save() {
     <section class="space-y-4">
       <div>
         <h2 class="text-sm font-semibold">Keys</h2>
-        <p class="text-xs text-muted">Saved on the server and never sent back to the browser. The open models and this device's own voices need none.</p>
+        <p class="text-xs text-muted">Saved on the server and never sent back to the browser. The open models, Pocket TTS and the Mac's voices need none.</p>
       </div>
       <CredentialField
         :settings="settings ?? null"

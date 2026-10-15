@@ -34,13 +34,13 @@ const BAR_VOICE = 'bar-voice'
 
 /**
  * Its voice in the voice bar: an engine and one of its voices, or the bar's
- * own from Settings. The device's voices are left out: each device has its own.
+ * own from Settings.
  */
 const { data: clones } = useClonedVoices()
 const voiceSpeakerItems = computed(() => [
   { label: 'The voice bar\'s own (Settings)', value: BAR_VOICE },
   // Kyutai only speaks for an assistant when the bar already uses it; kept for one that has it.
-  ...withoutKyutai(SPEAKERS, form.voiceSpeaker === 'kyutai').filter(speaker => speaker.id !== 'browser').map(speaker => ({ label: speaker.label, value: speaker.id }))
+  ...withoutKyutai(SPEAKERS, form.voiceSpeaker === 'kyutai').map(speaker => ({ label: speaker.label, value: speaker.id }))
 ])
 const voiceItems = computed(() => {
   const named = (list: readonly string[]) => list.map(voice => ({ label: voice, value: voice }))

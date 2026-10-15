@@ -25,23 +25,6 @@ watch(() => usesKyutai(form.value), uses => { if (uses) kyutaiOffered.value = tr
 
 const speakerItems = computed(() => withoutKyutai(SPEAKERS, kyutaiOffered.value).map(engine => ({ label: engine.label, value: engine.id, description: engine.description })))
 
-/** This device's voices, best first; the choice is kept in this browser, not in Settings. */
-const deviceVoices = ref<Array<{ label: string, value: string, description: string }>>([])
-const deviceVoiceName = ref('')
-function loadDeviceVoices() {
-  if (!('speechSynthesis' in window)) return
-  const ranked = rankDeviceVoices(window.speechSynthesis.getVoices(), form.value.language)
-  deviceVoices.value = ranked.map(voice => ({ label: voice.name, value: voice.name, description: `${voice.lang}${voice.localService ? '' : ', online'}` }))
-  deviceVoiceName.value = storedDeviceVoice() || ranked[0]?.name || ''
-}
-onMounted(() => {
-  loadDeviceVoices()
-  if ('speechSynthesis' in window) window.speechSynthesis.addEventListener('voiceschanged', loadDeviceVoices)
-})
-onBeforeUnmount(() => {
-  if ('speechSynthesis' in window) window.speechSynthesis.removeEventListener('voiceschanged', loadDeviceVoices)
-})
-watch(() => form.value.language, loadDeviceVoices)
 /** The voices on the Mac Domo runs on, asked for only when "This Mac" speaks. */
 const macVoices = ref<Array<{ label: string, value: string, description: string }>>([])
 const macUnavailable = ref<string | null>(null)
@@ -71,17 +54,6 @@ const macVoice = computed({
 })
 const macVoiceItems = computed(() => macVoices.value.map(item => ({ ...item, value: item.value || 'best' })))
 
-function chooseDeviceVoice(name: string) {
-  deviceVoiceName.value = name
-  storeDeviceVoice(name)
-  const voice = window.speechSynthesis.getVoices().find(v => v.name === name)
-  if (!voice) return
-  window.speechSynthesis.cancel()
-  const sample = new SpeechSynthesisUtterance('This is how replies will sound.')
-  sample.voice = voice
-  sample.lang = voice.lang
-  window.speechSynthesis.speak(sample)
-}
 const transcriberItems = computed(() => withoutKyutai(TRANSCRIBERS, kyutaiOffered.value).map(engine => ({ label: engine.label, value: engine.id, description: engine.description })))
 // The select refuses an empty value, and '' is how "let the engine guess" is stored.
 const languageItems = SPEECH_LANGUAGES.map(language => ({ label: language.label, value: language.id || 'auto' }))
@@ -96,10 +68,13 @@ onMounted(() => {
   hasDictation.value = !!((window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition)
 })
 
-function keyWarning(engine: AgentVoiceSettings['transcriber'] | AgentVoiceSettings['speaker']): string | null {
-  if (engine === 'gemini' && props.hasGeminiKey === false) return 'No Gemini key yet, so this engine will fail. Add one under Keys.'
-  if (engine === 'openai' && props.hasOpenAiKey === false) return 'No OpenAI key yet, so this engine will fail. Add one under Keys.'
-  return null
+/** Without its key, a transcriber fails; a speaker gives way to a free voice. */
+function keyWarning(engine: AgentVoiceSettings['transcriber'] | AgentVoiceSettings['speaker'], role: 'hear' | 'speak'): string | null {
+  const name = engine === 'gemini' && props.hasGeminiKey === false ? 'Gemini' : engine === 'openai' && props.hasOpenAiKey === false ? 'OpenAI' : null
+  if (!name) return null
+  return role === 'hear'
+    ? `No ${name} key yet, so this engine will fail. Add one under Keys.`
+    : `No ${name} key yet, so a free voice reads instead. Add one under Keys.`
 }
 
 /** The measured models as a menu, plus whatever id is stored, so a custom one is kept. */
@@ -112,7 +87,7 @@ const toolSoundItems = TOOL_SOUNDS.map(sound => ({ label: sound.label, value: so
 
 const detectorItems = computed(() => withoutKyutai(TURN_DETECTORS, kyutaiOffered.value).map(detector => ({ label: detector.label, value: detector.id, description: detector.description })))
 
-/** The microphone on this device; kept in this browser, like the device's voice. */
+/** The microphone on this device; kept in this browser. */
 const inputs = useAudioInputs()
 // The select refuses an empty value, and '' is how "the system's default" is stored.
 const SYSTEM_DEFAULT = 'system-default'
@@ -151,7 +126,7 @@ const uses = computed(() => new Set([
           value-key="value"
           class="w-full"
         />
-        <p v-if="keyWarning(form.transcriber)" class="mt-1 text-xs text-warning">{{ keyWarning(form.transcriber) }}</p>
+        <p v-if="keyWarning(form.transcriber, 'hear')" class="mt-1 text-xs text-warning">{{ keyWarning(form.transcriber, 'hear') }}</p>
         <p v-if="form.transcriber === 'browser' && !hasDictation" class="mt-1 text-xs text-warning">
           This browser has no dictation of its own. Chrome, Edge and Safari do.
         </p>
@@ -163,7 +138,7 @@ const uses = computed(() => new Set([
           value-key="value"
           class="w-full"
         />
-        <p v-if="keyWarning(form.speaker)" class="mt-1 text-xs text-warning">{{ keyWarning(form.speaker) }}</p>
+        <p v-if="keyWarning(form.speaker, 'speak')" class="mt-1 text-xs text-warning">{{ keyWarning(form.speaker, 'speak') }}</p>
         <div class="mt-1.5 flex items-center gap-2">
           <UButton
             icon="i-lucide-play"
@@ -244,19 +219,6 @@ const uses = computed(() => new Set([
       </UFormField>
       <UFormField v-if="form.turnDetector === 'silence'" label="Silence" hint="seconds">
         <UInputNumber v-model="form.silenceSeconds" :min="0.3" :max="30" :step="0.1" class="w-full" />
-      </UFormField>
-    </div>
-
-    <div v-if="form.speaker === 'browser'" class="grid gap-4 sm:grid-cols-2">
-      <UFormField label="Voice on this device" description="Kept in this browser. Each device has its own voices; pick one and hear it.">
-        <ChoiceMenu
-          :model-value="deviceVoiceName"
-          :items="deviceVoices"
-          value-key="value"
-          placeholder="No voices for this language"
-          class="w-full"
-          @update:model-value="(name: string) => chooseDeviceVoice(name)"
-        />
       </UFormField>
     </div>
 

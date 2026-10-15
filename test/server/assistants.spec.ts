@@ -172,7 +172,7 @@ describe('an assistant\'s voice', () => {
   it('takes one of an engine\'s voices, and refuses the device\'s, an unknown one, or a missing clone', async () => {
     const assistant = await pirate({ voice: { speaker: 'pocket', voice: 'mary' } })
     expect(assistant.voice).toEqual({ speaker: 'pocket', voice: 'mary' })
-    await expect(updateAssistantFields(assistant.id, { voice: { speaker: 'browser', voice: 'Samantha' } })).rejects.toThrow('device')
+    await expect(updateAssistantFields(assistant.id, { voice: { speaker: 'browser', voice: 'Samantha' } })).rejects.toThrow('Unknown speech engine browser')
     await expect(updateAssistantFields(assistant.id, { voice: { speaker: 'gemini', voice: 'Nobody' } })).rejects.toThrow('has no voice')
     await expect(updateAssistantFields(assistant.id, { voice: { speaker: 'pocket', voice: 'clone:000000000000' } })).rejects.toThrow('No cloned voice')
     expect((await updateAssistantFields(assistant.id, { voice: null })).voice).toBeNull()
@@ -185,7 +185,7 @@ describe('an assistant\'s voice', () => {
     // Kyutai is a server the human runs; not chosen in Settings, it is not there.
     const kyutai = await pirate({ voice: { speaker: 'kyutai', voice: 'some.wav' } })
     const resolved = await speechSettingsFor(kyutai.currentSessionId!, base)
-    expect(resolved).toEqual({ settings: base, fallback: null })
+    expect(resolved).toEqual({ settings: base, fallback: null, substitute: null })
   })
 
   it('clones a voice from a sample through the mesh, gives it to the assistant, and forgets it when it is deleted', async () => {

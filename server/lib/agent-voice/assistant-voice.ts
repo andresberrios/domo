@@ -12,6 +12,8 @@ import {
 } from '../../../shared/agent-voice'
 import type { AgentVoiceSettings, AssistantVoice, Speaker } from '../../../shared/types'
 import { getClonedVoice, listClonedVoices } from './voice-store'
+import { existsSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
 
 /**
  * An assistant speaks with its own voice wherever the voice bar reads it out:
@@ -43,9 +45,6 @@ export async function normalizeAssistantVoice(value: unknown): Promise<Assistant
   if (value === null || value === undefined || value === '') return null
   const input = value as Partial<AssistantVoice>
   const speaker = input?.speaker
-  if (speaker === ('browser' as Speaker)) {
-    throw new Error('An assistant cannot have one of the device\'s own voices: each device has different ones. Choose an engine\'s voice.')
-  }
   if (!speaker || !(speaker in VOICE_FIELD)) {
     throw new Error(`Unknown speech engine ${String(speaker)}. One of: ${Object.keys(VOICE_FIELD).join(', ')}.`)
   }
@@ -80,7 +79,39 @@ export function speakerUnavailable(speaker: AssistantVoice['speaker'], base: Age
     case 'mac': return process.platform === 'darwin' ? null : 'Domo is not running on a Mac.'
     // A server the human runs; only when Settings already point the bar at it.
     case 'kyutai': return base.speaker === 'kyutai' ? null : 'Kyutai speaks only when the voice bar\'s own speaker in Settings → Voice is Kyutai.'
-    case 'pocket': return null
+    // Domo starts Pocket itself through uvx, unless Settings name a server.
+    case 'pocket': return base.pocketUrl || onPath('uvx') ? null : 'Pocket TTS needs uv on the server, or a Pocket server in Settings → Voice.'
+  }
+}
+
+function onPath(command: string): boolean {
+  return (process.env.PATH ?? '').split(delimiter).some(dir => dir && existsSync(join(dir, command)))
+}
+
+/**
+ * The free voice that can speak here, closest to a device's own first:
+ * Apple's voices on a Mac, then Pocket TTS, then Kokoro on the CPU, which
+ * runs inside Domo and needs nothing. Null only if none of them can.
+ */
+export function freeSpeaker(base: AgentVoiceSettings): Speaker | null {
+  return (['mac', 'pocket', 'local'] as const).find(speaker => !speakerUnavailable(speaker, base)) ?? null
+}
+
+const speakerLabel = (speaker: Speaker) => SPEAKERS.find(entry => entry.id === speaker)?.label ?? speaker
+
+/**
+ * The bar's own voice, or, when its engine cannot speak here (a new install
+ * has no Gemini key), the free one, with a word for the person about it.
+ * When no voice at all can speak, the bar's own is kept, so speaking fails
+ * with its reason.
+ */
+export function barSpeech(base: AgentVoiceSettings): { settings: AgentVoiceSettings, substitute: string | null } {
+  const problem = speakerUnavailable(base.speaker, base)
+  const free = problem ? freeSpeaker(base) : null
+  if (!problem || !free) return { settings: base, substitute: null }
+  return {
+    settings: { ...base, speaker: free },
+    substitute: `${speakerLabel(base.speaker)} cannot speak here (${problem}), so ${speakerLabel(free)} is reading instead.`
   }
 }
 
@@ -92,10 +123,11 @@ export function speakerUnavailable(speaker: AssistantVoice['speaker'], base: Age
 export async function speechSettingsFor(
   agentSessionId: string,
   base: AgentVoiceSettings
-): Promise<{ settings: AgentVoiceSettings, fallback: AgentVoiceSettings | null }> {
+): Promise<{ settings: AgentVoiceSettings, fallback: AgentVoiceSettings | null, substitute: string | null }> {
+  const bar = barSpeech(base)
   const voice = (await getAssistantOfSession(agentSessionId).catch(() => null))?.voice
-  if (!voice || speakerUnavailable(voice.speaker, base)) return { settings: base, fallback: null }
-  return { settings: withVoice(base, voice), fallback: base }
+  if (!voice || speakerUnavailable(voice.speaker, base)) return { settings: bar.settings, fallback: null, substitute: bar.substitute }
+  return { settings: withVoice(base, voice), fallback: bar.settings, substitute: null }
 }
 
 /** The bar's settings, speaking in this voice instead. */
@@ -107,7 +139,6 @@ export function withVoice(base: AgentVoiceSettings, voice: AssistantVoice): Agen
 export async function voiceCatalog(base: AgentVoiceSettings) {
   const clones = await listClonedVoices()
   return SPEAKERS
-    .filter((speaker): speaker is typeof speaker & { id: AssistantVoice['speaker'] } => speaker.id !== 'browser')
     .map(speaker => ({
       engine: speaker.id,
       label: speaker.label,

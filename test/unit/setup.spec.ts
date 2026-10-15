@@ -51,12 +51,12 @@ describe('the live check', () => {
 })
 
 describe('voice', () => {
-  it('needs the key of whichever engine is chosen, and nothing for the device or the open models', () => {
+  it('needs the key of whichever engine is chosen, and nothing for the device\'s dictation or the open models', () => {
     forgetSecretSettings()
     const saved = process.env.NUXT_GEMINI_API_KEY
     for (const name of ['NUXT_GEMINI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY']) Reflect.deleteProperty(process.env, name)
     try {
-      expect(voiceProblem({ transcriber: 'gemini', speaker: 'browser' }, DEFAULT_AGENT_VOICE)).toMatch(/Gemini/)
+      expect(voiceProblem({ transcriber: 'gemini', speaker: 'local' }, DEFAULT_AGENT_VOICE)).toMatch(/Gemini/)
       expect(voiceProblem({ transcriber: 'browser', speaker: 'local' }, DEFAULT_AGENT_VOICE)).toBeNull()
       rememberSecretSettings({ geminiApiKey: 'AIza', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', openCodeApiKey: '', kyutaiApiKey: '' })
       expect(voiceProblem({ transcriber: 'gemini', speaker: 'gemini' }, DEFAULT_AGENT_VOICE)).toBeNull()

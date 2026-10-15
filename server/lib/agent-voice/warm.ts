@@ -1,6 +1,7 @@
 import { getSettings } from '../settings'
 import { requestLocalModel } from './local-models'
 import { warmPocket } from './pocket-speech'
+import { barSpeech } from './assistant-voice'
 
 /**
  * Fetch, ahead of the first spoken turn, what the engines Settings chose will
@@ -18,8 +19,10 @@ export async function warmAgentVoice(log: (line: string) => void = line => conso
   if (agentVoice.transcriber === 'local') {
     jobs.push([`the transcriber ${agentVoice.localTranscribeModel}`, requestLocalModel({ op: 'transcriber', model: agentVoice.localTranscribeModel })])
   }
-  if (agentVoice.speaker === 'local') jobs.push(['the local speech model', requestLocalModel({ op: 'speaker' })])
-  if (agentVoice.speaker === 'pocket') jobs.push(['Pocket TTS', warmPocket(agentVoice.pocketUrl)])
+  // The voice that will really speak: a free one when the chosen engine cannot here.
+  const { speaker } = barSpeech(agentVoice).settings
+  if (speaker === 'local') jobs.push(['the local speech model', requestLocalModel({ op: 'speaker' })])
+  if (speaker === 'pocket') jobs.push(['Pocket TTS', warmPocket(agentVoice.pocketUrl)])
   await Promise.all(jobs.map(([what, job]) => job.then(
     () => log(`[agent-voice] ${what} is ready`),
     error => log(`[agent-voice] could not fetch ${what} ahead of time: ${error instanceof Error ? error.message : String(error)}`)

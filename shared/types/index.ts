@@ -123,7 +123,7 @@ export interface PendingHandoff {
  * are not offered: each device has different ones.
  */
 export interface AssistantVoice {
-  speaker: Exclude<Speaker, 'browser'>
+  speaker: Speaker
   voice: string
 }
 
@@ -722,6 +722,8 @@ export interface AppSettings {
   browserTools: boolean
   /** Who hears and who speaks when talking to a coding agent. See `AgentVoiceSettings`. */
   agentVoice: AgentVoiceSettings
+  /** Something the voice settings say once, such as an engine Domo switched to; empty when nothing. */
+  agentVoiceNotice: string
   /** How an installed Domo looks for and applies new versions. See `UpdateSettings`. */
   updates: UpdateSettings
   /** Titles for sessions started without one. See `SessionTitleSettings`. */
@@ -909,11 +911,11 @@ export type SpeechEngine = 'gemini' | 'openai' | 'local' | 'kyutai' | 'mac'
 export type Transcriber = SpeechEngine | 'browser'
 
 /**
- * Who reads the agent's replies out: one of the engines, or the device's own
- * voices (the browser's speech synthesis), which start at once and cost
- * nothing, and sound as good as the device's voices do.
+ * Who reads the agent's replies out: one of the engines, or Pocket TTS. Always
+ * the server, so the speech plays through the page, where the echo canceller
+ * hears it; the device's own voices did not, and were dropped.
  */
-export type Speaker = SpeechEngine | 'browser' | 'pocket'
+export type Speaker = SpeechEngine | 'pocket'
 
 /** What a tool call sounds like in the voice bar. */
 export type ToolSound = 'typing' | 'laptop' | 'tick' | 'off'
@@ -1108,8 +1110,6 @@ export type AgentVoiceServerMessage =
   | { type: 'attachments-sent', uris: string[] }
   /** A spoken command was recognised and acted on. */
   | { type: 'command', name: 'hush' | 'cancel' | 'send' }
-  /** Text for the device to say itself, when it is the speaker. */
-  | { type: 'say', text: string }
   /** Speech to play, PCM16 base64 at `sampleRate`. */
   | { type: 'audio', data: string, sampleRate: number }
   /** The sentence now being spoken; null when nothing is. */

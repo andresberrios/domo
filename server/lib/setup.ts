@@ -121,7 +121,7 @@ const USAGE_PROVIDER: Record<AgentAdapter, UsageProviderId> = { 'claude-code': '
 /** Why an engine cannot hear or speak as set up, in the words the guide shows. */
 export function voiceProblem(voice: Pick<AgentVoiceSettings, 'transcriber' | 'speaker'>, base: AgentVoiceSettings): string | null {
   for (const engine of new Set([voice.transcriber, voice.speaker])) {
-    // The device's own, and a Kyutai server only Domo's own use can prove.
+    // The device's own dictation, and a Kyutai server only Domo's own use can prove.
     if (engine === 'browser' || engine === 'kyutai') continue
     const problem = speakerUnavailable(engine, base)
     if (problem) return problem
@@ -252,26 +252,24 @@ export function heardRight(expected: string, heard: string): boolean {
 
 /**
  * Voice end to end: the speaker says the test sentence and the transcriber
- * hears it back. When the device does one of the two itself, that half is
- * the browser's to check; the speech the server hears then comes from the
- * free local voice instead.
+ * hears it back. When the device's own dictation hears, that half is the
+ * browser's to check.
  */
 export async function checkVoice(): Promise<SetupCheckResult & { audio: string | null, heard: string | null }> {
   const settings = (await getSettings()).agentVoice
   const problem = voiceProblem(settings, settings)
   if (problem) return { ...result(false, problem, null), audio: null, heard: null }
-  const speaking = settings.speaker === 'browser' ? { ...settings, speaker: 'local' as const } : settings
   try {
     const chunks: Int16Array[] = []
     let rate = 0
-    await synthesizeWith(speaking, VOICE_CHECK_TEXT, (chunk) => {
+    await synthesizeWith(settings, VOICE_CHECK_TEXT, (chunk) => {
       rate ||= chunk.sampleRate
       const bytes = Buffer.from(chunk.data, 'base64')
       chunks.push(new Int16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length - (bytes.length % 2))))
     })
     if (!rate) return { ...result(false, 'The voice answered with no sound.', null), audio: null, heard: null }
     const samples = concatPcm16(chunks)
-    const audio = settings.speaker === 'browser' ? null : wavFromPcm16(samples, rate).toString('base64')
+    const audio = wavFromPcm16(samples, rate).toString('base64')
     if (settings.transcriber === 'browser') {
       return { ...result(true, 'Domo spoke. This device does the listening, so try the microphone in a session.', null), audio, heard: null }
     }

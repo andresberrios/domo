@@ -38,8 +38,8 @@ With Domo you can:
 - At least one coding agent account: a Claude, ChatGPT or OpenCode plan.
   See [Signing in](#signing-in).
 - For the default speech engines, a Gemini API key
-  ([AI Studio](https://aistudio.google.com/apikey)). The open models and your
-  device's own voices need no key.
+  ([AI Studio](https://aistudio.google.com/apikey)). The open models, Pocket TTS
+  and the Mac's voices need no key, and speak when there is none.
 
 ## Install
 

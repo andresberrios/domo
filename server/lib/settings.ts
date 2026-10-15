@@ -52,6 +52,7 @@ export const DEFAULTS: AppSettings = {
   // cost is one several-hundred-megabyte volume per machine, built once.
   browserTools: true,
   agentVoice: { ...DEFAULT_AGENT_VOICE },
+  agentVoiceNotice: '',
   updates: { ...DEFAULT_UPDATE_SETTINGS },
   // On, on whatever cheap model this machine can reach: a generated title
   // costs a fraction of a cent of a plan that is already paid for.
@@ -71,6 +72,7 @@ export async function getSettings(): Promise<AppSettings> {
     defaultAgentConfig: storedAgentConfig(stored),
     openCodePermission: storedOpenCodePermission(stored),
     agentVoice: storedAgentVoice(stored),
+    agentVoiceNotice: typeof stored.agentVoiceNotice === 'string' ? stored.agentVoiceNotice : '',
     updates: storedUpdates(stored),
     sessionTitles: storedSessionTitles(stored),
     setup: normalizeSetup(stored.setup)

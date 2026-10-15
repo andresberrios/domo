@@ -84,11 +84,11 @@ function asks(agentSessionId: string, id = 'pm_1', resolvedAt: string | null = n
   } as any)
 }
 
-/** A bar open on the device's speaker, and what it says. */
+/** A bar open, and what it says. */
 function openBar(runtime: InstanceType<typeof AgentVoiceRuntime>) {
   const messages: AgentVoiceServerMessage[] = []
   runtime.addListener(message => messages.push(message))
-  return () => messages.filter(message => message.type === 'say').map((message: any) => message.text as string)
+  return () => messages.filter(message => message.type === 'speaking' && message.text).map((message: any) => message.text as string)
 }
 
 /** Say something into a bar whose transcriber is the device. */
@@ -175,20 +175,30 @@ describe('the agent voice runtime', () => {
     runtime.close()
   })
 
-  it('has the device say the reply, piece by piece, when the device speaks', async () => {
-    settings.agentVoice.speaker = 'browser'
-    const runtime = new AgentVoiceRuntime('ag_device_speaker')
+  it('reads the reply out as it streams, all of it, once', async () => {
+    settings.agentVoice.speaker = 'local'
+    const runtime = new AgentVoiceRuntime('ag_streams')
+    openBar(runtime)
+    streams('ag_streams', 'It records your voice, sends it up')
+    streams('ag_streams', 'It records your voice, sends it up, and plays the answer. Then it waits.', false)
+    await vi.waitFor(() => expect(synthesizeWith.mock.calls.map(call => call[1]).join(' ')).toBe('It records your voice, sends it up, and plays the answer. Then it waits.'))
+    runtime.close()
+  })
+
+  it('speaks with a free voice when the bar\'s engine cannot speak here, and says so once', async () => {
+    // The default speaker is Gemini, and the tests have no key.
+    const runtime = new AgentVoiceRuntime('ag_no_key')
     const messages: AgentVoiceServerMessage[] = []
     runtime.addListener(message => messages.push(message))
-    streams('ag_device_speaker', 'It records your voice, sends it up')
-    streams('ag_device_speaker', 'It records your voice, sends it up, and plays the answer. Then it waits.', false)
-    await vi.waitFor(() => expect(messages.filter(m => m.type === 'say')).toHaveLength(3))
-    expect(messages.filter(m => m.type === 'say').map((m: any) => m.text)).toEqual([
-      'It records your voice,',
-      'sends it up, and plays the answer.',
-      'Then it waits.'
-    ])
-    expect(synthesizeWith).not.toHaveBeenCalled()
+    streams('ag_no_key', 'First reply.', false)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalledTimes(1))
+    expect(['mac', 'pocket', 'local']).toContain(synthesizeWith.mock.calls[0]![0].speaker)
+    streams('ag_no_key', 'Second reply.', false)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalledTimes(2))
+    const notices = messages.filter(message => message.type === 'notice').map((message: any) => message.message)
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatch(/^Gemini cannot speak here \(No Gemini API key.*is reading instead\./)
+    expect(messages.some(message => message.type === 'error')).toBe(false)
     runtime.close()
   })
 
@@ -204,7 +214,7 @@ describe('the agent voice runtime', () => {
   })
 
   it('reads out its agent\'s permission request and takes a spoken yes as the answer', async () => {
-    settings.agentVoice.speaker = 'browser'
+    settings.agentVoice.speaker = 'local'
     settings.agentVoice.transcriber = 'browser'
     const runtime = new AgentVoiceRuntime('ag_asks')
     const said = openBar(runtime)
@@ -232,7 +242,7 @@ describe('the agent voice runtime', () => {
   })
 
   it('speaks for other agents on the bar used last, and wants allow or deny from them, not yes', async () => {
-    settings.agentVoice.speaker = 'browser'
+    settings.agentVoice.speaker = 'local'
     settings.agentVoice.transcriber = 'browser'
     const older = agentVoiceManager.get('ag_older')
     const olderSaid = openBar(older)
@@ -254,7 +264,7 @@ describe('the agent voice runtime', () => {
   })
 
   it('reads out a notification on the open bar, and clips a long one', async () => {
-    settings.agentVoice.speaker = 'browser'
+    settings.agentVoice.speaker = 'local'
     const bar = agentVoiceManager.get('ag_listener')
     const said = openBar(bar)
     const long = `The migration is done. ${'Every table was checked twice and nothing was lost. '.repeat(10)}`
@@ -267,7 +277,7 @@ describe('the agent voice runtime', () => {
   })
 
   it('speaks an assistant\'s replies in its own voice, even when the bar speaks with another engine', async () => {
-    settings.agentVoice.speaker = 'browser'
+    settings.agentVoice.speaker = 'local'
     assistantVoices.set('ag_fox', { speaker: 'pocket', voice: 'mary' })
     const runtime = new AgentVoiceRuntime('ag_fox')
     const said = openBar(runtime)
@@ -276,7 +286,8 @@ describe('the agent voice runtime', () => {
     const [used, text] = synthesizeWith.mock.calls[0]!
     expect(used).toMatchObject({ speaker: 'pocket', pocketVoice: 'mary' })
     expect(text).toBe('All released. Tagged v2.')
-    expect(said()).toEqual([])
+    expect(synthesizeWith.mock.calls.every(call => call[0].speaker === 'pocket')).toBe(true)
+    expect(said()).toEqual(['All released. Tagged v2.'])
     runtime.close()
   })
 

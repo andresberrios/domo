@@ -5,7 +5,5 @@ import { getSettings } from '../../lib/settings'
 /** Which engines can speak an assistant's voice here, and why not, for the assistant form. */
 export default defineEventHandler(async () => {
   const { agentVoice } = await getSettings()
-  return Object.fromEntries(SPEAKERS
-    .filter(speaker => speaker.id !== 'browser')
-    .map(speaker => [speaker.id, speakerUnavailable(speaker.id as Exclude<typeof speaker.id, 'browser'>, agentVoice)]))
+  return Object.fromEntries(SPEAKERS.map(speaker => [speaker.id, speakerUnavailable(speaker.id, agentVoice)]))
 })

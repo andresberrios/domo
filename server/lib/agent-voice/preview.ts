@@ -23,7 +23,6 @@ export async function previewVoice(request: { agentVoice?: unknown, voice?: unkn
     if (unavailable) throw new PreviewError(`This voice cannot speak here, so the voice bar's own would be used: ${unavailable}`)
     settings = withVoice(base, voice)
   }
-  if (settings.speaker === 'browser') throw new PreviewError('The device speaks its own voices; the browser plays them itself.')
 
   const chunks: Int16Array[] = []
   let sampleRate = 0

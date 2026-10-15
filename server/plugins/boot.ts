@@ -22,6 +22,7 @@ import { stopLocalModels } from '../lib/agent-voice/local-models'
 import { updater } from '../lib/updates'
 import { getSettings } from '../lib/settings'
 import { warmAgentVoice } from '../lib/agent-voice/warm'
+import { migrateDeviceSpeaker } from '../lib/agent-voice/device-speaker'
 
 export default defineNitroPlugin(async (nitro) => {
   try {
@@ -98,6 +99,9 @@ export default defineNitroPlugin(async (nitro) => {
 
   // An installed Domo looks for new versions; a development server has none.
   await updater.start().catch(error => console.error('[domo] updater', error))
+
+  // Before the warm-up, so it fetches the voice that replaced the device's.
+  await migrateDeviceSpeaker().catch(error => console.error('[agent-voice] device speaker', error))
 
   // An installed Domo fetches the speech models its settings call for now, not
   // on the first spoken turn. Not under `pnpm dev`: a developer's reload must

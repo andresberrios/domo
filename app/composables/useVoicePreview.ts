@@ -1,12 +1,10 @@
 import type { AgentVoiceSettings, AssistantVoice } from '~~/shared/types'
-import { VOICE_PREVIEW_TEXT } from '~~/shared/agent-voice'
 import { playWav } from '~/utils/barSounds'
 
 /**
  * A voice saying a short line, to hear before choosing it: the bar's voice as
- * the Settings form has it, saved or not, or an assistant's. The device's
- * own voices are spoken here; every other engine on the server
- * (`/api/agent-voice/preview`). `error` says why one could not be heard.
+ * the Settings form has it, saved or not, or an assistant's, spoken on the
+ * server (`/api/agent-voice/preview`). `error` says why one could not be heard.
  */
 export function useVoicePreview() {
   const loading = ref(false)
@@ -14,10 +12,6 @@ export function useVoicePreview() {
 
   async function play(request: { agentVoice?: AgentVoiceSettings, voice?: AssistantVoice }, volume = 1) {
     error.value = null
-    if (!request.voice && request.agentVoice?.speaker === 'browser') {
-      speakOnDevice(request.agentVoice.language, volume)
-      return
-    }
     loading.value = true
     try {
       const wav = await $fetch<ArrayBuffer>('/api/agent-voice/preview', { method: 'POST', body: request, responseType: 'arrayBuffer' })
@@ -27,22 +21,6 @@ export function useVoicePreview() {
     } finally {
       loading.value = false
     }
-  }
-
-  function speakOnDevice(language: string, volume: number) {
-    if (!('speechSynthesis' in window)) {
-      error.value = 'This browser cannot speak.'
-      return
-    }
-    window.speechSynthesis.cancel()
-    const sample = new SpeechSynthesisUtterance(VOICE_PREVIEW_TEXT)
-    const voice = deviceVoice(language)
-    if (voice) {
-      sample.voice = voice
-      sample.lang = voice.lang
-    }
-    sample.volume = volume
-    window.speechSynthesis.speak(sample)
   }
 
   return { loading, error, play }

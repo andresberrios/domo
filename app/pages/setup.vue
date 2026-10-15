@@ -84,7 +84,6 @@ async function runCheck(target: SetupTarget) {
     if (setup.value) setup.value = { ...setup.value, progress: answer.progress }
     replies.value[target] = answer.reply ?? null
     if (answer.audio) await playWav(base64ToArrayBuffer(answer.audio), 1).catch(() => {})
-    else if (target === 'voice' && answer.ok && settings.value?.agentVoice.speaker === 'browser') speakOnDevice()
     await refreshSetup()
   } catch (error: any) {
     toast.add({ title: 'Could not run the check', description: error?.data?.message ?? error?.message, color: 'error' })
@@ -96,12 +95,6 @@ async function runCheck(target: SetupTarget) {
 function base64ToArrayBuffer(data: string): ArrayBuffer {
   const bytes = Uint8Array.from(atob(data), char => char.charCodeAt(0))
   return bytes.buffer
-}
-
-function speakOnDevice() {
-  if (!('speechSynthesis' in window)) return
-  window.speechSynthesis.cancel()
-  window.speechSynthesis.speak(new SpeechSynthesisUtterance('Domo can hear you and talk back.'))
 }
 
 async function patchSetup(body: { finished?: boolean, skip?: SetupTarget, unskip?: SetupTarget }) {

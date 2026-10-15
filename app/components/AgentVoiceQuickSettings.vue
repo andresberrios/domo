@@ -19,7 +19,7 @@ import {
  * these are changed while talking, and Settings is a page away.
  *
  * Every choice applies at once. Engines and voices are Settings, saved for
- * every device; the microphone and a device voice belong to this browser.
+ * every device; the microphone belongs to this browser.
  * The model ids and each engine's finer knobs stay on the Settings page.
  */
 const toast = useToast()
@@ -62,15 +62,7 @@ async function choose(column: Column, value: string) {
   }
 }
 
-/* The device's and the Mac's voices are only listed when they are the speaker. */
-const deviceVoices = ref<Item[]>([])
-const deviceVoiceName = ref('')
-function loadDeviceVoices() {
-  if (!('speechSynthesis' in window) || !voice.value) return
-  const ranked = rankDeviceVoices(window.speechSynthesis.getVoices(), voice.value.language)
-  deviceVoices.value = ranked.map(entry => ({ value: entry.name, label: entry.name, description: entry.lang }))
-  deviceVoiceName.value = storedDeviceVoice() || ranked[0]?.name || ''
-}
+/* The Mac's voices are only listed when it is the speaker. */
 const { data: clones } = useClonedVoices()
 const macVoices = ref<Item[]>([])
 const QUALITY = ['', 'default', 'enhanced', 'premium']
@@ -89,7 +81,6 @@ async function loadMacVoices() {
 watch([open, () => voice.value?.speaker], () => {
   if (!open.value) return
   void inputs.refresh()
-  if (voice.value?.speaker === 'browser') loadDeviceVoices()
   if (voice.value?.speaker === 'mac') void loadMacVoices()
 }, { immediate: true })
 
@@ -108,24 +99,6 @@ const voiceColumn = computed<Column | null>(() => {
       return { key: 'voice', label: 'Voice', items: pocketVoiceItems(clones.value ?? [], current.pocketVoice), selected: current.pocketVoice, apply: value => setVoice({ pocketVoice: value }) }
     case 'mac':
       return { key: 'voice', label: 'Voice', items: macVoices.value, selected: current.macVoice, apply: value => setVoice({ macVoice: value }) }
-    case 'browser':
-      return {
-        key: 'voice',
-        label: 'Voice on this device',
-        items: deviceVoices.value,
-        selected: deviceVoiceName.value,
-        apply: (value) => {
-          deviceVoiceName.value = value
-          storeDeviceVoice(value)
-          const chosen = window.speechSynthesis.getVoices().find(entry => entry.name === value)
-          if (!chosen) return
-          window.speechSynthesis.cancel()
-          const sample = new SpeechSynthesisUtterance('This is how replies will sound.')
-          sample.voice = chosen
-          sample.lang = chosen.lang
-          window.speechSynthesis.speak(sample)
-        }
-      }
     default:
       return null
   }

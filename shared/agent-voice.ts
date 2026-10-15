@@ -61,11 +61,10 @@ export function isTranscriber(value: unknown): value is Transcriber {
   return TRANSCRIBERS.some(transcriber => transcriber.id === value)
 }
 
-/** Who can speak: the engines, and the device's own voices. */
+/** Who can speak: the engines, and Pocket TTS. */
 export const SPEAKERS: Array<{ id: Speaker, label: string, description: string }> = [
   ...SPEECH_ENGINES,
-  { id: 'pocket', label: 'Pocket TTS', description: 'Kyutai\'s open model on the server\'s CPU: natural, starts at once, and can clone a voice.' },
-  { id: 'browser', label: 'This device', description: 'The device\'s own voices: instant and free. Siri voices on Apple, natural voices in Edge.' }
+  { id: 'pocket', label: 'Pocket TTS', description: 'Kyutai\'s open model on the server\'s CPU: natural, starts at once, and can clone a voice.' }
 ]
 
 /**

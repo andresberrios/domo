@@ -17,6 +17,11 @@ export default defineEventHandler(async (event) => {
     }
   }
 
+  // Only cleared from here, once read; Domo writes it.
+  if (patch.agentVoiceNotice !== undefined && patch.agentVoiceNotice !== '') {
+    throw createError({ statusCode: 400, message: 'agentVoiceNotice can only be cleared.' })
+  }
+
   if (patch.defaultAssistantId !== undefined && typeof patch.defaultAssistantId !== 'string') {
     throw createError({ statusCode: 400, message: 'defaultAssistantId must be an assistant id; empty means the most recent.' })
   }

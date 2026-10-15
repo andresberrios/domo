@@ -123,6 +123,8 @@ export class AgentVoiceRuntime {
   private pumping = false
   /** The bar has been told once that an assistant's voice gave way to its own. */
   private fallbackNoticed = false
+  /** Whether this bar has said that a free voice stands in for the engine Settings chose. */
+  private substituteNoticed = false
   private current: AbortController | null = null
   private speakingText: string | null = null
   /** Set by `hush`; the rest of this answer is not read. Cleared by a new turn. */
@@ -538,13 +540,11 @@ export class AgentVoiceRuntime {
       while (this.queue.length && !this.closed) {
         const { agentVoice } = await getSettings()
         const voiceOf = this.queue[0]!.voiceOf
-        const { settings, fallback } = await speechSettingsFor(voiceOf, agentVoice)
-        if (settings.speaker === 'browser') {
-          // The device says it, as each piece arrives; there is nothing to make here.
-          const text = this.queue.shift()!.text
-          this.emit({ type: 'speaking', text })
-          this.emit({ type: 'say', text })
-          continue
+        const { settings, fallback, substitute } = await speechSettingsFor(voiceOf, agentVoice)
+        // Said once a bar, like the assistant's fallback below.
+        if (substitute && !this.substituteNoticed) {
+          this.substituteNoticed = true
+          this.emit({ type: 'notice', message: substitute })
         }
         // Pieces in the same voice go out together; a change of voice is a new request.
         let text = this.queue.shift()!.text
@@ -578,8 +578,7 @@ export class AgentVoiceRuntime {
               this.emit({ type: 'notice', message: `The assistant's own voice could not speak, so the bar's voice is reading it: ${describe(error)}` })
             }
             try {
-              if (fallback.speaker === 'browser') this.emit({ type: 'say', text })
-              else await synthesizeWith(fallback, text, play, controller.signal)
+              await synthesizeWith(fallback, text, play, controller.signal)
               failure = null
             } catch (second) {
               failure = second
