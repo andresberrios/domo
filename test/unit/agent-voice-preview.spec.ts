@@ -6,6 +6,10 @@ const synthesizeWith = vi.fn(async (_settings: any, _text: string, onChunk: (chu
   onChunk({ data: Buffer.from(new Int16Array([1, 2, 3]).buffer).toString('base64'), sampleRate: 24000 })
 })
 let geminiKey: string | null = null
+// Which voice is free depends on the machine, so it is pinned: a Mac with uv,
+// unless a test says otherwise.
+const machine = vi.hoisted(() => ({ mac: true, uv: true }))
+vi.mock('../../server/lib/agent-voice/machine', () => ({ machine: { isMac: () => machine.mac, onPath: () => machine.uv } }))
 vi.mock('../../server/lib/settings', () => ({
   getSettings: async () => ({ agentVoice: { ...DEFAULT_AGENT_VOICE, speaker: 'local' } }),
   normalizeAgentVoice: (value: any) => ({ ...DEFAULT_AGENT_VOICE, ...value })
@@ -26,6 +30,7 @@ const { previewVoice, PreviewError } = await import('../../server/lib/agent-voic
 
 describe('previewing a voice', () => {
   beforeEach(() => {
+    Object.assign(machine, { mac: true, uv: true })
     synthesizeWith.mockClear()
     geminiKey = null
     delete process.env.HF_TOKEN

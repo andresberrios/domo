@@ -17,6 +17,10 @@ const synthesizeWith = vi.fn(async (_settings: any, _text: string, _onChunk: any
 const assistantVoices = new Map<string, { speaker: string, voice: string }>()
 
 vi.mock('../../server/lib/settings', () => ({ getSettings: async () => settings }))
+// Which voice is free depends on the machine, so it is pinned: a Mac with uv,
+// unless a test says otherwise.
+const machine = vi.hoisted(() => ({ mac: true, uv: true }))
+vi.mock('../../server/lib/agent-voice/machine', () => ({ machine: { isMac: () => machine.mac, onPath: () => machine.uv } }))
 vi.mock('../../server/lib/acp/manager', () => ({ acpManager: { deliver, answerPermission, cancel: vi.fn() } }))
 vi.mock('../../server/lib/repo', () => ({
   getAgentSession: async (id: string) => ({
@@ -105,6 +109,7 @@ function delivered(): string {
 
 describe('the agent voice runtime', () => {
   beforeEach(() => {
+    Object.assign(machine, { mac: true, uv: true })
     settings.agentVoice = { ...DEFAULT_AGENT_VOICE }
     deliver.mockClear()
     answerPermission.mockClear()

@@ -12,8 +12,7 @@ import {
 } from '../../../shared/agent-voice'
 import type { AgentVoiceSettings, AssistantVoice, Speaker } from '../../../shared/types'
 import { getClonedVoice, listClonedVoices } from './voice-store'
-import { existsSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { machine } from './machine'
 
 /**
  * An assistant speaks with its own voice wherever the voice bar reads it out:
@@ -76,16 +75,12 @@ export function speakerUnavailable(speaker: AssistantVoice['speaker'], base: Age
     case 'gemini': return geminiApiKey() ? null : 'No Gemini API key. Add one in Settings → Voice.'
     case 'openai': return openAiApiKey() ? null : 'No OpenAI API key. Add one in Settings → Voice.'
     case 'local': return null
-    case 'mac': return process.platform === 'darwin' ? null : 'Domo is not running on a Mac.'
+    case 'mac': return machine.isMac() ? null : 'Domo is not running on a Mac.'
     // A server the human runs; only when Settings already point the bar at it.
     case 'kyutai': return base.speaker === 'kyutai' ? null : 'Kyutai speaks only when the voice bar\'s own speaker in Settings → Voice is Kyutai.'
     // Domo starts Pocket itself through uvx, unless Settings name a server.
-    case 'pocket': return base.pocketUrl || onPath('uvx') ? null : 'Pocket TTS needs uv on the server, or a Pocket server in Settings → Voice.'
+    case 'pocket': return base.pocketUrl || machine.onPath('uvx') ? null : 'Pocket TTS needs uv on the server, or a Pocket server in Settings → Voice.'
   }
-}
-
-function onPath(command: string): boolean {
-  return (process.env.PATH ?? '').split(delimiter).some(dir => dir && existsSync(join(dir, command)))
 }
 
 /**
