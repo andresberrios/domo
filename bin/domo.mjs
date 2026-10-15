@@ -62,7 +62,15 @@ const P = {
  * asks with the `restart-requested` file instead and stops normally.
  */
 export const RESTART_EXIT_CODE = 75
-const SERVICE_LABEL = 'com.domo.app'
+/**
+ * The login service's name. launchd and systemd are per user, not per home,
+ * so an install in any home but the default one gets its own name, from its
+ * path: a test install's `install`, `stop` or `uninstall` never reaches the
+ * real one's service.
+ */
+const SERVICE_SUFFIX = HOME === resolve(homedir(), '.domo') ? '' : createHash('sha256').update(HOME).digest('hex').slice(0, 8)
+const SERVICE_LABEL = SERVICE_SUFFIX ? `com.domo.app.${SERVICE_SUFFIX}` : 'com.domo.app'
+const SYSTEMD_UNIT = SERVICE_SUFFIX ? `domo-${SERVICE_SUFFIX}` : 'domo'
 const HEALTH_TIMEOUT_MS = 60_000
 
 // --------------------------------------------------------------------------
@@ -477,7 +485,7 @@ function servicePaths() {
   if (platform() === 'darwin') {
     return { kind: 'launchd', file: join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`), domain: `gui/${userInfo().uid}` }
   }
-  return { kind: 'systemd', file: join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', 'domo.service') }
+  return { kind: 'systemd', file: join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', `${SYSTEMD_UNIT}.service`) }
 }
 
 function writeService() {
@@ -543,7 +551,7 @@ function serviceStart() {
     if (!result.ok) fail(`launchctl bootstrap: ${result.err}`)
   } else {
     sh('systemctl', ['--user', 'daemon-reload'])
-    const result = sh('systemctl', ['--user', 'enable', '--now', 'domo'])
+    const result = sh('systemctl', ['--user', 'enable', '--now', SYSTEMD_UNIT])
     if (!result.ok) fail(`systemctl: ${result.err}`)
   }
   log(`service started (${service.kind})`)
@@ -552,7 +560,7 @@ function serviceStart() {
 function serviceStop() {
   const service = servicePaths()
   if (service.kind === 'launchd') sh('launchctl', ['bootout', `${service.domain}/${SERVICE_LABEL}`])
-  else sh('systemctl', ['--user', 'stop', 'domo'])
+  else sh('systemctl', ['--user', 'stop', SYSTEMD_UNIT])
   const pid = supervisorPid()
   if (pid) process.kill(pid, 'SIGTERM')
   log('service stopped')
@@ -561,7 +569,7 @@ function serviceStop() {
 function serviceUninstall() {
   serviceStop()
   const service = servicePaths()
-  if (service.kind === 'systemd') sh('systemctl', ['--user', 'disable', 'domo'])
+  if (service.kind === 'systemd') sh('systemctl', ['--user', 'disable', SYSTEMD_UNIT])
   rmSync(service.file, { force: true })
   if (service.kind === 'systemd') sh('systemctl', ['--user', 'daemon-reload'])
   console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p domo-prod down\` stops them, add \`-v\` to delete the database.`)
@@ -869,7 +877,7 @@ function serviceRestart() {
     const result = sh('launchctl', ['kickstart', '-k', `${service.domain}/${SERVICE_LABEL}`])
     if (!result.ok) fail(`launchctl kickstart: ${result.err}`)
   } else {
-    const result = sh('systemctl', ['--user', 'restart', 'domo'])
+    const result = sh('systemctl', ['--user', 'restart', SYSTEMD_UNIT])
     if (!result.ok) fail(`systemctl restart: ${result.err}`)
   }
   log('service restarted')

@@ -347,9 +347,10 @@ Then open `https://localhost:3866`. For an update, commit, build and
 `manifest --previous` the old `manifest.json` into a new directory, serve
 that, and watch Settings → Updates. Afterwards
 `DOMO_HOME=/tmp/domo-home /tmp/domo-home/bin/domo uninstall`,
-`docker compose -p domo-inst down -v`, and remove `/tmp/domo-home`. The
-launchd label is `com.domo.app` whichever home is used, so the scratch
-service and a real one cannot run at the same time. To test the move from
+`docker compose -p domo-inst down -v`, and remove `/tmp/domo-home`. A home
+other than `~/.domo` gets a service of its own (`com.domo.app.<hash of its
+path>`, `domo-<hash>.service`), so the scratch one runs beside the real one.
+To test the move from
 git, install `main`'s `scripts/install.sh` first with `DOMO_REPO` set to a
 bare clone (`file:///…`) whose `release` is the old commit, then push the
 branch to that `release`.
