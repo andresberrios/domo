@@ -40,12 +40,14 @@ function line(item: TranscriptItem) {
   const domo = domoCall(tool)
   const described = domo ? describeDomoCall(domo, names) : null
   const command = tool.rawInput?.command ?? tool.rawInput?.cmd
+  // A Bash call's title is often its command; then the title alone says it.
+  const detail = !described && command && String(command).trim() !== tool.title.trim() ? String(command) : null
   return {
     icon: running ? 'i-lucide-loader-circle' : (described?.icon ?? TOOL_KIND_ICONS[tool.kind] ?? TOOL_KIND_ICONS.other!),
     spin: running,
     text: described ? domoCallText(described) : tool.title,
     // Left off on a phone, where the line has room for the title and no more.
-    detail: !described && command ? String(command) : null
+    detail
   }
 }
 

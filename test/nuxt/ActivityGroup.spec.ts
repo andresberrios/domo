@@ -176,4 +176,12 @@ describe('ActivityGroup', () => {
     expect(component.find('[data-testid="activity-current"] .animate-spin').exists()).toBe(false)
     expect(component.text()).not.toContain('Bash ×1')
   })
+  it('says a call once when its title is its command', async () => {
+    const component = await render([
+      tool('c1', 'Bash', 'completed', { title: 'sleep 2; echo done', rawInput: { command: 'sleep 2; echo done' } }),
+      agentEvent('agent_message', { text: 'done', streaming: false })
+    ])
+
+    expect(component.find('[data-testid="activity-current"]').text()).toBe('sleep 2; echo done')
+  })
 })
