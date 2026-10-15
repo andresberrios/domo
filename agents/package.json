@@ -1,0 +1,15 @@
+{
+  "name": "domo-agents",
+  "private": true,
+  "description": "The coding agents an installed Domo runs, pinned with their lockfile. A release ships these two files, and the launcher installs them into ~/.domo/agents/<hash of the lockfile> only when they change. See docs/install-and-updates.md.",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.90.0",
+    "@agentclientprotocol/codex-acp": "2.2.2",
+    "@github/copilot": "1.0.98",
+    "@openai/codex": "0.162.1",
+    "@opencode/cli": "2.0.29"
+  },
+  "overrides": {
+    "@openai/codex": "0.162.1"
+  }
+}

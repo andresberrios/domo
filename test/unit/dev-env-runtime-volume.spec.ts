@@ -75,6 +75,24 @@ describe('the pins', () => {
       expect(dependencies[name]?.replace(/^\^/, ''), name).toBe(version)
     }
   })
+
+  // An installed Domo runs what agents/ pins: its lockfile is what a release
+  // ships and the launcher installs (docs/install-and-updates.md).
+  it('match what an installed Domo runs, lockfile included', async () => {
+    const { ADAPTER_PACKAGES, ADAPTER_OVERRIDES } = await load()
+    const root = new URL('../../', import.meta.url)
+    const agents = JSON.parse(readFileSync(new URL('agents/package.json', root), 'utf8'))
+    const lock = JSON.parse(readFileSync(new URL('agents/package-lock.json', root), 'utf8'))
+    const pinned = Object.fromEntries([
+      ...Object.values(ADAPTER_PACKAGES).map(({ spec }) => [spec.slice(0, spec.lastIndexOf('@')), spec.slice(spec.lastIndexOf('@') + 1)]),
+      ...Object.entries(ADAPTER_OVERRIDES)
+    ])
+
+    expect(agents.dependencies).toEqual(pinned)
+    expect(agents.overrides).toEqual(ADAPTER_OVERRIDES)
+    expect(lock.packages[''].dependencies).toEqual(agents.dependencies)
+    for (const [name, version] of Object.entries(pinned)) expect(lock.packages[`node_modules/${name}`]?.version, name).toBe(version)
+  })
 })
 
 describe('adapterCommandPath', () => {

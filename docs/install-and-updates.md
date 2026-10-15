@@ -22,11 +22,11 @@ no source. Installs read it without an account. The version is the commit's
 UTC date and short hash, `2026.10.15-ab18e19`, so every job that builds one
 commit agrees on it. Each release holds:
 
-- `domo-<version>-<os>-<arch>.tar.gz`, one directory `domo/` with the built
-  app (`.output`), a `node_modules` with only the packages the server
-  resolves from its working directory, the launcher, the `Caddyfile`, the
-  production compose file, `.tool-versions` (without pnpm: nothing is built)
-  and `build.json` (`version`, `commit`, `subject`, `builtAt`, `platform`).
+- `domo-<version>-<os>-<arch>.tar.gz`, about 55 MB: one directory `domo/`
+  with the built app (`.output`), `agents/` (the coding agents' pins, below),
+  the launcher, the `Caddyfile`, the production compose file,
+  `.tool-versions` (without pnpm: nothing is built) and `build.json`
+  (`version`, `commit`, `subject`, `builtAt`, `platform`).
   No source: the release build (`DOMO_RELEASE_BUILD=1` in `nuxt.config.ts`)
   writes no source maps, which embed the source, and minifies the server.
 - `manifest.json`: the version, the Node it runs on, the launcher's checksum,
@@ -36,16 +36,28 @@ commit agrees on it. Each release holds:
   `launcherSha256` sit on lines of their own: `install.sh` reads them with sed.
 - `SHA256SUMS`, `domo.mjs` (the launcher) and `install.sh`.
 
-A release is built on the platform it is for. Nitro's tracing carries the
-adapters' JavaScript but not the platform binaries they resolve at run time
-(Claude Code's, Codex's, OpenCode's, Copilot's), and it traces sharp and the
-ONNX runtime for the machine it runs on. So the tarball's `node_modules` is a
-fresh `pnpm install --prod` of what `adapterEntry()` and `codexBinary()`
-resolve (every package in `ADAPTERS`, read from the source, and Codex's CLI),
-from the same lockfile, hoisted into plain directories; the server runs with
-the release as its cwd. OpenCode's postinstall copies its binary into
-`@opencode/cli/bin`, and the platform package it came from is dropped as a
-second copy. A tarball is about 500 MB, most of it the agents' binaries.
+A release is built on the platform it is for: `.output` traces sharp and
+the ONNX runtime for the machine it runs on (the build keeps only this
+platform's ONNX binaries).
+
+The coding agents are not in the tarball. They are over a gigabyte, they
+change far less often than Domo, and Nitro's tracing does not carry their
+platform binaries anyway. `agents/package.json` and `agents/package-lock.json`
+pin them: every package `adapterEntry()` and `codexBinary()` resolve from the
+server's working directory, at the versions `ADAPTER_PACKAGES` names (a unit
+test keeps the three pin sites equal; `docs/acp-adapters.md`). npm's
+lockfile lists every platform's binary packages, so one lockfile serves all
+four builds, and it records each package's sha512. The launcher installs a
+lockfile once into `~/.domo/agents/<the first 16 hex of its sha256>`
+(`ensureAgents()`): `npm ci --ignore-scripts` with the bundled Node's npm,
+which checks every package against the lockfile; then OpenCode's postinstall
+alone, which places its binary for this machine; the musl builds, which npm
+installs too, are dropped; and each agent's CLI has to answer `--version`.
+It is built in a temporary directory and renamed into place with
+`.installed`. Each release's `node_modules` is a link to the install it pins,
+so the server resolves the adapters through it with the release as its cwd,
+and a rollback finds the agents its release pins. An install no kept release
+pins is removed.
 
 The manifest is cumulative: the publish job downloads the latest one and adds
 the new release on top. The release is a draft until every file is up, since
@@ -60,9 +72,9 @@ such as `domo-mac`, run it as a service (`./svc.sh install && ./svc.sh start`),
 and set the repository variable `DOMO_MACOS_RUNNER` to that label. Both
 macOS jobs then run there, one after the other, while the Mac is awake;
 unset the variable to go back. darwin-x64 builds on an x64 Node under
-Rosetta, which makes pnpm and the postinstalls fetch the x64 packages;
-`release.mjs build --platform` fails the job if the agents' native packages
-are not the platform named. The Linux jobs stay on GitHub's runners. A
+Rosetta, which makes pnpm fetch the x64 packages; `release.mjs build
+--platform` fails the job if that Node, or the sharp build `.output` traced,
+is not the platform named. The Linux jobs stay on GitHub's runners. A
 self-hosted runner runs whatever a workflow in the repository asks, so this
 suits a private repository that takes no outside pull requests.
 
@@ -72,7 +84,8 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
 
 ```
 ~/.domo/
-  releases/     one unpacked release per version
+  releases/     one unpacked release per version; its node_modules links into agents/
+  agents/       the coding agents, one install per lockfile (<hash>/node_modules)
   current  ->   releases/<version>      the release the server runs from
   previous ->   releases/<version>      the one before it, kept for rollback
   node/         the official Node tarball for this platform (.tool-versions)
@@ -182,7 +195,9 @@ server is restarted under it, the job goes on; the next server finds the live
    beside the download and rename it to `releases/<version>` whole, so a
    release directory with `build.json` is always complete.
 4. Bring the tools the release's `.tool-versions` names (`ensureTools`: Node
-   by swapping the directory, Caddy, `uv`), so a release moves any of them.
+   by swapping the directory, Caddy, `uv`), so a release moves any of them,
+   and the agents its lockfile pins, when no earlier release installed them
+   (`ensureAgents`, above). An ordinary update downloads only the app.
 5. Smoke test: start the release on a spare port with
    `DATABASE_URL=postgresql://127.0.0.1:1/none` and `ELECTRIC_URL` likewise, and
    require `GET /` to answer within thirty seconds. This proves the bundle
@@ -190,8 +205,8 @@ server is restarted under it, the job goes on; the next server finds the live
    marks every session stopped). A release that fails is deleted, so the
    next attempt downloads it again.
 6. Point `previous` at the old `current` and `current` at the new release,
-   delete every other release, replace the launcher if the release's
-   differs, and exit. The server, seeing `current` differ from its own
+   delete every other release and the agents' installs neither pins, replace
+   the launcher if the release's differs, and exit. The server, seeing `current` differ from its own
    release, marks the row `ready` and waits for a quiet moment (see below);
    then it writes `restart-requested`, marks `restarting`, and sends itself
    SIGTERM, which runs Nitro's close hooks. The supervisor does the rest,
@@ -235,7 +250,9 @@ feed. A release built from git has a `.git` file; it always counts as
 behind, even against the release of its own commit, so the next update
 downloads that release. The git-built one stays as `previous` for rollback;
 the update after that prunes it, and with no release left that came from
-git, `app/` is removed. `.env`, `data/` and the database are never touched.
+git, `app/` is removed. A git-built release has its own `node_modules` and
+no `agents/`, so it pins no agents' install. `.env`, `data/` and the
+database are never touched.
 Running the install one-liner over such an install does the same at once.
 
 ## Installing

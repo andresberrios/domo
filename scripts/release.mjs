@@ -14,12 +14,14 @@
 //       (DOMO_FEED=http://localhost:8765)
 //
 // A tarball holds one directory, `domo/`: the built server and client
-// (`.output`, without source maps, which carry the source), a `node_modules`
-// with only the packages the server resolves from its working directory (the
-// ACP adapters and the coding-agent binaries they run, which Nitro's tracing
-// does not carry), the launcher, the Caddyfile, the production compose file,
-// `.tool-versions` and `build.json`. Native packages are this machine's, so
-// each platform is built on its own (.github/workflows/release.yml).
+// (`.output`, without source maps, which carry the source), the launcher, the
+// Caddyfile, the production compose file, `.tool-versions`, `build.json` and
+// `agents/`, the coding agents' package.json and lockfile. The agents
+// themselves are not in it: the launcher installs them from npm into a
+// directory of their own, shared by every release that pins the same ones
+// (bin/domo.mjs, `ensureAgents()`). `.output` traces sharp and the ONNX
+// runtime for this machine, so each platform is built on its own
+// (.github/workflows/release.yml).
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -28,20 +30,8 @@ import { arch, platform } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
-/**
- * What the server resolves from its working directory at run time: every
- * adapter's package (`ADAPTERS` in adapter-process.ts, read from the source so
- * a new adapter is never left out) and Codex's CLI (`codexBinary()`).
- */
-function runtimePackages() {
-  const source = readFileSync(join(ROOT, 'server', 'lib', 'acp', 'adapter-process.ts'), 'utf8')
-  const adapters = [...source.matchAll(/packageName: '([^']+)'/g)].map(match => match[1])
-  if (adapters.length < 4) throw new Error('could not read the adapters\' packages from adapter-process.ts')
-  return [...new Set([...adapters, '@openai/codex'])]
-}
 /** How many releases the manifest remembers, for the changelog of an install that is several behind. */
 const HISTORY = 100
-
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { cwd: ROOT, stdio: 'inherit', ...options })
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} exited ${result.status ?? result.error?.message}`)
@@ -88,36 +78,29 @@ function build(args) {
   // Source maps embed the source they map.
   cpSync(join(ROOT, '.output'), join(stage, '.output'), { recursive: true, filter: src => !src.endsWith('.map') })
 
-  // The runtime packages at the versions the lockfile installed, from the
-  // same lockfile, so their dependencies resolve as they do in development.
-  // Hoisted: plain directories, which is what a tarball and `createRequire`
-  // from the working directory both want.
-  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-  const dependencies = Object.fromEntries(runtimePackages().map(name => [
-    name, JSON.parse(readFileSync(join(ROOT, 'node_modules', name, 'package.json'), 'utf8')).version
-  ]))
-  writeFileSync(join(stage, 'package.json'), `${JSON.stringify({ name: 'domo', version: v, private: true, type: 'module', license: pkg.license, dependencies }, null, 2)}\n`)
-  cpSync(join(ROOT, 'pnpm-lock.yaml'), join(stage, 'pnpm-lock.yaml'))
-  cpSync(join(ROOT, 'pnpm-workspace.yaml'), join(stage, 'pnpm-workspace.yaml'))
-  run('pnpm', [
-    'install', '--prod', '--no-frozen-lockfile', '--config.node-linker=hoisted',
-    '--config.enable-global-virtual-store=false', '--config.confirm-modules-purge=false'
-  ], { cwd: stage, env: { ...process.env, CI: '1' } })
-  for (const file of ['pnpm-lock.yaml', 'pnpm-workspace.yaml', join('node_modules', '.modules.yaml'), join('node_modules', '.pnpm-workspace-state-v1.json')]) {
-    rmSync(join(stage, file), { force: true })
-  }
-  // The agents' native packages are this platform's, or the tarball would
-  // carry another machine's binaries under this one's name.
+  // This platform's native packages only: the ONNX runtime ships every one's.
   const [os, cpu] = platformKey().split('-')
-  for (const name of [`@openai/codex-${os}-${cpu}`, `@anthropic-ai/claude-agent-sdk-${os}-${cpu}`, `@github/copilot-${os}-${cpu}`]) {
-    if (!existsSync(join(stage, 'node_modules', name))) throw new Error(`${name} was not installed; the release would not run on ${platformKey()}`)
+  const onnx = join(stage, '.output', 'server', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v3')
+  for (const dir of existsSync(onnx) ? readdirSync(onnx) : []) {
+    for (const sub of readdirSync(join(onnx, dir))) if (dir !== os || sub !== cpu) rmSync(join(onnx, dir, sub), { recursive: true, force: true })
   }
-  // OpenCode's postinstall copied its platform's binary into `@opencode/cli/bin`;
-  // the platform package it came from would be a second copy of 200 MB.
-  if (!existsSync(join(stage, 'node_modules', '@opencode', 'cli', 'bin', 'opencode.exe'))) throw new Error('OpenCode\'s postinstall did not place its binary')
-  for (const name of readdirSync(join(stage, 'node_modules', '@opencode')).filter(n => n.startsWith('cli-'))) {
-    rmSync(join(stage, 'node_modules', '@opencode', name), { recursive: true, force: true })
+  if (!existsSync(join(stage, '.output', 'server', 'node_modules', '@img', `sharp-${os}-${cpu}`))) {
+    throw new Error(`.output has no sharp for ${platformKey()}; it was built for another platform`)
   }
+
+  // The agents' pins. A lockfile that does not match its package.json would
+  // fail `npm ci` on every machine that installs the release.
+  const agents = JSON.parse(readFileSync(join(ROOT, 'agents', 'package.json'), 'utf8'))
+  const lock = JSON.parse(readFileSync(join(ROOT, 'agents', 'package-lock.json'), 'utf8'))
+  if (JSON.stringify(lock.packages?.['']?.dependencies) !== JSON.stringify(agents.dependencies)) {
+    throw new Error('agents/package-lock.json is out of date: run `npm install --package-lock-only` in agents/')
+  }
+  mkdirSync(join(stage, 'agents'))
+  for (const file of ['package.json', 'package-lock.json']) cpSync(join(ROOT, 'agents', file), join(stage, 'agents', file))
+  // The server resolves the adapters from its working directory's package.json;
+  // the launcher links `node_modules` beside it to the agents' install.
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  writeFileSync(join(stage, 'package.json'), `${JSON.stringify({ name: 'domo', version: v, private: true, type: 'module', license: pkg.license }, null, 2)}\n`)
 
   mkdirSync(join(stage, 'bin'))
   cpSync(join(ROOT, 'bin', 'domo.mjs'), join(stage, 'bin', 'domo.mjs'))

@@ -40,8 +40,8 @@ jobs:
           - { runner: ubuntu-24.04, platform: linux-x64, node-arch: x64 }
           - { runner: ubuntu-24.04-arm, platform: linux-arm64, node-arch: arm64 }
           - { runner: "${{ vars.DOMO_MACOS_RUNNER || 'macos-15' }}", platform: darwin-arm64, node-arch: arm64 }
-          # An x64 Node: on Apple silicon it runs under Rosetta, and pnpm and the
-          # postinstalls pick the x64 packages for the process's architecture.
+          # An x64 Node: on Apple silicon it runs under Rosetta, and pnpm picks
+          # the x64 packages for the process's architecture.
           - { runner: "${{ vars.DOMO_MACOS_RUNNER || 'macos-15-intel' }}", platform: darwin-x64, node-arch: x64 }
     runs-on: ${{ matrix.runner }}
     steps:

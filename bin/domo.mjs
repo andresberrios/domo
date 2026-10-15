@@ -14,7 +14,7 @@ import {
   renameSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs'
 import { arch, homedir, platform, tmpdir, userInfo } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
@@ -32,6 +32,8 @@ const P = {
   // release built from it is still `current` or `previous`.
   app: join(HOME, 'app'),
   releases: join(HOME, 'releases'),
+  // The coding agents, one install per lockfile, shared by the releases that pin it.
+  agents: join(HOME, 'agents'),
   current: join(HOME, 'current'),
   previous: join(HOME, 'previous'),
   nodeDir: join(HOME, 'node'),
@@ -712,6 +714,102 @@ function forgetCheckout() {
   rmSync(P.app, { recursive: true, force: true })
 }
 
+// --------------------------------------------------------------------------
+// The coding agents: installed apart from the app, since they are most of the
+// weight and change far less often. A release carries only their pins
+// (`agents/package.json` and its lockfile); every release that pins the same
+// ones shares one install, `agents/<the lockfile's hash>`, which the release's
+// `node_modules` links to and the server resolves the adapters through.
+// --------------------------------------------------------------------------
+
+/** The name of the agents' install a release pins, or null for one that carries its own (built from git). */
+function agentsKey(dir) {
+  const lock = join(dir, 'agents', 'package-lock.json')
+  return existsSync(lock) ? createHash('sha256').update(readFileSync(lock)).digest('hex').slice(0, 16) : null
+}
+
+function runStep(command, args, options) {
+  return new Promise((done, reject) => {
+    const child = spawn(command, args, { stdio: 'inherit', ...options })
+    child.on('error', reject)
+    child.on('exit', code => (code === 0 ? done() : reject(new Error(`${basename(command)} ${args.slice(0, 2).join(' ')} exited ${code}`))))
+  })
+}
+
+/**
+ * Install the agents `dir` pins, unless an earlier release already did, and
+ * link the release's `node_modules` to them. `npm ci` from the lockfile, with
+ * the bundled Node's npm: every package is checked against the lockfile's
+ * integrity hash, and the lockfile came in the checked tarball. No package's
+ * install script runs but OpenCode's, which places its binary for this
+ * machine. Built beside and renamed into place, then each agent is started
+ * once, so an install directory with `.installed` is always whole.
+ */
+async function ensureAgents(dir) {
+  const key = agentsKey(dir)
+  if (!key) return
+  const target = join(P.agents, key)
+  if (!existsSync(join(target, '.installed'))) {
+    log(`installing the coding agents (${key}); this downloads them once, not on every update`)
+    mkdirSync(P.agents, { recursive: true })
+    const tmp = mkdtempSync(join(P.agents, '.install-'))
+    try {
+      for (const file of ['package.json', 'package-lock.json']) cpSync(join(dir, 'agents', file), join(tmp, file))
+      const env = { ...process.env, PATH: `${dirname(P.node)}:${process.env.PATH || '/usr/bin:/bin'}`, npm_config_update_notifier: 'false' }
+      const npm = join(P.nodeDir, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      await runStep(P.node, [npm, 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--cache', join(tmp, '.npm')], { cwd: tmp, env })
+      rmSync(join(tmp, '.npm'), { recursive: true, force: true })
+      const opencode = join(tmp, 'node_modules', '@opencode', 'cli')
+      if (existsSync(join(opencode, 'postinstall.mjs'))) {
+        await runStep(P.node, ['postinstall.mjs'], { cwd: opencode, env })
+        // It copied its platform's binary into `bin`; the platform package is a second copy.
+        for (const name of readdirSync(dirname(opencode)).filter(n => n.startsWith('cli-'))) rmSync(join(dirname(opencode), name), { recursive: true, force: true })
+      }
+      // npm installs the musl builds beside the glibc ones (it does not read
+      // `libc`); a release runs on glibc only.
+      for (const scope of ['@anthropic-ai', '@github', '@openai']) {
+        const dir = join(tmp, 'node_modules', scope)
+        for (const name of existsSync(dir) ? readdirSync(dir).filter(n => /musl/.test(n)) : []) rmSync(join(dir, name), { recursive: true, force: true })
+      }
+      checkAgents(tmp)
+      writeFileSync(join(tmp, '.installed'), new Date().toISOString())
+      rmSync(target, { recursive: true, force: true })
+      renameSync(tmp, target)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+  relink(join(dir, 'node_modules'), relative(dir, join(target, 'node_modules')))
+}
+
+/** Each agent's CLI starts on this machine: the platform packages are there and run. */
+function checkAgents(dir) {
+  const os = platform() === 'darwin' ? 'darwin' : 'linux'
+  const cpu = arch() === 'arm64' ? 'arm64' : 'x64'
+  const modules = join(dir, 'node_modules')
+  const commands = [
+    [P.node, join(modules, '@openai', 'codex', 'bin', 'codex.js')],
+    [join(modules, '@opencode', 'cli', 'bin', 'opencode.exe')],
+    [join(modules, '@github', `copilot-${os}-${cpu}`, 'copilot')],
+    [join(modules, '@anthropic-ai', `claude-agent-sdk-${os}-${cpu}`, 'claude')]
+  ]
+  for (const [command, ...args] of commands) {
+    const result = spawnSync(command, [...args, '--version'], { encoding: 'utf8', timeout: 60_000 })
+    if (result.status !== 0) throw new Error(`${[command, ...args].pop()} --version failed: ${(result.stderr || result.error?.message || `exit ${result.status}`).trim().split('\n').pop()}`)
+  }
+}
+
+/** Agents' installs no kept release pins. */
+function pruneAgents() {
+  if (!existsSync(P.agents)) return
+  const pinned = new Set(readdirSync(P.releases).map(name => agentsKey(join(P.releases, name))).filter(Boolean))
+  for (const name of readdirSync(P.agents)) {
+    if (pinned.has(name)) continue
+    log(`removing agents ${name}, which no kept release uses`)
+    rmSync(join(P.agents, name), { recursive: true, force: true })
+  }
+}
+
 /** Start the release on a spare port against no database: proves the bundle loads and serves. */
 async function smokeTest(dir, env) {
   const port = String(40_000 + Math.floor(Math.random() * 10_000))
@@ -804,6 +902,7 @@ async function update(args) {
     const old = currentRelease()
     try {
       await ensureTools(dir)
+      await ensureAgents(dir)
       await smokeTest(dir, env)
     } catch (error) {
       // Not kept: the next attempt downloads it again rather than trust it.
@@ -814,6 +913,7 @@ async function update(args) {
     relink(P.current, dir)
     writeState({ lastAppliedAt: new Date().toISOString() })
     pruneReleases([dir, old].filter(Boolean))
+    pruneAgents()
     forgetCheckout()
     const launcherChanged = refreshLauncher(dir)
     log(`current is now ${manifest.version} (${Math.round((Date.now() - started) / 1000)}s)`)
