@@ -1,10 +1,12 @@
 import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
 
-import { adapterEnv, adapterLaunch } from './acp/adapter-process'
+import { adapterEnv, adapterLaunch, hostGhToken } from './acp/adapter-process'
 import { askOnce } from './acp/ask-once'
 import { anthropicApiKey, claudeOauthToken, hasClaudeSubscriptionLogin } from './claude-credentials'
 import { codexLogin } from './codex-credentials'
+import { copilotGithubToken } from './copilot-credentials'
+import { copilotHostLogin } from './acp/copilot'
 import { openCodeCredentialState } from './opencode-credentials'
 import { listUsageProviders } from './repo'
 import { openAiApiKey } from './openai'
@@ -87,11 +89,32 @@ export function classifyOpenCode(input: { key: boolean, hostLogin: boolean }): L
   return { login: 'free', loginDetail: 'No account: only OpenCode\'s free models.', environments: true }
 }
 
+/**
+ * Copilot: the token saved in Domo, else this computer's `copilot login`.
+ * An environment without a saved token signs in with the `gh` token it gets
+ * for git, which works unless it is a classic token, which Copilot refuses.
+ */
+export function classifyCopilot(input: { token: boolean, hostLogin: boolean, ghToken: string | null }): LoginAnswer {
+  if (input.token) return { login: 'subscription', loginDetail: 'Your Copilot plan, through the GitHub token saved in Domo.', environments: true }
+  const environments = !!input.ghToken && !input.ghToken.startsWith('ghp_')
+  if (input.hostLogin) {
+    return {
+      login: 'subscription',
+      loginDetail: environments
+        ? 'Your Copilot plan, through the Copilot login on this computer. Development environments use your GitHub CLI login.'
+        : 'Your Copilot plan, through the Copilot login on this computer. Development environments need a GitHub token.',
+      environments
+    }
+  }
+  return { login: 'none', loginDetail: 'No Copilot login on this computer, and no GitHub token.', environments: false }
+}
+
 /** Whether the adapter's program is where Domo will start it from. */
 async function installed(adapter: AgentAdapter): Promise<string | null> {
   try {
     const launch = adapterLaunch(adapter)
-    const file = launch.args[0] && launch.args[0] !== 'acp' ? launch.args[0] : launch.command
+    // A JavaScript adapter is its script; a native one is the command itself.
+    const file = launch.command === process.execPath && launch.args[0] ? launch.args[0] : launch.command
     await access(file, file === launch.command ? constants.X_OK : constants.R_OK)
     return null
   } catch (error) {
@@ -113,10 +136,17 @@ async function login(adapter: AgentAdapter): Promise<LoginAnswer> {
       apiKey: !!openAiApiKey()
     })
   }
+  if (adapter === 'copilot') {
+    return classifyCopilot({
+      token: !!copilotGithubToken(),
+      hostLogin: await copilotHostLogin(),
+      ghToken: process.env.NUXT_GH_TOKEN || process.env.GH_TOKEN || await hostGhToken()
+    })
+  }
   return classifyOpenCode(await openCodeCredentialState())
 }
 
-const USAGE_PROVIDER: Record<AgentAdapter, UsageProviderId> = { 'claude-code': 'claude', codex: 'codex', opencode: 'opencode' }
+const USAGE_PROVIDER: Record<AgentAdapter, UsageProviderId> = { 'claude-code': 'claude', codex: 'codex', opencode: 'opencode', copilot: 'copilot' }
 
 /** Why an engine cannot hear or speak as set up, in the words the guide shows. */
 export function voiceProblem(voice: Pick<AgentVoiceSettings, 'transcriber' | 'speaker'>, base: AgentVoiceSettings): string | null {
@@ -201,7 +231,8 @@ export function explainCheckFailure(adapter: AgentAdapter, message: string): str
 const SIGN_IN_AGAIN: Record<AgentAdapter, string> = {
   'claude-code': 'Run claude setup-token again and paste the new token.',
   codex: 'Run codex login again on the computer Domo runs on.',
-  opencode: 'Check the console key, or create a new one in the OpenCode console.'
+  opencode: 'Check the console key, or create a new one in the OpenCode console.',
+  copilot: 'Run copilot login on the computer Domo runs on, or save a new GitHub token.'
 }
 
 function firstLine(message: string): string {

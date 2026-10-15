@@ -17,7 +17,7 @@ import {
 } from './helpers'
 
 /**
- * Both coding agents, for real, inside a real development environment.
+ * Every coding agent, for real, inside a real development environment.
  *
  * This is the boundary every other layer stops at: a real account, a real
  * adapter process, a real container, real Postgres. `acp-stream.spec.ts` proves
@@ -43,14 +43,18 @@ const MODELS: Record<AgentAdapter, string> = {
   // `opencode-go/*` together and 18 bare names are in both, so a preference
   // like `glm-5.3` is refused as ambiguous rather than guessed at. The `-go`
   // provider is the flat subscription; `flash` is the cheap end of it.
-  opencode: 'opencode-go/glm-5.3-flash'
+  opencode: 'opencode-go/glm-5.3-flash',
+  // The router, which every plan offers; Copilot Free offers nothing else.
+  copilot: 'auto'
 }
 
 /** A second cheap model per adapter, for the switch. */
 const OTHER_MODELS: Record<AgentAdapter, string> = {
   'claude-code': 'sonnet',
   codex: 'gpt-6-luna',
-  opencode: 'opencode-go/gpt-5.6-luna'
+  opencode: 'opencode-go/gpt-5.6-luna',
+  // Free on paid plans' request billing. Copilot Free refuses it; see the switch test.
+  copilot: 'gpt-5-mini'
 }
 
 let mesh: MeshHarness
@@ -147,6 +151,12 @@ const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
   opencode: {
     modeId: 'build',
     prompt: 'Read the file /etc/hosts with your read tool and reply with its first line.'
+  },
+  // Copilot's Agent mode with Allow All off asks before every shell command.
+  copilot: {
+    modeId: 'https://agentclientprotocol.com/protocol/session-modes#agent',
+    prompt: 'Run this exact shell command with your shell tool, and nothing else: '
+      + 'echo ok > permission-probe.txt'
   }
 }
 
@@ -163,7 +173,8 @@ const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
 const NAMES_TOOL_CALLS: Record<AgentAdapter, boolean> = {
   'claude-code': true,
   codex: true,
-  opencode: false
+  opencode: false,
+  copilot: true
 }
 
 /** Start a session in the shared environment, on the cheap model. */
@@ -184,7 +195,7 @@ async function start(adapter: AgentAdapter, options: { modeId?: string, host?: b
   return session
 }
 
-describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev environment', (adapter) => {
+describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode', 'copilot'])('%s in a dev environment', (adapter) => {
   it('starts a session inside the container, on the model it was given', async () => {
     const { getAgentSession } = await import('../../server/lib/repo')
     const session = await start(adapter)
@@ -376,6 +387,19 @@ describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev e
     const session = await start(adapter)
     await acpManager.prompt(session.id, [{ type: 'text', text: 'Reply with the single word ONE.' }])
 
+    // Copilot Free offers Auto alone (its picker lists no model), so there the
+    // switch is refused, naming what is on offer, and the session stays put.
+    if (adapter === 'copilot') {
+      const { listAdapterModels } = await import('../../server/lib/acp/models')
+      const offered = (await listAdapterModels('copilot')).models.map(model => model.id)
+      if (!offered.includes(OTHER_MODELS.copilot)) {
+        expect(offered).toEqual(['auto'])
+        await expect(acpManager.setModel(session.id, OTHER_MODELS.copilot)).rejects.toThrow(/does not offer.*auto/s)
+        expect((await getAgentSession(session.id))!.model).toBe('auto')
+        return
+      }
+    }
+
     await acpManager.setModel(session.id, OTHER_MODELS[adapter])
 
     expect((await getAgentSession(session.id))!.model).toBe(OTHER_MODELS[adapter])
@@ -400,7 +424,8 @@ describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev e
     const answered = answerPermissions(session.id)
     const result = await acpManager.prompt(session.id, [{
       type: 'text',
-      text: 'What was the codeword I gave you? Reply with the codeword only.'
+      // Named by its prefix: Copilot Free's small model otherwise echoes the last "OK".
+      text: 'What was the codeword I gave you? It starts with kumquat-. Reply with the whole codeword only.'
     }])
     await answered.stop()
 
@@ -585,13 +610,13 @@ describe('a turn Claude Code starts for itself', () => {
 describe('an upgrade under live sessions', () => {
   // The upgrade replaces the container the adapters ran in; every session
   // resumes on the new one through `session/load`, reading its state from the
-  // home volume (Claude Code, OpenCode) or the host's `~/.codex` (Codex).
+  // home volume (Claude Code, OpenCode, Copilot) or the host's `~/.codex` (Codex).
   it('replaces the container, and every adapter\'s session remembers what it was told before', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const { beginProjectEnvironmentUpgrade } = await import('../../server/lib/projects')
     const { getDevEnvironment, listAgentEvents } = await import('../../server/lib/repo')
     const { pinnedAdapterVersions } = await import('../../server/lib/dev-env/runtime-volume')
-    const adapters: AgentAdapter[] = ['claude-code', 'codex', 'opencode']
+    const adapters: AgentAdapter[] = ['claude-code', 'codex', 'opencode', 'copilot']
     const planted = new Map<string, string>()
     for (const adapter of adapters) {
       const session = await start(adapter)
@@ -612,7 +637,7 @@ describe('an upgrade under live sessions', () => {
       expect(acpManager.isRunning(id)).toBe(false)
       expect(await listAgentEvents(id)).toContainEqual(expect.objectContaining({ type: 'environment_upgraded' }))
       const answered = answerPermissions(id)
-      const result = await acpManager.prompt(id, [{ type: 'text', text: 'What was the codeword I gave you? Reply with the codeword only.' }])
+      const result = await acpManager.prompt(id, [{ type: 'text', text: 'What was the codeword I gave you? It starts with quince-. Reply with the whole codeword only.' }])
       await answered.stop()
       expect(result.stopReason).toBe('end_turn')
       expect(await assistantText(id), id).toContain(codeword)

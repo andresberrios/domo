@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { dirname } from 'node:path'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { access, readFile, writeFile, mkdir } from 'node:fs/promises'
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
@@ -19,6 +20,7 @@ import { mintMeshToken } from '../mesh/token'
 import { normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEnv, adapterLaunch } from './adapter-process'
+import { copilotMcpConfig, copilotModels, withCopilotModels } from './copilot'
 import { assertSessionStartable } from './startable'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
@@ -894,14 +896,17 @@ class AgentRuntime {
       env.USER = environment.remoteUser ?? 'root'
       env.HOME = env.USER === 'root' ? '/root' : `/home/${env.USER}`
       env.LOGNAME = env.USER
+      const extra = await this.copilotLaunchArgs(session, environment)
       proc = spawn('docker', [
         ...containerExecArgs(environment, env),
         // The adapters live in the shared runtime volume at /opt/domo, not on the image's PATH.
-        'sh', '-c', 'echo $$ > "$1"; exec "$2"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter)
+        'sh', '-c', 'echo $ > "$1"; command="$2"; shift 2; exec "$command" "$@"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter),
+        ...extra
       ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
     } else {
       const launch = adapterLaunch(session.adapter)
-      proc = spawn(launch.command, launch.args, {
+      const extra = await this.copilotLaunchArgs(session, null)
+      proc = spawn(launch.command, [...launch.args, ...extra], {
         cwd: session.cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -976,6 +981,8 @@ class AgentRuntime {
         return {}
       })
       .connect(stream)
+    // Copilot publishes no model option over ACP; this gives it one.
+    if (session.adapter === 'copilot') withCopilotModels(connection, () => copilotModels())
     this.connection = connection
 
     const initialized = (await connection.agent.request(acp.methods.agent.initialize, {
@@ -1000,7 +1007,9 @@ class AgentRuntime {
     if (!httpMcp) warnNoHttpMcp(session.adapter)
 
     const settings = await getSettings()
-    const mcpServers = await this.mcpServersForSession(environment, httpMcp, settings)
+    const offered = await this.mcpServersForSession(environment, httpMcp, settings)
+    // Copilot got its stdio servers at launch (`copilotLaunchArgs`).
+    const mcpServers = session.adapter === 'copilot' ? offered.filter(server => !server.command) : offered
 
     // An assistant's identity and handoff note, for a harness that takes a
     // system prompt. Sent on load as well as new, so a reattach keeps it and a
@@ -1305,6 +1314,27 @@ class AgentRuntime {
     if (JSON.stringify(config) !== JSON.stringify(session.config ?? {})) patch.config = config
     if (!sameConfigOptions(reported, session.configOptions)) patch.configOptions = reported
     if (Object.keys(patch).length) await updateAgentSession(this.agentSessionId, patch)
+  }
+
+  /**
+   * Copilot's stdio MCP servers, as the arguments that hand them over at
+   * launch; see `copilotMcpConfig`. Nothing for any other adapter.
+   */
+  private async copilotLaunchArgs(session: AgentSession, environment: DevEnvironment | null): Promise<string[]> {
+    if (session.adapter !== 'copilot') return []
+    const stdio = (await this.mcpServersForSession(environment, false, await getSettings()))
+      .filter(server => server.command)
+    if (!stdio.length) return []
+    const config = copilotMcpConfig(stdio)
+    const file = environment
+      ? `/tmp/domo-copilot-mcp-${this.agentSessionId}.json`
+      : join(tmpdir(), `domo-copilot-mcp-${this.agentSessionId}.json`)
+    if (environment) {
+      await writeEnvironmentFile(environment, file, config)
+    } else {
+      await writeFile(file, config, { mode: 0o600 })
+    }
+    return ['--additional-mcp-config', `@${file}`]
   }
 
   private async mcpServersForSession(

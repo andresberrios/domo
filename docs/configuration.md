@@ -16,6 +16,7 @@ Never name a variable or `.env` in UI copy, help text or errors.
 | `NUXT_OPENAI_API_KEY` | OpenAI key: the OpenAI speech engine, OpenCode's `openai/…` models, and Codex's fallback when it has no ChatGPT login. Bills the API |
 | `NUXT_CODEX_API_KEY` | Optional. Codex uses it only when there is no ChatGPT login, and it bills the API |
 | `NUXT_OPENCODE_API_KEY` | OpenCode console service-account key |
+| `NUXT_COPILOT_GITHUB_TOKEN` | Fine-grained GitHub token with the Copilot Requests permission |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
 | `NUXT_GH_TOKEN` | GitHub token for environment sessions |
 | `DATABASE_URL`, `ELECTRIC_URL` | Default to the compose services |

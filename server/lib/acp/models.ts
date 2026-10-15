@@ -7,6 +7,7 @@ import * as acp from '@agentclientprotocol/sdk'
 
 import { adapterEnv, adapterLaunch } from './adapter-process'
 import { adapterConfigOptions } from './config-options'
+import { clearCopilotModelCache, copilotModels, withCopilotModels } from './copilot'
 import { availableModelOptions, currentModel, modelConfigOption } from './model'
 import { availableModes, currentModeId } from './mode'
 import type { AgentAdapter, SessionConfigOptionInfo, SessionModeInfo } from '../../../shared/types'
@@ -87,12 +88,14 @@ export async function listAdapterModels(adapter: AgentAdapter, model?: string | 
 /** Test seam, and what an adapter upgrade would want. */
 export function clearAdapterModelCache(): void {
   cache.clear()
+  clearCopilotModelCache()
 }
 
 const ADAPTER_NAMES: Record<AgentAdapter, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
-  opencode: 'OpenCode'
+  opencode: 'OpenCode',
+  copilot: 'Copilot'
 }
 
 export interface AdapterCatalogEntry {
@@ -122,7 +125,7 @@ export interface AdapterCatalogEntry {
  * answer to most of the question.
  */
 export async function listAdapterCatalog(only?: AgentAdapter): Promise<{ adapters: AdapterCatalogEntry[] }> {
-  const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex', 'opencode']
+  const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex', 'opencode', 'copilot']
   const adapters = await Promise.all(wanted.map(async (id): Promise<AdapterCatalogEntry> => {
     try {
       const { models, current, modes, currentMode, configOptions } = await listAdapterModels(id)
@@ -163,12 +166,13 @@ async function probe(adapter: AgentAdapter, model: string | null): Promise<Adapt
     proc.stderr.setEncoding('utf8')
     proc.stderr.on('data', (chunk: string) => (stderr += chunk))
 
-    const connection = acp
+    const connected = acp
       .client({ name: 'domo' })
       .connect(acp.ndJsonStream(
         Writable.toWeb(proc.stdin) as WritableStream<Uint8Array>,
         Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>
       ))
+    const connection = adapter === 'copilot' ? withCopilotModels(connected, () => copilotModels()) : connected
 
     const exited = new Promise<never>((_, reject) => {
       proc!.once('exit', code => reject(new Error(

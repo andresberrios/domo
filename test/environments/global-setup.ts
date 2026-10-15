@@ -106,6 +106,9 @@ async function prepare(): Promise<void> {
       NUXT_CLAUDE_ACP_ENTRY: dead,
       NUXT_CODEX_ACP_ENTRY: dead,
       NUXT_OPENCODE_ACP_ENTRY: dead,
+      NUXT_COPILOT_ACP_ENTRY: dead,
+      NUXT_COPILOT_GITHUB_TOKEN: '',
+      NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1',
       NUXT_CODEX_ENTRY: dead
     }
   })

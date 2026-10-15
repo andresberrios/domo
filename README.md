@@ -2,7 +2,7 @@
 
 **A voice-first control room for coding agents.**
 
-You talk out loud to Claude Code, Codex and OpenCode sessions running over
+You talk out loud to Claude Code, Codex, OpenCode and GitHub Copilot sessions running over
 [ACP](https://agentclientprotocol.com). The agent you talk to can start other
 agents, watch them work and report back; whichever one you are talking to reads
 out the others' permission prompts and notes, and takes your answers. You can
@@ -25,8 +25,8 @@ With Domo you can:
   fresh, it writes itself a note and carries on in a new session; its page
   reads as one conversation, and its journal lists the sessions underneath.
 - Schedule prompts to agents or assistants, once or on a cron schedule.
-- See context usage for each session, and your Claude, Codex and OpenCode Go
-  plan limits.
+- See context usage for each session, and your Claude, Codex, OpenCode Go and
+  Copilot plan limits.
 - Talk to any agent from its page. One engine hears you and one speaks the
   replies, chosen in Settings: Gemini, OpenAI, open models on your CPU
   (Pocket TTS among them, which can clone a voice), macOS's own on a Mac, or
@@ -35,7 +35,7 @@ With Domo you can:
 ## Requirements
 
 - Docker and git
-- At least one coding agent account: a Claude, ChatGPT or OpenCode plan.
+- At least one coding agent account: a Claude, ChatGPT, OpenCode or Copilot plan.
   See [Signing in](#signing-in).
 - For the default speech engines, a Gemini API key
   ([AI Studio](https://aistudio.google.com/apikey)). The open models, Pocket TTS
@@ -142,6 +142,13 @@ models work.
 Check the model prefix before you run OpenCode. `openai/*` models bill your
 ChatGPT login, and `opencode/*` models bill OpenCode console usage per token.
 Some model names exist under both prefixes.
+
+**Copilot.** Sessions on this computer use your `copilot login`. A
+development environment signs in with a fine-grained GitHub token that has the
+Copilot Requests permission, pasted on the Copilot settings page, or else with
+the `gh` token it already gets for git. Neither rotates. The token also lets
+Domo show your Copilot quotas and models. On Copilot Free the only model is
+Auto.
 
 **Voice.** The Gemini key goes on the Voice settings page. The OpenAI speech
 engine uses the same OpenAI key as Codex, and bills per token.

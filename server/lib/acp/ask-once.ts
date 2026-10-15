@@ -7,6 +7,7 @@ import * as acp from '@agentclientprotocol/sdk'
 
 import { adapterLaunch } from './adapter-process'
 import { adapterConfigOptions } from './config-options'
+import { copilotModels, withCopilotModels } from './copilot'
 import { availableModelIds, currentModel, modelConfigOption } from './model'
 import { availableModes, modeConfigOption } from './mode'
 import type { AgentAdapter } from '../../../shared/types'
@@ -64,7 +65,7 @@ export async function askOnce(ask: AskOnce): Promise<{ answer: string, model: st
 
     let answer = ''
     let sessionId: string | null = null
-    const connection = acp
+    const connected = acp
       .client({ name: 'domo' })
       .onNotification(acp.methods.client.session.update, (ctx: any) => {
         const update = ctx.params?.update
@@ -77,6 +78,7 @@ export async function askOnce(ask: AskOnce): Promise<{ answer: string, model: st
         Writable.toWeb(proc.stdin) as WritableStream<Uint8Array>,
         Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>
       ))
+    const connection = adapter === 'copilot' ? withCopilotModels(connected, () => copilotModels()) : connected
 
     const exited = new Promise<never>((_, reject) => {
       proc!.once('exit', code => reject(new Error(

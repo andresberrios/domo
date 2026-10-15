@@ -3,6 +3,7 @@ import { listUsageLimits, setUsageProviderState, writeUsageLimits } from '../rep
 import { fetchClaudeUsage, probeClaudeHeaders, type ClaudeUsageResult } from './claude'
 import { fetchCodexUsage, type CodexUsageResult } from './codex'
 import { fetchOpenCodeUsage, type OpenCodeUsageResult } from './opencode'
+import { fetchCopilotUsage, type CopilotUsageResult } from './copilot'
 import type { UsageLimitValue } from './normalize'
 import type { UsageProviderId, UsageProviderState } from '../../../shared/types'
 
@@ -38,6 +39,7 @@ const CLAUDE_ENDPOINT_MS = 60 * 60_000
 const CLAUDE_PROBE_MS = 15 * 60_000
 const CODEX_MS = 5 * 60_000
 const OPENCODE_MS = 5 * 60_000
+const COPILOT_MS = 5 * 60_000
 
 /** Never more than one attempt per provider per minute, whoever asks. */
 const FLOOR_MS = 60_000
@@ -48,7 +50,7 @@ const BACKOFF_CAP_MS = 30 * 60_000
 /** A turn ending is a good moment to look, but several ending at once is not. */
 const TURN_DEBOUNCE_MS = 5_000
 
-const PROVIDERS: UsageProviderId[] = ['claude', 'codex', 'opencode']
+const PROVIDERS: UsageProviderId[] = ['claude', 'codex', 'opencode', 'copilot']
 
 /** The network-facing half, injected so the tests never reach a real account. */
 export interface UsageClients {
@@ -56,6 +58,7 @@ export interface UsageClients {
   claudeHeaders: () => Promise<ClaudeUsageResult>
   codex: () => Promise<CodexUsageResult>
   opencode: () => Promise<OpenCodeUsageResult>
+  copilot: () => Promise<CopilotUsageResult>
 }
 
 /** The database-facing half, injected for the same reason. */
@@ -78,7 +81,8 @@ const defaultClients: UsageClients = {
   claudeEndpoint: () => fetchClaudeUsage(),
   claudeHeaders: () => probeClaudeHeaders(),
   codex: () => fetchCodexUsage(),
-  opencode: () => fetchOpenCodeUsage()
+  opencode: () => fetchOpenCodeUsage(),
+  copilot: () => fetchCopilotUsage()
 }
 
 const defaultSink: UsageSink = {
@@ -207,7 +211,8 @@ export class UsagePoller {
   private async poll(provider: UsageProviderId, state: ProviderState): Promise<void> {
     try {
       if (provider === 'codex') await this.pollCodex(state)
-      else if (provider === 'opencode') await this.pollOpenCode(state)
+      else if (provider === 'opencode') await this.pollAccount('opencode', state, OPENCODE_MS)
+      else if (provider === 'copilot') await this.pollAccount('copilot', state, COPILOT_MS)
       else await this.pollClaude(state)
     } catch (error) {
       // Nothing may throw out of a poll: the timer that scheduled it is the
@@ -216,7 +221,7 @@ export class UsagePoller {
       const message = error instanceof Error ? (error.message || error.name) : String(error)
       console.error(`[usage] ${provider} poll failed: ${message}`)
       await this.sink.setState(provider, 'error', message).catch(() => {})
-      const interval = provider === 'claude' ? CLAUDE_ENDPOINT_MS : provider === 'codex' ? CODEX_MS : OPENCODE_MS
+      const interval = provider === 'claude' ? CLAUDE_ENDPOINT_MS : provider === 'codex' ? CODEX_MS : provider === 'copilot' ? COPILOT_MS : OPENCODE_MS
       this.schedule(provider, this.backoff(state, interval))
     }
   }
@@ -325,18 +330,19 @@ export class UsagePoller {
     this.schedule('codex', this.backoff(state, CODEX_MS))
   }
 
-  private async pollOpenCode(state: ProviderState): Promise<void> {
-    const result = await this.clients.opencode()
+  /** An account endpoint that answers every window at once: OpenCode Go's, and Copilot's. */
+  private async pollAccount(provider: 'opencode' | 'copilot', state: ProviderState, interval: number): Promise<void> {
+    const result = await this.clients[provider]()
     if (result.outcome === 'ok') {
       state.failures = 0
-      await this.sink.writeLimits('opencode', result.limits, { replace: true })
-      await this.sink.setState('opencode', 'ok', null)
-      this.schedule('opencode', OPENCODE_MS)
+      await this.sink.writeLimits(provider, result.limits, { replace: true })
+      await this.sink.setState(provider, 'ok', null)
+      this.schedule(provider, interval)
       return
     }
     state.failures += result.outcome === 'error' ? 1 : 0
-    await this.sink.setState('opencode', result.outcome === 'unconfigured' ? 'unconfigured' : 'error', result.message)
-    this.schedule('opencode', result.outcome === 'error' ? this.backoff(state, OPENCODE_MS) : OPENCODE_MS)
+    await this.sink.setState(provider, result.outcome === 'unconfigured' ? 'unconfigured' : 'error', result.message)
+    this.schedule(provider, result.outcome === 'error' ? this.backoff(state, interval) : interval)
   }
 }
 

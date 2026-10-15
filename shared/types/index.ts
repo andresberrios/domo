@@ -10,7 +10,7 @@ export type AgentSessionStatus =
   | 'error'
   | 'stopped'
 
-export type AgentAdapter = 'claude-code' | 'codex' | 'opencode'
+export type AgentAdapter = 'claude-code' | 'codex' | 'opencode' | 'copilot'
 
 /**
  * What OpenCode does when a tool reaches outside the session's working
@@ -182,7 +182,7 @@ export interface AgentUsage {
 }
 
 /** Which account a limit belongs to. */
-export type UsageProviderId = 'claude' | 'codex' | 'opencode'
+export type UsageProviderId = 'claude' | 'codex' | 'opencode' | 'copilot'
 
 /**
  * Where a limit reading came from, best first.
@@ -682,6 +682,12 @@ export interface AppSettings {
    * rotates its refresh token, so nothing copies it.
    */
   openCodeApiKey: string
+  /**
+   * A fine-grained GitHub token with the Copilot Requests permission: how
+   * Copilot signs in in an environment, and how its plan limits and models
+   * are read. Such a token does not rotate, so it is safe in a container.
+   */
+  copilotGithubToken: string
   /** Gemini, for the voice bar's Gemini speech engines. */
   geminiApiKey: string
   /** OpenAI: Codex's fallback when it has no ChatGPT login, OpenCode's OpenAI models, and the OpenAI speech engine. Bills per token. */
@@ -994,7 +1000,7 @@ export interface AgentVoiceSettings {
 
 /** The credentials in `AppSettings`: stored, never answered, each reported as a boolean in `AppSettingsView`. */
 export const SECRET_SETTING_KEYS = [
-  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey', 'kyutaiApiKey'
+  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey', 'copilotGithubToken', 'kyutaiApiKey'
 ] as const
 export type SecretSettingKey = typeof SECRET_SETTING_KEYS[number]
 
@@ -1016,6 +1022,8 @@ export interface AppSettingsView extends Omit<AppSettings, SecretSettingKey> {
   hasOpenCodeKey: boolean
   /** A login on this machine, which is all a host session needs and all Domo can see. */
   hasOpenCodeAuth: boolean
+  /** A Copilot login on this computer (`copilot login`), which is all a host session needs. */
+  hasCopilotAuth: boolean
   /**
    * Where each credential comes from: `saved` in Settings, `server` when the
    * server's own configuration sets it (and so wins, and cannot be changed

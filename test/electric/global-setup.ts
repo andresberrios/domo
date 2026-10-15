@@ -82,6 +82,10 @@ async function prepare(): Promise<void> {
       NUXT_CLAUDE_CODE_OAUTH_TOKEN: '',
       CLAUDE_CODE_OAUTH_TOKEN: '',
       NUXT_ANTHROPIC_API_BASE: 'http://127.0.0.1:1',
+      // Copilot reads its limits with the host's `gh` token when it has no other.
+      NUXT_COPILOT_GITHUB_TOKEN: '',
+      NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1',
+      NUXT_COPILOT_ACP_ENTRY: join(rootDir, 'test', 'helpers', 'dead-adapter.mjs'),
       NUXT_CODEX_ENTRY: join(rootDir, 'test', 'helpers', 'dead-adapter.mjs')
     }
   })

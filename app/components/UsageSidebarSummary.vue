@@ -16,7 +16,8 @@ import type { UsageProviderId } from '~~/shared/types'
 const PROVIDERS: Array<{ id: UsageProviderId, name: string }> = [
   { id: 'claude', name: 'Claude' },
   { id: 'codex', name: 'Codex' },
-  { id: 'opencode', name: 'OpenCode' }
+  { id: 'opencode', name: 'OpenCode' },
+  { id: 'copilot', name: 'Copilot' }
 ]
 
 const { forProvider, providerState } = useUsageLimits()
@@ -64,7 +65,7 @@ watch(open, (value) => {
           <span class="text-[11px] text-dimmed">{{ entry.name }}</span>
           <UsageLimitGauge v-if="entry.fiveHour" icon="i-lucide-timer" label="5-hour limit" :limit="entry.fiveHour" />
           <span v-else />
-          <UsageLimitGauge v-if="entry.weekly" icon="i-lucide-calendar-days" label="Weekly limit" :limit="entry.weekly" />
+          <UsageLimitGauge v-if="entry.weekly" icon="i-lucide-calendar-days" :label="(entry.weekly.windowMinutes ?? 0) > 14 * 24 * 60 ? 'Monthly limit' : 'Weekly limit'" :limit="entry.weekly" />
           <span v-else />
         </template>
       </span>

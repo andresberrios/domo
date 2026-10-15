@@ -9,6 +9,13 @@ import { TEST_SERVER_ORIGIN } from './test/electric/origin.ts'
 const rootDir = dirname(fileURLToPath(import.meta.url))
 
 /**
+ * Copilot's models and limits are read from GitHub with whatever token is at
+ * hand, the host's `gh` login included. The default layers read them from
+ * nowhere.
+ */
+const OFFLINE_ENV = { NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1' }
+
+/**
  * The app's own aliases, so a test imports a module exactly the way the app
  * does. The `nuxt` project gets them from the real Nuxt config instead.
  */
@@ -36,6 +43,7 @@ export default defineConfig(async () => ({
         test: {
           name: 'unit',
           environment: 'node',
+          env: OFFLINE_ENV,
           include: ['test/unit/**/*.spec.ts', 'test/docker/**/*.spec.ts'],
           exclude: ['test/docker/**/*.live.spec.ts']
         }
@@ -46,6 +54,7 @@ export default defineConfig(async () => ({
         test: {
           name: 'nuxt',
           environment: 'nuxt',
+          env: OFFLINE_ENV,
           include: ['test/nuxt/**/*.spec.ts'],
           environmentOptions: { nuxt: { domEnvironment: 'happy-dom' } },
           // Booting Nuxt for a file takes 7-11 s here, and the default 10 s
@@ -64,6 +73,7 @@ export default defineConfig(async () => ({
         test: {
           name: 'integration',
           environment: 'node',
+          env: OFFLINE_ENV,
           include: [
             'test/server/**/*.spec.ts',
             'test/e2e/**/*.spec.ts',
@@ -100,6 +110,7 @@ export default defineConfig(async () => ({
         test: {
           name: 'electric',
           environment: 'nuxt',
+          env: OFFLINE_ENV,
           include: ['test/electric/**/*.spec.ts'],
           environmentOptions: {
             nuxt: {
