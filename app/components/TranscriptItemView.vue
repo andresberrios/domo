@@ -13,6 +13,8 @@ const props = defineProps<{
 }>()
 
 const item = computed(() => props.item)
+/** Thoughts and handoff notes keep whether they are open by id, as every transcript row does (`useRowOpen`). */
+const open = useRowOpen(() => props.item.id)
 
 const permissionPending = computed(() =>
   props.item.kind === 'permission'
@@ -45,7 +47,7 @@ const permissionPending = computed(() =>
   <!-- Its read-aloud button is in the strip under the row (`TranscriptRowMeta`). -->
   <MarkdownView v-else-if="item.kind === 'assistant'" :text="item.text" />
 
-  <UCollapsible v-else-if="item.kind === 'thought'" class="w-full">
+  <UCollapsible v-else-if="item.kind === 'thought'" v-model:open="open" class="w-full">
     <UButton
       label="Thought"
       icon="i-lucide-brain"
@@ -87,7 +89,7 @@ const permissionPending = computed(() =>
   </div>
 
   <!-- An assistant's session taking over: a divider, with the note it started from behind it. -->
-  <UCollapsible v-else-if="item.kind === 'handoff'" class="w-full">
+  <UCollapsible v-else-if="item.kind === 'handoff'" v-model:open="open" class="w-full">
     <div class="flex items-center gap-2 text-xs text-dimmed">
       <span class="h-px flex-1 bg-(--ui-border)" />
       <UButton

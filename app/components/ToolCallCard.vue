@@ -3,7 +3,7 @@ import type { ToolCallView } from '~/utils/agentTranscript'
 
 const props = defineProps<{ tool: ToolCallView }>()
 
-const open = ref(false)
+const open = useRowOpen(() => `tool:${props.tool.toolCallId}`)
 
 const names = useDomoNames()
 /** A call to one of Domo's own tools says what it did in words, not as JSON. */

@@ -1,9 +1,10 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { defineComponent, h } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import ToolCallCard from '~/components/ToolCallCard.vue'
 import type { ToolCallView } from '~/utils/agentTranscript'
+import { forgetExpandedRows } from '~/composables/useRowOpen'
 
 function tool(overrides: Partial<ToolCallView> = {}): ToolCallView {
   return {
@@ -21,6 +22,9 @@ function tool(overrides: Partial<ToolCallView> = {}): ToolCallView {
 function render(overrides: Partial<ToolCallView> = {}) {
   return mountSuspended(ToolCallCard, { props: { tool: tool(overrides) } })
 }
+
+// Expanded state is kept per id for the whole tab; each case starts collapsed.
+beforeEach(() => forgetExpandedRows())
 
 describe('ToolCallCard', () => {
   it('summarises the call in one line', async () => {

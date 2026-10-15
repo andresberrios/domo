@@ -10,7 +10,7 @@ import type { MeshItem } from '~/utils/agentTranscript'
  */
 const props = defineProps<{ item: MeshItem }>()
 
-const open = ref(false)
+const open = useRowOpen(() => props.item.id)
 const names = useDomoNames()
 
 const peerTitle = computed(() => {

@@ -108,10 +108,6 @@ export function useSyncedLog<TRow extends object, TItem>(
     async function subscribe(from: number | null, to: number | null) {
       const where = (row: any) =>
         from === null ? lt(row.seq, to!) : to === null ? gte(row.seq, from) : and(gte(row.seq, from), lt(row.seq, to))
-      // A subset asked of a collection that has not started yet waits for it,
-      // and its subscription says it is ready in the meantime.
-      await Promise.all(sources.map(entry => entry.preload()))
-      if (cancelled) return
       await Promise.all(sources.map(entry => new Promise<void>((resolve) => {
         let reported = false
         const subscription = entry.subscribeChanges(onChanges, {

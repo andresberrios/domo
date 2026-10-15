@@ -6,6 +6,7 @@ import { useAlwaysShowTimes } from '~/composables/useRecordVisibility'
 import { useRevealedRow } from '~/composables/useRevealedRow'
 import type { AgentEvent, AgentSession, PendingPermission } from '~~/shared/types'
 import { agentEvent, permission, textChunk, thoughtChunk, userMessage } from '../helpers/events'
+import { forgetExpandedRows } from '~/composables/useRowOpen'
 
 const session: AgentSession = {
   id: 'ag_1',
@@ -40,6 +41,9 @@ function render(events: AgentEvent[], permissions: PendingPermission[] = []) {
 function text(component: Awaited<ReturnType<typeof render>>) {
   return expect.poll(() => component.text())
 }
+
+// Expanded state is kept per id for the whole tab; each case starts collapsed.
+beforeEach(() => forgetExpandedRows())
 
 describe('AgentTranscript', () => {
   /**
