@@ -39,6 +39,12 @@ vi.mock('../../server/lib/repo', () => ({
     { type: 'user_message', text: 'Load `useAgentVoice` please' }
   ]
 }))
+// Smart Turn's verdict on a pause, set by a test; complete unless it says otherwise.
+const turnModel = vi.hoisted(() => ({ probability: 0.9 }))
+vi.mock('../../server/lib/agent-voice/local-speech', async (original) => ({
+  ...(await original<typeof import('../../server/lib/agent-voice/local-speech')>()),
+  endOfTurn: async () => turnModel.probability
+}))
 vi.mock('../../server/lib/agent-voice/speech', async (original) => ({
   ...(await original<typeof import('../../server/lib/agent-voice/speech')>()),
   transcribe,
@@ -102,6 +108,22 @@ async function speak(runtime: InstanceType<typeof AgentVoiceRuntime>, words: str
   await runtime.segmentEnd(true)
 }
 
+/** Everything a bar is sent, and what of it is the agent's voice coming out. */
+function listen(runtime: InstanceType<typeof AgentVoiceRuntime>) {
+  const messages: AgentVoiceServerMessage[] = []
+  runtime.addListener(message => messages.push(message))
+  const said = () => messages.filter(message => message.type === 'speaking' && message.text).map((message: any) => message.text as string)
+  const played = () => messages.filter(message => message.type === 'audio').length
+  return { messages, said, played }
+}
+
+/** A speech engine that answers each request with one chunk of audio. */
+function chunked() {
+  synthesizeWith.mockImplementation(async (_settings: any, _text: string, onChunk: any) => {
+    onChunk({ data: 'AAAA', sampleRate: 24000 })
+  })
+}
+
 function delivered(): string {
   const content = (deliver.mock.calls[0] as any)?.[1]?.content as Array<{ text: string }> | undefined
   return content?.[0]?.text ?? ''
@@ -116,6 +138,115 @@ describe('the agent voice runtime', () => {
     transcribe.mockClear()
     synthesizeWith.mockReset().mockImplementation(async () => {})
     assistantVoices.clear()
+    turnModel.probability = 0.9
+  })
+
+  it('holds the reply while the developer is talking, and plays it in order at the click that ends their turn', async () => {
+    settings.agentVoice.speaker = 'local'
+    settings.agentVoice.transcriber = 'browser'
+    chunked()
+    const runtime = new AgentVoiceRuntime('ag_hold_click')
+    const bar = listen(runtime)
+    runtime.addAudio(speech())
+    streams('ag_hold_click', 'Looking at the file now. It has two bugs.', false)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalled())
+    // Made, but not heard, and not shown as speaking either.
+    expect(bar.played()).toBe(0)
+    expect(bar.said()).toEqual([])
+    expect(bar.messages.filter(message => message.type === 'status').at(-1)).toMatchObject({ speaking: false })
+
+    runtime.addDictation('and check the tests too')
+    const heard = runtime.segmentEnd(true)
+    // At the click, not once the turn has been transcribed.
+    expect(bar.said()).toEqual(['Looking at the file now. It has two bugs.'])
+    expect(bar.played()).toBe(1)
+    await heard
+    expect(delivered()).toBe('and check the tests too')
+    // What waited was never heard, so the new turn does not drop it.
+    expect(bar.messages.map(message => message.type)).not.toContain('hushed')
+    runtime.close()
+  })
+
+  it('holds speech through a hands-free turn judged unfinished, and plays it instead of a "yes?" in the pause', async () => {
+    vi.useFakeTimers()
+    try {
+      settings.agentVoice.speaker = 'local'
+      settings.agentVoice.transcriber = 'browser'
+      turnModel.probability = 0.1
+      chunked()
+      const runtime = new AgentVoiceRuntime('ag_hold_pause')
+      const bar = listen(runtime)
+      runtime.addAudio(speech())
+      runtime.addDictation('so the thing is')
+      await runtime.segmentEnd(false)
+      expect(bar.messages).toContainEqual(expect.objectContaining({ type: 'turn', complete: false }))
+      // A permission request waits as well.
+      asks('ag_hold_pause', 'pm_hold')
+      streams('ag_hold_pause', 'Done with the migration.', false)
+      await vi.waitFor(() => expect(synthesizeWith.mock.calls.map(call => call[1]).join(' ')).toBe('It needs permission: Run the tests. Allow it? Done with the migration.'))
+      expect(bar.played()).toBe(0)
+
+      await vi.advanceTimersByTimeAsync(2600)
+      expect(bar.said().join(' ')).toBe('It needs permission: Run the tests. Allow it? Done with the migration.')
+      expect(bar.played()).toBe(synthesizeWith.mock.calls.length)
+      runtime.close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds speech across a hands-free turn\'s pauses until the turn the detector ended is sent', async () => {
+    settings.agentVoice.speaker = 'local'
+    settings.agentVoice.transcriber = 'browser'
+    turnModel.probability = 0.1
+    chunked()
+    const runtime = new AgentVoiceRuntime('ag_hold_turn')
+    const bar = listen(runtime)
+    runtime.addAudio(speech())
+    runtime.addDictation('so the thing is')
+    await runtime.segmentEnd(false)
+    streams('ag_hold_turn', 'Done with the migration.', false)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalled())
+
+    turnModel.probability = 0.9
+    runtime.addAudio(speech())
+    runtime.addDictation('it is too slow')
+    expect(bar.played()).toBe(0)
+    await runtime.segmentEnd(false)
+    expect(delivered()).toBe('so the thing is it is too slow')
+    expect(bar.said()).toEqual(['Done with the migration.'])
+    // "complete" is a guess, so it waits for the turn to be heard.
+    const types = bar.messages.map(message => message.type)
+    expect(types.indexOf('sent')).toBeLessThan(types.indexOf('audio'))
+    runtime.close()
+  })
+
+  it('stops what was held when the turn is a "stop"', async () => {
+    settings.agentVoice.speaker = 'local'
+    settings.agentVoice.transcriber = 'browser'
+    chunked()
+    const runtime = new AgentVoiceRuntime('ag_hold_stop')
+    const bar = listen(runtime)
+    runtime.addAudio(speech())
+    streams('ag_hold_stop', 'Here is a long answer.', false)
+    await vi.waitFor(() => expect(synthesizeWith).toHaveBeenCalled())
+    runtime.addDictation('stop')
+    await runtime.segmentEnd(true)
+    const types = bar.messages.map(message => message.type)
+    expect(types.lastIndexOf('hushed')).toBeGreaterThan(types.lastIndexOf('audio'))
+    expect(bar.messages.at(-1)).toEqual({ type: 'command', name: 'hush' })
+    expect(deliver).not.toHaveBeenCalled()
+    runtime.close()
+  })
+
+  it('speaks at once when nobody is talking', async () => {
+    settings.agentVoice.speaker = 'local'
+    chunked()
+    const runtime = new AgentVoiceRuntime('ag_no_hold')
+    const bar = listen(runtime)
+    streams('ag_no_hold', 'Straight out.', false)
+    await vi.waitFor(() => expect(bar.played()).toBe(1))
+    runtime.close()
   })
 
   it('hears a click turn with the conversation and the vocabulary as context', async () => {
