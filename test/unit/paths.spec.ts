@@ -1,66 +1,26 @@
-import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { defaultWorkDir, normalizeCwd } from '../../server/lib/paths'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+describe('defaultWorkDir', () => {
+  afterEach(() => vi.unstubAllEnvs())
 
-let root: string
-
-beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'domo-paths-'))
-  vi.resetModules()
-})
-
-afterEach(async () => {
-  delete process.env.NUXT_DATA_DIR
-  delete process.env.DOMO_DATA_DIR
-  await rm(root, { recursive: true, force: true })
-})
-
-/** Everything Domo persists hangs off one directory, and it must exist. */
-describe('dataDir', () => {
-  it('uses NUXT_DATA_DIR and creates it', async () => {
-    const configured = join(root, 'nested', 'data')
-    process.env.NUXT_DATA_DIR = configured
-    const { dataDir } = await import('../../server/lib/paths')
-
-    expect(dataDir()).toBe(configured)
-    expect(existsSync(configured)).toBe(true)
+  it('is the checkout under pnpm dev', () => {
+    vi.stubEnv('DOMO_HOME', '')
+    vi.stubEnv('NUXT_DEFAULT_CWD', '')
+    expect(defaultWorkDir()).toBe(process.cwd())
   })
 
-  it('resolves a relative setting against the working directory', async () => {
-    process.env.NUXT_DATA_DIR = 'relative-data'
-    const { dataDir } = await import('../../server/lib/paths')
-
-    expect(dataDir()).toBe(resolve(process.cwd(), 'relative-data'))
-    await rm(resolve(process.cwd(), 'relative-data'), { recursive: true, force: true })
+  it('is the home directory in an installed Domo, never the release it runs from', () => {
+    vi.stubEnv('DOMO_HOME', '/tmp/domo-home')
+    vi.stubEnv('NUXT_DEFAULT_CWD', '')
+    expect(defaultWorkDir()).toBe(homedir())
+    expect(normalizeCwd('')).toBe(homedir())
   })
 
-  it('accepts the DOMO_DATA_DIR alias', async () => {
-    process.env.DOMO_DATA_DIR = join(root, 'alias')
-    const { dataDir } = await import('../../server/lib/paths')
-
-    expect(dataDir()).toBe(join(root, 'alias'))
-  })
-
-  it('defaults to ./.data', async () => {
-    const expected = resolve(process.cwd(), '.data')
-    const existed = existsSync(expected)
-    const { dataDir } = await import('../../server/lib/paths')
-
-    expect(dataDir()).toBe(expected)
-    // Creating the directory is the point of dataDir(); don't leave it behind.
-    if (!existed) await rm(expected, { recursive: true, force: true })
-  })
-})
-
-describe('sub-directories', () => {
-  it('live under the data directory and are created on demand', async () => {
-    process.env.NUXT_DATA_DIR = root
-    const { uploadsDir } = await import('../../server/lib/paths')
-
-    expect(uploadsDir()).toBe(join(root, 'uploads'))
-    expect(existsSync(join(root, 'uploads'))).toBe(true)
+  it('takes the override first', () => {
+    vi.stubEnv('DOMO_HOME', '/tmp/domo-home')
+    vi.stubEnv('NUXT_DEFAULT_CWD', '/srv/work')
+    expect(defaultWorkDir()).toBe('/srv/work')
   })
 })

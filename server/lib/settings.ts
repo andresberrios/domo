@@ -1,4 +1,5 @@
 import { query } from './db'
+import { defaultWorkDir } from './paths'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
 import { AGENT_ADAPTERS, isAgentAdapter } from '../../shared/agent-adapters'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector, normalizeVolumes } from '../../shared/agent-voice'
@@ -16,7 +17,7 @@ export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
 }
 
 export const DEFAULTS: AppSettings = {
-  defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
+  defaultCwd: defaultWorkDir(),
   defaultAssistantId: '',
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
