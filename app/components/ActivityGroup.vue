@@ -42,7 +42,7 @@ function line(item: TranscriptItem) {
   return {
     icon: running ? 'i-lucide-loader-circle' : (described?.icon ?? TOOL_KIND_ICONS[tool.kind] ?? TOOL_KIND_ICONS.other!),
     spin: running,
-    text: described ? [described.label, described.subject].filter(Boolean).join(' ') : tool.title,
+    text: described ? domoCallText(described) : tool.title,
     // Left off on a phone, where the line has room for the title and no more.
     detail: !described && command ? String(command) : null
   }

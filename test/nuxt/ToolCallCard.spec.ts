@@ -130,7 +130,7 @@ describe('ToolCallCard for one of Domo\'s own tools', () => {
   it('says what it did and to whom, not the tool\'s id', async () => {
     const component = await renderNamed(getAgent())
 
-    expect(component.find('[data-testid="domo-tool"]').text()).toBe('Check agent Builder')
+    expect(component.find('[data-testid="domo-tool"]').text()).toBe('Checked agent: Builder')
     expect(component.text()).not.toContain('mcp__domo__get_agent')
   })
 
@@ -140,12 +140,12 @@ describe('ToolCallCard for one of Domo\'s own tools', () => {
     }))
 
     // The gap before the outcome is a margin, not a space.
-    expect(component.find('[data-testid="domo-tool"]').text()).toMatch(/^Check agent Builder\s*· thinking$/)
+    expect(component.find('[data-testid="domo-tool"]').text()).toMatch(/^Checked agent: Builder\s*· thinking$/)
   })
 
   it('shows the id where the page does not know the agent', async () => {
     const component = await mountSuspended(ToolCallCard, { props: { tool: getAgent() } })
 
-    expect(component.find('[data-testid="domo-tool"]').text()).toBe('Check agent ag_peer1')
+    expect(component.find('[data-testid="domo-tool"]').text()).toBe('Checked agent: ag_peer1')
   })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ToolCallView } from '~/utils/agentTranscript'
-import { describeDomoCall, domoCall, domoToolLabel, parseObjectLiteral, type DomoNames } from '~/utils/domoTools'
+import { describeDomoCall, domoCall, domoCallText, domoToolLabel, parseObjectLiteral, type DomoNames } from '~/utils/domoTools'
 
 /**
  * Domo's own tools, read back out of the three adapters' tool calls. The
@@ -85,8 +85,8 @@ describe('describeDomoCall', () => {
   const describe_ = (name: string, args: object, result: any = null) => describeDomoCall({ name, args, result }, names)
 
   it('names the agent it acted on by title', () => {
-    expect(describe_('get_agent', { agentId: 'ag_peer1' })).toMatchObject({ label: 'Check agent', subject: 'Builder' })
-    expect(describe_('subscribe_to_agent', { agentId: 'ag_peer1' })).toMatchObject({ label: 'Follow', subject: 'Builder' })
+    expect(describe_('get_agent', { agentId: 'ag_peer1' })).toMatchObject({ action: 'Checked agent', subject: 'Builder' })
+    expect(describe_('subscribe_to_agent', { agentId: 'ag_peer1' })).toMatchObject({ action: 'Subscribed to agent', subject: 'Builder' })
   })
 
   it('falls back to the id for an agent the page does not know', () => {
@@ -95,9 +95,9 @@ describe('describeDomoCall', () => {
 
   it('names environments and projects', () => {
     expect(describe_('update_dev_environment', { environmentId: 'env_1', status: 'stopped' }))
-      .toMatchObject({ label: 'Stop environment', subject: 'scratch' })
+      .toMatchObject({ action: 'Stopped environment', subject: 'scratch' })
     expect(describe_('create_dev_environment', { projectId: 'pr_1', name: 'fix-auth' }))
-      .toMatchObject({ label: 'Create environment', subject: '"fix-auth" in domo' })
+      .toMatchObject({ action: 'Created environment', subject: 'fix-auth', detail: 'in domo' })
   })
 
   it('sums a result up in a few words', () => {
@@ -108,21 +108,34 @@ describe('describeDomoCall', () => {
   it('names a permission answer by its option, and by the id before the result says it', () => {
     const args = { agentId: 'ag_peer1', permissionId: 'p1', optionId: 'allow_always' }
     expect(describe_('answer_permission_request', args, { answered: true, optionId: 'allow_always', optionName: 'Always allow' }))
-      .toMatchObject({ label: 'Answer a permission for', subject: 'Builder', outcome: 'Always allow' })
+      .toMatchObject({ action: 'Answered permission for agent', subject: 'Builder', outcome: 'Always allow' })
     expect(describe_('answer_permission_request', args).outcome).toBe('allow_always')
   })
 
   it('says what it is changing', () => {
-    expect(describe_('manage_agent_session', { agentId: 'ag_peer1', archived: true })).toMatchObject({ label: 'Archive', subject: 'Builder' })
-    expect(describe_('manage_agent_session', { title: 'New name' })).toMatchObject({ label: 'Rename', subject: 'itself to "New name"' })
-    expect(describe_('forward_environment_port', { port: 3000, environmentId: 'env_1' })).toMatchObject({ label: 'Forward port 3000', subject: 'scratch' })
+    expect(describe_('manage_agent_session', { agentId: 'ag_peer1', archived: true })).toMatchObject({ action: 'Archived agent', subject: 'Builder' })
+    expect(describe_('manage_agent_session', { title: 'New name' })).toMatchObject({ action: 'Renamed itself', subject: null, detail: 'to "New name"' })
+    expect(describe_('forward_environment_port', { port: 3000, environmentId: 'env_1' })).toMatchObject({ action: 'Forwarded port 3000 of environment', subject: 'scratch' })
+  })
+
+  it('names every kind of thing it acts on, apart from the verb', () => {
+    expect(describe_('message_agent', { agentId: 'ag_peer1', message: 'hi' })).toMatchObject({ action: 'Messaged agent', subject: 'Builder' })
+    expect(describe_('spawn_agent', { title: 'Fixer', prompt: 'Fix\n the build' })).toMatchObject({ action: 'Started agent', subject: 'Fixer', detail: 'Fix\n the build' })
+    expect(describe_('retire_dev_environment', { environmentId: 'env_1' })).toMatchObject({ action: 'Retired environment', subject: 'scratch' })
+    expect(describe_('create_assistant', { name: 'Pager' })).toMatchObject({ action: 'Created assistant', subject: 'Pager' })
+    expect(describe_('schedule_task', { name: 'nightly', cronExpression: '0 3 * * *' })).toMatchObject({ action: 'Scheduled task', subject: 'nightly', detail: '0 3 * * *' })
+  })
+
+  it('reads as one line where there is only room for text', () => {
+    expect(domoCallText(describe_('message_agent', { agentId: 'ag_peer1' }))).toBe('Messaged agent: Builder')
+    expect(domoCallText(describe_('notify_supervisor', { message: 'done' }))).toBe('Notified you')
   })
 
   it('still says something for a tool it has never heard of', () => {
-    expect(describe_('brand_new_tool', {})).toMatchObject({ label: 'brand new tool' })
+    expect(describe_('brand_new_tool', {})).toMatchObject({ action: 'brand new tool' })
   })
 
   it('has a short name for the group breakdown', () => {
-    expect(domoToolLabel('list_agents')).toBe('List agents')
+    expect(domoToolLabel('list_agents')).toBe('Listed agents')
   })
 })

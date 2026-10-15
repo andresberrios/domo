@@ -24,19 +24,23 @@ function render(overrides: Partial<MeshItem> = {}) {
 }
 
 describe('MeshMessageCard', () => {
+  /** The action and the name are drawn apart, so the verb never reads as part of an agent's title. */
   it.each([
-    [{ direction: 'in', via: 'message' }, 'From auth'],
-    [{ direction: 'out', via: 'message' }, 'To auth'],
-    [{ direction: 'out', via: 'spawn' }, 'Started auth'],
-    [{ direction: 'in', via: 'spawn' }, 'Task from auth'],
-    [{ direction: 'out', via: 'notify', peer: { id: null, title: null } }, 'To you'],
-    [{ direction: 'in', via: 'domo', peer: { id: null, title: null } }, 'From Domo'],
-    [{ direction: 'in', via: 'update' }, 'auth'],
-    [{ direction: 'in', via: 'schedule', peer: { id: 'cj_1', title: 'nightly check' } }, 'Scheduled task "nightly check"']
-  ] as const)('heads %o as "%s"', async (overrides, heading) => {
+    [{ direction: 'in', via: 'message' }, 'Message from agent:', 'auth'],
+    [{ direction: 'out', via: 'message' }, 'Messaged agent:', 'auth'],
+    [{ direction: 'out', via: 'spawn' }, 'Started agent:', 'auth'],
+    [{ direction: 'in', via: 'spawn' }, 'Task from agent:', 'auth'],
+    [{ direction: 'out', via: 'notify', peer: { id: null, title: null } }, 'Notified you', null],
+    [{ direction: 'in', via: 'domo', peer: { id: null, title: null } }, 'Message from Domo', null],
+    [{ direction: 'in', via: 'update' }, 'Update about agent:', 'auth'],
+    [{ direction: 'in', via: 'schedule', peer: { id: 'cj_1', title: 'nightly check' } }, 'Scheduled task:', 'nightly check']
+  ] as const)('heads %o as "%s" %s', async (overrides, action, subject) => {
     const component = await render(overrides as Partial<MeshItem>)
 
-    expect(component.find('.font-medium').text()).toBe(heading)
+    expect(component.find('[data-testid="action"]').text()).toBe(action)
+    const name = component.find('[data-testid="subject"]')
+    expect(name.exists() ? name.text() : null).toBe(subject)
+    if (subject) expect(component.find('[data-testid="action"]').classes()).toContain('text-muted')
   })
 
   it('starts as one line, with the message flattened into a preview', async () => {

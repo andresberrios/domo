@@ -293,6 +293,72 @@ function scrollTo(top: number) {
   ownTop = scroller.value?.scrollTop ?? null
 }
 
+/**
+ * Following glides: while text streams in, the view eases toward the end in
+ * one continuous motion instead of stepping a chunk at a time. There is one
+ * glide, never a queue of them: new content moves its target and the same
+ * loop carries on toward it, so fast streaming cannot pile up animations that
+ * lag behind. Each frame covers a share of what is left, measured in time
+ * rather than frames, so a slow phone arrives as soon as a fast one.
+ *
+ * Instant instead when the motion would only be in the way: when the reader
+ * asks for less motion, when the destination is more than a screen away
+ * (opening a transcript, jumping back from far up), when the box resizes
+ * (the end must stay on screen in the frame it would leave it), and when
+ * earlier rows are put in above the reader.
+ */
+const GLIDE_MS = 90
+let glideTarget: number | null = null
+let glideFrame = 0
+let glideLast = 0
+
+function prefersLessMotion() {
+  return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+}
+
+function stopGlide() {
+  if (glideFrame) cancelAnimationFrame(glideFrame)
+  glideFrame = 0
+  glideTarget = null
+}
+
+function moveTo(top: number, { instant = false } = {}) {
+  const el = scroller.value
+  if (!el) return
+  const destination = Math.max(0, Math.min(top, el.scrollHeight - el.clientHeight))
+  if (instant || prefersLessMotion() || Math.abs(destination - el.scrollTop) > el.clientHeight) {
+    stopGlide()
+    scrollTo(destination)
+    return
+  }
+  glideTarget = destination
+  if (!glideFrame) {
+    glideLast = performance.now()
+    glideFrame = requestAnimationFrame(glide)
+  }
+}
+
+function glide(now: number) {
+  glideFrame = 0
+  const el = scroller.value
+  if (!el || glideTarget === null) return
+  const elapsed = Math.min(64, now - glideLast)
+  glideLast = now
+  const left = glideTarget - el.scrollTop
+  if (Math.abs(left) <= 1) {
+    scrollTo(glideTarget)
+    glideTarget = null
+    return
+  }
+  // At least a pixel a frame: the browser rounds the position, and a step
+  // smaller than that would never arrive.
+  const step = left * (1 - Math.exp(-elapsed / GLIDE_MS))
+  scrollTo(el.scrollTop + Math.sign(left) * Math.max(1, Math.abs(step)))
+  glideFrame = requestAnimationFrame(glide)
+}
+
+onBeforeUnmount(stopGlide)
+
 /** Within this far of the top of what is loaded, the page before it is asked for. */
 const EARLIER_THRESHOLD = 800
 
@@ -314,6 +380,8 @@ function onScroll() {
     if (el.scrollTop < lastScrollTop) pinned.value = false
     else if (below <= BOTTOM_THRESHOLD) pinned.value = true
   }
+  // The reader took over: a glide toward the end must not pull against them.
+  if (!own && glideTarget !== null && !pinned.value) stopGlide()
   lastScrollTop = el.scrollTop
   askForEarlier()
 }
@@ -327,14 +395,15 @@ function askForEarlier() {
 /**
  * Keep the end of the last row on screen, and do nothing else: while it is
  * in the space below, new text has room to arrive without anything moving,
- * and once it would pass the bottom of the box the view moves with it, by
- * exactly as much.
+ * and once it would pass the bottom of the box the view glides after it.
  */
-function follow() {
+function follow({ instant = false } = {}) {
   const el = scroller.value
   if (!el || !pinned.value) return
-  const below = overflow(el)
-  if (below > 0) scrollTo(el.scrollTop + below)
+  const end = contentEnd() - el.clientHeight
+  // Measured from where the view is headed, so a glide already under way is
+  // retargeted rather than started again.
+  if (end > (glideTarget ?? el.scrollTop)) moveTo(end, { instant })
 }
 
 /**
@@ -347,7 +416,7 @@ function follow() {
 function onViewportResize(height: number) {
   if (height === viewport) return
   viewport = height
-  follow()
+  follow({ instant: true })
 }
 
 /**
@@ -375,7 +444,7 @@ watch(() => items.value[items.value.length - 1], (last, before) => {
     const el = scroller.value
     const row = rowAt(index)
     if (!el || !row) return
-    scrollTo(Math.min(el.scrollHeight - el.clientHeight, row.start - 16))
+    moveTo(row.start - 16)
   })
 })
 
@@ -394,13 +463,16 @@ watch(items, () => {
   const index = items.value.findIndex(item => item.id === held.key)
   if (index < 0) return
   const row = rowAt(index)
-  if (row) scrollTo(row.start - held.offset)
+  if (row) {
+    stopGlide()
+    scrollTo(row.start - held.offset)
+  }
 }, { flush: 'post' })
 
 function jumpToLatest() {
   pinned.value = true
   const el = scroller.value
-  if (el) scrollTo(contentEnd() - el.clientHeight)
+  if (el) moveTo(contentEnd() - el.clientHeight)
 }
 
 /**
