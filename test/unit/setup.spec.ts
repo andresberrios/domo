@@ -58,7 +58,7 @@ describe('voice', () => {
     try {
       expect(voiceProblem({ transcriber: 'gemini', speaker: 'local' }, DEFAULT_AGENT_VOICE)).toMatch(/Gemini/)
       expect(voiceProblem({ transcriber: 'browser', speaker: 'local' }, DEFAULT_AGENT_VOICE)).toBeNull()
-      rememberSecretSettings({ geminiApiKey: 'AIza', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', openCodeApiKey: '', kyutaiApiKey: '' })
+      rememberSecretSettings({ geminiApiKey: 'AIza', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', openCodeApiKey: '', copilotGithubToken: '', kyutaiApiKey: '' })
       expect(voiceProblem({ transcriber: 'gemini', speaker: 'gemini' }, DEFAULT_AGENT_VOICE)).toBeNull()
     } finally {
       forgetSecretSettings()

@@ -20,6 +20,7 @@ const stored = {
   anthropicApiKey: 'sk-ant-stored',
   claudeCodeOauthToken: 'sk-ant-oat-stored',
   openCodeApiKey: '',
+  copilotGithubToken: '',
   kyutaiApiKey: ''
 }
 

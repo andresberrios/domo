@@ -802,7 +802,7 @@ describe('the model a session runs on', () => {
     // used to read were a second, invisible way of saying the same thing.
     const { patchSettings } = await import('../../server/lib/settings')
     try {
-      await patchSettings({ defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '', copilot: '' } })
       const fromSetting = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku', 'opus'] })
       expect(fromSetting.asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
 
@@ -811,7 +811,7 @@ describe('the model a session runs on', () => {
     } finally {
       // The settings table survives the per-test truncate, so this one has to
       // put it back or every later test in the file boots on `haiku`.
-      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '' } })
     }
   })
 
@@ -828,7 +828,7 @@ describe('the model a session runs on', () => {
     // the user can see it and change it. The notice names the source.
     const { patchSettings } = await import('../../server/lib/settings')
     try {
-      await patchSettings({ defaultAgentModels: { 'claude-code': 'gemini-3-pro', codex: '', opencode: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': 'gemini-3-pro', codex: '', opencode: '', copilot: '' } })
       const { agent } = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku'] })
 
       const row = await getAgentSession(agent.id)
@@ -837,7 +837,7 @@ describe('the model a session runs on', () => {
       const notice = (await listAgentEvents(agent.id)).find(event => event.type === 'error')
       expect(notice?.payload.message).toMatch(/default model for claude-code.*"gemini-3-pro".*sonnet, haiku/s)
     } finally {
-      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '' } })
     }
   })
 

@@ -68,6 +68,16 @@ export async function setup(): Promise<void> {
     )
   }
 
+  // A host `copilot login` is never copied into an environment either, and a
+  // classic `ghp_` token is refused by Copilot, so the layer asks for the
+  // fine-grained token (or a `gh` OAuth token) by name rather than guessing.
+  if (!process.env.NUXT_COPILOT_GITHUB_TOKEN && !process.env.COPILOT_GITHUB_TOKEN) {
+    missing.push(
+      'NUXT_COPILOT_GITHUB_TOKEN is not set. Create a fine-grained GitHub token with the Copilot Requests '
+      + 'permission and put it in .env (a `gh auth token` OAuth token also works).'
+    )
+  }
+
   if (missing.length > 0) {
     throw new Error(
       `The agents-live layer did not run — it needs all of the following:\n - ${missing.join('\n - ')}`

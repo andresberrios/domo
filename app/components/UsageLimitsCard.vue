@@ -11,7 +11,8 @@ import type { UsageProviderId } from '~~/shared/types'
 const PROVIDERS: Array<{ id: UsageProviderId, name: string, icon: string }> = [
   { id: 'claude', name: 'Claude', icon: 'i-lucide-sparkles' },
   { id: 'codex', name: 'Codex', icon: 'i-lucide-terminal' },
-  { id: 'opencode', name: 'OpenCode Go', icon: 'i-lucide-code-xml' }
+  { id: 'opencode', name: 'OpenCode Go', icon: 'i-lucide-code-xml' },
+  { id: 'copilot', name: 'Copilot', icon: 'i-lucide-github' }
 ]
 
 const { forProvider, providerState } = useUsageLimits()

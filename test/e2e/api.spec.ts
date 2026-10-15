@@ -95,6 +95,9 @@ await setup({
     NUXT_CLAUDE_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
     NUXT_CODEX_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
     NUXT_OPENCODE_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
+    NUXT_COPILOT_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
+    NUXT_COPILOT_GITHUB_TOKEN: '',
+    NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1',
     NUXT_CODEX_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs')
   }
 })
@@ -493,7 +496,7 @@ describe('setup guide', () => {
   it('reports every coding agent and voice, and opens by itself on a new install', async () => {
     const status = await $fetch<SetupStatus>('/api/setup')
 
-    expect(status.agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'opencode'])
+    expect(status.agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'opencode', 'copilot'])
     for (const agent of status.agents) {
       expect(agent.installed).toBe(true)
       expect(['subscription', 'api-key', 'free', 'none']).toContain(agent.login)
@@ -785,7 +788,7 @@ describe('plan usage', () => {
     // feel slower than the data it is fetching.
     const response = await $fetch<{ requested: string[] }>('/api/usage/refresh', { method: 'POST' })
 
-    expect(response.requested).toEqual(['claude', 'codex', 'opencode'])
+    expect(response.requested).toEqual(['claude', 'codex', 'opencode', 'copilot'])
   })
 
   it('narrows to one provider when asked, and ignores a name it does not know', async () => {
@@ -797,7 +800,7 @@ describe('plan usage', () => {
     await expect($fetch<{ requested: string[] }>('/api/usage/refresh', {
       method: 'POST',
       body: { provider: 'nonsense' }
-    })).resolves.toEqual({ requested: ['claude', 'codex', 'opencode'] })
+    })).resolves.toEqual({ requested: ['claude', 'codex', 'opencode', 'copilot'] })
   })
 })
 

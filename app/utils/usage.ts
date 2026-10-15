@@ -162,5 +162,6 @@ export function usageProviderOf(adapter: AgentAdapter | null | undefined): Usage
   if (adapter === 'claude-code') return 'claude'
   if (adapter === 'codex') return 'codex'
   if (adapter === 'opencode') return 'opencode'
+  if (adapter === 'copilot') return 'copilot'
   return undefined
 }

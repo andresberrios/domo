@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import type { AgentAdapter } from '../../../shared/types'
+import { COPILOT_ARGS } from '../acp/adapter-process'
 import { dockerServerArch, resourcePrefix, run } from './docker'
 
 /**
@@ -35,6 +36,16 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
     spec: '@opencode/cli@2.0.29',
     entry: 'bin/opencode.exe',
     args: ['acp'],
+    native: true
+  },
+  copilot: {
+    command: 'copilot-acp',
+    spec: '@github/copilot@1.0.98',
+    // The platform package's executable, never the package's own Node loader,
+    // which does not pass a stop on (`copilotBinary` in adapter-process.ts).
+    // npm installs the one for the volume's architecture; the shell finds it.
+    entry: '../copilot-linux-*/copilot',
+    args: COPILOT_ARGS,
     native: true
   }
 }

@@ -1,10 +1,11 @@
 import { acpManager } from '../../lib/acp/manager'
+import type { AgentAdapter } from '../../../shared/types'
 import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{
     title?: string
-    adapter?: 'claude-code' | 'codex' | 'opencode'
+    adapter?: AgentAdapter
     cwd?: string
     modeId?: string | null
     model?: string | null
