@@ -12,6 +12,8 @@ const props = defineProps<{
    * the box to be sent again.
    */
   start?: (content: any[]) => Promise<boolean>
+  /** What the session's earlier messages' attachments are called, so a new one is not named the same. */
+  sentNames?: string[]
 }>()
 /** The draft's settings, for the card beside the attach button; see AgentComposerSettings. */
 const draft = defineModel<AgentDraft | null>('draft', { default: null })
@@ -156,13 +158,16 @@ const placeholder = computed(() => {
   return 'Joins the turn it is running…'
 })
 
+/** Names given to files still uploading, so the next paste does not reuse them. */
+const naming = new Set<string>()
+
 /** Never rejects: a failed upload is a toast, not something a caller handles. */
-async function upload(files: File[]) {
+async function upload(files: File[], names: string[]) {
   try {
     const form = new FormData()
     // The third argument is the filename the server sees, which is the only
     // way a clipboard file with no name of its own gets one.
-    for (const file of files) form.append('files', file, uploadName(file))
+    files.forEach((file, index) => form.append('files', file, names[index]))
     const result = await $fetch<{ files: typeof attachments.value }>('/api/uploads', {
       method: 'POST',
       body: form
@@ -175,10 +180,20 @@ async function upload(files: File[]) {
 
 function attach(files: File[]) {
   if (!files.length) return
+  // Named now, in the order they came, against everything already there.
+  const names: string[] = []
+  for (const file of files) {
+    const name = uploadName(file, [...(props.sentNames ?? []), ...attachments.value.map(attachment => attachment.name), ...naming, ...names])
+    names.push(name)
+  }
+  for (const name of names) naming.add(name)
   uploads.value += 1
   inflight = inflight
-    .then(() => upload(files))
-    .finally(() => { uploads.value -= 1 })
+    .then(() => upload(files, names))
+    .finally(() => {
+      uploads.value -= 1
+      for (const name of names) naming.delete(name)
+    })
 }
 
 function onFiles(event: Event) {
@@ -199,6 +214,13 @@ function onPaste(event: ClipboardEvent) {
   event.preventDefault()
   attach(files)
 }
+
+/** The attachments as `MessageAttachments` reads a sent message's. */
+const attachmentViews = computed(() => attachments.value.map(attachment => ({
+  name: attachment.name,
+  uri: `file://${attachment.path}`,
+  mimeType: attachment.mimeType
+})))
 
 function removeAttachment(path: string) {
   attachments.value = attachments.value.filter(attachment => attachment.path !== path)
@@ -421,32 +443,17 @@ async function stop() {
     @keydown.capture="onKeydownCapture"
     @submit.capture="onSubmitCapture"
   >
-    <div v-if="attachments.length || uploading" class="flex flex-wrap gap-1.5">
-      <UBadge
-        v-for="attachment in attachments"
-        :key="attachment.path"
-        color="neutral"
-        variant="subtle"
-        size="md"
-        class="gap-1"
-      >
-        <UIcon name="i-lucide-paperclip" class="size-3" />
-        {{ attachment.name }}
-        <UButton
-          icon="i-lucide-x"
-          color="neutral"
-          variant="link"
-          size="xs"
-          class="-me-1 p-0"
-          @click="removeAttachment(attachment.path)"
-        />
-      </UBadge>
-
+    <MessageAttachments
+      v-if="attachments.length || uploading"
+      :attachments="attachmentViews"
+      removable
+      @remove="index => removeAttachment(attachments[index]!.path)"
+    >
       <UBadge v-if="uploading" color="neutral" variant="subtle" size="md" class="gap-1">
         <UIcon name="i-lucide-loader-circle" class="size-3 animate-spin" />
         Attaching…
       </UBadge>
-    </div>
+    </MessageAttachments>
 
     <UChatPrompt
       ref="prompt"

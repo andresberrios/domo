@@ -43,13 +43,34 @@ function extensionFor(mimeType: string): string {
 }
 
 /**
- * A screenshot on the clipboard arrives with no filename at all, and the name
- * is what the badge shows and what the agent is told the resource link is. So
- * one is made up — dated, because the only thing distinguishing two pasted
- * screenshots is when they were pasted.
+ * The names browsers give every clipboard image (Chrome, Firefox and Safari
+ * all hand a screenshot over as `image.png`): a name, but not the file's own.
  */
-export function uploadName(file: File, at: Date = new Date()): string {
-  if (file.name) return file.name
-  const stamp = at.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
-  return `pasted-${stamp}.${extensionFor(file.type || '')}`
+const CLIPBOARD_NAME = /^image\.[a-z0-9]+$/i
+
+/**
+ * What an attachment is called: the badge, the thumbnail's caption, and what
+ * the agent is told the resource link is.
+ *
+ * A file that came with a name of its own keeps it. A clipboard image has
+ * none worth keeping — every one is `image.png`, which read as if each paste
+ * replaced the last — so it is numbered, `image-1.png`, `image-2.png`, past
+ * every name in `taken`: the message's other attachments and the ones the
+ * session has already been sent. A real name that is taken gets a number too,
+ * from 2, so the agent can still tell the two files apart.
+ */
+export function uploadName(file: File, taken: Iterable<string> = []): string {
+  const used = new Set(Array.from(taken, name => name.toLowerCase()))
+  const own = file.name && !CLIPBOARD_NAME.test(file.name) ? file.name : ''
+  if (own && !used.has(own.toLowerCase())) return own
+
+  const dot = own.lastIndexOf('.')
+  const stem = own ? (dot > 0 ? own.slice(0, dot) : own) : (file.type.startsWith('image/') ? 'image' : 'pasted')
+  const extension = own
+    ? (dot > 0 ? own.slice(dot) : '')
+    : `.${file.name ? file.name.split('.').pop()!.toLowerCase() : extensionFor(file.type || '')}`
+  for (let n = own ? 2 : 1; ; n++) {
+    const name = `${stem}-${n}${extension}`
+    if (!used.has(name.toLowerCase())) return name
+  }
 }

@@ -35,17 +35,7 @@ const permissionPending = computed(() =>
         <span>Spoken</span>
       </div>
       <MarkdownView :text="item.text" />
-      <div v-if="item.attachments?.length" class="flex flex-wrap gap-1.5">
-        <UBadge
-          v-for="attachment in item.attachments"
-          :key="attachment.name"
-          icon="i-lucide-paperclip"
-          color="neutral"
-          variant="subtle"
-          size="sm"
-          :label="attachment.name"
-        />
-      </div>
+      <MessageAttachments v-if="item.attachments?.length" :attachments="item.attachments" />
     </div>
   </template>
 

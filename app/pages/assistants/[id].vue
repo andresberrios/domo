@@ -51,6 +51,9 @@ const events = computed(() => {
     event.agentSessionId === currentId || (event.type !== 'handed_off' && event.type !== 'adapter-exit'))
 })
 
+/** What earlier attachments were called, across the sessions shown; a new one is numbered past them. */
+const sentNames = computed(() => sentAttachmentNames(merged.value))
+
 /** Whether anything has been said yet: a fresh assistant's log holds only notices. */
 const conversed = computed(() => events.value.some(event => event.type === 'user_message' || event.type === 'agent_message'))
 
@@ -218,7 +221,7 @@ const menuItems = computed(() => [
         </div>
 
         <div v-if="!blocked && current && !assistant?.archived" class="shrink-0 pt-2">
-          <AgentComposer :session="current" />
+          <AgentComposer :session="current" :sent-names="sentNames" />
         </div>
       </div>
 
