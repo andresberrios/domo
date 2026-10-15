@@ -1,46 +1,80 @@
+import { and, gte, lt } from '@tanstack/db'
 import type { Collection } from '@tanstack/db'
 
 /**
- * A long, append-mostly log read straight off its collection.
+ * A long, append-mostly log read straight off its collections, newest first.
  *
- * `useLiveQuery` is the right tool for a list you show whole: it keeps a
- * `reactive([])` and rebuilds it from the collection on every change. On a
- * transcript that is the wrong shape twice over — the array is rebuilt from
- * thousands of rows to learn that one of them grew by a word, and the rebuild
- * fires the dependents twice (once to empty the array, once to refill it).
- * Both costs scale with the log, not with what changed, so the page got slower
- * the longer an agent worked.
+ * Two costs used to grow with everything an agent had ever done. Rebuilding a
+ * reactive array from thousands of rows on every streamed word is the first,
+ * and reading the change stream into a plain array behind a `shallowRef` is
+ * what fixed it: a delta costs one mapping and one splice. The second was the
+ * download itself. A long session's shape is megabytes of tool output, and the
+ * browser parsed all of it before the page could draw a row; on a phone that
+ * was seconds of one frozen frame.
  *
- * This reads the collection's change stream instead. Rows are mapped once, on
- * arrival, into a plain array held behind a `shallowRef`: a delta costs one
- * mapping and one splice whatever the log's length, and Vue sees one new array
- * identity per batch rather than a reactive tree to walk.
+ * So the collections are on-demand (see `agentEventsCollection`) and the log is
+ * a window: the newest page of rows, then each earlier page only when
+ * `loadEarlier()` asks for it. A window is "everything from this `seq` on", so
+ * the live tail streams into it and an edit to a row inside it lands, while
+ * rows below it are never fetched. Where each page begins is `pageFloor`'s
+ * answer, which the server gives without sending the rows (`agentEventsPageFloor`).
+ *
+ * `seq` is global, so several collections — an assistant's sessions — share
+ * one floor and read as one log; they are given oldest first.
  *
  * The array is ordered by `compare` and kept that way as rows arrive, so
  * readers never sort. An unchanged row keeps its mapped object, which is what
- * lets everything downstream — the transcript builder, and Vue's own prop
- * diffing — tell what actually moved.
+ * lets everything downstream tell what actually moved.
  */
 export function useSyncedLog<TRow extends object, TItem>(
-  /** One collection, or several read as one log (their keys must not collide). */
   collection: MaybeRefOrGetter<Collection<any, any, any> | Collection<any, any, any>[] | null | undefined>,
   map: (row: TRow) => TItem,
-  compare: (a: TItem, b: TItem) => number
+  compare: (a: TItem, b: TItem) => number,
+  /**
+   * Where the page below `ceiling` begins: the `seq` to load from, or null
+   * when what is left is the rest of the log.
+   */
+  pageFloor: (ceiling: number | null) => Promise<number | null>
 ) {
   const items = shallowRef<TItem[]>([])
   const isReady = ref(false)
+  /** Every row is loaded: there is nothing earlier to ask for. */
+  const complete = ref(false)
+  const loadingEarlier = ref(false)
 
-  watchEffect((onCleanup) => {
+  let loadEarlierNow: () => Promise<void> = async () => {}
+
+  const collections = computed(() => {
     const source = toValue(collection)
-    const sources = Array.isArray(source) ? source : source ? [source] : []
+    return Array.isArray(source) ? source : source ? [source] : []
+  })
+
+  // Started again only when the collections themselves change. A caller's list
+  // is rebuilt whenever anything it is derived from changes — an assistant's
+  // sessions on any status change — and starting again means loading the page
+  // again, with the transcript empty meanwhile.
+  watch(() => collections.value.map(entry => entry.id).join('\n'), (_key, _previous, onCleanup) => {
+    const sources = collections.value
     items.value = []
     isReady.value = false
+    complete.value = false
+    loadingEarlier.value = false
+    loadEarlierNow = async () => {}
     if (!sources.length) return
+
+    let cancelled = false
+    const subscriptions: Array<{ unsubscribe: () => void }> = []
+    onCleanup(() => {
+      cancelled = true
+      subscriptions.forEach(subscription => subscription.unsubscribe())
+    })
 
     /* Plain structures, deliberately outside Vue: only `items` is reactive, and
      * it is replaced wholesale so nothing here needs to be observed. */
     const byKey = new Map<string, TItem>()
     const sorted: TItem[] = []
+    /** The lowest `seq` in the window; null once the window is the whole log. */
+    let floor: number | null = null
 
     const remove = (item: TItem) => {
       const at = indexOf(sorted, item, compare)
@@ -48,6 +82,7 @@ export function useSyncedLog<TRow extends object, TItem>(
     }
 
     const onChanges = (changes: any[]) => {
+      if (cancelled) return
       for (const change of changes) {
         const key = String(change.key)
         const previous = byKey.get(key)
@@ -67,14 +102,64 @@ export function useSyncedLog<TRow extends object, TItem>(
       }
       // One new identity per batch: Vue re-reads the array, not the rows in it.
       items.value = sorted.slice()
-      isReady.value = true
     }
-    const subscriptions = sources.map(entry => entry.subscribeChanges(onChanges, { includeInitialState: true }))
 
-    onCleanup(() => subscriptions.forEach(subscription => subscription.unsubscribe()))
-  })
+    /** Subscribe every collection to `[from, to)`; resolves once its rows are in. */
+    async function subscribe(from: number | null, to: number | null) {
+      const where = (row: any) =>
+        from === null ? lt(row.seq, to!) : to === null ? gte(row.seq, from) : and(gte(row.seq, from), lt(row.seq, to))
+      // A subset asked of a collection that has not started yet waits for it,
+      // and its subscription says it is ready in the meantime.
+      await Promise.all(sources.map(entry => entry.preload()))
+      if (cancelled) return
+      await Promise.all(sources.map(entry => new Promise<void>((resolve) => {
+        let reported = false
+        const subscription = entry.subscribeChanges(onChanges, {
+          includeInitialState: true,
+          ...(from === null && to === null ? {} : { where }),
+          // On-demand, the initial state is whatever this load brings.
+          onLoadSubsetResult: (result: unknown) => {
+            reported = true
+            if (result instanceof Promise) result.then(() => resolve(), () => resolve())
+            else resolve()
+          }
+        } as any)
+        subscriptions.push(subscription)
+        if (cancelled) subscription.unsubscribe()
+        // Nothing to load — an eager collection already holds every row.
+        if (!reported) resolve()
+      })))
+    }
 
-  return { items, isReady }
+    void (async () => {
+      // Not knowing where the newest page starts is no reason to show nothing:
+      // the whole log is slower, but it is the transcript.
+      floor = await pageFloor(null).catch(() => null)
+      if (cancelled) return
+      await subscribe(floor, null)
+      if (cancelled) return
+      complete.value = floor === null
+      isReady.value = true
+    })()
+
+    loadEarlierNow = async () => {
+      if (cancelled || floor === null || loadingEarlier.value || !isReady.value) return
+      loadingEarlier.value = true
+      try {
+        const ceiling = floor
+        const next = await pageFloor(ceiling)
+        if (cancelled) return
+        await subscribe(next, ceiling)
+        if (cancelled) return
+        floor = next
+        complete.value = next === null
+      } finally {
+        loadingEarlier.value = false
+      }
+    }
+  }, { immediate: true })
+
+  return { items, isReady, complete, loadingEarlier, loadEarlier: () => loadEarlierNow() }
 }
 
 /** Where `item` belongs, by `compare`. Appends — the common case — are O(1). */

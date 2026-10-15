@@ -64,11 +64,14 @@ const hasDetail = computed(() =>
       @click="hasDetail && (open = !open)"
     >
       <UIcon :name="icon" class="size-4 shrink-0 text-muted" />
-      <span v-if="described" class="min-w-0 flex-1 truncate text-sm" data-testid="domo-tool">
-        {{ described.label }}
-        <span v-if="described.subject" class="font-medium">{{ described.subject }}</span>
-        <span v-if="described.outcome" class="ms-1 text-xs text-muted">· {{ described.outcome }}</span>
-      </span>
+      <ActionLine
+        v-if="described"
+        :action="described.action"
+        :subject="described.subject"
+        :detail="described.detail"
+        :outcome="described.outcome"
+        data-testid="domo-tool"
+      />
       <span v-else class="min-w-0 flex-1 truncate text-sm">
         {{ tool.title }}
         <span v-if="command" class="ms-1 font-mono text-xs text-muted">{{ truncate(String(command), 60) }}</span>

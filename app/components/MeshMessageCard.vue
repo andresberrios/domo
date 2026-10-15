@@ -18,14 +18,25 @@ const peerTitle = computed(() => {
   return title ?? (id ? names.agent(id) ?? id : null) ?? 'an agent'
 })
 
-const heading = computed(() => {
-  const { direction, via } = props.item
-  if (via === 'notify') return 'To you'
-  if (via === 'domo') return 'From Domo'
-  if (via === 'update') return peerTitle.value
-  if (via === 'schedule') return `Scheduled task "${props.item.peer.title ?? props.item.peer.id}"`
-  if (via === 'spawn') return direction === 'out' ? `Started ${peerTitle.value}` : `Task from ${peerTitle.value}`
-  return direction === 'out' ? `To ${peerTitle.value}` : `From ${peerTitle.value}`
+/**
+ * What happened, kept apart from who it happened with: "Messaged agent:",
+ * then the agent's name. Run together ("To Builder…", "Started Builder…")
+ * the verb read as part of the title.
+ */
+const heading = computed<{ action: string, subject: string | null }>(() => {
+  const { direction, via, peer } = props.item
+  switch (via) {
+    case 'notify': return { action: 'Notified you', subject: null }
+    case 'domo': return { action: 'Message from Domo', subject: null }
+    case 'update': return { action: 'Update about agent', subject: peerTitle.value }
+    case 'schedule': return { action: 'Scheduled task', subject: peer.title ?? peer.id }
+    case 'spawn': return direction === 'out'
+      ? { action: 'Started agent', subject: peerTitle.value }
+      : { action: 'Task from agent', subject: peerTitle.value }
+    default: return direction === 'out'
+      ? { action: 'Messaged agent', subject: peerTitle.value }
+      : { action: 'Message from agent', subject: peerTitle.value }
+  }
 })
 
 const icon = computed(() => {
@@ -70,10 +81,7 @@ const outcome = computed(() => {
       @click="open = !open"
     >
       <UIcon :name="icon" class="size-4 shrink-0 text-primary" />
-      <span class="min-w-0 flex-1 truncate text-sm">
-        <span class="font-medium">{{ heading }}</span>
-        <span v-if="preview" class="ms-1.5 text-muted">{{ preview }}</span>
-      </span>
+      <ActionLine :action="heading.action" :subject="heading.subject" :detail="preview" />
       <UBadge
         v-if="running || status === 'failed'"
         :color="running ? 'primary' : 'error'"

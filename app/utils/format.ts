@@ -14,15 +14,29 @@ export function relativeTime(value?: string | null): string {
   return new Date(value).toLocaleDateString()
 }
 
-const CLOCK = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
 const FULL = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'medium' })
 const WEEKDAY = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
 const DATED = new Intl.DateTimeFormat(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })
 
-/** "14:05", or "2:05 PM": when, within its day. */
+/** "14:05:09", or "2:05:09 PM": when, within its day. */
 export function clockTime(value?: string | null): string {
   const date = value ? new Date(value) : null
   return date && !Number.isNaN(date.getTime()) ? CLOCK.format(date) : ''
+}
+
+/**
+ * The same time in two pieces, for a narrow column: "4:52:09" and "AM", or
+ * "16:52:09" and nothing where the clock has no day period.
+ */
+export function clockParts(value?: string | null): { time: string, period: string } {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return { time: '', period: '' }
+  const parts = CLOCK.formatToParts(date)
+  return {
+    time: parts.filter(part => part.type !== 'dayPeriod').map(part => part.value).join('').trim(),
+    period: parts.find(part => part.type === 'dayPeriod')?.value ?? ''
+  }
 }
 
 /** The whole instant, for a tooltip. */

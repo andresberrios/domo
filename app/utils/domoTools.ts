@@ -119,8 +119,6 @@ export interface DomoNames {
   project: (id: string) => string | null
 }
 
-const quoted = (value: unknown) => (value == null || value === '' ? null : `"${value}"`)
-
 /** The agent an id names, by title where the transcript knows it. */
 function agentName(id: unknown, names: DomoNames, result?: any): string | null {
   if (typeof id !== 'string' || !id) return null
@@ -144,135 +142,175 @@ function count(list: unknown, noun: string): string | null {
 
 interface DomoToolView {
   icon: string
-  /** What the call does, as a person would say it. */
-  label: (call: DomoCall) => string
+  /**
+   * What the call did, naming the kind of thing it did it to: "Messaged
+   * agent", "Retired environment". Drawn apart from the name that follows,
+   * so the verb never reads as part of an agent's title.
+   */
+  action: (call: DomoCall) => string
   /** What it acted on: an agent's title, an environment's name. */
   subject?: (call: DomoCall, names: DomoNames) => string | null
+  /** More about it, read after the name: a new title, a schedule, a prompt. */
+  detail?: (call: DomoCall, names: DomoNames) => string | null
   /** The result, in a few words. */
   outcome?: (call: DomoCall) => string | null
 }
 
 const onAgent = (call: DomoCall, names: DomoNames) => agentName(call.args.agentId, names, call.result)
-const onOwnOrAgent = (call: DomoCall, names: DomoNames) =>
-  call.args.agentId ? agentName(call.args.agentId, names, call.result) : 'itself'
 const onEnvironment = (call: DomoCall, names: DomoNames) =>
   environmentName(call.args.environmentId ?? call.args.devEnvironmentId, names, call.result)
 const onProject = (call: DomoCall, names: DomoNames) => projectName(call.args.projectId, names, call.result)
+const named = (value: unknown) => (typeof value === 'string' && value ? value : null)
+/** An agent's own session when it names none: "Renamed itself", with nothing after. */
+const ownOr = (call: DomoCall, onOther: string, onSelf: string) => (call.args.agentId ? onOther : onSelf)
 
 export const DOMO_TOOLS: Record<string, DomoToolView> = {
-  list_models: { icon: 'i-lucide-cpu', label: () => 'List models', outcome: call => count(call.result?.models, 'model') },
-  list_agents: { icon: 'i-lucide-bot', label: () => 'List agents', outcome: call => count(call.result?.agents, 'agent') },
+  list_models: { icon: 'i-lucide-cpu', action: () => 'Listed models', outcome: call => count(call.result?.models, 'model') },
+  list_agents: { icon: 'i-lucide-bot', action: () => 'Listed agents', outcome: call => count(call.result?.agents, 'agent') },
   get_agent: {
     icon: 'i-lucide-bot',
-    label: () => 'Check agent',
+    action: () => 'Checked agent',
     subject: onAgent,
     outcome: call => call.result?.status ?? null
   },
-  read_agent_transcript: { icon: 'i-lucide-scroll-text', label: () => 'Read transcript of', subject: onOwnOrAgent },
-  message_agent: { icon: 'i-lucide-send', label: () => 'Message', subject: onAgent, outcome: call => call.result?.outcome ?? null },
+  read_agent_transcript: {
+    icon: 'i-lucide-scroll-text',
+    action: call => ownOr(call, 'Read transcript of agent', 'Read its own transcript'),
+    subject: (call, names) => (call.args.agentId ? onAgent(call, names) : null)
+  },
+  message_agent: { icon: 'i-lucide-send', action: () => 'Messaged agent', subject: onAgent, outcome: call => call.result?.outcome ?? null },
   cancel_agent_turn: {
     icon: 'i-lucide-circle-stop',
-    label: () => 'Cancel the turn of',
+    action: () => 'Cancelled turn of agent',
     subject: onAgent,
     outcome: call => (call.result?.cancelled === false ? 'was not running' : null)
   },
-  withdraw_queued_message: { icon: 'i-lucide-undo-2', label: () => 'Withdraw a message to', subject: onAgent },
+  withdraw_queued_message: { icon: 'i-lucide-undo-2', action: () => 'Withdrew message to agent', subject: onAgent },
   answer_permission_request: {
     icon: 'i-lucide-shield-check',
-    label: call => (call.args.reject ? 'Reject a permission for' : 'Answer a permission for'),
+    action: call => (call.args.reject ? 'Rejected permission for agent' : 'Answered permission for agent'),
     subject: onAgent,
     outcome: call => call.result?.optionName ?? call.args.optionId ?? null
   },
   spawn_agent: {
     icon: 'i-lucide-bot',
-    label: () => 'Start agent',
-    subject: call => quoted(call.args.title ?? call.result?.title)
+    action: () => 'Started agent',
+    subject: call => named(call.args.title ?? call.result?.title),
+    detail: call => named(call.args.prompt)
   },
   manage_agent_session: {
     icon: 'i-lucide-settings-2',
-    label: (call) => {
-      if (call.args.archived === true) return 'Archive'
-      if (call.args.archived === false) return 'Unarchive'
-      if (call.args.title) return 'Rename'
-      return 'Update'
+    action: (call) => {
+      const verb = call.args.archived === true
+        ? 'Archived'
+        : call.args.archived === false ? 'Unarchived' : call.args.title ? 'Renamed' : 'Updated'
+      return ownOr(call, `${verb} agent`, `${verb} itself`)
     },
-    subject: (call, names) => {
-      const target = call.args.agentId ? agentName(call.args.agentId, names) : 'itself'
-      return call.args.title ? `${target} to "${call.args.title}"` : target
-    }
+    subject: (call, names) => (call.args.agentId ? agentName(call.args.agentId, names) : null),
+    detail: call => (call.args.title ? `to "${call.args.title}"` : null)
   },
-  subscribe_to_agent: { icon: 'i-lucide-bell-plus', label: () => 'Follow', subject: onAgent },
-  unsubscribe_from_agent: { icon: 'i-lucide-bell-minus', label: () => 'Stop following', subject: onAgent },
-  list_subscriptions: { icon: 'i-lucide-bell', label: () => 'List subscriptions' },
-  list_projects: { icon: 'i-lucide-folder-git-2', label: () => 'List projects', outcome: call => count(call.result?.projects, 'project') },
-  create_project: { icon: 'i-lucide-folder-plus', label: () => 'Add project', subject: call => quoted(call.args.name) ?? call.args.repoPath ?? null },
-  update_project: { icon: 'i-lucide-folder-pen', label: () => 'Rename project', subject: (call, names) => `${onProject(call, names)} to "${call.args.name}"` },
-  retire_project: { icon: 'i-lucide-folder-x', label: () => 'Retire project', subject: onProject },
+  subscribe_to_agent: { icon: 'i-lucide-bell-plus', action: () => 'Subscribed to agent', subject: onAgent },
+  unsubscribe_from_agent: { icon: 'i-lucide-bell-minus', action: () => 'Unsubscribed from agent', subject: onAgent },
+  list_subscriptions: { icon: 'i-lucide-bell', action: () => 'Listed subscriptions' },
+  list_projects: { icon: 'i-lucide-folder-git-2', action: () => 'Listed projects', outcome: call => count(call.result?.projects, 'project') },
+  create_project: {
+    icon: 'i-lucide-folder-plus',
+    action: () => 'Added project',
+    subject: call => named(call.args.name) ?? named(call.args.repoPath),
+    detail: call => (call.args.name ? named(call.args.repoPath) : null)
+  },
+  update_project: { icon: 'i-lucide-folder-pen', action: () => 'Renamed project', subject: onProject, detail: call => (call.args.name ? `to "${call.args.name}"` : null) },
+  retire_project: { icon: 'i-lucide-folder-x', action: () => 'Retired project', subject: onProject },
   create_dev_environment: {
     icon: 'i-lucide-box',
-    label: () => 'Create environment',
-    subject: (call, names) => {
-      const project = call.args.projectId ? projectName(call.args.projectId, names) : null
-      return [quoted(call.args.name), project && `in ${project}`].filter(Boolean).join(' ') || null
-    }
+    action: () => 'Created environment',
+    subject: call => named(call.args.name ?? call.result?.name),
+    detail: (call, names) => (call.args.projectId ? `in ${projectName(call.args.projectId, names)}` : null)
   },
-  get_dev_environment: { icon: 'i-lucide-box', label: () => 'Check environment', subject: onEnvironment, outcome: call => call.result?.status ?? null },
+  get_dev_environment: { icon: 'i-lucide-box', action: () => 'Checked environment', subject: onEnvironment, outcome: call => call.result?.status ?? null },
   update_dev_environment: {
     icon: 'i-lucide-box',
-    label: (call) => {
-      if (call.args.status === 'running') return 'Start environment'
-      if (call.args.status === 'stopped') return 'Stop environment'
-      return 'Update environment'
+    action: (call) => {
+      if (call.args.status === 'running') return 'Started environment'
+      if (call.args.status === 'stopped') return 'Stopped environment'
+      return 'Updated environment'
     },
     subject: onEnvironment
   },
-  retire_dev_environment: { icon: 'i-lucide-archive', label: () => 'Retire environment', subject: onEnvironment },
-  retry_environment_cleanup: { icon: 'i-lucide-rotate-cw', label: () => 'Retry cleanup of', subject: onEnvironment },
-  list_environment_ports: { icon: 'i-lucide-ethernet-port', label: () => 'List ports of', subject: onEnvironment },
+  upgrade_dev_environment: { icon: 'i-lucide-circle-arrow-up', action: () => 'Upgraded environment', subject: onEnvironment },
+  retire_dev_environment: { icon: 'i-lucide-archive', action: () => 'Retired environment', subject: onEnvironment },
+  retry_environment_cleanup: { icon: 'i-lucide-rotate-cw', action: () => 'Retried cleanup of environment', subject: onEnvironment },
+  list_environment_ports: { icon: 'i-lucide-ethernet-port', action: () => 'Listed ports of environment', subject: onEnvironment },
   forward_environment_port: {
     icon: 'i-lucide-ethernet-port',
-    label: call => `${call.args.forward === false ? 'Stop forwarding' : 'Forward'} port ${call.args.port ?? ''}`.trim(),
+    action: call => `${call.args.forward === false ? 'Stopped forwarding' : 'Forwarded'} port ${call.args.port ?? ''} of environment`.replace(/ {2}/, ' '),
     subject: onEnvironment
   },
+  list_assistants: { icon: 'i-lucide-users', action: () => 'Listed assistants', outcome: call => count(call.result?.assistants, 'assistant') },
+  create_assistant: { icon: 'i-lucide-user-plus', action: () => 'Created assistant', subject: call => named(call.args.name ?? call.result?.name) },
+  update_assistant: {
+    icon: 'i-lucide-user-pen',
+    action: call => (call.args.archived === true ? 'Archived assistant' : call.args.archived === false ? 'Unarchived assistant' : 'Updated assistant'),
+    subject: call => named(call.result?.name ?? call.args.name ?? call.args.assistantId)
+  },
+  hand_off: { icon: 'i-lucide-notebook-pen', action: () => 'Handed off to a fresh session' },
+  list_voices: { icon: 'i-lucide-audio-lines', action: () => 'Listed voices', outcome: call => count(call.result?.voices, 'voice') },
+  create_voice: { icon: 'i-lucide-audio-lines', action: () => 'Created voice', subject: call => named(call.args.name ?? call.result?.name) },
+  generate_image: { icon: 'i-lucide-image', action: () => 'Generated image', detail: call => named(call.args.prompt) },
   schedule_task: {
     icon: 'i-lucide-calendar-clock',
-    label: () => 'Schedule',
-    subject: call => [quoted(call.args.name), call.args.cronExpression ?? call.args.runAt].filter(Boolean).join(' · ') || null
+    action: () => 'Scheduled task',
+    subject: call => named(call.args.name ?? call.result?.name),
+    detail: call => named(call.args.cronExpression ?? call.args.runAt)
   },
-  list_scheduled_tasks: { icon: 'i-lucide-calendar', label: () => 'List scheduled tasks', outcome: call => count(call.result?.tasks, 'task') },
+  list_scheduled_tasks: { icon: 'i-lucide-calendar', action: () => 'Listed scheduled tasks', outcome: call => count(call.result?.tasks, 'task') },
   update_scheduled_task: {
     icon: 'i-lucide-calendar-cog',
-    label: (call) => {
-      if (call.args.enabled === false) return 'Pause scheduled task'
-      if (call.args.enabled === true) return 'Resume scheduled task'
-      return 'Update scheduled task'
+    action: (call) => {
+      if (call.args.enabled === false) return 'Paused scheduled task'
+      if (call.args.enabled === true) return 'Resumed scheduled task'
+      return 'Updated scheduled task'
     },
-    subject: call => quoted(call.args.name ?? call.result?.name)
+    subject: call => named(call.args.name ?? call.result?.name)
   },
-  run_scheduled_task: { icon: 'i-lucide-play', label: () => 'Run scheduled task', subject: call => quoted(call.result?.name) },
-  delete_scheduled_task: { icon: 'i-lucide-calendar-x', label: () => 'Delete scheduled task', subject: call => quoted(call.result?.name) },
-  notify_supervisor: { icon: 'i-lucide-bell-ring', label: () => 'Notify you' },
-  get_usage_limits: { icon: 'i-lucide-gauge', label: () => 'Check usage limits', subject: call => call.args.provider ?? null }
+  run_scheduled_task: { icon: 'i-lucide-play', action: () => 'Ran scheduled task', subject: call => named(call.result?.name) },
+  delete_scheduled_task: { icon: 'i-lucide-calendar-x', action: () => 'Deleted scheduled task', subject: call => named(call.result?.name) },
+  notify_supervisor: { icon: 'i-lucide-bell-ring', action: () => 'Notified you' },
+  get_usage_limits: { icon: 'i-lucide-gauge', action: () => 'Checked usage limits', detail: call => named(call.args.provider) }
 }
 
 export const NO_NAMES: DomoNames = { agent: () => null, environment: () => null, project: () => null }
 
+export interface DomoCallView {
+  icon: string
+  action: string
+  subject: string | null
+  detail: string | null
+  outcome: string | null
+}
+
 /** One line for a Domo tool call: its icon, what it did, to what, and how it went. */
-export function describeDomoCall(call: DomoCall, names: DomoNames = NO_NAMES) {
+export function describeDomoCall(call: DomoCall, names: DomoNames = NO_NAMES): DomoCallView {
   const view = DOMO_TOOLS[call.name]
   if (!view) {
-    return { icon: 'i-lucide-house', label: call.name.replace(/_/g, ' '), subject: null, outcome: null }
+    return { icon: 'i-lucide-house', action: call.name.replace(/_/g, ' '), subject: null, detail: null, outcome: null }
   }
   return {
     icon: view.icon,
-    label: view.label(call),
+    action: view.action(call),
     subject: view.subject?.(call, names) ?? null,
+    detail: view.detail?.(call, names) ?? null,
     outcome: view.outcome?.(call) ?? null
   }
 }
 
-/** The tool's short name for a group's breakdown: "List agents ×3". */
+/** The same line as plain text: "Messaged agent: Builder". */
+export function domoCallText(view: DomoCallView): string {
+  return view.subject ? `${view.action}: ${view.subject}` : view.action
+}
+
+/** The tool's short name for a group's breakdown: "Listed agents ×3". */
 export function domoToolLabel(name: string): string {
   const view = DOMO_TOOLS[name]
-  return view ? view.label({ name, args: {}, result: null }) : name.replace(/_/g, ' ')
+  return view ? view.action({ name, args: {}, result: null }) : name.replace(/_/g, ' ')
 }

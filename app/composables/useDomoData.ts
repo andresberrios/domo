@@ -271,6 +271,19 @@ function toAgentEvent(row: any): AgentEvent {
 
 const bySeq = (a: { seq: number }, b: { seq: number }) => a.seq - b.seq
 
+/** Rows per page of transcript: a screenful many times over, and well under a second on a phone. */
+const EVENT_PAGE_SIZE = 400
+
+/** Where a page of these sessions' transcript begins (see `useSyncedLog`). */
+function eventPageFloor(ids: () => string[]) {
+  return async (ceiling: number | null) => {
+    const { floor } = await $fetch<{ floor: number | null }>('/api/agent-events/page', {
+      query: { sessions: ids().join(','), size: EVENT_PAGE_SIZE, ...(ceiling === null ? {} : { before: ceiling }) }
+    })
+    return floor
+  }
+}
+
 /**
  * One session's transcript log, in order.
  *
@@ -280,16 +293,17 @@ const bySeq = (a: { seq: number }, b: { seq: number }) => a.seq - b.seq
  * been working. See `useSyncedLog`.
  */
 export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | undefined>) {
-  const { items: events, isReady } = useSyncedLog<any, AgentEvent>(
+  const { items: events, ...log } = useSyncedLog<any, AgentEvent>(
     () => {
       const id = toValue(agentSessionId)
       return id ? agentEventsCollection(id) : null
     },
     toAgentEvent,
-    bySeq
+    bySeq,
+    eventPageFloor(() => [toValue(agentSessionId)].filter((id): id is string => !!id))
   )
 
-  return { events, isReady }
+  return { events, ...log }
 }
 
 /**
@@ -299,12 +313,13 @@ export function useAgentEvents(agentSessionId: MaybeRefOrGetter<string | null | 
  * own page, so only the sessions on screen are synced.
  */
 export function useSessionsEvents(agentSessionIds: MaybeRefOrGetter<string[]>) {
-  const { items: events, isReady } = useSyncedLog<any, AgentEvent>(
+  const { items: events, ...log } = useSyncedLog<any, AgentEvent>(
     () => toValue(agentSessionIds).map(id => agentEventsCollection(id)),
     toAgentEvent,
-    bySeq
+    bySeq,
+    eventPageFloor(() => toValue(agentSessionIds))
   )
-  return { events, isReady }
+  return { events, ...log }
 }
 
 /**

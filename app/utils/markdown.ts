@@ -1,6 +1,4 @@
-import { marked } from 'marked'
-
-let configured = false
+import { Marked } from 'marked'
 
 function escapeHtml(value: string): string {
   return value
@@ -99,50 +97,56 @@ async function highlight(code: string, lang?: string): Promise<string> {
   }
 }
 
-function configure() {
-  if (configured) return
-  configured = true
-  marked.use({
-    gfm: true,
-    breaks: true,
-    async: true,
-    walkTokens: async (token: any) => {
-      if (token.type === 'code') {
-        token.text = await highlight(token.text ?? '', token.lang)
-        token.escaped = true
-      }
-    },
-    renderer: {
-      code(token: any) {
-        return token.escaped ? token.text : `<pre><code>${escapeHtml(token.text ?? '')}</code></pre>`
-      },
-      // Both block-level and inline raw HTML arrive as `html` tokens. The text we
-      // render is model output that quotes files, web pages and command output,
-      // so a tag in it is something the agent *read*, not markup we were asked to
-      // render — show it, never run it.
-      html(token: any) {
-        return escapeHtml(token.text ?? '')
-      },
-      link(this: any, token: any) {
-        // `token.text` is the raw source; the inline tokens carry bold/code/etc.
-        const label = this.parser.parseInline(token.tokens ?? [])
-        const href = safeUrl(token.href ?? '')
-        // An unusable scheme leaves the label behind as plain text: the words
-        // still read, but there is nothing to click.
-        if (href === null) return label
-        const title = token.title ? ` title="${escapeHtml(token.title)}"` : ''
-        return `<a href="${escapeHtml(href)}"${title} target="_blank" rel="noreferrer noopener">${label}</a>`
-      },
-      image(token: any) {
-        const alt = escapeHtml(token.text ?? '')
-        const src = safeUrl(token.href ?? '')
-        if (src === null) return alt
-        const title = token.title ? ` title="${escapeHtml(token.title)}"` : ''
-        return `<img src="${escapeHtml(src)}" alt="${alt}"${title}>`
-      }
-    }
-  })
+/**
+ * How every token but a code fence renders, in both passes. `this` is marked's
+ * renderer, which is where `parser` comes from.
+ */
+const renderer = {
+  code(token: any) {
+    return token.escaped ? token.text : `<pre><code>${escapeHtml(token.text ?? '')}</code></pre>`
+  },
+  // Both block-level and inline raw HTML arrive as `html` tokens. The text we
+  // render is model output that quotes files, web pages and command output,
+  // so a tag in it is something the agent *read*, not markup we were asked to
+  // render — show it, never run it.
+  html(token: any) {
+    return escapeHtml(token.text ?? '')
+  },
+  link(this: any, token: any) {
+    // `token.text` is the raw source; the inline tokens carry bold/code/etc.
+    const label = this.parser.parseInline(token.tokens ?? [])
+    const href = safeUrl(token.href ?? '')
+    // An unusable scheme leaves the label behind as plain text: the words
+    // still read, but there is nothing to click.
+    if (href === null) return label
+    const title = token.title ? ` title="${escapeHtml(token.title)}"` : ''
+    return `<a href="${escapeHtml(href)}"${title} target="_blank" rel="noreferrer noopener">${label}</a>`
+  },
+  image(token: any) {
+    const alt = escapeHtml(token.text ?? '')
+    const src = safeUrl(token.href ?? '')
+    if (src === null) return alt
+    const title = token.title ? ` title="${escapeHtml(token.title)}"` : ''
+    return `<img src="${escapeHtml(src)}" alt="${alt}"${title}>`
+  }
 }
+
+/** Code fences highlighted by Shiki, which loads its grammars as it needs them. */
+const highlighted = new Marked({
+  gfm: true,
+  breaks: true,
+  async: true,
+  walkTokens: async (token: any) => {
+    if (token.type === 'code') {
+      token.text = await highlight(token.text ?? '', token.lang)
+      token.escaped = true
+    }
+  },
+  renderer
+})
+
+/** Code fences as plain text, at once. */
+const plain = new Marked({ gfm: true, breaks: true, async: false, renderer })
 
 /**
  * Render agent/model markdown to HTML with syntax-highlighted code fences.
@@ -152,7 +156,17 @@ function configure() {
  * image URLs are restricted to a scheme allow-list.
  */
 export async function renderMarkdown(source: string): Promise<string> {
-  configure()
   if (!source) return ''
-  return (await marked.parse(source)) as string
+  return (await highlighted.parse(source)) as string
+}
+
+/**
+ * The same, synchronously, with code fences left unhighlighted: what a view
+ * shows in the frame it mounts in, while `renderMarkdown` highlights. A fence
+ * is the same lines either way, so the swap changes colours and not height.
+ * Held to the same rules as `renderMarkdown`, by the same renderer.
+ */
+export function renderMarkdownNow(source: string): string {
+  if (!source) return ''
+  return plain.parse(source) as string
 }

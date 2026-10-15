@@ -31,10 +31,9 @@ const sessionId = computed(() => isDraft.value ? null : agentId.value)
 
 const { session: synced } = useAgentSession(sessionId)
 const { all: allEnvironments, environments, isReady: environmentsReady } = useDevEnvironments()
-const { events } = useAgentEvents(sessionId)
+const { events, complete, loadingEarlier, loadEarlier } = useAgentEvents(sessionId)
 const { permissions, pending } = usePermissions(agentId)
 const { queued } = useAgentInbox(sessionId)
-const condensed = useCondensedTranscript()
 
 /**
  * The session is read the same way everything else on this page is: off the
@@ -354,7 +353,6 @@ const menuItems = computed(() => [
           <TargetSchedules v-if="session" :agent-session-id="session.id" :assistant-id="handedOff ? null : assistant?.id" />
         </template>
         <template #right>
-          <USwitch v-model="condensed" size="xs" label="Condensed" :ui="{ label: 'text-xs text-muted' }" />
           <span class="text-xs text-dimmed">{{ relativeTime(session?.lastActivityAt) }}</span>
         </template>
       </UDashboardToolbar>
@@ -416,7 +414,9 @@ const menuItems = computed(() => [
           :session="session"
           :events="shownEvents"
           :permissions="permissions"
-          :condensed="condensed"
+          :complete="complete"
+          :loading-earlier="loadingEarlier"
+          @load-earlier="loadEarlier"
         />
 
         <div v-if="pending.length && !blocked" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
