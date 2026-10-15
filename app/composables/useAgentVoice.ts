@@ -112,6 +112,9 @@ export function useAgentVoice(
   const errorMessage = ref<string | null>(null)
   /** The device's own recogniser is the transcriber (Settings), and this browser has one. */
   const dictation = ref(false)
+  // A new build of Domo waits: a reload would cut off what is being said, either way.
+  holdReload(() => recording.value || holding.value || transcribing.value || awaitingReply.value
+    || synthesizing.value || speaking.value)
   const inputs = useAudioInputs()
 
   let socket: WebSocket | null = null
