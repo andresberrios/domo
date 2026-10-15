@@ -26,8 +26,17 @@ import { arch, platform } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
-/** Resolved from the server's working directory at run time (`adapterEntry()`, `codexBinary()`). */
-const RUNTIME_PACKAGES = ['@agentclientprotocol/claude-agent-acp', '@agentclientprotocol/codex-acp', '@openai/codex', '@opencode/cli']
+/**
+ * What the server resolves from its working directory at run time: every
+ * adapter's package (`ADAPTERS` in adapter-process.ts, read from the source so
+ * a new adapter is never left out) and Codex's CLI (`codexBinary()`).
+ */
+function runtimePackages() {
+  const source = readFileSync(join(ROOT, 'server', 'lib', 'acp', 'adapter-process.ts'), 'utf8')
+  const adapters = [...source.matchAll(/packageName: '([^']+)'/g)].map(match => match[1])
+  if (adapters.length < 4) throw new Error('could not read the adapters\' packages from adapter-process.ts')
+  return [...new Set([...adapters, '@openai/codex'])]
+}
 /** How many releases the manifest remembers, for the changelog of an install that is several behind. */
 const HISTORY = 100
 
@@ -80,7 +89,7 @@ function build(args) {
   // Hoisted: plain directories, which is what a tarball and `createRequire`
   // from the working directory both want.
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-  const dependencies = Object.fromEntries(RUNTIME_PACKAGES.map(name => [
+  const dependencies = Object.fromEntries(runtimePackages().map(name => [
     name, JSON.parse(readFileSync(join(ROOT, 'node_modules', name, 'package.json'), 'utf8')).version
   ]))
   writeFileSync(join(stage, 'package.json'), `${JSON.stringify({ name: 'domo', version: v, private: true, type: 'module', license: pkg.license, dependencies }, null, 2)}\n`)

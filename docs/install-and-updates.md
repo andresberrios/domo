@@ -38,14 +38,14 @@ commit agrees on it. Each release holds:
 
 A release is built on the platform it is for. Nitro's tracing carries the
 adapters' JavaScript but not the platform binaries they resolve at run time
-(Claude Code's, Codex's, OpenCode's), and it traces sharp and the ONNX
-runtime for the machine it runs on. So the tarball's `node_modules` is a
-fresh `pnpm install --prod` of the four packages `adapterEntry()` and
-`codexBinary()` resolve, from the same lockfile, hoisted into plain
-directories; the server runs with the release as its cwd. OpenCode's
-postinstall copies its binary into `@opencode/cli/bin`, and the platform
-package it came from is dropped as a second copy. A tarball is about 450 MB,
-most of it the three agents' binaries.
+(Claude Code's, Codex's, OpenCode's, Copilot's), and it traces sharp and the
+ONNX runtime for the machine it runs on. So the tarball's `node_modules` is a
+fresh `pnpm install --prod` of what `adapterEntry()` and `codexBinary()`
+resolve (every package in `ADAPTERS`, read from the source, and Codex's CLI),
+from the same lockfile, hoisted into plain directories; the server runs with
+the release as its cwd. OpenCode's postinstall copies its binary into
+`@opencode/cli/bin`, and the platform package it came from is dropped as a
+second copy. A tarball is about 500 MB, most of it the agents' binaries.
 
 The manifest is cumulative: the publish job downloads the latest one and adds
 the new release on top. The release is a draft until every file is up, since
