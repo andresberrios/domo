@@ -1,8 +1,9 @@
 #!/bin/sh
 # Runs inside a Debian container with the host's Docker socket mounted:
-# installs Domo from the mounted branch checkout with --no-service, runs the
-# supervisor in the background, checks the app answers, runs update --check,
-# creates a project in a new folder, and prints the lines that matter.
+# installs Domo from the feed given as $1 (`node scripts/release.mjs serve` on
+# the host) with --no-service, runs the supervisor in the background, checks
+# the app answers, runs update --check, creates a project in a new folder,
+# and prints the lines that matter.
 #
 # The image has no git, so the installer installs Debian's.
 set -eu
@@ -28,15 +29,12 @@ export ELECTRIC_URL=http://host.docker.internal:30010
 export COMPOSE_PROJECT_NAME=domo-inst DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010
 export DOMO_PORT=3767 DOMO_HTTPS_ADDRESS=localhost:3766
 echo "== install"
-if ! DOMO_REPO=file:///repo.git DOMO_CHANNEL="$1" DOMO_INSTALL_ARGS="--no-service" sh /src/scripts/install.sh > /tmp/install.log 2>&1; then
+if ! DOMO_FEED="$1" DOMO_INSTALL_ARGS="--no-service" sh /install.sh > /tmp/install.log 2>&1; then
   echo "INSTALL FAILED"; tail -40 /tmp/install.log; exit 1
 fi
-grep -E "==>|\[domo\]|^domo:|Built\." /tmp/install.log
+grep -E "==>|\[domo\]|^domo:|Installed\." /tmp/install.log
 if [ -e "$DOMO_HOME/.env" ]; then echo "INSTALL WROTE A .env"; exit 1; fi
 echo "== no .env"
-# The mounted repository belongs to the host user, not root; without this
-# git refuses the fetch of `update --check`.
-git config --global --add safe.directory /repo.git
 echo "== git: $(command -v git || echo none)"
 echo "== status"
 "$DOMO_HOME/bin/domo" status
@@ -48,7 +46,6 @@ echo "health: $(curl -sk https://localhost:3766/api/health)"
 grep "\[domo\]" /tmp/run.log | tail -5
 echo "== update --check"
 "$DOMO_HOME/bin/domo" update --check
-echo "== shallow: $(git -C $DOMO_HOME/app rev-parse --is-shallow-repository)"
 echo "== new project"
 curl -sk https://localhost:3766/api/projects -H 'content-type: application/json' \
   -d '{"repoPath":"/tmp/projects/fresh","initialize":true}' | head -c 300; echo

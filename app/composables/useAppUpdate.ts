@@ -32,8 +32,8 @@ export function useAppUpdate() {
     const u = update.value
     if (!u) return null
     switch (u.state) {
-      case 'building': return 'Building an update…'
-      case 'ready': return 'Update built, restart pending'
+      case 'building': return 'Downloading an update…'
+      case 'ready': return 'Update ready, restart pending'
       case 'restarting': return 'Restarting…'
       case 'failed': return 'Update failed'
       default:

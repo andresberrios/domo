@@ -1,27 +1,29 @@
 #!/bin/sh
 # Install Domo into DOMO_HOME (default ~/.domo) as a login service.
 #
-#   curl -fsSL https://raw.githubusercontent.com/andresberrios/domo/release/scripts/install.sh | sh
+#   curl -fsSL https://github.com/andresberrios/domo-releases/releases/latest/download/install.sh | sh
 #
-# Needs Docker on the machine. Everything else — Node, pnpm, Caddy, uv and
-# Domo itself — is downloaded under DOMO_HOME, at the versions the checkout's
-# `.tool-versions` names. This script brings Node, which the launcher runs on;
-# the launcher brings the rest, here and on every update. The second half of
-# the install (building, the service, the certificate) is
-# `bin/domo.mjs install`.
+# Needs Docker on the machine. Everything else — Node, Caddy, uv and Domo
+# itself, already built — is downloaded under DOMO_HOME. This script reads the
+# newest release's manifest and brings the Node it names and the launcher
+# (`domo.mjs`), checked against the manifest; the launcher downloads the
+# release for this platform and does the rest (`domo install`). Run over an
+# existing install, including one that was built from git, it moves it onto
+# the newest release and keeps its data and settings.
 #
-# git comes from the machine. When it has none that runs, the script installs
-# it: on macOS the Xcode Command Line Tools (Apple's dialog, then it waits),
-# on Linux the distribution's package.
+# git comes from the machine: Domo's projects are git checkouts, and the coding
+# agents run it. When it has none that runs, the script installs it: on macOS
+# the Xcode Command Line Tools (Apple's dialog, then it waits), on Linux the
+# distribution's package.
 #
-# Overrides: DOMO_HOME, DOMO_REPO (a URL or a local path), DOMO_CHANNEL (the
-# branch to follow, default `release`), DOMO_INSTALL_ARGS (passed to
-# `domo install`, e.g. `--skip-trust --no-open`).
+# Overrides: DOMO_HOME, DOMO_FEED (where releases are published, e.g. a local
+# server for a test), DOMO_INSTALL_ARGS (passed to `domo install`, e.g.
+# `--skip-trust --no-open`).
 set -eu
 
 DOMO_HOME="${DOMO_HOME:-$HOME/.domo}"
-DOMO_REPO="${DOMO_REPO:-https://github.com/andresberrios/domo.git}"
-DOMO_CHANNEL="${DOMO_CHANNEL:-release}"
+DOMO_FEED="${DOMO_FEED:-https://github.com/andresberrios/domo-releases/releases}"
+DOMO_FEED="${DOMO_FEED%/}"
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf 'domo install: %s\n' "$*" >&2; exit 1; }
@@ -43,6 +45,8 @@ case "$cpu" in
   x86_64|amd64) node_cpu=x64 ;;
   *) die "$cpu is not supported" ;;
 esac
+# Releases are built against glibc; Alpine and other musl systems cannot run them.
+if [ "$os" = Linux ] && ls /lib/ld-musl-* >/dev/null 2>&1; then die "musl-based Linux (such as Alpine) is not supported"; fi
 
 mkdir -p "$DOMO_HOME/bin" "$DOMO_HOME/releases" "$DOMO_HOME/data" "$DOMO_HOME/logs"
 tmp=$(mktemp -d)
@@ -107,20 +111,17 @@ if ! machine_git; then
 fi
 git --version >/dev/null 2>&1 || die "git does not run: $(git --version 2>&1 | head -n 1)"
 
-if [ -d "$DOMO_HOME/app/.git" ]; then
-  say "Fetching Domo ($DOMO_CHANNEL)"
-  git -C "$DOMO_HOME/app" fetch --quiet origin "+refs/heads/$DOMO_CHANNEL:refs/remotes/origin/$DOMO_CHANNEL"
-else
-  say "Cloning Domo into $DOMO_HOME/app"
-  rm -rf "$DOMO_HOME/app"
-  # Shallow: the launcher fetches a window of history behind the channel's tip
-  # and counts against that; nobody needs the whole history to run Domo.
-  git clone --quiet --depth 1 --branch "$DOMO_CHANNEL" "$DOMO_REPO" "$DOMO_HOME/app"
-fi
-git -C "$DOMO_HOME/app" checkout --quiet --detach "origin/$DOMO_CHANNEL"
+say "Reading the newest release"
+curl -fsSL "$DOMO_FEED/latest/download/manifest.json" -o "$tmp/manifest.json" || die "could not read $DOMO_FEED/latest/download/manifest.json"
+# The manifest keeps these three on lines of their own for this.
+field() { sed -n "s/^  \"$1\": \"\([^\"]*\)\",\{0,1\}\$/\1/p" "$tmp/manifest.json" | head -n 1; }
+VERSION=$(field version)
+NODE_VERSION=$(field node)
+LAUNCHER_SHA=$(field launcherSha256)
+[ -n "$VERSION" ] && [ -n "$NODE_VERSION" ] && [ -n "$LAUNCHER_SHA" ] || die "the release manifest is not one this script can read"
 
-NODE_VERSION=$(awk '$1 == "nodejs" { print $2 }' "$DOMO_HOME/app/.tool-versions")
-[ -n "$NODE_VERSION" ] || die "no nodejs version in $DOMO_HOME/app/.tool-versions"
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d ' ' -f 1; }
+
 if [ ! -x "$DOMO_HOME/node/bin/node" ] || [ "$("$DOMO_HOME/node/bin/node" -v)" != "v$NODE_VERSION" ]; then
   say "Downloading Node $NODE_VERSION"
   curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-$node_os-$node_cpu.tar.gz" -o "$tmp/node.tgz"
@@ -131,7 +132,9 @@ if [ ! -x "$DOMO_HOME/node/bin/node" ] || [ "$("$DOMO_HOME/node/bin/node" -v)" !
   mv "$DOMO_HOME/node.new" "$DOMO_HOME/node"
 fi
 
-cp "$DOMO_HOME/app/bin/domo.mjs" "$DOMO_HOME/bin/domo.mjs"
+curl -fsSL "$DOMO_FEED/download/v$VERSION/domo.mjs" -o "$tmp/domo.mjs" || die "could not download the launcher of $VERSION"
+[ "$(sha256 "$tmp/domo.mjs")" = "$LAUNCHER_SHA" ] || die "the launcher of $VERSION does not match its checksum; not installing it"
+mv "$tmp/domo.mjs" "$DOMO_HOME/bin/domo.mjs"
 cat > "$DOMO_HOME/bin/domo" <<EOF
 #!/bin/sh
 export DOMO_HOME="$DOMO_HOME"
@@ -139,6 +142,6 @@ exec "$DOMO_HOME/node/bin/node" "$DOMO_HOME/bin/domo.mjs" "\$@"
 EOF
 chmod +x "$DOMO_HOME/bin/domo"
 
-say "Building Domo (a few minutes the first time)"
+say "Installing Domo $VERSION"
 # shellcheck disable=SC2086
-DOMO_HOME="$DOMO_HOME" exec "$DOMO_HOME/node/bin/node" "$DOMO_HOME/bin/domo.mjs" install --channel "$DOMO_CHANNEL" ${DOMO_INSTALL_ARGS:-}
+DOMO_HOME="$DOMO_HOME" DOMO_FEED="$DOMO_FEED" exec "$DOMO_HOME/node/bin/node" "$DOMO_HOME/bin/domo.mjs" install ${DOMO_INSTALL_ARGS:-}

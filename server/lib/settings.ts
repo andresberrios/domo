@@ -6,12 +6,10 @@ import { rememberSecretSettings } from './secret-settings'
 import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type SetupProgress, type SetupTarget, type UpdateSettings } from '../../shared/types'
 
 /**
- * Follow `release`, look every hour, and never switch by itself: an unasked
- * restart is the one thing an update must not do until the operator says so.
+ * Look every hour, and never switch by itself: an unasked restart is the one
+ * thing an update must not do until the operator says so.
  */
 export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
-  // The launcher passes the channel the installer was given.
-  channel: process.env.DOMO_CHANNEL || 'release',
   checkIntervalMinutes: 60,
   autoApply: false,
   minHoursBetweenApplies: 1
@@ -118,7 +116,6 @@ function storedUpdates(stored: Record<string, any>): UpdateSettings {
   const updates = { ...DEFAULT_UPDATE_SETTINGS }
   const current = stored.updates
   if (!current || typeof current !== 'object') return updates
-  if (typeof current.channel === 'string' && /^[\w./-]+$/.test(current.channel.trim())) updates.channel = current.channel.trim()
   if (Number.isFinite(current.checkIntervalMinutes)) updates.checkIntervalMinutes = Math.max(5, Math.round(current.checkIntervalMinutes))
   if (typeof current.autoApply === 'boolean') updates.autoApply = current.autoApply
   if (Number.isFinite(current.minHoursBetweenApplies)) updates.minHoursBetweenApplies = Math.max(0, current.minHoursBetweenApplies)

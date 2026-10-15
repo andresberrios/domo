@@ -24,7 +24,7 @@ async function fake(name: string, body: string) {
   await chmod(join(bin, name), 0o755)
 }
 
-/** A git that answers `--version` and fails everything else, so the install stops right after choosing it. */
+/** A git that answers `--version` and fails everything else. The fake curl fails, so the install stops at the manifest. */
 const FAKE_GIT = 'echo "git $*" >> "$CALLS"; [ "$1" = --version ] && echo "git version 0" && exit 0; exit 1'
 
 beforeEach(async () => {
@@ -52,7 +52,7 @@ afterEach(async () => {
 function install(os: 'Linux' | 'Darwin') {
   const result = spawnSync('/bin/sh', [SCRIPT], {
     encoding: 'utf8',
-    env: { PATH: bin, HOME: root, DOMO_HOME: join(root, 'home'), DOMO_REPO: 'file:///nowhere', FAKE_OS: os, CALLS: calls }
+    env: { PATH: bin, HOME: root, DOMO_HOME: join(root, 'home'), DOMO_FEED: 'http://feed.invalid', FAKE_OS: os, CALLS: calls }
   })
   return { status: result.status, output: result.stdout + result.stderr }
 }
@@ -67,7 +67,7 @@ describe('install.sh and git', () => {
     install('Linux')
 
     expect(await logged()).not.toMatch(/apt-get|xcode-select/)
-    expect(await logged()).toContain('git clone')
+    expect(await logged()).toContain('curl -fsSL http://feed.invalid/latest/download/manifest.json')
   })
 
   it('on Linux without git, installs the distribution\'s package with sudo', async () => {
@@ -78,7 +78,7 @@ describe('install.sh and git', () => {
 
     expect(output).toContain('Installing git: sudo apt-get install -y -qq git (sudo may ask for your password)')
     expect((await logged()).split('\n')).toEqual(expect.arrayContaining([
-      'sudo apt-get update -qq', 'sudo apt-get install -y -qq git', 'git --version', expect.stringMatching(/^git clone /)
+      'sudo apt-get update -qq', 'sudo apt-get install -y -qq git', 'git --version', expect.stringMatching(/^curl .*manifest\.json/)
     ]))
   })
 
@@ -109,9 +109,9 @@ ${then}`)
       expect(output).toContain('A macOS dialog is asking to install them')
       expect(output).toContain('Command Line Tools installed')
       expect((await logged()).split('\n')).toEqual(expect.arrayContaining([
-        'xcode-select --install', 'git --version', expect.stringMatching(/^git clone /)
+        'xcode-select --install', 'git --version', expect.stringMatching(/^curl .*manifest\.json/)
       ]))
-      expect(await logged()).not.toMatch(/curl|apt-get/)
+      expect(await logged()).not.toMatch(/apt-get/)
     }, 20_000)
 
     it('stops with what to do when the dialog goes away without installing', async () => {
@@ -121,7 +121,7 @@ ${then}`)
 
       expect(status).toBe(1)
       expect(output).toContain('the Command Line Tools were not installed (the dialog was cancelled or failed)')
-      expect(await logged()).not.toMatch(/git clone/)
+      expect(await logged()).not.toMatch(/curl/)
     }, 20_000)
 
     it('stops at once when xcode-select refuses to start the install', async () => {

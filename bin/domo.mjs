@@ -8,23 +8,34 @@
 // docs/install-and-updates.md for the layout. Development uses `pnpm dev`
 // and never this file.
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
-  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+  cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
   renameSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs'
 import { arch, homedir, platform, tmpdir, userInfo } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 
 const HOME = resolve(process.env.DOMO_HOME || join(homedir(), '.domo'))
+/**
+ * Where releases are published: a GitHub repository's releases, read without
+ * an account. `<feed>/latest/download/manifest.json` is the newest release,
+ * `<feed>/download/v<version>/<file>` its files. DOMO_FEED, kept in
+ * `state.json` by `domo install`, points a test install at a local server.
+ */
+const DEFAULT_FEED = 'https://github.com/andresberrios/domo-releases/releases'
 const P = {
+  // The git checkout installs before 2026-10 built from. Kept only while a
+  // release built from it is still `current` or `previous`.
   app: join(HOME, 'app'),
   releases: join(HOME, 'releases'),
   current: join(HOME, 'current'),
   previous: join(HOME, 'previous'),
   nodeDir: join(HOME, 'node'),
   node: join(HOME, 'node', 'bin', 'node'),
-  pnpm: join(HOME, 'bin', 'pnpm'),
   caddy: join(HOME, 'bin', 'caddy'),
   uv: join(HOME, 'bin', 'uv'),
   caddySocket: join(HOME, 'caddy.sock'),
@@ -153,9 +164,6 @@ function serverEnv() {
   env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54322/domo'
   env.ELECTRIC_URL ||= 'http://localhost:30002'
   env.NODE_ENV = 'production'
-  // What the installer was told to follow, which is the server's default
-  // channel until Settings says otherwise.
-  env.DOMO_CHANNEL ||= readState().channel
   // Nitro waits this long for open connections on SIGTERM. Electric's shape
   // long-polls are always open, so the default thirty seconds is a restart
   // that takes thirty seconds; the browser reconnects anyway.
@@ -163,16 +171,36 @@ function serverEnv() {
   return env
 }
 
-function currentRelease() {
+/** Where a release link points, or null. */
+function linked(link) {
   try {
-    return realpathSync(P.current)
+    return realpathSync(link)
   } catch {
     return null
   }
 }
 
+function currentRelease() {
+  return linked(P.current)
+}
+
 function releaseInfo(dir) {
   return dir ? readJson(join(dir, 'build.json'), { commit: basename(dir) }) : null
+}
+
+/** A release's name: its version, or the commit of one built from a git checkout. */
+function releaseId(info) {
+  return info ? (info.version ?? info.commit) : null
+}
+
+/** A commit is shown short; a version as it is. */
+function label(id) {
+  return /^[0-9a-f]{40}$/.test(id ?? '') ? id.slice(0, 7) : id
+}
+
+/** Built from the git checkout by an earlier launcher: a worktree, so it has a `.git` file. */
+function isCheckoutRelease(dir) {
+  return existsSync(join(dir, '.git'))
 }
 
 /** Point `link` at `target` atomically: a symlink that is never missing. */
@@ -190,14 +218,6 @@ function git(args, options = {}) {
     throw new Error(`git ${args.join(' ')}: ${(result.stderr || result.stdout || '').trim() || `exit ${result.status}`}`)
   }
   return result.stdout.trim()
-}
-
-function runStreaming(command, args, options) {
-  return new Promise((done, reject) => {
-    const child = spawn(command, args, { stdio: 'inherit', ...options })
-    child.on('error', reject)
-    child.on('exit', code => (code === 0 ? done() : reject(new Error(`${basename(command)} ${args.join(' ')} exited ${code}`))))
-  })
 }
 
 /**
@@ -222,7 +242,7 @@ async function healthy(env, timeoutMs, abort = () => false) {
 }
 
 // --------------------------------------------------------------------------
-// The bundled tools: Node, pnpm, Caddy and uv at the versions a checkout's
+// The bundled tools: Node, Caddy and uv at the versions a release's
 // `.tool-versions` names, so a release can move any of them.
 // --------------------------------------------------------------------------
 
@@ -241,10 +261,20 @@ function installedVersion(file, args, pattern) {
   return result.status === 0 ? (result.stdout.match(pattern)?.[1] ?? null) : null
 }
 
-async function download(url, file) {
+/** Stream `url` into `file`; with `sha256`, fail unless the bytes match it. */
+async function download(url, file, sha256 = null) {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`${url}: ${response.status}`)
-  writeFileSync(file, Buffer.from(await response.arrayBuffer()))
+  if (!response.ok || !response.body) throw new Error(`${url}: ${response.status}`)
+  const hash = createHash('sha256')
+  const tap = new Transform({
+    transform(chunk, _encoding, done) {
+      hash.update(chunk)
+      done(null, chunk)
+    }
+  })
+  await pipeline(Readable.fromWeb(response.body), tap, createWriteStream(file))
+  const actual = hash.digest('hex')
+  if (sha256 && actual !== sha256) throw new Error(`${basename(file)} does not match its checksum (expected ${sha256}, got ${actual}); not installing it`)
 }
 
 function untar(file, dir, ...args) {
@@ -278,17 +308,6 @@ async function ensureTools(dir) {
       if (existsSync(P.nodeDir)) renameSync(P.nodeDir, old)
       renameSync(fresh, P.nodeDir)
       rmSync(old, { recursive: true, force: true })
-    }
-    if (wanted.pnpm && installedVersion(P.pnpm, ['-v'], /(\S+)/) !== wanted.pnpm) {
-      log(`downloading pnpm ${wanted.pnpm}`)
-      const tgz = join(tmp, 'pnpm.tgz')
-      await download(`https://github.com/pnpm/pnpm/releases/download/v${wanted.pnpm}/pnpm-${os}-${cpu}.tar.gz`, tgz)
-      const into = join(tmp, 'pnpm')
-      mkdirSync(into)
-      untar(tgz, into)
-      const binary = readdirSync(into).find(name => name.startsWith('pnpm'))
-      if (!binary) throw new Error('the pnpm archive holds no pnpm binary')
-      cpSync(join(into, binary), P.pnpm)
     }
     if (wanted.caddy && installedVersion(P.caddy, ['version'], /v?(\d+\.\d+\.\d+)/) !== wanted.caddy) {
       log(`downloading Caddy ${wanted.caddy}`)
@@ -379,7 +398,7 @@ async function run() {
     env = serverEnv()
     const release = currentRelease()
     const info = releaseInfo(release)
-    log(`starting ${basename(release)} (${info?.commit?.slice(0, 7) ?? '?'}, built ${info?.builtAt ?? '?'})`)
+    log(`starting ${label(releaseId(info)) ?? '?'} (built ${info?.builtAt ?? '?'})`)
     const candidate = restartRequested
     restartRequested = false
     const child = spawn(P.node, [join(release, '.output', 'server', 'index.mjs')], { env, stdio: 'inherit', cwd: release })
@@ -568,8 +587,8 @@ async function status() {
   const pid = supervisorPid()
   const ok = release && pid ? await healthy(env, 2500) : false
   console.log(`home       ${HOME}`)
-  console.log(`release    ${release ? `${basename(release)} (built ${info?.builtAt ?? '?'})` : 'none'}`)
-  console.log(`channel    ${readState().channel}`)
+  console.log(`release    ${release ? `${label(releaseId(info))} (built ${info?.builtAt ?? '?'})` : 'none'}`)
+  console.log(`feed       ${feed()}`)
   console.log(`supervisor ${pid ? `running (pid ${pid})` : 'not running'}`)
   console.log(`server     ${ok ? `answering at https://${env.DOMO_HTTPS_ADDRESS}` : 'not answering'}`)
   const failed = readJson(P.updateFailed)
@@ -587,7 +606,7 @@ function logs() {
 // --------------------------------------------------------------------------
 
 function readState() {
-  return { channel: 'release', ...readJson(P.state, {}) }
+  return readJson(P.state, {})
 }
 
 function writeState(patch) {
@@ -604,80 +623,93 @@ function takeUpdateLock() {
   return release
 }
 
-/**
- * The clone is shallow (`--depth 1` at install) and stays so: a plain fetch
- * brings only what is new between the installed commit and the channel's
- * tip, which is exactly the history the count needs. (`--depth` on the fetch
- * would be the wrong tool: it re-measures from the tip and, over some
- * transports, pulls the whole history.) The refspec is explicit because a
- * single-branch clone's default refspec names only the branch it was made
- * from, and the channel is a setting that can change.
- */
-function fetchChannel(channel) {
-  git(['fetch', '--quiet', 'origin', `+refs/heads/${channel}:refs/remotes/origin/${channel}`], { timeout: 120_000 })
-  return git(['rev-parse', `origin/${channel}`])
+function feed() {
+  return (process.env.DOMO_FEED || readDotenv().DOMO_FEED || readState().feed || DEFAULT_FEED).replace(/\/+$/, '')
 }
 
-function updateCheck(channel) {
-  const target = fetchChannel(channel)
-  const installed = releaseInfo(currentRelease())?.commit ?? git(['rev-parse', 'HEAD'])
-  if (installed === target) return { installed, target, behind: 0, commits: [] }
-  const countable = git(['merge-base', '--is-ancestor', installed, target], { lenient: true }) !== null
-  // Not an ancestor: the branch was rewritten, or the installed commit is
-  // older than the clone's history. "An update, count unknown", never a number.
-  if (!countable) return { installed, target, behind: null, commits: [] }
-  const behind = Number(git(['rev-list', '--count', `${installed}..${target}`]))
-  const commits = git(['log', '--format=%H%x1f%s%x1f%aI', `${installed}..${target}`])
-    .split('\n').filter(Boolean)
-    .map((line) => {
-      const [sha, subject, date] = line.split('\x1f')
-      return { sha, subject, date }
-    })
-  return { installed, target, behind, commits }
+function platformKey() {
+  return `${platform() === 'darwin' ? 'darwin' : 'linux'}-${arch() === 'arm64' ? 'arm64' : 'x64'}`
+}
+
+/** The newest release: its version, a build per platform, and the releases before it with their commits. */
+async function fetchManifest() {
+  const url = `${feed()}/latest/download/manifest.json`
+  const response = await fetch(url, { signal: AbortSignal.timeout(60_000) })
+  if (!response.ok) throw new Error(`${url}: ${response.status}`)
+  const manifest = await response.json()
+  if (manifest?.schema !== 1 || typeof manifest.version !== 'string') throw new Error(`${url} is not a Domo release manifest`)
+  return manifest
 }
 
 /**
- * Build `commit` into releases/<commit>: a git worktree of the checkout at
- * that commit, with its own `node_modules` and `.output`. The server runs
- * from the worktree, so the native adapter binaries (Claude Code, Codex,
- * OpenCode) resolve from a full install, which Nitro's tracing does not
- * carry, and `pnpm` hard-links every package from one store, so a second
- * release costs little disk. A worktree without `build.json` did not finish
- * and is built again.
+ * Where the install stands against the newest release. `behind` counts the
+ * commits of the releases in between, from the manifest's history; null is
+ * "an update, count unknown": the installed one is older than the history, or
+ * it was built from git, which always moves onto a release, even of its own
+ * commit.
  */
-async function buildRelease(commit, env) {
-  const dir = join(P.releases, commit)
+async function updateCheck() {
+  const manifest = await fetchManifest()
+  const release = currentRelease()
+  const info = releaseInfo(release)
+  const installed = releaseId(info)
+  const fromCheckout = Boolean(release && isCheckoutRelease(release))
+  const result = { installed, target: manifest.version, behind: 0, commits: [], manifest }
+  if (installed === manifest.version && !fromCheckout) return result
+  const history = Array.isArray(manifest.history) ? manifest.history : []
+  const at = history.findIndex(entry => entry.version === installed || (fromCheckout && entry.commit === info.commit))
+  const newer = at >= 0 ? history.slice(0, at) : []
+  result.commits = newer.flatMap(entry => entry.commits ?? [])
+  result.behind = result.commits.length || null
+  return result
+}
+
+/**
+ * Download the manifest's build for this platform into releases/<version>,
+ * check it against the manifest's checksum, and unpack it beside the running
+ * one. It is renamed into place whole, so a release directory with
+ * `build.json` is always complete.
+ */
+async function fetchRelease(manifest) {
+  const dir = join(P.releases, manifest.version)
   if (existsSync(join(dir, 'build.json'))) {
-    log(`release ${commit.slice(0, 7)} is already built`)
+    log(`release ${manifest.version} is already downloaded`)
     return dir
   }
+  const artifact = manifest.artifacts?.[platformKey()]
+  if (!artifact) throw new Error(`release ${manifest.version} has no build for ${platformKey()}`)
   mkdirSync(P.releases, { recursive: true })
-  removeRelease(dir)
-
-  log(`checking out ${commit.slice(0, 7)}`)
-  git(['worktree', 'add', '--quiet', '--detach', dir, commit])
-  await ensureTools(dir)
-  const buildEnv = { ...env, CI: '1', COREPACK_ENABLE_STRICT: '0' }
-  delete buildEnv.NODE_ENV
-  log('pnpm install --frozen-lockfile')
-  await runStreaming(P.pnpm, ['install', '--frozen-lockfile'], { cwd: dir, env: buildEnv })
-  log('pnpm build')
-  await runStreaming(P.pnpm, ['build'], { cwd: dir, env: buildEnv })
-
-  writeJson(join(dir, 'build.json'), {
-    commit,
-    builtAt: new Date().toISOString(),
-    nodeVersion: process.version,
-    subject: git(['log', '-1', '--format=%s', commit])
-  })
-  return dir
+  const tmp = mkdtempSync(join(P.releases, '.download-'))
+  try {
+    const file = join(tmp, artifact.file)
+    log(`downloading ${artifact.file} (${Math.round(artifact.size / 1e6)} MB)`)
+    await download(`${feed()}/download/v${manifest.version}/${artifact.file}`, file, artifact.sha256)
+    const into = join(tmp, 'release')
+    mkdirSync(into)
+    untar(file, into, '--strip-components=1')
+    if (!existsSync(join(into, 'build.json'))) throw new Error(`${artifact.file} holds no build.json`)
+    removeRelease(dir)
+    renameSync(into, dir)
+    return dir
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 }
 
 function removeRelease(dir) {
   if (!existsSync(dir)) return
-  git(['worktree', 'remove', '--force', dir], { lenient: true })
+  const worktree = isCheckoutRelease(dir) && existsSync(P.app)
+  if (worktree) git(['worktree', 'remove', '--force', dir], { lenient: true })
   rmSync(dir, { recursive: true, force: true })
-  git(['worktree', 'prune'], { lenient: true })
+  if (worktree) git(['worktree', 'prune'], { lenient: true })
+}
+
+/** The git checkout of an older install, once no release kept for rollback was built from it. */
+function forgetCheckout() {
+  if (!existsSync(P.app)) return
+  if (readdirSync(P.releases).some(name => isCheckoutRelease(join(P.releases, name)))) return
+  log(`removing ${P.app}: releases are downloaded now, not built from git`)
+  rmSync(P.app, { recursive: true, force: true })
 }
 
 /** Start the release on a spare port against no database: proves the bundle loads and serves. */
@@ -747,23 +779,19 @@ function serviceRestart() {
 
 async function update(args) {
   const checkOnly = args.includes('--check')
-  const channelFlag = args.indexOf('--channel')
-  const channel = channelFlag >= 0 ? args[channelFlag + 1] : readState().channel
-  if (!channel) fail('--channel needs a branch name')
-  if (!existsSync(join(P.app, '.git'))) fail(`${P.app} is not a git checkout; run the installer`)
-  if (channelFlag >= 0) writeState({ channel })
-
   const json = args.includes('--json')
-  const check = updateCheck(channel)
+  // `--channel` is still accepted from a server that passes it; there is one feed.
+  const check = await updateCheck()
+  const { manifest, ...summary } = check
   if (checkOnly) {
-    if (json) console.log(JSON.stringify({ channel, ...check }))
-    else if (check.behind === 0) console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
-    else if (check.behind === null) console.log(`${channel} has moved (${check.installed.slice(0, 7)} -> ${check.target.slice(0, 7)}); the commits between cannot be counted`)
-    else console.log(`${check.behind} commit${check.behind === 1 ? '' : 's'} behind ${channel}:\n  ${check.commits.map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n  ')}`)
+    if (json) console.log(JSON.stringify({ channel: 'release', ...summary }))
+    else if (check.behind === 0) console.log(`up to date (${label(check.installed)})`)
+    else if (check.behind === null) console.log(`${check.target} is out (installed: ${label(check.installed) ?? 'nothing'})`)
+    else console.log(`${check.target} is out, ${check.behind} commit${check.behind === 1 ? '' : 's'} newer:\n  ${check.commits.map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n  ')}`)
     return
   }
   if (check.behind === 0 && !args.includes('--force') && currentRelease()) {
-    console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
+    console.log(`up to date (${label(check.installed)})`)
     return
   }
 
@@ -772,15 +800,23 @@ async function update(args) {
   const started = Date.now()
   try {
     rmSync(P.updateFailed, { force: true })
-    const dir = await buildRelease(check.target, env)
-    await smokeTest(dir, env)
+    const dir = await fetchRelease(manifest)
     const old = currentRelease()
-    if (old && old !== dir) relink(P.previous, old)
+    try {
+      await ensureTools(dir)
+      await smokeTest(dir, env)
+    } catch (error) {
+      // Not kept: the next attempt downloads it again rather than trust it.
+      if (![old, linked(P.previous)].includes(realpathSync(dir))) removeRelease(dir)
+      throw error
+    }
+    if (old && old !== realpathSync(dir)) relink(P.previous, old)
     relink(P.current, dir)
-    writeState({ channel, lastAppliedAt: new Date().toISOString() })
+    writeState({ lastAppliedAt: new Date().toISOString() })
     pruneReleases([dir, old].filter(Boolean))
+    forgetCheckout()
     const launcherChanged = refreshLauncher(dir)
-    log(`current is now ${check.target.slice(0, 7)} (${Math.round((Date.now() - started) / 1000)}s)`)
+    log(`current is now ${manifest.version} (${Math.round((Date.now() - started) / 1000)}s)`)
     if (!args.includes('--no-restart')) {
       if (!supervisorPid()) log('the service is not running; start it with `domo start`')
       // The supervisor runs the launcher it started with, so a new one needs
@@ -798,19 +834,18 @@ async function update(args) {
 // --------------------------------------------------------------------------
 
 async function install(args) {
-  const channel = (args.indexOf('--channel') >= 0 ? args[args.indexOf('--channel') + 1] : null) || readState().channel
-  writeState({ channel })
-  if (!existsSync(join(P.app, '.git'))) fail(`there is no checkout at ${P.app}; run scripts/install.sh`)
+  // The service starts without the installer's environment, so a feed it was given is kept.
+  if (process.env.DOMO_FEED) writeState({ feed: process.env.DOMO_FEED })
   mkdirSync(P.bin, { recursive: true })
-  // The installer brought Node, which this runs on; the rest come here, as they do on every update.
-  await ensureTools(P.app)
   mkdirSync(P.data, { recursive: true })
   mkdirSync(P.logs, { recursive: true })
   if (!existsSync(P.launcher)) cpSync(fileURLToPath(import.meta.url), P.launcher)
 
-  await update(['--no-restart', '--force', ...(channel ? ['--channel', channel] : [])])
+  // The installer brought Node, which this runs on; the update brings the
+  // release and the tools its `.tool-versions` names, as every update does.
+  await update(['--no-restart', '--force'])
   if (args.includes('--no-service')) {
-    console.log(`\n  Built. Start Domo with \`${P.bin}/domo run\` (no login service was installed).\n`)
+    console.log(`\n  Installed. Start Domo with \`${P.bin}/domo run\` (no login service was installed).\n`)
     return
   }
 
@@ -848,8 +883,8 @@ const HELP = `domo <command>
   status              what is installed and whether it answers
   trust               make the browser accept the local certificate (asks for your password)
   logs                follow the log
-  update [--check] [--json] [--channel <branch>] [--force] [--no-restart]
-                      fetch, build and switch to the newest commit of the channel
+  update [--check] [--json] [--force] [--no-restart]
+                      download the newest release and switch to it
   install [--no-service] [--skip-trust] [--no-open]
                       finish an installation (used by scripts/install.sh)
   uninstall           remove the login service (keeps ${HOME})

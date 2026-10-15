@@ -44,30 +44,29 @@ With Domo you can:
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/andresberrios/domo/release/scripts/install.sh | sh
+curl -fsSL https://github.com/andresberrios/domo-releases/releases/latest/download/install.sh | sh
 ```
 
-This puts Domo under `~/.domo` with its own Node, pnpm and Caddy, builds it,
-starts it as a login service (launchd on macOS, systemd on Linux) and opens
+This puts Domo under `~/.domo` with its own Node and Caddy, downloads the
+newest release for your machine (macOS or Linux, arm64 or x64), starts it as a login service (launchd on macOS, systemd on Linux) and opens
 `https://localhost:3666`, where a setup guide checks each coding agent and
 voice and tells you what is missing. Then:
 
 ```bash
 ~/.domo/bin/domo status    # what is installed, and is it answering
-~/.domo/bin/domo update    # build and switch to the newest commit; --check only looks
+~/.domo/bin/domo update    # download and switch to the newest release; --check only looks
 ~/.domo/bin/domo restart
 ~/.domo/bin/domo trust     # if the browser warns about the certificate; asks for your password
 ~/.domo/bin/domo logs
 ~/.domo/bin/domo uninstall # stop starting at login; keeps ~/.domo
 ```
 
-`DOMO_HOME` moves the directory and `DOMO_CHANNEL` picks the branch to follow
-(default `release`); other server overrides are in
+`DOMO_HOME` moves the directory; other server overrides are in
 [docs/configuration.md](docs/configuration.md).
 
-Domo looks at its branch every hour and says in the sidebar how many commits
-behind it is. **Settings → Updates** shows what is new, updates on request,
-and can update by itself: it builds the new version beside the running one
+Domo looks for a new release every hour and says in the sidebar how many
+commits behind it is. **Settings → Updates** shows what is new, updates on
+request, and can update by itself: it downloads the new version beside the running one
 and restarts onto it when no agent is working, no environment is being created
 and no schedule is about to fire, no more often than you choose. A version that does
 not start is rolled back.
@@ -317,4 +316,4 @@ See `AGENTS.md` and `test/AGENTS.md`.
 
 ## License
 
-See [LICENSE.md](./LICENSE.md).
+Proprietary; see [LICENSE.md](./LICENSE.md).

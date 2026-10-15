@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { releaseLabel } from '~~/shared/releases'
 import type { AppSettings } from '~~/shared/types'
 
 const toast = useToast()
 const { data: settings, refresh } = await useSettingsForm()
 const { update, headline } = useAppUpdate()
 
-const form = reactive<AppSettings['updates']>({ channel: 'release', checkIntervalMinutes: 60, autoApply: false, minHoursBetweenApplies: 1 })
+const form = reactive<AppSettings['updates']>({ checkIntervalMinutes: 60, autoApply: false, minHoursBetweenApplies: 1 })
 watchEffect(() => {
   if (settings.value) Object.assign(form, settings.value.updates)
 })
@@ -66,7 +67,7 @@ const statusColor = computed(() => {
 <template>
   <SettingsShell
     title="Updates"
-    description="Domo follows a branch of its own repository. A new version is built beside the running one and switched to only once it starts; one that does not start is rolled back."
+    description="A new version is downloaded beside the running one and switched to only once it starts; one that does not start is rolled back."
     :saving="saving"
     :save="save"
   >
@@ -76,7 +77,7 @@ const statusColor = computed(() => {
       variant="subtle"
       icon="i-lucide-code"
       title="This is a development server"
-      description="It runs from a checkout with pnpm dev and is updated with git. The installed kind (see Install in the README) is what checks for and applies new versions."
+      description="It runs from a checkout with pnpm dev and is updated with git. An installed Domo (see Install in the README) is what checks for and applies new versions."
     />
 
     <template v-else>
@@ -85,7 +86,7 @@ const statusColor = computed(() => {
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="flex items-center gap-2">
               <UBadge :color="statusColor" variant="subtle" :label="headline ?? 'Up to date'" />
-              <span class="text-sm text-muted">on <code>{{ update.channel }}</code>, version <code>{{ update.installedCommit.slice(0, 7) }}</code> built {{ when(update.installedAt) }}</span>
+              <span class="text-sm text-muted">version <code>{{ releaseLabel(update.installedCommit) }}</code> built {{ when(update.installedAt) }}</span>
             </div>
             <div class="flex items-center gap-2">
               <UButton
@@ -118,11 +119,11 @@ const statusColor = computed(() => {
 
         <div class="flex flex-col gap-3 text-sm">
           <p v-if="update.state === 'ready'" class="text-muted">
-            The new version is built. Domo restarts onto it as soon as nothing is running<template v-if="update.blockers.length">; right now {{ update.blockers.join(', ') }}</template>.
+            The new version is ready. Domo restarts onto it as soon as nothing is running<template v-if="update.blockers.length">; right now {{ update.blockers.join(', ') }}</template>.
             Restart now interrupts whatever is running.
           </p>
           <p v-else-if="update.state === 'building'" class="text-muted">
-            Building the new version. Agents keep working; the restart comes after, at a quiet moment.
+            Downloading the new version. Agents keep working; the restart comes after, at a quiet moment.
           </p>
           <UAlert
             v-if="update.lastError"
@@ -144,21 +145,18 @@ const statusColor = computed(() => {
             </ul>
           </div>
           <p v-else-if="update.behind === null && update.checkedAt" class="text-muted">
-            Too far behind to list the changes.
+            The changes in it cannot be listed.
           </p>
         </div>
       </UCard>
 
-      <UFormField label="Channel" hint="The branch to follow" description="release is what everyone gets. main is every merge, as soon as it lands.">
-        <UInput v-model="form.channel" class="w-full max-w-xs" />
-      </UFormField>
       <UFormField label="Look for updates">
         <USelect v-model="form.checkIntervalMinutes" :items="intervals" class="w-full max-w-xs" />
       </UFormField>
       <USwitch
         v-model="form.autoApply"
         label="Update automatically"
-        description="Build each new version when it appears and restart onto it when no agent is working, no environment is being built, and no schedule is about to fire. Off, Domo only tells you."
+        description="Download each new version when it appears and restart onto it when no agent is working, no environment is being built, and no schedule is about to fire. Off, Domo only tells you."
       />
       <UFormField label="Automatic updates" :description="form.autoApply ? undefined : 'Applies when the switch above is on.'">
         <USelect v-model="form.minHoursBetweenApplies" :items="gaps" :disabled="!form.autoApply" class="w-full max-w-xs" />

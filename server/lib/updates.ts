@@ -1,15 +1,16 @@
 import { spawn } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { bus } from './bus'
 import { getAppUpdate, restartBlockers, saveAppUpdate } from './repo'
 import { getSettings } from './settings'
+import { releaseLabel } from '../../shared/releases'
 import type { AppUpdate, AppUpdateCommit, UpdateSettings } from '../../shared/types'
 
 /**
  * Updates of an installed Domo. See `docs/install-and-updates.md`.
  *
- * The launcher (`bin/domo.mjs`) owns git and the builds; this module owns the
+ * The launcher (`bin/domo.mjs`) owns the downloads; this module owns the
  * timing, because the server is the only process that knows whether a
  * restart would interrupt an agent. It asks the launcher for a check, starts
  * it building, and once `current` points at the new release it stops this
@@ -22,18 +23,32 @@ import type { AppUpdate, AppUpdateCommit, UpdateSettings } from '../../shared/ty
 /** What the server knows about the install it is running from. */
 export interface InstallInfo {
   home: string
-  /** The release this process runs from (`build.json` in its cwd). */
+  /**
+   * The release this process runs from (`build.json` in its cwd): its
+   * version, or its commit when an older launcher built it from git.
+   */
   commit: string
   builtAt: string
+}
+
+interface BuildStamp {
+  version?: string
+  commit?: string
+  builtAt?: string
+}
+
+function releaseOf(build: BuildStamp): string | null {
+  return build.version ?? build.commit ?? null
 }
 
 export function installInfo(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): InstallInfo | null {
   const home = env.DOMO_HOME
   if (!home) return null
   try {
-    const build = JSON.parse(readFileSync(join(cwd, 'build.json'), 'utf8')) as { commit?: string, builtAt?: string }
-    if (!build.commit) return null
-    return { home, commit: build.commit, builtAt: build.builtAt ?? new Date(0).toISOString() }
+    const build = JSON.parse(readFileSync(join(cwd, 'build.json'), 'utf8')) as BuildStamp
+    const release = releaseOf(build)
+    if (!release) return null
+    return { home, commit: release, builtAt: build.builtAt ?? new Date(0).toISOString() }
   } catch {
     return null
   }
@@ -119,12 +134,12 @@ export class Updater {
   private async reconcile(): Promise<void> {
     const info = this.info!
     const existing = await getAppUpdate()
-    const settings = (await getSettings()).updates
     const fresh = !existing || existing.installedCommit !== info.commit
     const row: Omit<AppUpdate, 'updatedAt'> = {
       installedCommit: info.commit,
       installedAt: info.builtAt,
-      channel: settings.channel,
+      // One feed now; the column is from when an install followed a git branch.
+      channel: 'release',
       targetCommit: fresh ? null : existing.targetCommit,
       behind: fresh ? null : existing.behind,
       commits: fresh ? [] : existing.commits,
@@ -141,7 +156,7 @@ export class Updater {
     const failed = this.readJson<{ release?: string, rolledBackTo?: string, reason?: string, at?: string }>(join(info.home, 'update-failed.json'))
     if (failed?.rolledBackTo === info.commit && failed.release) {
       row.state = 'failed'
-      row.lastError = `Version ${failed.release.slice(0, 7)} ${failed.reason ?? 'did not start'}; Domo went back to this one.`
+      row.lastError = `Version ${releaseLabel(failed.release)} ${failed.reason ?? 'did not start'}; Domo went back to this one.`
       this.failedTarget = failed.release
     }
     const lock = this.readJson<{ pid?: number }>(join(info.home, 'update.lock'))
@@ -166,7 +181,7 @@ export class Updater {
     })
   }
 
-  /** Fetch the channel and record where the install stands. */
+  /** Read the newest release and record where the install stands. */
   check(): Promise<CheckResult | null> {
     if (this.checking) return this.checking
     this.checking = this.doCheck().finally(() => {
@@ -182,9 +197,9 @@ export class Updater {
     if (row.state === 'building' || row.state === 'restarting') return null
     const settings = (await getSettings()).updates
     // Only an idle row shows "checking": a failed or ready one has more to say.
-    await this.save({ state: row.state === 'idle' ? 'checking' : row.state, channel: settings.channel })
+    await this.save({ state: row.state === 'idle' ? 'checking' : row.state })
     try {
-      const output = await this.launcher(['update', '--check', '--json', '--channel', settings.channel])
+      const output = await this.launcher(['update', '--check', '--json'])
       const line = output.trim().split('\n').filter(l => l.startsWith('{')).pop()
       if (!line) throw new Error(output.trim().split('\n').pop() || 'the check printed nothing')
       const check = JSON.parse(line) as CheckResult
@@ -209,7 +224,7 @@ export class Updater {
     }
   }
 
-  /** Build the channel's tip beside this release and switch `current` to it, then restart when quiet. */
+  /** Download the newest release beside this one and switch `current` to it, then restart when quiet. */
   apply(): Promise<void> {
     if (this.building) return this.building
     this.building = this.doApply().finally(() => {
@@ -222,12 +237,11 @@ export class Updater {
     const info = this.info
     if (!info || !this.row) return
     if (this.row.state === 'building' || this.row.state === 'ready' || this.row.state === 'restarting') return
-    const settings = (await getSettings()).updates
     await this.save({ state: 'building', lastError: null, blockers: [] })
     try {
-      await this.launcher(['update', '--no-restart', '--channel', settings.channel], true)
+      await this.launcher(['update', '--no-restart'], true)
       if (this.currentCommit() === info.commit) {
-        // Nothing to switch to: the channel had nothing new after all.
+        // Nothing to switch to: there was nothing new after all.
         await this.save({ state: 'idle', behind: 0, commits: [] })
         return
       }
@@ -312,12 +326,15 @@ export class Updater {
     })
   }
 
+  /** The release `current` points at, which differs from this process's once an update is switched to. */
   private currentCommit(): string | null {
+    const dir = join(this.info!.home, 'current')
     try {
-      return basename(realpathSync(join(this.info!.home, 'current')))
+      realpathSync(dir)
     } catch {
       return null
     }
+    return releaseOf(this.readJson<BuildStamp>(join(dir, 'build.json')) ?? {})
   }
 
   private async save(patch: Partial<Omit<AppUpdate, 'updatedAt'>>): Promise<void> {

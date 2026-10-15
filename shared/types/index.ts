@@ -809,11 +809,9 @@ export interface SessionTitleSettings {
  * `pnpm dev`, which has no release to update.
  */
 export interface UpdateSettings {
-  /** The branch the install follows. */
-  channel: string
   /** How often to look, in minutes. */
   checkIntervalMinutes: number
-  /** Build and switch to a new version by itself, when no agent is working. */
+  /** Download and switch to a new version by itself, when no agent is working. */
   autoApply: boolean
   /** The least time between two automatic switches, in hours. */
   minHoursBetweenApplies: number
