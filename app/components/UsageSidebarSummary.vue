@@ -51,30 +51,19 @@ watch(open, (value) => {
 
 <template>
   <UPopover v-if="entries.length" v-model:open="open" :content="{ side: 'top', align: 'start' }">
-    <UButton color="neutral" variant="ghost" size="xs" block class="justify-start gap-1">
-      <UIcon name="i-lucide-gauge" class="size-3.5 shrink-0 text-dimmed" />
+    <UButton color="neutral" variant="ghost" size="xs" block class="justify-start">
       <!--
-        A grid rather than a wrapping flex row: Claude and Codex name labels
-        differ in width, and in a flex row that shifts each provider's gauges
-        by however many pixels its own name happens to be. A CSS grid sizes
-        every column to the widest cell it contains across *both* rows, so the
-        5-hour and weekly gauges line up under each other regardless of which
-        name is longer. Providers that haven't reported one of the two windows
-        yet still get an empty cell for it, or a missing gauge would shift
-        every column after it out of alignment for that row only.
-
-        Spacing is per-column margin rather than a uniform grid `gap`: the name
-        should read as attached to its own gauges, and the two gauges as two
-        separate things, so the gap after the name is smaller than the gap
-        between the 5-hour and weekly gauges — a single `gap-x-*` cannot vary
-        by column pair, but a margin on every cell of a given column can, and
-        stays consistent between the two rows the same way the grid tracks do.
+        A grid, so each column is as wide as its widest cell across every
+        provider's row: the names share one left-aligned column, and the two
+        gauge columns split what is left equally, with a gap between them. A
+        provider missing one window still gets an empty cell for it, or every
+        cell after it would shift a column.
       -->
-      <span class="grid min-w-0 flex-1 grid-cols-[auto_auto_auto] items-center gap-y-0.5">
+      <span class="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-3 gap-y-0.5 text-start">
         <template v-for="entry in entries" :key="entry.id">
-          <span class="mr-0.5 text-[11px] text-dimmed">{{ entry.name }}</span>
-          <UsageLimitGauge v-if="entry.fiveHour" class="mr-6" icon="i-lucide-timer" label="5-hour limit" :limit="entry.fiveHour" />
-          <span v-else class="mr-6" />
+          <span class="text-[11px] text-dimmed">{{ entry.name }}</span>
+          <UsageLimitGauge v-if="entry.fiveHour" icon="i-lucide-timer" label="5-hour limit" :limit="entry.fiveHour" />
+          <span v-else />
           <UsageLimitGauge v-if="entry.weekly" icon="i-lucide-calendar-days" label="Weekly limit" :limit="entry.weekly" />
           <span v-else />
         </template>

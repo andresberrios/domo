@@ -12,9 +12,10 @@ import type { UsageLimit } from '~~/shared/types'
  * precision a bar alone can't give. `title` on the wrapper is what still
  * names the window for anyone not reading it as a shape.
  *
- * The bar itself grows to fill whatever width its grid cell gives it (see
- * `UsageSidebarSummary`'s `1fr` gauge columns) rather than sitting at a fixed
- * few pixels with empty sidebar width around it.
+ * The bar fills whatever width its grid cell gives it (see
+ * `UsageSidebarSummary`'s `1fr` gauge columns), and the percentage takes a
+ * fixed width whatever its digits, so "4%" and "100%" leave bars of one length
+ * that line up from row to row.
  */
 const props = defineProps<{
   icon: string
@@ -40,6 +41,6 @@ const barWidth = computed(() => (
     <span class="h-1 min-w-3 flex-1 overflow-hidden rounded-full bg-elevated">
       <span class="block h-full rounded-full" :class="barClass" :style="{ width: `${barWidth}%` }" />
     </span>
-    <span class="shrink-0 text-[11px] tabular-nums" :class="textClass">{{ formatPercent(limit.usedPercent) }}</span>
+    <span class="w-[4ch] shrink-0 text-end text-[11px] tabular-nums" :class="textClass">{{ formatPercent(limit.usedPercent) }}</span>
   </span>
 </template>

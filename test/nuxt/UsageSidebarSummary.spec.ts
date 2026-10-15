@@ -113,4 +113,27 @@ describe('UsageSidebarSummary', () => {
 
     expect(calls).toHaveLength(1)
   })
+
+  it('gives every bar one length whatever its percentage, in columns after the names', async () => {
+    const component = await mountSuspended(Harness)
+
+    const gauges = component.findAll('[title^="5-hour limit"], [title^="Weekly limit"]')
+    expect(gauges).toHaveLength(2)
+    for (const gauge of gauges) {
+      // The percentage takes a fixed width, so the bar beside it does not
+      // grow or shrink with its digits; only the bar grows into the cell.
+      const [, bar, percent] = gauge.element.children
+      expect(percent!.className).toMatch(/\bw-\[4ch\]/)
+      expect(percent!.className).toMatch(/\bshrink-0\b/)
+      expect(bar!.className).toMatch(/\bflex-1\b/)
+    }
+
+    // One grid: the names, then two equal gauge columns with a gap between.
+    const grid = gauges[0]!.element.parentElement!
+    expect(grid.className).toContain('grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)]')
+    expect(grid.className).toMatch(/\bgap-x-\d/)
+    expect(grid.className).toContain('text-start')
+    expect(grid.children[0]!.textContent).toBe('Claude')
+  })
 })
+

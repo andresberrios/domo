@@ -77,7 +77,15 @@ mockNuxtImport('useDevEnvironments', () => () => ({ environments: computed(() =>
 /** A session of an assistant in the same environment: its journal's, not the tree's. */
 const assistantSession: AgentSession = { ...agent, id: 'ag_assistant', title: 'Inbox organizer', assistantId: 'as_1' }
 
-mockNuxtImport('useAgentSessions', () => () => ({ sessions: computed(() => [agent, assistantSession]), isReady: ref(true) }))
+/** A second session in `environment`, so it keeps its nested list; the merged row has tests of its own. */
+const sibling: AgentSession = { ...agent, id: 'ag_2', title: 'Login page', status: 'idle' }
+/** Sessions a test adds, to see an environment with one session as one row. */
+const extraSessions: AgentSession[] = []
+
+mockNuxtImport('useAgentSessions', () => () => ({
+  sessions: computed(() => [agent, sibling, assistantSession, ...extraSessions]),
+  isReady: ref(true)
+}))
 mockNuxtImport('usePermissions', () => () => ({
   permissions: computed(() => []),
   pending: computed(() => []),
@@ -111,6 +119,9 @@ registerEndpoint('/api/dev-environments/env_1/stop', { method: 'POST', handler: 
 registerEndpoint('/api/dev-environments/env_1/start', { method: 'POST', handler: record('/api/dev-environments/env_1/start', 'POST') })
 registerEndpoint('/api/agents/ag_1', { method: 'PATCH', handler: record('/api/agents/ag_1', 'PATCH') })
 registerEndpoint('/api/agents/ag_1/cancel', { method: 'POST', handler: record('/api/agents/ag_1/cancel', 'POST') })
+registerEndpoint('/api/agents/ag_solo', { method: 'PATCH', handler: record('/api/agents/ag_solo', 'PATCH') })
+registerEndpoint('/api/dev-environments/env_solo', { method: 'PATCH', handler: record('/api/dev-environments/env_solo', 'PATCH') })
+registerEndpoint('/api/dev-environments/env_solo/stop', { method: 'POST', handler: record('/api/dev-environments/env_solo/stop', 'POST') })
 
 const Harness = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(ProjectTree) })
@@ -148,6 +159,8 @@ async function choose(menuLabel: string, item: string) {
 
 beforeEach(() => {
   calls.length = 0
+  grouped.length = 0
+  extraSessions.length = 0
   localStorage.clear()
   document.body.innerHTML = ''
 })
@@ -387,7 +400,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     await choose('Actions for Domo', 'Retire')
     await vi.waitFor(() => expect(document.body.textContent).toContain('Retire Domo?'))
     expect(document.body.textContent).toContain('1 development environment')
-    expect(document.body.textContent).toContain('and 1 coding agent inside them')
+    expect(document.body.textContent).toContain('and 2 coding agents inside them')
 
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find(element => element.textContent?.includes('Retire project'))
@@ -396,6 +409,103 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
     await vi.waitFor(() => expect(calls).toContainEqual(
       expect.objectContaining({ method: 'DELETE', path: '/api/projects/p1' })
     ))
+
+    wrapper.unmount()
+  })
+})
+
+describe('ProjectTree: an environment with one session', { timeout: 30_000 }, () => {
+  const solo: DevEnvironment = { ...environment, id: 'env_solo', name: 'solo-env' }
+  const soloAgent: AgentSession = { ...agent, id: 'ag_solo', title: 'Fix badges', devEnvironmentId: 'env_solo' }
+
+  function showSolo() {
+    grouped.push(solo)
+    extraSessions.push(soloAgent)
+  }
+
+  it('is one row: the environment\'s icon links to it, the rest to the session', async () => {
+    showSolo()
+    const wrapper = await mountTree()
+
+    const environmentLink = document.body.querySelector<HTMLAnchorElement>('a[href="/environments/env_solo"]')!
+    const agentLink = document.body.querySelector<HTMLAnchorElement>('a[href="/agents/ag_solo"]')!
+    expect(environmentLink, 'the environment keeps a link').toBeTruthy()
+    // Its name is there for a screen reader and slides out on hover; the full name is the tooltip.
+    expect(environmentLink.textContent).toContain('solo-env')
+    expect(environmentLink.getAttribute('title')).toBe('solo-env')
+    expect(agentLink.textContent).toContain('Fix badges')
+
+    // Both links on the one row, environment first, and no nested list under it.
+    const row = environmentLink.parentElement!
+    expect(agentLink.parentElement).toBe(row)
+    expect(environmentLink.compareDocumentPosition(agentLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(row.closest('li')!.querySelector('ul')).toBeNull()
+    expect(buttonLabelled('Collapse solo-env')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('keeps the nested list for two sessions or none', async () => {
+    showSolo()
+    grouped.push({ ...environment, id: 'env_empty', name: 'empty-one' })
+    const wrapper = await mountTree()
+
+    // Two sessions: an environment row with its own chevron and list.
+    expect(buttonLabelled('Collapse feature-auth')).toBeTruthy()
+    expect(buttonLabelled('Actions for feature-auth')).toBeTruthy()
+    // None: the environment's own row, with nothing to open.
+    expect(buttonLabelled('Actions for empty-one')).toBeTruthy()
+    // One: only the merged row's menu.
+    expect(buttonLabelled('Actions for solo-env')).toBeUndefined()
+    expect(buttonLabelled('Actions for Fix badges')).toBeUndefined()
+    expect(buttonLabelled('Actions for Fix badges in solo-env')).toBeTruthy()
+
+    wrapper.unmount()
+  })
+
+  it('has one menu that acts on the session and on the environment', async () => {
+    showSolo()
+    const wrapper = await mountTree()
+
+    await choose('Actions for Fix badges in solo-env', 'Stop environment')
+    await vi.waitFor(() => expect(calls).toContainEqual(
+      expect.objectContaining({ method: 'POST', path: '/api/dev-environments/env_solo/stop' })
+    ))
+
+    await choose('Actions for Fix badges in solo-env', 'Archive')
+    await vi.waitFor(() => expect(calls).toContainEqual(
+      expect.objectContaining({ method: 'PATCH', path: '/api/agents/ag_solo', body: { archived: true } })
+    ))
+
+    const menu = await openMenu('Actions for Fix badges in solo-env')
+    const labels = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')].map(item => item.textContent?.trim())
+    expect(labels).toEqual(expect.arrayContaining([
+      'Rename session', 'Stop the turn', 'Archive',
+      'New session here', 'Stop environment', 'Open in VS Code', 'Rename environment', 'Retire environment'
+    ]))
+
+    wrapper.unmount()
+  })
+
+  it('renames the environment, not the session, from "Rename environment"', async () => {
+    showSolo()
+    const wrapper = await mountTree()
+
+    await choose('Actions for Fix badges in solo-env', 'Rename environment')
+    const input = await vi.waitFor(() => {
+      const found = document.body.querySelector<HTMLInputElement>('input[value="solo-env"]')
+      expect(found).toBeTruthy()
+      return found!
+    })
+    input.value = 'solo-renamed'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!
+    ;[...dialog.querySelectorAll<HTMLButtonElement>('button')].find(element => element.textContent?.trim() === 'Rename')!.click()
+
+    await vi.waitFor(() => expect(calls).toContainEqual(
+      expect.objectContaining({ method: 'PATCH', path: '/api/dev-environments/env_solo', body: { name: 'solo-renamed' } })
+    ))
+    expect(calls.some(call => call.path === '/api/agents/ag_solo')).toBe(false)
 
     wrapper.unmount()
   })

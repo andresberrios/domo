@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { environmentListRows } from '~~/shared/dev-environments'
-import type { Project } from '~~/shared/types'
+import type { AgentSession, Project } from '~~/shared/types'
 
 /**
  * The sidebar's management surface: projects → environments → agents.
@@ -77,8 +77,19 @@ function folderKey(projectId: string, path: string) {
   return `folder:${projectId}:${path}`
 }
 
-function agentsFor(environmentId: string) {
-  return agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId)
+const agentsByEnvironment = computed(() => {
+  const map = new Map<string, AgentSession[]>()
+  for (const agent of agentSessions.value) {
+    if (!agent.devEnvironmentId) continue
+    const list = map.get(agent.devEnvironmentId)
+    if (list) list.push(agent)
+    else map.set(agent.devEnvironmentId, [agent])
+  }
+  return map
+})
+
+function agentsFor(environmentId: string): AgentSession[] {
+  return agentsByEnvironment.value.get(environmentId) ?? []
 }
 
 // A local-directory agent has no dev environment, but its cwd may still sit
@@ -251,6 +262,16 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
                   {{ row.count }}
                 </span>
               </div>
+
+              <!-- One session in it: one row, not a list of one under the environment. -->
+              <SidebarEnvironmentAgentRow
+                v-else-if="agentsFor(row.environment.id).length === 1"
+                :environment="row.environment"
+                :agent="agentsFor(row.environment.id)[0]!"
+                :pending="pendingByAgent.get(agentsFor(row.environment.id)[0]!.id)"
+                :label="row.label"
+                @new-agent="openNewAgent({ environmentId: row.environment.id })"
+              />
 
               <template v-else>
                 <SidebarEnvironmentRow

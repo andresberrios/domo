@@ -7,50 +7,8 @@ import type { AgentSession } from '~~/shared/types'
  */
 const props = defineProps<{ agent: AgentSession, pending?: number }>()
 
-const toast = useToast()
-const renaming = ref(false)
-const busy = ref(false)
-
-async function patch(body: Record<string, unknown>, failure: string) {
-  busy.value = true
-  try {
-    await $fetch(`/api/agents/${props.agent.id}`, { method: 'PATCH', body })
-  } catch (error: any) {
-    toast.add({ title: failure, description: error?.data?.statusMessage ?? error?.message, color: 'error' })
-  } finally {
-    busy.value = false
-  }
-}
-
-async function rename(title: string) {
-  renaming.value = false
-  await patch({ title }, 'Could not rename the agent')
-}
-
-async function archive() {
-  // The row leaves the tree unless "Show archived" is on, and its
-  // transcript is kept either way.
-  await patch({ archived: !props.agent.archived }, props.agent.archived ? 'Could not unarchive the agent' : 'Could not archive the agent')
-}
-
-async function stop() {
-  busy.value = true
-  try {
-    await $fetch(`/api/agents/${props.agent.id}/cancel`, { method: 'POST' })
-  } catch (error: any) {
-    toast.add({ title: 'Could not stop the turn', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
-  } finally {
-    busy.value = false
-  }
-}
-
-const items = computed(() => [[
-  { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { renaming.value = true } },
-  { label: 'Stop the turn', icon: 'i-lucide-square', onSelect: () => stop() },
-  props.agent.archived
-    ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: () => archive() }
-    : { label: 'Archive', icon: 'i-lucide-archive', onSelect: () => archive() }
-]])
+const { busy, renaming, rename, items: actions } = useAgentRowActions(() => props.agent)
+const items = computed(() => [actions()])
 </script>
 
 <template>
