@@ -34,3 +34,8 @@ export const ROW_MENU_CLASS
  */
 export const ROW_BADGE_CLASS
   = 'group-hover:hidden group-focus-within:hidden pointer-coarse:hidden group-has-[[data-state=open]]:hidden'
+
+/** A tree row's depth (a project's own row is 0), for `.tree-indent` in main.css. */
+export function treeDepth(depth: number) {
+  return { '--depth': depth }
+}

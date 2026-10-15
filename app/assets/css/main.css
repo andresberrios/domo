@@ -185,3 +185,28 @@
 * {
   scrollbar-width: thin;
 }
+
+/* -------------------------------------------------------------------------
+ * The sidebar tree's levels
+ *
+ * A row at depth d (`treeDepth(d)`, a project's own row being 0) starts one
+ * step further in per level, and every row keeps a chevron's slot whether it
+ * has one or not, so the icons of one level sit in one column. Under each
+ * level above it, the row draws a guide down the middle of that ancestor's
+ * chevron (12px into a step), so a group's children hang off a line from
+ * the chevron that opens them. The row draws its own guides, so rows that
+ * are flat in the DOM (environments inside folders) get them too, and the
+ * guides of stacked rows join into one line.
+ * ------------------------------------------------------------------------- */
+.tree-indent {
+  --tree-step: 20px;
+  padding-inline-start: calc(var(--depth, 0) * var(--tree-step));
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0 11.5px,
+    var(--ui-border-accented) 11.5px 12.5px,
+    transparent 12.5px var(--tree-step)
+  );
+  background-repeat: no-repeat;
+  background-size: calc(var(--depth, 0) * var(--tree-step)) 100%;
+}

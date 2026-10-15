@@ -189,35 +189,42 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
           />
 
           <Transition name="disclose">
-            <MotionList v-show="isExpanded(project.id)" class="mt-0.5 flex flex-col gap-px ps-2">
+            <!--
+              No gaps between rows and no indent on the lists: each row is
+              indented by its depth (`tree-indent`) and draws its own guides,
+              which only join into lines when the rows touch.
+            -->
+            <MotionList v-show="isExpanded(project.id)" class="mt-0.5 flex flex-col">
               <!-- The project's own checkout, only once something runs there; its menu starts one. -->
               <li v-if="localAgentsFor(project).length" key="local">
-                <div :class="ROW_CLASS">
-                  <SidebarDisclosure
-                    :expanded="isExpanded(localKey(project.id))"
-                    :label="`the ${project.name} checkout`"
-                    @toggle="toggle(localKey(project.id))"
-                  />
-                  <span class="flex min-w-0 flex-1 items-center gap-2" :title="project.repoPath">
-                    <UIcon name="i-lucide-laptop" class="size-4 shrink-0 text-muted" />
-                    <span class="min-w-0 flex-1 truncate">Local checkout</span>
-                  </span>
-                  <span v-if="!isExpanded(localKey(project.id))" class="px-1 text-xs tabular-nums text-dimmed" :class="ROW_BADGE_CLASS">
-                    {{ localAgentsFor(project).length }}
-                  </span>
-                  <UButton
-                    icon="i-lucide-plus"
-                    color="neutral"
-                    variant="ghost"
-                    size="xs"
-                    :aria-label="`New session in the ${project.name} checkout`"
-                    :class="ROW_MENU_CLASS"
-                    @click="openNewAgent({ projectId: project.id })"
-                  />
+                <div class="tree-indent" :style="treeDepth(1)">
+                  <div :class="ROW_CLASS">
+                    <SidebarDisclosure
+                      :expanded="isExpanded(localKey(project.id))"
+                      :label="`the ${project.name} checkout`"
+                      @toggle="toggle(localKey(project.id))"
+                    />
+                    <span class="flex min-w-0 flex-1 items-center gap-2" :title="project.repoPath">
+                      <UIcon name="i-lucide-laptop" class="size-4 shrink-0 text-muted" />
+                      <span class="min-w-0 flex-1 truncate">Local checkout</span>
+                    </span>
+                    <span v-if="!isExpanded(localKey(project.id))" class="px-1 text-xs tabular-nums text-dimmed" :class="ROW_BADGE_CLASS">
+                      {{ localAgentsFor(project).length }}
+                    </span>
+                    <UButton
+                      icon="i-lucide-plus"
+                      color="neutral"
+                      variant="ghost"
+                      size="xs"
+                      :aria-label="`New session in the ${project.name} checkout`"
+                      :class="ROW_MENU_CLASS"
+                      @click="openNewAgent({ projectId: project.id })"
+                    />
+                  </div>
                 </div>
                 <Transition name="disclose">
-                  <MotionList v-show="isExpanded(localKey(project.id))" class="ms-3 flex flex-col gap-px border-s border-accented ps-3">
-                    <li v-for="agent in localAgentsFor(project)" :key="agent.id">
+                  <MotionList v-show="isExpanded(localKey(project.id))" class="flex flex-col">
+                    <li v-for="agent in localAgentsFor(project)" :key="agent.id" class="tree-indent" :style="treeDepth(2)">
                       <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
                     </li>
                   </MotionList>
@@ -227,56 +234,60 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
               <li
                 v-for="row in environmentRowsFor(project.id)"
                 :key="row.kind === 'folder' ? folderKey(project.id, row.path) : row.environment.id"
-                :style="{ paddingInlineStart: `${row.depth * 0.625}rem` }"
               >
-                <div v-if="row.kind === 'folder'" :class="ROW_CLASS" :title="row.path">
-                  <SidebarDisclosure
-                    :expanded="isExpanded(folderKey(project.id, row.path))"
-                    :label="row.path"
-                    @toggle="toggle(folderKey(project.id, row.path))"
-                  />
-                  <button
-                    type="button"
-                    class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-start text-muted"
-                    @click="toggle(folderKey(project.id, row.path))"
-                  >
-                    <UIcon
-                      :name="isExpanded(folderKey(project.id, row.path)) ? 'i-lucide-folder-open' : 'i-lucide-folder'"
-                      class="size-4 shrink-0"
+                <div v-if="row.kind === 'folder'" class="tree-indent" :style="treeDepth(1 + row.depth)">
+                  <div :class="ROW_CLASS" :title="row.path">
+                    <SidebarDisclosure
+                      :expanded="isExpanded(folderKey(project.id, row.path))"
+                      :label="row.path"
+                      @toggle="toggle(folderKey(project.id, row.path))"
                     />
-                    <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
-                  </button>
-                  <span v-if="!isExpanded(folderKey(project.id, row.path))" class="px-1 text-xs tabular-nums text-dimmed">
-                    {{ row.count }}
-                  </span>
+                    <button
+                      type="button"
+                      class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-start text-muted"
+                      @click="toggle(folderKey(project.id, row.path))"
+                    >
+                      <UIcon
+                        :name="isExpanded(folderKey(project.id, row.path)) ? 'i-lucide-folder-open' : 'i-lucide-folder'"
+                        class="size-4 shrink-0"
+                      />
+                      <span class="min-w-0 flex-1 truncate">{{ row.label }}</span>
+                    </button>
+                    <span v-if="!isExpanded(folderKey(project.id, row.path))" class="px-1 text-xs tabular-nums text-dimmed">
+                      {{ row.count }}
+                    </span>
+                  </div>
                 </div>
 
                 <!-- One session in it: one row, not a list of one under the environment. -->
-                <SidebarEnvironmentAgentRow
-                  v-else-if="agentsFor(row.environment.id).length === 1"
-                  :environment="row.environment"
-                  :agent="agentsFor(row.environment.id)[0]!"
-                  :pending="pendingByAgent.get(agentsFor(row.environment.id)[0]!.id)"
-                  :label="row.label"
-                  @new-agent="openNewAgent({ environmentId: row.environment.id })"
-                />
-
-                <template v-else>
-                  <SidebarEnvironmentRow
+                <div v-else-if="agentsFor(row.environment.id).length === 1" class="tree-indent" :style="treeDepth(1 + row.depth)">
+                  <SidebarEnvironmentAgentRow
                     :environment="row.environment"
+                    :agent="agentsFor(row.environment.id)[0]!"
+                    :pending="pendingByAgent.get(agentsFor(row.environment.id)[0]!.id)"
                     :label="row.label"
-                    :expanded="isExpanded(row.environment.id)"
-                    :agent-count="agentsFor(row.environment.id).length"
-                    @toggle="toggle(row.environment.id)"
                     @new-agent="openNewAgent({ environmentId: row.environment.id })"
                   />
+                </div>
+
+                <template v-else>
+                  <div class="tree-indent" :style="treeDepth(1 + row.depth)">
+                    <SidebarEnvironmentRow
+                      :environment="row.environment"
+                      :label="row.label"
+                      :expanded="isExpanded(row.environment.id)"
+                      :agent-count="agentsFor(row.environment.id).length"
+                      @toggle="toggle(row.environment.id)"
+                      @new-agent="openNewAgent({ environmentId: row.environment.id })"
+                    />
+                  </div>
                   <Transition name="disclose">
                     <MotionList
                       v-if="agentsFor(row.environment.id).length"
                       v-show="isExpanded(row.environment.id)"
-                      class="ms-3 flex flex-col gap-px border-s border-accented ps-3"
+                      class="flex flex-col"
                     >
-                      <li v-for="agent in agentsFor(row.environment.id)" :key="agent.id">
+                      <li v-for="agent in agentsFor(row.environment.id)" :key="agent.id" class="tree-indent" :style="treeDepth(2 + row.depth)">
                         <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
                       </li>
                     </MotionList>
@@ -284,7 +295,7 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
                 </template>
               </li>
 
-              <li v-if="!environmentsFor(project.id).length && !localAgentsFor(project).length" key="new-environment">
+              <li v-if="!environmentsFor(project.id).length && !localAgentsFor(project).length" key="new-environment" class="tree-indent" :style="treeDepth(1)">
                 <UButton
                   label="New environment"
                   icon="i-lucide-plus"
@@ -307,7 +318,7 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
       <h2 class="ps-2 pb-1 text-xs font-medium text-muted">
         Other directories
       </h2>
-      <MotionList class="flex flex-col gap-px rounded-lg bg-muted p-1 ring ring-default">
+      <MotionList class="flex flex-col rounded-lg bg-muted p-1 ring ring-default">
         <li v-for="agent in localAgents" :key="agent.id">
           <SidebarAgentRow :agent="agent" :pending="pendingByAgent.get(agent.id)" />
         </li>
