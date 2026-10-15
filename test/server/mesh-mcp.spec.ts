@@ -840,7 +840,7 @@ describe('projects and dev environments', () => {
     })
     expect(devEnvironments.beginUpgrade).toHaveBeenCalledWith(environment.id, expect.anything())
     await expect.poll(async () => (await listInboxMessages(caller.id)).map(message => message.content[0].text)).toEqual([
-      expect.stringMatching(/"env" \(env_\w+\) was upgraded and is running\. Coding-agent adapters: updated\. .*--force-recreate: db/)
+      expect.stringMatching(/"env" \(env_\w+\) was upgraded and is running\. Coding-agent adapters: updated to current \(codex 1\.0\.0 → 2\.0\.0\)\. .*--force-recreate: db/)
     ])
     expect(acp.stop).toHaveBeenCalledWith(inside.id)
     await expect(listAgentEvents(inside.id)).resolves.toMatchObject([

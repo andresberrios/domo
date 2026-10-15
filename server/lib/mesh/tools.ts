@@ -19,7 +19,7 @@ import {
 import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPort } from '../dev-environment-ports'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment, beginProjectEnvironmentUpgrade } from '../projects'
 import { cronJobState, normalizeCronJobInput } from '../cron/input'
-import { upgradeAdapterChange, upgradeNotes } from '../../../shared/dev-environments'
+import { describeAdapterUpgrade, upgradeNotes } from '../../../shared/dev-environments'
 import { notifyHuman, readAgentFile, writeAgentFile } from '../notifications'
 import { getSettings } from '../settings'
 import { voiceCatalog } from '../agent-voice/assistant-voice'
@@ -1786,7 +1786,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       upgraded.then(
         report => tellAgent(caller.id, [
           `Development environment "${environment.name}" (${environment.id}) was upgraded and is ${report.environment.status}. `
-          + `Coding-agent adapters: ${upgradeAdapterChange(report)}.`,
+          + `Coding-agent adapters: ${describeAdapterUpgrade(report)}.`,
           ...upgradeNotes(report)
         ].join(' ')),
         error => tellAgent(
