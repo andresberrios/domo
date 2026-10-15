@@ -85,6 +85,12 @@ them on first use.
 - **Gemini's voice wanders within a long answer** by about as much as a
   change of model, on a speaker verification model, whatever the request
   size, the model or a seed. Nothing here fixes it.
+- **Every speaker gets plain sentences, never Markdown**
+  (`plainForSpeech`, on `marked`'s tokens): each list item, heading and
+  paragraph ends as a sentence, code blocks and tables are named, bare URLs
+  are their site. Measured October 2026: without the full stops, Kokoro made
+  no pause between list items and read them as one sentence; raw Markdown,
+  it says "hash" and "asterisk". Paths and ids are still read as written.
 - **Speech starts at the first clause**: an answer's first words go at its
   first comma or dash (`takeClause`), not at the end of the first sentence.
 - **`scripts/stt-bench` measures transcribers on real people**: Earnings-22

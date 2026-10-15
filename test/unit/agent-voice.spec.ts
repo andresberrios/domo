@@ -105,25 +105,74 @@ describe('takeSentences', () => {
     expect(takeSentences('He said "done." Then left')).toEqual({ sentences: ['He said "done."'], rest: 'Then left' })
   })
 
-  it('holds an open code fence and drops a closed one', () => {
+  it('holds an open code fence, and says a closed one is there rather than reading it', () => {
     expect(takeSentences('Here it is. ```ts\nconst a = 1.\n')).toEqual({
       sentences: ['Here it is.'],
       rest: '```ts\nconst a = 1.\n'
     })
     expect(takeSentences('Here it is. ```ts\nconst a = 1.\n``` That is all. ')).toEqual({
-      sentences: ['Here it is.', 'That is all.'],
+      sentences: ['Here it is.', 'A code block.', 'That is all.'],
       rest: ''
     })
   })
+
+  it('does not cut a list\'s "1." off its item', () => {
+    expect(takeSentences('Plan:\n1. Fix the build\n2. Ship it\n')).toEqual({
+      sentences: ['Plan:', '1. Fix the build', '2. Ship it'],
+      rest: ''
+    })
+  })
+
+  it('holds a table until it ends, then hands it over whole', () => {
+    const open = takeSentences('Results:\n| test | result |\n| --- | --- |\n| unit | ok |\n')
+    expect(open).toEqual({ sentences: ['Results:'], rest: '| test | result |\n| --- | --- |\n| unit | ok |\n' })
+    expect(takeSentences(`${open.rest}| e2e | ok |\n\nAll green.\n`).sentences).toEqual([
+      '| test | result |\n| --- | --- |\n| unit | ok |\n| e2e | ok |',
+      'All green.'
+    ])
+  })
 })
 
+/**
+ * Every speech engine is handed this. Measured on Gemini and Kokoro: list
+ * items with no punctuation between them ran together as one sentence (Kokoro
+ * made no pause at all between them); ended as sentences, each gets its break.
+ */
 describe('plainForSpeech', () => {
-  it('drops the Markdown and keeps the words', () => {
+  it('ends each list item, heading and paragraph as a sentence of its own', () => {
     expect(plainForSpeech('## Result\n\n- **Two** tests fail\n- see `auth.spec.ts`\n\n> note')).toBe(
-      'Result Two tests fail see auth.spec.ts note'
+      'Result. Two tests fail. see auth.spec.ts. note.'
     )
+    expect(plainForSpeech('1. Run the tests')).toBe('Run the tests.')
+    // Its own punctuation is kept, and a clause said early keeps its comma.
+    expect(plainForSpeech('- Is it fixed?')).toBe('Is it fixed?')
+    expect(plainForSpeech('It records your voice,')).toBe('It records your voice,')
+  })
+
+  it('drops the Markdown and keeps the words', () => {
     expect(plainForSpeech('Read [the docs](https://example.com) first.')).toBe('Read the docs first.')
-    expect(plainForSpeech('```js\nx()\n```\nDone.')).toBe('Done.')
+    expect(plainForSpeech('A **bold** and *soft* ~~gone~~ `x < y && z`.')).toBe('A bold and soft gone x < y && z.')
+  })
+
+  it('says a code block, a table and a bare URL as what they are', () => {
+    expect(plainForSpeech('```js\nx()\n```')).toBe('A code block.')
+    expect(plainForSpeech('| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |')).toBe('A table with 2 rows.')
+    expect(plainForSpeech('See https://www.github.com/acme/domo/pull/412 for it.')).toBe('See github.com for it.')
+  })
+
+  it('reads a streamed report item by item, the way the runtime cuts it', () => {
+    const report = 'Done. Three changes:\n- Fixed the login bug\n- Added tests for the parser\n- Updated the docs\n\n## Next\n1. Run `pnpm test`\n2. Open https://github.com/acme/domo/pull/412\n'
+    let pending = ''
+    const said: string[] = []
+    for (let i = 0; i < report.length; i += 5) {
+      pending += report.slice(i, i + 5)
+      const { sentences, rest } = takeSentences(pending)
+      pending = rest
+      said.push(...sentences.map(plainForSpeech).filter(Boolean))
+    }
+    expect(said.join(' ')).toBe(
+      'Done. Three changes: Fixed the login bug. Added tests for the parser. Updated the docs. Next. Run pnpm test. Open github.com.'
+    )
   })
 })
 

@@ -1,3 +1,5 @@
+import { marked, type Token, type Tokens } from 'marked'
+
 /**
  * The pure half of talking to a coding agent: what a transcript means, and how
  * the agent's text becomes sentences a speech model can be handed one at a time.
@@ -91,30 +93,34 @@ export function joinUtterance(held: string, more: string): string {
  * speak now, leaving the unfinished tail behind.
  *
  * A boundary needs whitespace after the punctuation, so "3." at the very end
- * of the buffer waits to see whether "5" follows. A fenced code block is never
- * split: while its fence is open, everything from the fence on stays behind,
- * and once it closes the block is dropped whole, because the agent was told not
- * to write code for speech and a block that slipped through is not something
- * to read out.
+ * of the buffer waits to see whether "5" follows, and a list's "1." at the
+ * start of a line is not a sentence. A fenced code block and a table are never
+ * split: while one is open, everything from its start stays behind; a closed
+ * code block is said as "A code block." and a finished table goes out whole,
+ * for `plainForSpeech` to sum up.
  */
 export function takeSentences(buffer: string): { sentences: string[], rest: string } {
-  let text = buffer.replace(/```[\s\S]*?```/g, ' ')
+  let text = buffer
+    .replace(/```[\s\S]*?```/g, '\nA code block.\n')
+    // A table that something other than a row has followed: one piece, kept on one line.
+    .replace(/(^|\n)((?:[ \t]*\|.*\n)+)(?=[ \t]*(?:\n|[^|\s]))/g, (_, start, table: string) => `${start}${table.trim().replace(/\n/g, '\uE000')}\n`)
   let held = ''
-  const open = text.indexOf('```')
-  if (open >= 0) {
-    held = text.slice(open)
-    text = text.slice(0, open)
+  // An open fence, or table rows running to the end of what has come so far.
+  const open = /```|(?<=^|\n)(?:[ \t]*\|[^\n]*(?:\n|$))+$/.exec(text)
+  if (open) {
+    held = text.slice(open.index)
+    text = text.slice(0, open.index)
   }
 
   const sentences: string[] = []
-  const boundary = /[.!?]["')\]]*\s+|\n+/
+  const boundary = /(?<!(?:^|\n)\s*\d{1,3})[.!?]["')\]]*\s+|\n+/
   for (;;) {
     const match = boundary.exec(text)
     if (!match) break
     const end = match.index + match[0].length
     const sentence = text.slice(0, end).trim()
     text = text.slice(end)
-    if (sentence) sentences.push(sentence)
+    if (sentence) sentences.push(sentence.replace(/\uE000/g, '\n'))
   }
   return { sentences, rest: text + held }
 }
@@ -137,23 +143,48 @@ export function takeClause(buffer: string): { clause: string, rest: string } | n
 }
 
 /**
- * What is left of a Markdown sentence once it is to be said rather than shown.
- * The agent is asked not to write Markdown for speech; this is for when it
- * forgets, and for typed turns that are read out anyway.
+ * What is left of Markdown once it is to be said rather than shown: the words,
+ * parsed by `marked` (the transcript's own renderer), with each paragraph,
+ * heading and list item ended as a sentence, so they are not read as one run-on
+ * line. A code block or a table is said as what it is, and a bare URL as its
+ * site. The agent is asked not to write Markdown for speech; this is for when
+ * it forgets, and for typed turns that are read out anyway.
  */
 export function plainForSpeech(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '')
-    .replace(/^\s*>\s?/gm, '')
-    .replace(/(\*\*|__)(.*?)\1/g, '$2')
-    .replace(/(\*|_)([^*_\n]+)\1/g, '$2')
-    .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, '')
-    .replace(/\|/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return wordsOf(marked.lexer(text)).replace(/\s+([.,;:!?])/g, '$1').replace(/\s+/g, ' ').trim()
+}
+
+/** A block's words, ending as a sentence unless they already do. */
+function sentence(words: string): string {
+  const trimmed = words.trim()
+  return !trimmed || /[.!?,;:…]["')\]]*$/.test(trimmed) ? `${trimmed} ` : `${trimmed}. `
+}
+
+function wordsOf(tokens: Token[] = []): string {
+  return tokens.map((token: any) => {
+    switch (token.type) {
+      case 'code': return 'A code block. '
+      case 'table': return token.rows.length === 1 ? 'A table with 1 row. ' : `A table with ${token.rows.length} rows. `
+      case 'heading': case 'paragraph': return sentence(wordsOf(token.tokens))
+      case 'list': return token.items.map((item: Tokens.ListItem) => sentence(wordsOf(item.tokens))).join('')
+      case 'link': return token.text === token.href ? hostOf(token.href) : wordsOf(token.tokens)
+      case 'image': case 'html': case 'hr': case 'space': return ' '
+      case 'br': return ' '
+      case 'codespan': case 'escape': return decode(token.text)
+      default: return token.tokens ? wordsOf(token.tokens) : decode(token.text ?? '')
+    }
+  }).join('')
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
+/** `marked` hands some text over HTML-escaped. */
+function decode(text: string): string {
+  return text.replace(/&quot;/g, '"').replace(/&#39;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
 }
