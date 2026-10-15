@@ -176,10 +176,10 @@ Every environment gets a locked git worktree in
   there (git config, `~/.ssh`, pnpm config, Claude's onboarding) is written
   again, or where missing.
 - **An environment created before the home volume, or by another Domo, has
-  its home copied** out of its stopped container (`docker cp`) into a new volume. `docker cp`
-  includes what is mounted under the path, so every mount under the home is
-  excluded, or the volume keeps a copy of the developer's `~/.ssh-host` and
-  `~/.codex`.
+  its home copied** into a new volume through a `docker commit` of its stopped
+  container, never `docker cp` of the container itself: that mounts every bind
+  again, and a bind whose source is gone (another Domo's proxy socket) fails
+  it. Every mount under the home is excluded; the snapshot holds only its stub.
 - **Everything that can fail on its own account runs while the old container
   is still there**: the image build, the refusals (a missing worktree, an image
   whose remote user changed), the home copy. Its agents are stood down only

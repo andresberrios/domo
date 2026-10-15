@@ -1,6 +1,6 @@
 import { posix } from 'node:path'
 
-import { copyOutOfContainer, run } from './docker'
+import { copyOutOfContainer, resourcePrefix, run } from './docker'
 import { homeVolumeName } from './leftovers'
 
 /**
@@ -39,9 +39,10 @@ export function mountsUnderHome(home: string, destinations: string[]): string[] 
  * that name and nothing has to be stripped. Extracted as root, so every file
  * keeps its owner by number.
  *
- * `docker cp` of a stopped container archives what is mounted under the path
- * too, which here is the developer's own `~/.ssh-host`, `~/.codex` and the
- * rest. Each mount is excluded, or the volume would keep a copy of them.
+ * Each mount under the home is excluded. The snapshot holds only the empty
+ * stub Docker made for it, which the new container mounts over anyway, and a
+ * `docker cp` of the container itself would archive the developer's own
+ * `~/.ssh-host`, `~/.codex` and the rest.
  */
 export function homeExtractArgs(input: {
   volume: string
@@ -59,10 +60,23 @@ export function homeExtractArgs(input: {
   ]
 }
 
+/** The image the old container's own layer is committed to while its home is read. */
+export function homeSnapshotName(environmentId: string): string {
+  return `${resourcePrefix()}${environmentId}-home-snapshot`.toLowerCase()
+}
+
 /**
  * Copy a container's writable-layer home into a new home volume, for an
  * environment created before there was one. Measured: a Claude Code session
  * copied this way resumes in a new container, under a newer adapter.
+ *
+ * Read through a snapshot, never with `docker cp` of the old container: to
+ * read a stopped container the daemon mounts everything it mounted again, and
+ * a bind whose host source is gone fails the copy (`mkdirat
+ * run/docker-host.sock: file exists`), as the proxy socket of an environment
+ * another Domo made is. `docker commit` takes the container's own layer and
+ * none of its mounts, and a container created from that, never started, has
+ * nothing mounted but the image's anonymous volumes.
  */
 export async function migrateHome(input: {
   environmentId: string
@@ -72,21 +86,36 @@ export async function migrateHome(input: {
   helperImage: string
 }): Promise<string> {
   const volume = await createHomeVolume(input.environmentId)
-  // A half-copied home must not be taken for a whole one by the next attempt.
-  const discard = async (error: unknown) => {
-    await run('docker', ['volume', 'rm', volume], { allowFailure: true }).catch(() => {})
-    throw error
-  }
-  await copyOutOfContainer({
-    containerId: input.containerId,
-    path: input.home,
-    label: `${input.home} into ${volume}`,
-    consumerArgs: homeExtractArgs({
-      volume,
-      home: input.home,
-      helperImage: input.helperImage,
-      exclude: mountsUnderHome(input.home, input.mountDestinations)
+  const snapshot = homeSnapshotName(input.environmentId)
+  let reader: string | null = null
+  try {
+    await run('docker', ['commit', input.containerId, snapshot])
+    reader = (await run('docker', ['create', '--network', 'none', '--entrypoint', 'true', snapshot])).stdout.trim()
+    await copyOutOfContainer({
+      containerId: reader,
+      path: input.home,
+      label: `${input.home} into ${volume}`,
+      consumerArgs: homeExtractArgs({
+        volume,
+        home: input.home,
+        helperImage: input.helperImage,
+        exclude: mountsUnderHome(input.home, input.mountDestinations)
+      })
     })
-  }).catch(discard)
+  } catch (error) {
+    // A half-copied home must not be taken for a whole one by the next attempt.
+    await run('docker', ['volume', 'rm', volume], { allowFailure: true }).catch(() => {})
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `Could not copy the old container's ${input.home} into a home volume, so nothing was changed: ${reason}. `
+      + 'Upgrade again once the cause is fixed (often disk space: `docker system df`). '
+      + 'If it keeps failing, create a new environment on the same branch: the checkout is kept, '
+      + 'but this one\'s agent sessions cannot be resumed there.',
+      { cause: error }
+    )
+  } finally {
+    if (reader) await run('docker', ['rm', '--force', '--volumes', reader], { allowFailure: true }).catch(() => {})
+    await run('docker', ['image', 'rm', '--force', snapshot], { allowFailure: true }).catch(() => {})
+  }
   return volume
 }

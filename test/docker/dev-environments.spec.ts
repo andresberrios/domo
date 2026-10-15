@@ -1836,7 +1836,8 @@ describe('upgradeEnvironment', () => {
       if (args[0] === 'rm' && args.includes('old-sha')) oldRemoved = true
       if (old && args[0] === 'stop' && args.includes('old-sha')) old.running = false
       if (old && args[0] === 'start' && args.includes('old-sha')) old.running = true
-      return { stdout: answers(args) ?? (args[0] === 'run' && args[1] === '--detach' ? 'new-sha' : ''), stderr: '' }
+      const made = args[0] === 'run' && args[1] === '--detach' ? 'new-sha' : args[0] === 'create' ? 'reader-sha' : ''
+      return { stdout: answers(args) ?? made, stderr: '' }
     })
     inspectContainer.mockImplementation(async (reference: string) => {
       if (reference === 'new-sha') return { ...oldContainer(), id: 'new-sha', running: true, namedVolumes: [] }
@@ -1937,8 +1938,13 @@ describe('upgradeEnvironment', () => {
     const report = await upgradeEnvironment('env_1')
 
     expect(report.home).toBe('migrated')
+    // Through a snapshot of its own layer: a `docker cp` of the old container
+    // mounts its binds again, and one whose source is gone fails it.
+    const snapshot = 'domo-dev-env_1-home-snapshot'
+    expect(dockerCalls()).toContainEqual(['commit', 'old-sha', snapshot])
+    expect(stepAt('create', snapshot)).toBeGreaterThan(stepAt('commit', 'old-sha'))
     const copy = copyOutOfContainer.mock.calls[0]![0]
-    expect(copy).toMatchObject({ containerId: 'old-sha', path: '/home/vscode' })
+    expect(copy).toMatchObject({ containerId: 'reader-sha', path: '/home/vscode' })
     expect(copy.consumerArgs).toEqual(expect.arrayContaining([
       `type=volume,source=${HOME},target=/mnt/vscode`, 'vscode/.ssh-host', 'vscode/.codex'
     ]))
@@ -1946,6 +1952,8 @@ describe('upgradeEnvironment', () => {
     const copied = copyOutOfContainer.mock.invocationCallOrder[0]!
     expect(dockerAt('stop', 'old-sha')).toBeLessThan(copied)
     expect(copied).toBeLessThan(dockerAt('rm', 'old-sha'))
+    expect(dockerCalls()).toContainEqual(['rm', '--force', '--volumes', 'reader-sha'])
+    expect(dockerCalls()).toContainEqual(['image', 'rm', '--force', snapshot])
     expect(dockerCalls()[stepAt('run', '--detach')]).toContain(`type=volume,source=${HOME},target=/home/vscode`)
   })
 
@@ -1953,10 +1961,12 @@ describe('upgradeEnvironment', () => {
     withContainers(oldContainer({ namedVolumes: ['domo-dev-runtime-old'] }))
     copyOutOfContainer.mockRejectedValueOnce(new Error('copying failed: no space left on device'))
 
-    await expect(upgradeEnvironment('env_1')).rejects.toThrow('no space left on device')
+    await expect(upgradeEnvironment('env_1')).rejects.toThrow(/no space left on device.*Upgrade again/)
 
     expect(stepAt('rm', 'old-sha')).toBe(-1)
     expect(dockerCalls()).toContainEqual(['volume', 'rm', HOME])
+    expect(dockerCalls()).toContainEqual(['rm', '--force', '--volumes', 'reader-sha'])
+    expect(dockerCalls()).toContainEqual(['image', 'rm', '--force', 'domo-dev-env_1-home-snapshot'])
     expect(dockerCalls()).toContainEqual(['start', 'old-sha'])
     expect(repo.updateDevEnvironment).not.toHaveBeenCalledWith('env_1', expect.objectContaining({ status: 'error' }))
   })
@@ -2170,7 +2180,8 @@ describe('upgradeEnvironment', () => {
     expect(runArgs.some(arg => arg.startsWith('type=volume,source=domo-dev-caches,'))).toBe(true)
     expect(runArgs.join(' ')).not.toContain('domo-other-')
     // Its home came out of the exited container, into this Domo's volume.
-    expect(copyOutOfContainer).toHaveBeenCalledWith(expect.objectContaining({ containerId: 'old-sha', path: '/home/vscode' }))
+    expect(dockerCalls()).toContainEqual(['commit', 'old-sha', 'domo-dev-env_1-home-snapshot'])
+    expect(copyOutOfContainer).toHaveBeenCalledWith(expect.objectContaining({ containerId: 'reader-sha', path: '/home/vscode' }))
     expect(copyOutOfContainer.mock.calls[0]![0].consumerArgs).toContain(`type=volume,source=${HOME},target=/mnt/vscode`)
     // pnpm's links in the checkout pointed into the other cache volume: made again before the install.
     expect(stepAt('.modules.yaml', '/worktrees/env_1')).toBeGreaterThan(-1)
