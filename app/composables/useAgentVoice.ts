@@ -2,6 +2,7 @@ import type { AgentVoiceClientMessage, AgentVoiceServerMessage, Chime, SoundVolu
 import { DEFAULT_VOLUMES, type AgentVoiceMode } from '~~/shared/agent-voice'
 import { playChime } from '~/utils/barSounds'
 import { createDownsampler } from '~/utils/downsample'
+import { isAndroid, micEchoCancellation } from '~/utils/echoCancellation'
 import { RECORDER_WORKLET, base64ToFloat32, floatToPcm16Base64 } from '~/utils/pcm'
 import { playToolSound } from '~/utils/toolSounds'
 
@@ -472,10 +473,7 @@ export function useAgentVoice(
       audio: {
         ...deviceId ? { deviceId: { exact: deviceId } } : {},
         channelCount: 1,
-        // "all": cancel everything the device plays, the agent's voice and
-        // the device's own speech included, not only WebRTC audio (Chrome
-        // 141+). Older browsers read it as true.
-        echoCancellation: 'all' as unknown as boolean,
+        echoCancellation: micEchoCancellation(),
         noiseSuppression: true,
         autoGainControl: true
       }
@@ -591,7 +589,7 @@ export function useAgentVoice(
     // Android: the speaker opened before the microphone is on the media
     // channel, out of the echo canceller's sight (closePlayback). Reopen it now,
     // inside the same tap, so it opens on the call channel.
-    if (/Android/i.test(navigator.userAgent) && playbackContext) {
+    if (isAndroid() && playbackContext) {
       closePlayback()
       await ensurePlayback()
       logDevice('speaker reopened after the microphone, on the call channel')
@@ -624,7 +622,7 @@ export function useAgentVoice(
     // Android: the phone leaves call mode with the microphone, so the speaker
     // is reopened on the media channel by the next sound (closePlayback), but
     // only once the agent has finished what it is saying.
-    if (/Android/i.test(navigator.userAgent) && playbackContext) {
+    if (isAndroid() && playbackContext) {
       if (scheduled.length) reopenWhenQuiet = true
       else closePlayback()
     }

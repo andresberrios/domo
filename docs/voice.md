@@ -123,9 +123,10 @@ them on first use.
   pause ends the turn. The `kyutai` detector reads the Kyutai transcriber's
   two-second pause head instead, and `silence` waits `silenceSeconds`.
 - **The echo canceller is the browser's, and it is told everything.** The
-  microphone asks for `echoCancellation: "all"` (Chrome 141+; older browsers
-  read it as `true`), which cancels everything the device plays. And the
-  agent's voice reaches the speaker through a WebRTC loopback inside the page,
+  microphone asks for `echoCancellation: true` on desktop, like call apps,
+  and `"all"` on Android (`micEchoCancellation`). On desktop `"all"` cancels
+  only the device's own voices beyond what `true` does, delays the
+  microphone, and in Dia gives only silence. The agent's voice reaches the speaker through a WebRTC loopback inside the page,
   because audio received over a peer connection is what Chrome's canceller
   reliably subtracts; a media element was not enough, and a phone's
   loudspeaker made the agent interrupt itself. The bar logs what the
