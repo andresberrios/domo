@@ -33,11 +33,14 @@ const scheduleItems = [
   { label: 'Recurring', value: 'cron' },
   { label: 'One time', value: 'once' }
 ]
+// Short labels so the chosen one reads whole in the field; the menu says the rest.
 const deliveryItems = [
-  { label: 'Wait for the turn to end', value: 'queue' },
-  { label: 'Join the running turn', value: 'steer' },
-  { label: 'Stop the turn and start', value: 'interrupt' }
+  { label: 'Wait its turn', description: 'Runs once the current turn ends', value: 'queue' },
+  { label: 'Join the turn', description: 'Steers the turn that is running', value: 'steer' },
+  { label: 'Interrupt', description: 'Stops the running turn and starts', value: 'interrupt' }
 ]
+// The menu sizes to its options rather than to the field.
+const selectUi = { content: 'min-w-fit' }
 
 const STATUS_LABELS: Record<string, string> = { running: 'Running', delivered: 'Delivered', failed: 'Failed' }
 const form = reactive({
@@ -200,7 +203,7 @@ async function remove() {
           </div>
           <div v-if="!agentItems.length" class="text-sm text-muted">Create an assistant or a coding agent before scheduling work.</div>
           <template v-else>
-            <div class="grid gap-3 sm:grid-cols-2">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <UFormField label="Send to">
                 <ChoiceMenu
                   v-model="form.agentSessionId"
@@ -217,12 +220,12 @@ async function remove() {
             <UFormField label="Prompt">
               <UTextarea v-model="form.prompt" class="w-full" :rows="3" placeholder="Check the repository and…" />
             </UFormField>
-            <div class="grid gap-3 sm:grid-cols-5">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-6">
               <UFormField label="Schedule">
-                <USelect v-model="scheduleType" :items="scheduleItems" value-key="value" class="w-full" />
+                <USelect v-model="scheduleType" :items="scheduleItems" value-key="value" class="w-full" :ui="selectUi" />
               </UFormField>
-              <UFormField label="If busy">
-                <USelect v-model="form.delivery" :items="deliveryItems" value-key="value" class="w-full" />
+              <UFormField label="If busy" class="sm:col-span-2">
+                <USelect v-model="form.delivery" :items="deliveryItems" value-key="value" class="w-full" :ui="selectUi" />
               </UFormField>
               <UFormField v-if="scheduleType === 'cron'" label="Cron expression" class="sm:col-span-2">
                 <UInput v-model="form.cronExpression" class="w-full font-mono" />
