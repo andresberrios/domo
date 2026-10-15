@@ -1,0 +1,286 @@
+import { constants } from 'node:fs'
+import { access } from 'node:fs/promises'
+
+import { adapterEnv, adapterLaunch } from './acp/adapter-process'
+import { askOnce } from './acp/ask-once'
+import { anthropicApiKey, claudeOauthToken, hasClaudeSubscriptionLogin } from './claude-credentials'
+import { codexLogin } from './codex-credentials'
+import { openCodeCredentialState } from './opencode-credentials'
+import { listUsageProviders } from './repo'
+import { openAiApiKey } from './openai'
+import { getSettings, patchSettings } from './settings'
+import { speakerUnavailable } from './agent-voice/assistant-voice'
+import { concatPcm16, synthesizeWith, transcribeWith, wavFromPcm16 } from './agent-voice/speech'
+import { AGENT_ADAPTERS, agentAdapterInfo, TITLE_MODELS } from '../../shared/agent-adapters'
+import type {
+  AgentAdapter,
+  AgentVoiceSettings,
+  SetupAgentStatus,
+  SetupCheckResult,
+  SetupLogin,
+  SetupProgress,
+  SetupStatus,
+  SetupTarget,
+  SetupVoiceStatus,
+  UsageProviderId
+} from '../../shared/types'
+
+/**
+ * The setup guide's questions about each coding agent and voice: is it
+ * installed, what does it sign in with, and — only when the person asks — can
+ * it answer a real request. Whether something is installed or logged in is
+ * read fresh every time from the same places the sessions read it; only what
+ * the person did is kept (`SetupProgress`).
+ */
+
+interface LoginAnswer {
+  login: SetupLogin
+  loginDetail: string
+  environments: boolean
+}
+
+/**
+ * Claude Code's credential, in the order `adapterEnv` uses them: the
+ * `setup-token` token, then this computer's own login, and an API key only
+ * when there is neither.
+ */
+export function classifyClaude(input: { token: boolean, hostLogin: boolean, apiKey: boolean }): LoginAnswer {
+  if (input.token) return { login: 'subscription', loginDetail: 'Your Claude subscription, through a Claude Code token.', environments: true }
+  if (input.hostLogin) {
+    return {
+      login: 'subscription',
+      loginDetail: 'Your Claude subscription, through the Claude login on this computer. Development environments need a Claude Code token.',
+      environments: false
+    }
+  }
+  if (input.apiKey) return { login: 'api-key', loginDetail: 'An Anthropic API key, billed per token.', environments: true }
+  return { login: 'none', loginDetail: 'No Claude Code token, no Claude login on this computer, and no API key.', environments: false }
+}
+
+/** Codex: a ChatGPT login always wins; a key is only its fallback. */
+export function classifyCodex(input: { login: 'chatgpt' | 'apikey' | null, apiKey: boolean }): LoginAnswer {
+  if (input.login === 'chatgpt') return { login: 'subscription', loginDetail: 'Your ChatGPT plan, through codex login.', environments: true }
+  if (input.login === 'apikey') return { login: 'api-key', loginDetail: 'An API key saved in Codex\'s own login, billed per token.', environments: true }
+  if (input.apiKey) return { login: 'api-key', loginDetail: 'An OpenAI API key, billed per token.', environments: true }
+  return { login: 'none', loginDetail: 'No ChatGPT login on this computer, and no API key.', environments: false }
+}
+
+/**
+ * OpenCode works with no credential at all, on its free models. A console key
+ * is what a container can use; a host login is only this computer's.
+ */
+export function classifyOpenCode(input: { key: boolean, hostLogin: boolean }): LoginAnswer {
+  if (input.key) {
+    return {
+      login: 'subscription',
+      loginDetail: 'An OpenCode console key: opencode-go/… models use your Go plan, opencode/… models bill your console credit per token.',
+      environments: true
+    }
+  }
+  if (input.hostLogin) {
+    return {
+      login: 'subscription',
+      loginDetail: 'The OpenCode login on this computer. Development environments need a console key.',
+      environments: false
+    }
+  }
+  return { login: 'free', loginDetail: 'No account: only OpenCode\'s free models.', environments: true }
+}
+
+/** Whether the adapter's program is where Domo will start it from. */
+async function installed(adapter: AgentAdapter): Promise<string | null> {
+  try {
+    const launch = adapterLaunch(adapter)
+    const file = launch.args[0] && launch.args[0] !== 'acp' ? launch.args[0] : launch.command
+    await access(file, file === launch.command ? constants.X_OK : constants.R_OK)
+    return null
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function login(adapter: AgentAdapter): Promise<LoginAnswer> {
+  if (adapter === 'claude-code') {
+    return classifyClaude({
+      token: !!claudeOauthToken(),
+      hostLogin: await hasClaudeSubscriptionLogin().catch(() => false),
+      apiKey: !!anthropicApiKey()
+    })
+  }
+  if (adapter === 'codex') {
+    return classifyCodex({
+      login: await codexLogin(false),
+      apiKey: !!openAiApiKey()
+    })
+  }
+  return classifyOpenCode(await openCodeCredentialState())
+}
+
+const USAGE_PROVIDER: Record<AgentAdapter, UsageProviderId> = { 'claude-code': 'claude', codex: 'codex', opencode: 'opencode' }
+
+/** Why an engine cannot hear or speak as set up, in the words the guide shows. */
+export function voiceProblem(voice: Pick<AgentVoiceSettings, 'transcriber' | 'speaker'>, base: AgentVoiceSettings): string | null {
+  for (const engine of new Set([voice.transcriber, voice.speaker])) {
+    // The device's own, and a Kyutai server only Domo's own use can prove.
+    if (engine === 'browser' || engine === 'kyutai') continue
+    const problem = speakerUnavailable(engine, base)
+    if (problem) return problem
+  }
+  return null
+}
+
+export async function setupStatus(): Promise<SetupStatus> {
+  const settings = await getSettings()
+  const usage = await listUsageProviders().catch(() => [])
+  const agents = await Promise.all(AGENT_ADAPTERS.map(async ({ id }): Promise<SetupAgentStatus> => {
+    const [problem, answer] = await Promise.all([installed(id), login(id)])
+    const poll = usage.find(row => row.provider === USAGE_PROVIDER[id])
+    return {
+      id,
+      installed: !problem,
+      installProblem: problem,
+      ...answer,
+      testModel: TITLE_MODELS[id],
+      usage: poll ? { state: poll.state, message: poll.message } : null
+    }
+  }))
+  const voice: SetupVoiceStatus = {
+    transcriber: settings.agentVoice.transcriber,
+    speaker: settings.agentVoice.speaker,
+    problem: voiceProblem(settings.agentVoice, settings.agentVoice)
+  }
+  return { agents, voice, progress: settings.setup }
+}
+
+/** Merge a step's result, a skip or the end of the guide into what is kept. */
+export async function updateSetup(change: {
+  finished?: boolean
+  skip?: SetupTarget
+  unskip?: SetupTarget
+  check?: { target: SetupTarget, result: SetupCheckResult }
+}): Promise<SetupProgress> {
+  const current = (await getSettings()).setup
+  const next: SetupProgress = { ...current, skipped: [...current.skipped], checks: { ...current.checks } }
+  if (change.finished !== undefined) next.finishedAt = change.finished ? new Date().toISOString() : null
+  if (change.skip && !next.skipped.includes(change.skip)) next.skipped.push(change.skip)
+  if (change.unskip) next.skipped = next.skipped.filter(target => target !== change.unskip)
+  if (change.check) {
+    next.checks[change.check.target] = change.check.result
+    // Done is not skipped.
+    if (change.check.result.ok) next.skipped = next.skipped.filter(target => target !== change.check!.target)
+  }
+  return (await patchSettings({ setup: next })).setup
+}
+
+const CHECK_INSTRUCTIONS = 'This is a connection test. Reply with only the word: ready'
+const CHECK_TIMEOUT_MS = 90_000
+
+/**
+ * The model the live check runs on: the harness's cheap one, or for OpenCode
+ * without an account, one of its free ones. Never a full-price default.
+ */
+export function checkModel(adapter: AgentAdapter, offered: string[]): string | null {
+  const cheap = TITLE_MODELS[adapter]
+  if (offered.includes(cheap)) return cheap
+  if (adapter !== 'opencode') return null
+  return offered.find(id => /free/i.test(id)) ?? null
+}
+
+/** A failed check, said the way the guide can act on. */
+export function explainCheckFailure(adapter: AgentAdapter, message: string): string {
+  const label = agentAdapterInfo(adapter).label
+  if (/missing from this Domo install|ENOENT/i.test(message)) return `${label} is not installed with this Domo. Update or reinstall Domo.`
+  if (/does not offer/i.test(message)) return `${label} started, but its account does not offer a cheap model to test with.`
+  if (/no answer within/i.test(message)) return `${label} did not answer within ${CHECK_TIMEOUT_MS / 1000} seconds.`
+  if (/auth|log ?in|logged|401|403|unauthori[sz]ed|credential|api key|token/i.test(message)) {
+    return `${label} could not sign in: ${firstLine(message)}. ${SIGN_IN_AGAIN[adapter]}`
+  }
+  return `${label} failed: ${firstLine(message)}`
+}
+
+const SIGN_IN_AGAIN: Record<AgentAdapter, string> = {
+  'claude-code': 'Run claude setup-token again and paste the new token.',
+  codex: 'Run codex login again on the computer Domo runs on.',
+  opencode: 'Check the console key, or create a new one in the OpenCode console.'
+}
+
+function firstLine(message: string): string {
+  const line = message.split('\n').map(part => part.trim()).find(Boolean) ?? message
+  const short = line.length > 240 ? `${line.slice(0, 239)}…` : line
+  return short.replace(/[.\s]+$/, '')
+}
+
+/**
+ * One real request, on the credential a session of this harness would use —
+ * the key included when that is all there is, which the guide says before
+ * the person presses the button.
+ */
+export async function checkAgent(adapter: AgentAdapter): Promise<SetupCheckResult & { reply: string | null }> {
+  const started = Date.now()
+  try {
+    const { answer, model } = await askOnce({
+      adapter,
+      model: offered => checkModel(adapter, offered),
+      instructions: CHECK_INSTRUCTIONS,
+      message: 'Are you there?',
+      env: await adapterEnv(adapter, false),
+      timeoutMs: CHECK_TIMEOUT_MS,
+      timeoutMessage: `no answer within ${CHECK_TIMEOUT_MS / 1000}s`
+    })
+    const reply = answer.trim()
+    const seconds = ((Date.now() - started) / 1000).toFixed(1)
+    if (!reply) return result(false, `${agentAdapterInfo(adapter).label} started on ${model} but answered nothing.`, null)
+    return result(true, `${model} answered in ${seconds} s.`, reply)
+  } catch (error) {
+    return result(false, explainCheckFailure(adapter, error instanceof Error ? error.message : String(error)), null)
+  }
+}
+
+function result(ok: boolean, summary: string, reply: string | null) {
+  return { ok, summary, at: new Date().toISOString(), reply }
+}
+
+export const VOICE_CHECK_TEXT = 'Domo can hear you and talk back.'
+
+/** Whether a transcript is the test sentence, give or take punctuation and a word. */
+export function heardRight(expected: string, heard: string): boolean {
+  const words = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
+  const want = words(expected)
+  const got = new Set(words(heard))
+  return want.filter(word => got.has(word)).length >= Math.ceil(want.length * 0.6)
+}
+
+/**
+ * Voice end to end: the speaker says the test sentence and the transcriber
+ * hears it back. When the device does one of the two itself, that half is
+ * the browser's to check; the speech the server hears then comes from the
+ * free local voice instead.
+ */
+export async function checkVoice(): Promise<SetupCheckResult & { audio: string | null, heard: string | null }> {
+  const settings = (await getSettings()).agentVoice
+  const problem = voiceProblem(settings, settings)
+  if (problem) return { ...result(false, problem, null), audio: null, heard: null }
+  const speaking = settings.speaker === 'browser' ? { ...settings, speaker: 'local' as const } : settings
+  try {
+    const chunks: Int16Array[] = []
+    let rate = 0
+    await synthesizeWith(speaking, VOICE_CHECK_TEXT, (chunk) => {
+      rate ||= chunk.sampleRate
+      const bytes = Buffer.from(chunk.data, 'base64')
+      chunks.push(new Int16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length - (bytes.length % 2))))
+    })
+    if (!rate) return { ...result(false, 'The voice answered with no sound.', null), audio: null, heard: null }
+    const samples = concatPcm16(chunks)
+    const audio = settings.speaker === 'browser' ? null : wavFromPcm16(samples, rate).toString('base64')
+    if (settings.transcriber === 'browser') {
+      return { ...result(true, 'Domo spoke. This device does the listening, so try the microphone in a session.', null), audio, heard: null }
+    }
+    const heard = (await transcribeWith(settings, samples, rate)).trim()
+    if (!heardRight(VOICE_CHECK_TEXT, heard)) {
+      return { ...result(false, heard ? `Domo spoke, but heard it back as “${heard}”.` : 'Domo spoke, but heard nothing back.', null), audio, heard }
+    }
+    return { ...result(true, `Domo spoke and heard itself back: “${heard}”.`, null), audio, heard }
+  } catch (error) {
+    return { ...result(false, `Voice failed: ${firstLine(error instanceof Error ? error.message : String(error))}`, null), audio: null, heard: null }
+  }
+}

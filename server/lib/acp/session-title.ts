@@ -1,14 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { Readable, Writable } from 'node:stream'
-import * as acp from '@agentclientprotocol/sdk'
-
-import { adapterEnv, adapterLaunch } from './adapter-process'
-import { adapterConfigOptions } from './config-options'
-import { availableModelIds, modelConfigOption } from './model'
-import { availableModes, modeConfigOption } from './mode'
+import { adapterEnv } from './adapter-process'
+import { askOnce } from './ask-once'
 import { claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
 import { hasCodexSubscriptionLogin } from '../codex-credentials'
 import { openCodeCredentialState } from '../opencode-credentials'
@@ -102,129 +93,25 @@ export function cleanTitle(raw: string): string {
   return title
 }
 
-/** The value that thinks least, out of a reasoning-effort select's values. */
-function leastEffort(values: string[]): string | null {
-  return ['none', 'minimal', 'low'].find(value => values.includes(value)) ?? null
-}
-
 /**
- * Ask the harness for a title and return its raw answer.
- *
- * Claude Code takes the instructions as its whole system prompt, with no
- * tools, no settings files (so no MCP servers, hooks or plugins of the
- * user's) and no transcript on disk. Codex and OpenCode offer no system prompt
- * over ACP, so the instructions go ahead of the message, in a read-only mode.
- * Both still read their own config, and keep their own record of the
- * conversation, as any session of theirs does.
+ * Ask the harness for a title and return its raw answer. See `askOnce` for
+ * what the throwaway session can and cannot do.
  */
 export async function askForTitle(
   text: string,
   titler: { adapter: AgentAdapter, model: string },
   timeoutMs = TIMEOUT_MS
 ): Promise<string> {
-  const { adapter, model } = titler
-  const cwd = await mkdtemp(join(tmpdir(), 'domo-title-'))
-  let proc: ChildProcessWithoutNullStreams | null = null
-  let timer: ReturnType<typeof setTimeout> | null = null
-  try {
-    const launch = adapterLaunch(adapter)
-    proc = spawn(launch.command, launch.args, {
-      cwd,
-      env: await titlerEnv(adapter),
-      stdio: ['pipe', 'pipe', 'pipe']
-    }) as ChildProcessWithoutNullStreams
-    let stderr = ''
-    proc.stderr.setEncoding('utf8')
-    proc.stderr.on('data', (chunk: string) => (stderr = (stderr + chunk).slice(-2000)))
-
-    let answer = ''
-    let sessionId: string | null = null
-    const connection = acp
-      .client({ name: 'domo' })
-      .onNotification(acp.methods.client.session.update, (ctx: any) => {
-        const update = ctx.params?.update
-        if (ctx.params?.sessionId !== sessionId || update?.sessionUpdate !== 'agent_message_chunk') return
-        if (update.content?.type === 'text') answer += update.content.text
-      })
-      // It has no business asking; the answer is no.
-      .onRequest(acp.methods.client.session.requestPermission, () => ({ outcome: { outcome: 'cancelled' } }) as any)
-      .connect(acp.ndJsonStream(
-        Writable.toWeb(proc.stdin) as WritableStream<Uint8Array>,
-        Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>
-      ))
-
-    const exited = new Promise<never>((_, reject) => {
-      proc!.once('exit', code => reject(new Error(
-        `the ${adapter} adapter exited (code ${code})${stderr.trim() ? `: ${stderr.trim()}` : ''}`
-      )))
-    })
-    const timedOut = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`no title within ${timeoutMs / 1000}s`)), timeoutMs)
-    })
-
-    const ask = (async () => {
-      await connection.agent.request(acp.methods.agent.initialize, {
-        protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
-        clientInfo: { name: 'domo', title: 'Domo', version: '1.0.0' }
-      } as any)
-      const ownPrompt = adapter === 'claude-code'
-      const created = (await connection.agent.request(acp.methods.agent.session.new, {
-        cwd,
-        mcpServers: [],
-        ...ownPrompt
-          ? {
-              _meta: {
-                systemPrompt: INSTRUCTIONS,
-                claudeCode: { options: { tools: [], settingSources: [], strictMcpConfig: true, persistSession: false } }
-              }
-            }
-          : {}
-      } as any)) as any
-      sessionId = created.sessionId
-
-      const modelOption = modelConfigOption(created)
-      if (!availableModelIds(modelOption).includes(model)) throw new Error(`the ${adapter} adapter does not offer ${model}`)
-      let options = created
-      if (modelOption.currentValue !== model) {
-        options = await connection.agent.request(acp.methods.agent.session.setConfigOption, {
-          sessionId, configId: modelOption.id, value: model
-        } as any)
-      }
-      const effort = adapterConfigOptions(options).find(option => option.category === 'thought_level')
-      const least = effort && leastEffort(effort.options.map(option => option.value))
-      if (effort && least && effort.currentValue !== least) {
-        await connection.agent.request(acp.methods.agent.session.setConfigOption, {
-          sessionId, configId: effort.id, value: least
-        } as any)
-      }
-      if (!ownPrompt) {
-        const readOnly = ['read-only', 'plan'].find(id => availableModes(created).some(mode => mode.id === id))
-        const modeOption = modeConfigOption(created)
-        if (readOnly && modeOption) {
-          await connection.agent.request(acp.methods.agent.session.setConfigOption, { sessionId, configId: modeOption.id, value: readOnly } as any)
-        } else if (readOnly) {
-          await connection.agent.request(acp.methods.agent.session.setMode, { sessionId, modeId: readOnly } as any)
-        }
-      }
-
-      const message = text.trim().slice(0, MESSAGE_LIMIT)
-      await connection.agent.request(acp.methods.agent.session.prompt, {
-        sessionId,
-        prompt: [{
-          type: 'text',
-          text: ownPrompt ? message : `${INSTRUCTIONS}\n\n<message>\n${message}\n</message>`
-        }]
-      } as any)
-      return answer
-    })()
-
-    return await Promise.race([ask, exited, timedOut])
-  } finally {
-    if (timer) clearTimeout(timer)
-    proc?.kill('SIGTERM')
-    await rm(cwd, { recursive: true, force: true }).catch(() => {})
-  }
+  const { answer } = await askOnce({
+    adapter: titler.adapter,
+    model: titler.model,
+    instructions: INSTRUCTIONS,
+    message: text.trim().slice(0, MESSAGE_LIMIT),
+    env: await titlerEnv(titler.adapter),
+    timeoutMs,
+    timeoutMessage: `no title within ${timeoutMs / 1000}s`
+  })
+  return answer
 }
 
 let running = 0

@@ -3,7 +3,7 @@ import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
 import { AGENT_ADAPTERS, isAgentAdapter } from '../../shared/agent-adapters'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector, normalizeVolumes } from '../../shared/agent-voice'
 import { rememberSecretSettings } from './secret-settings'
-import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type UpdateSettings } from '../../shared/types'
+import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type SetupProgress, type SetupTarget, type UpdateSettings } from '../../shared/types'
 
 /**
  * Follow `release`, look every hour, and never switch by itself: an unasked
@@ -20,7 +20,6 @@ export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
 export const DEFAULTS: AppSettings = {
   defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
   defaultAssistantId: '',
-  autoApprovePermissions: false,
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
   // `agent` ("Auto review"). The ids are not interchangeable — see
@@ -34,16 +33,15 @@ export const DEFAULTS: AppSettings = {
   // point for settings Domo does not know the names of. See
   // `AppSettings.defaultAgentConfig`.
   defaultAgentConfig: Object.fromEntries(AGENT_ADAPTERS.map(adapter => [adapter.id, {}])) as AppSettings['defaultAgentConfig'],
-  // Empty, and `NUXT_OPENCODE_API_KEY` is read ahead of it rather than seeded
+  // Empty, with a server override read ahead of the row rather than seeded
   // into it: a default that copied the environment in would be written back to
-  // the row by the first save, and the operator's variable would stop being the
-  // thing in charge.
+  // the row by the first save (`secret-settings.ts`).
   openCodeApiKey: '',
-  // The same for the rest: empty, with the environment read ahead of the row.
   geminiApiKey: '',
   openAiApiKey: '',
   anthropicApiKey: '',
   claudeCodeOauthToken: '',
+  kyutaiApiKey: '',
   // Environments permissive, the host as OpenCode has it. See
   // `AppSettings.openCodePermission` for why the two differ.
   openCodePermission: { host: 'ask', environment: 'allow' },
@@ -57,7 +55,8 @@ export const DEFAULTS: AppSettings = {
   updates: { ...DEFAULT_UPDATE_SETTINGS },
   // On, on whatever cheap model this machine can reach: a generated title
   // costs a fraction of a cent of a plan that is already paid for.
-  sessionTitles: { enabled: true, adapter: '', model: '' }
+  sessionTitles: { enabled: true, adapter: '', model: '' },
+  setup: { finishedAt: null, skipped: [], checks: {} }
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -73,7 +72,8 @@ export async function getSettings(): Promise<AppSettings> {
     openCodePermission: storedOpenCodePermission(stored),
     agentVoice: storedAgentVoice(stored),
     updates: storedUpdates(stored),
-    sessionTitles: storedSessionTitles(stored)
+    sessionTitles: storedSessionTitles(stored),
+    setup: normalizeSetup(stored.setup)
   } as AppSettings
   // The synchronous key readers (`secret-settings.ts`) see what was just read.
   rememberSecretSettings(settings)
@@ -81,6 +81,24 @@ export async function getSettings(): Promise<AppSettings> {
 }
 
 const isSecretKey = (key: string): key is SecretSettingKey => (SECRET_SETTING_KEYS as readonly string[]).includes(key)
+
+const isSetupTarget = (value: unknown): value is SetupTarget => value === 'voice' || isAgentAdapter(value)
+
+/** The setup guide's progress, from the row or a request, keeping only what it can use. */
+export function normalizeSetup(current: any): SetupProgress {
+  const setup: SetupProgress = { finishedAt: null, skipped: [], checks: {} }
+  if (!current || typeof current !== 'object') return setup
+  if (typeof current.finishedAt === 'string' && current.finishedAt) setup.finishedAt = current.finishedAt
+  if (Array.isArray(current.skipped)) setup.skipped = [...new Set(current.skipped.filter(isSetupTarget))] as SetupTarget[]
+  if (current.checks && typeof current.checks === 'object') {
+    for (const [target, check] of Object.entries(current.checks as Record<string, any>)) {
+      if (!isSetupTarget(target) || !check || typeof check !== 'object') continue
+      if (typeof check.ok !== 'boolean' || typeof check.at !== 'string' || typeof check.summary !== 'string') continue
+      setup.checks[target] = { ok: check.ok, at: check.at, summary: check.summary }
+    }
+  }
+  return setup
+}
 
 /** The title settings, with a harness Domo knows or none. */
 function storedSessionTitles(stored: Record<string, any>): AppSettings['sessionTitles'] {

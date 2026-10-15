@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { DEFAULT_AGENT_VOICE } from '~~/shared/agent-voice'
+import { DEFAULT_AGENT_VOICE, usesKyutai } from '~~/shared/agent-voice'
 
 /**
  * Talking to a coding agent from its page: the voice bar's engines, voices,
@@ -33,6 +33,15 @@ const talkItems = computed(() => [
   }))
 ])
 
+/**
+ * The keys voice uses, beside the engines that use them. Gemini's always:
+ * its engines are the default and nothing else uses it. OpenAI's and Kyutai's
+ * only while one of their engines is chosen; the OpenAI key is also Codex's
+ * and OpenCode's, on their pages.
+ */
+const usesOpenAi = computed(() => form.value.transcriber === 'openai' || form.value.speaker === 'openai')
+const showKyutaiKey = computed(() => usesKyutai(form.value))
+
 const saving = ref(false)
 async function save() {
   saving.value = true
@@ -64,6 +73,44 @@ async function save() {
     >
       <USelect v-model="talkTarget" :items="talkItems" value-key="value" class="w-full sm:w-80" />
     </UFormField>
+    <section class="space-y-4">
+      <div>
+        <h2 class="text-sm font-semibold">Keys</h2>
+        <p class="text-xs text-muted">Saved on the server and never sent back to the browser. The open models and this device's own voices need none.</p>
+      </div>
+      <CredentialField
+        :settings="settings ?? null"
+        credential="geminiApiKey"
+        label="Gemini API key"
+        placeholder="AIza…"
+        @saved="refresh"
+      >
+        <template #help>
+          For the Gemini engines.
+          <ULink to="https://aistudio.google.com/apikey" target="_blank" class="text-primary">Get a key at Google AI Studio</ULink>.
+        </template>
+      </CredentialField>
+      <CredentialField
+        v-if="usesOpenAi"
+        :settings="settings ?? null"
+        credential="openAiApiKey"
+        label="OpenAI API key"
+        help="For the OpenAI engines. Codex and OpenCode can use the same key."
+        placeholder="sk-…"
+        warning="Bills per token through the OpenAI API, not a ChatGPT plan."
+        @saved="refresh"
+      />
+      <CredentialField
+        v-if="showKyutaiKey"
+        :settings="settings ?? null"
+        credential="kyutaiApiKey"
+        label="Kyutai server key"
+        help="Only if your Kyutai server asks for one."
+        placeholder="Key"
+        @saved="refresh"
+      />
+    </section>
+    <USeparator />
     <AgentVoiceSettings
       v-model="form"
       :has-gemini-key="settings?.hasGeminiKey"

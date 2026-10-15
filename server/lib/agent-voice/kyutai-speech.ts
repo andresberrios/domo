@@ -21,6 +21,8 @@ import type { SpeechChunk } from './speech'
  * decides when a turn is over.
  */
 
+import { secret } from '../secret-settings'
+
 const RATE = 24000
 /** The largest of the model's delays, so the last word has time to appear. */
 const FLUSH_SECONDS = 3
@@ -29,7 +31,7 @@ const PAUSE_HEAD = 2
 const PAUSE_HEAD_SECONDS = 2
 
 function apiKey(): string {
-  return process.env.NUXT_KYUTAI_API_KEY || 'public_token'
+  return secret('kyutaiApiKey') || 'public_token'
 }
 
 function open(url: string): Promise<WebSocket> {

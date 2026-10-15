@@ -802,10 +802,8 @@ async function install(args) {
   await ensureTools(P.app)
   mkdirSync(P.data, { recursive: true })
   mkdirSync(P.logs, { recursive: true })
-  if (!existsSync(P.env)) {
-    cpSync(join(P.app, '.env.example'), P.env)
-    log(`wrote ${P.env}; add your keys there or in Settings`)
-  }
+  // The server's own overrides, for whoever needs one; keys go in through the app's setup guide.
+  if (!existsSync(P.env)) cpSync(join(P.app, '.env.example'), P.env)
   if (!existsSync(P.launcher)) cpSync(fileURLToPath(import.meta.url), P.launcher)
 
   await update(['--no-restart', '--force', ...(channel ? ['--channel', channel] : [])])

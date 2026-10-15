@@ -103,12 +103,12 @@ describe('UsageLimitRows', () => {
         limits: [],
         provider: provider({
           state: 'unconfigured',
-          message: 'Add a Claude Code token (from `claude setup-token`) in Settings → General to see plan limits.'
+          message: 'Add a Claude Code token (from `claude setup-token`) in Settings → Claude Code to see plan limits.'
         })
       }
     })
 
-    expect(component.text()).toContain('Settings → General')
+    expect(component.text()).toContain('Settings → Claude Code')
     expect(component.text()).not.toContain('0%')
   })
 

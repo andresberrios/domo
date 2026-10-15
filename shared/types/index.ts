@@ -636,8 +636,6 @@ export interface AppSettings {
    * An id that names an archived or deleted assistant reads as empty.
    */
   defaultAssistantId: string
-  /** Auto-answer coding-agent permission prompts with the first "allow once" option. */
-  autoApprovePermissions: boolean
   /**
    * The mode a new session of each adapter starts in. Claude Code and Codex
    * use it for permission policy; OpenCode uses it to choose a visible agent.
@@ -669,33 +667,29 @@ export interface AppSettings {
    */
   defaultAgentConfig: Record<AgentAdapter, Record<string, string>>
   /**
-   * An OpenCode console service-account key, for installs without a `.env`.
-   *
-   * The one credential in this object, and the reason it is here rather than in
-   * the environment alone is that it is the *only* way a container session can
-   * authenticate: OpenCode 2 keeps its own login in sqlite, and that login
-   * rotates its refresh token, so nothing copies it. `NUXT_OPENCODE_API_KEY`
-   * still wins when it is set.
-   *
-   * **Never returned by `GET /api/settings`** — that endpoint answers
-   * `hasOpenCodeKey` instead, the way it already does for the Gemini and
-   * Anthropic keys. Anything that spreads `AppSettings` into a response has to
-   * take it back out.
+   * The credentials, entered in Settings and the setup guide and kept in this
+   * row. Empty means none. **Never returned by `GET /api/settings`**: that
+   * endpoint reports each one in `credentialSources` instead, and anything that
+   * spreads `AppSettings` into a response has to take them back out. A server
+   * variable for the same purpose (`server/lib/secret-settings.ts`) is a
+   * developer override and wins.
+   */
+  /**
+   * An OpenCode console service-account key. The only way a container session
+   * can authenticate: OpenCode 2 keeps its own login in sqlite, and that login
+   * rotates its refresh token, so nothing copies it.
    */
   openCodeApiKey: string
-  /**
-   * The other credentials, kept under the same rule as `openCodeApiKey`: never
-   * returned by `GET /api/settings`, and the environment variable for the same
-   * purpose wins when it is set. Empty means none. See `SECRET_SETTING_KEYS`.
-   */
-  /** Gemini, for the voice bar's Gemini speech engines (`NUXT_GEMINI_API_KEY`). */
+  /** Gemini, for the voice bar's Gemini speech engines. */
   geminiApiKey: string
-  /** OpenAI, for the voice bar's OpenAI speech engines and as a Codex credential (`NUXT_OPENAI_API_KEY`). */
+  /** OpenAI: Codex's fallback when it has no ChatGPT login, OpenCode's OpenAI models, and the OpenAI speech engine. Bills per token. */
   openAiApiKey: string
-  /** Anthropic. Bills the API, so it is passed only when no subscription credential exists (`NUXT_ANTHROPIC_API_KEY`). */
+  /** Anthropic. Bills the API, so it is passed only when no subscription credential exists. */
   anthropicApiKey: string
-  /** From `claude setup-token`: how Claude Code authenticates in an environment (`NUXT_CLAUDE_CODE_OAUTH_TOKEN`). */
+  /** From `claude setup-token`: how Claude Code authenticates in an environment, and how plan limits are read. */
   claudeCodeOauthToken: string
+  /** The Kyutai speech server's key, when it asks for one. */
+  kyutaiApiKey: string
   /**
    * Whether OpenCode asks before touching a path outside the session's working
    * directory, per surface. `ask` is OpenCode's own behaviour and Domo then
@@ -732,6 +726,65 @@ export interface AppSettings {
   updates: UpdateSettings
   /** Titles for sessions started without one. See `SessionTitleSettings`. */
   sessionTitles: SessionTitleSettings
+  /** What the setup guide has seen done. See `SetupProgress`. */
+  setup: SetupProgress
+}
+
+/** What the setup guide checks: each coding agent, and voice. */
+export type SetupTarget = AgentAdapter | 'voice'
+
+/** The outcome of a live check the person started from the setup guide. */
+export interface SetupCheckResult {
+  ok: boolean
+  at: string
+  /** One plain sentence: what answered, or what went wrong. */
+  summary: string
+}
+
+/**
+ * The setup guide's memory. Whether an agent is installed and logged in is
+ * asked fresh every time (`GET /api/setup`); only what the person did is kept.
+ */
+export interface SetupProgress {
+  /** When the guide was finished or skipped as a whole; null until then. */
+  finishedAt: string | null
+  /** Steps the person chose to skip. */
+  skipped: SetupTarget[]
+  /** The last live check of each step. */
+  checks: Partial<Record<SetupTarget, SetupCheckResult>>
+}
+
+/** How a coding agent signs in on this machine, as far as Domo can tell without using it. */
+export type SetupLogin = 'subscription' | 'api-key' | 'free' | 'none'
+
+export interface SetupAgentStatus {
+  id: AgentAdapter
+  /** Its adapter resolves and can be started. */
+  installed: boolean
+  installProblem: string | null
+  login: SetupLogin
+  /** Which credential that is, in plain words ("Claude Code token", "ChatGPT login"). */
+  loginDetail: string
+  /** Whether environment sessions can sign in too; a host login cannot be copied into one. */
+  environments: boolean
+  /** The cheap model a live check runs on. */
+  testModel: string
+  /** Plan limits as the usage poller last read them; null for no poller row yet. */
+  usage: { state: UsageProviderState, message: string | null } | null
+}
+
+export interface SetupVoiceStatus {
+  transcriber: Transcriber
+  speaker: Speaker
+  /** Why the chosen engines cannot work as set up, or null. */
+  problem: string | null
+}
+
+/** `GET /api/setup`. */
+export interface SetupStatus {
+  agents: SetupAgentStatus[]
+  voice: SetupVoiceStatus
+  progress: SetupProgress
 }
 
 /**
@@ -937,7 +990,7 @@ export interface AgentVoiceSettings {
 
 /** The credentials in `AppSettings`: stored, never answered, each reported as a boolean in `AppSettingsView`. */
 export const SECRET_SETTING_KEYS = [
-  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey'
+  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey', 'kyutaiApiKey'
 ] as const
 export type SecretSettingKey = typeof SECRET_SETTING_KEYS[number]
 
@@ -959,6 +1012,14 @@ export interface AppSettingsView extends Omit<AppSettings, SecretSettingKey> {
   hasOpenCodeKey: boolean
   /** A login on this machine, which is all a host session needs and all Domo can see. */
   hasOpenCodeAuth: boolean
+  /**
+   * Where each credential comes from: `saved` in Settings, `server` when the
+   * server's own configuration sets it (and so wins, and cannot be changed
+   * here), or null for none.
+   */
+  credentialSources: Record<SecretSettingKey, 'saved' | 'server' | null>
+  /** Whether the setup guide should open by itself: never finished, and nothing has been run yet. */
+  setupDue: boolean
   /** What writes titles when `sessionTitles` names no harness; null when nothing is logged in. */
   sessionTitlesDefault: { adapter: AgentAdapter, model: string } | null
 }

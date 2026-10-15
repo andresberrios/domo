@@ -1531,7 +1531,6 @@ class AgentRuntime {
   }
 
   private async onPermission(params: any): Promise<any> {
-    const settings = await getSettings()
     const options = (params.options ?? []).map((option: any) => ({
       optionId: option.optionId,
       name: option.name,
@@ -1570,17 +1569,6 @@ class AgentRuntime {
       await this.setStatus('awaiting-permission', { touch: true })
       return row
     })
-
-    if (settings.autoApprovePermissions) {
-      const auto =
-        options.find((o: any) => o.kind === 'allow_once') ?? options.find((o: any) => o.kind === 'allow_always')
-      if (auto) {
-        this.waiters.delete(permission.id)
-        await resolvePermissionRow(permission.id, auto.optionId, 'auto')
-        await this.setStatus(this.turn ? 'thinking' : 'idle')
-        return { outcome: { outcome: 'selected', optionId: auto.optionId } }
-      }
-    }
 
     const optionId = await answer
     this.waiters.delete(permission.id)
@@ -1746,7 +1734,7 @@ class AgentRuntime {
     // is waiting for is a person. Declaring the turn over here would drain the
     // inbox into an adapter parked inside `session/request_permission`, and the
     // session would stop saying what it is blocked on. It terminates by other
-    // means every time: the answer, auto-approve, `cancel`, or the adapter
+    // means every time: the answer, `cancel`, or the adapter
     // exiting — all of which resolve every waiter.
     if (this.waiters.size) {
       this.armAdapterTurn()

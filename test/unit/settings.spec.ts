@@ -20,13 +20,13 @@ describe('getSettings', () => {
   })
 
   it('lets stored values win over the defaults', async () => {
-    stored({ vscodeSshHost: 'mac', autoApprovePermissions: true })
+    stored({ vscodeSshHost: 'mac', browserTools: false })
 
     const settings = await getSettings()
 
     expect(settings.vscodeSshHost).toBe('mac')
-    expect(settings.autoApprovePermissions).toBe(true)
-    expect(settings.browserTools).toBe(DEFAULTS.browserTools)
+    expect(settings.browserTools).toBe(false)
+    expect(settings.homeMounts).toEqual(DEFAULTS.homeMounts)
   })
 
   it('defaults the VS Code SSH host to empty, meaning docker is local', async () => {

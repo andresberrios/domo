@@ -99,16 +99,15 @@ function setConfigValue(option: SessionConfigOptionInfo, value: string) {
     : { ...config.value, [option.id]: value }
 }
 
-/**
- * The OpenCode console key, which is write-only on purpose.
- *
- * `GET /api/settings` never answers it — it answers `hasOpenCodeKey` — so the
- * box starts empty whether or not one is stored, and an ordinary save must not
- * read that empty box as "remove it". Only a non-empty value is ever sent, and
- * removal is its own explicit action.
- */
-const showKeyField = computed(() => adapterId.value === 'opencode')
-const apiKey = ref('')
+/** Only OpenCode has the out-of-project permission below. */
+const isOpenCode = computed(() => adapterId.value === 'opencode')
+
+const { data: setup, refresh: refreshSetup } = useSetupStatus()
+const signIn = computed(() => setup.value?.agents.find(agent => agent.id === adapterId.value) ?? null)
+/** A new credential can change the models on offer, which the server forgets on a credential change. */
+async function credentialsChanged() {
+  await Promise.all([refreshSettings(), refreshSetup(), refreshProbe()])
+}
 
 const saving = ref(false)
 async function save() {
@@ -121,11 +120,9 @@ async function save() {
         defaultAgentModes: { ...settings.value.defaultAgentModes, [adapterId.value]: mode.value },
         defaultAgentModels: { ...settings.value.defaultAgentModels, [adapterId.value]: model.value },
         defaultAgentConfig: { ...settings.value.defaultAgentConfig, [adapterId.value]: config.value },
-        ...(showKeyField.value ? { openCodePermission: { ...permission.value } } : {}),
-        ...(showKeyField.value && apiKey.value.trim() ? { openCodeApiKey: apiKey.value.trim() } : {})
+        ...(isOpenCode.value ? { openCodePermission: { ...permission.value } } : {})
       }
     })
-    apiKey.value = ''
     await refreshSettings()
     toast.add({ title: `${adapter.value.label} settings saved`, color: 'success', icon: 'i-lucide-check' })
   } catch (error: any) {
@@ -139,30 +136,21 @@ function addMode(id: string) {
   typedModes.value.push(id)
   mode.value = id
 }
-
-const removing = ref(false)
-async function removeKey() {
-  removing.value = true
-  try {
-    await $fetch('/api/settings', { method: 'PATCH', body: { openCodeApiKey: '' } })
-    apiKey.value = ''
-    await refreshSettings()
-    toast.add({ title: 'Console key removed', color: 'success', icon: 'i-lucide-check' })
-  } catch (error: any) {
-    toast.add({ title: 'Could not remove the key', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
-  } finally {
-    removing.value = false
-  }
-}
 </script>
 
 <template>
   <SettingsShell
     :title="adapter.label"
-    description="Its defaults, and the models, modes and options it offers."
+    description="How it signs in, its defaults, and the models, modes and options it offers."
     :saving="saving"
     :save="save"
   >
+    <section class="space-y-3">
+      <h2 class="text-sm font-semibold">Sign-in</h2>
+      <AgentSignIn :adapter="adapter.id" :status="signIn" :settings="settings ?? null" @changed="credentialsChanged" />
+    </section>
+    <USeparator />
+
     <UAlert
       v-if="probeError"
       color="error"
@@ -181,36 +169,7 @@ async function removeKey() {
       :description="probe?.current ? `Default model: ${probe.current}` : 'It chooses its own default model.'"
     />
 
-    <UFormField
-      v-if="showKeyField"
-      label="Console API key"
-      :help="settings?.hasOpenCodeAuth
-        ? 'Host sessions already use your own opencode auth login. A service-account key from the OpenCode console is what a development environment can use, because that login cannot be copied into one.'
-        : 'A service-account key from the OpenCode console. Without one, OpenCode offers only its free models.'"
-    >
-      <div class="flex items-center gap-2">
-        <UInput
-          v-model="apiKey"
-          type="password"
-          class="flex-1"
-          autocomplete="off"
-          :placeholder="settings?.hasOpenCodeKey ? 'A key is configured — type a new one to replace it' : 'oc_sk_…'"
-        />
-        <UButton
-          v-if="settings?.hasOpenCodeKey"
-          color="neutral"
-          variant="subtle"
-          icon="i-lucide-trash-2"
-          :loading="removing"
-          @click="removeKey"
-        >
-          Remove
-        </UButton>
-      </div>
-    </UFormField>
-
-    <template v-if="showKeyField">
-      <USeparator />
+    <template v-if="isOpenCode">
       <section class="space-y-4">
         <div>
           <h2 class="text-sm font-semibold">Working outside the project</h2>

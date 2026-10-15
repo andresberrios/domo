@@ -1,6 +1,20 @@
 <script setup lang="ts">
 const { creating, talk, assistant } = useTalk()
 const talkLabel = computed(() => assistant.value ? `Talk to ${assistant.value.name}` : 'Talk in a new session')
+
+/**
+ * A new install opens on the setup guide, from the home page and once per
+ * visit: skipping it or running a first session stops that for good, and
+ * Settings has it after. A deep link is left where it points.
+ */
+const route = useRoute()
+const { data: settings } = useSettings()
+const offeredSetup = useState('offered-setup', () => false)
+watch(settings, (value) => {
+  if (!value?.setupDue || offeredSetup.value || route.path !== '/') return
+  offeredSetup.value = true
+  void navigateTo('/setup')
+}, { immediate: true })
 </script>
 
 <template>

@@ -177,7 +177,7 @@ describe('retiring an environment', () => {
     expect(await getCronJob(job.id)).toMatchObject({ enabled: false, nextRunAt: null })
     await expect(listAgentSubscriptions(peer.id)).resolves.toEqual([])
     // Cancelled, and *named* as cancelled: "nobody ever answered this" is a
-    // different fact from "the auto-approve setting answered it".
+    // different fact from "Domo closed it on a restart".
     const permissions = await listPermissions(session.id, false)
     expect(permissions[0]).toMatchObject({ resolvedBy: 'retired', resolvedOptionId: null })
   })

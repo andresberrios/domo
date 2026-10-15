@@ -56,8 +56,8 @@ export function codexEntry(): string {
     }
   }
   throw new Error(
-    'Could not find @openai/codex. Run `pnpm install` in the Domo directory, '
-    + 'or point NUXT_CODEX_ENTRY at the Codex CLI entry file.'
+    '@openai/codex is missing from this Domo install. Update or reinstall Domo; '
+    + 'in a development checkout, run `pnpm install`.'
   )
 }
 

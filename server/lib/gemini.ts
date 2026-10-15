@@ -1,7 +1,6 @@
-import { storedSecret } from './secret-settings'
+import { secret } from './secret-settings'
 
-/** The Gemini key: the environment first, then the one stored in Settings. */
+/** The Gemini key: the server's override first, then the one stored in Settings. */
 export function geminiApiKey(): string | null {
-  return process.env.NUXT_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
-    || storedSecret('geminiApiKey')
+  return secret('geminiApiKey')
 }

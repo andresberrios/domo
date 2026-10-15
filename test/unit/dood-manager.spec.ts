@@ -131,7 +131,7 @@ describe('the socket path', () => {
     process.env.HOME = `/Users/${'a'.repeat(53 - '/Users/'.length)}`
     expect(doodSocketPath('env_x')).toHaveLength(88)
     process.env.HOME += 'a'
-    expect(() => doodSocketPath('env_x')).toThrow(/Set NUXT_DOOD_SOCKET_DIR to a shorter directory/)
+    expect(() => doodSocketPath('env_x')).toThrow(/name a shorter socket directory/)
   })
 
   // A Domo developing Domo: its own home is the environment's image layer,
