@@ -9,7 +9,9 @@ const projectId = computed(() => route.params.id as string)
 
 const { projects, isReady } = useProjects()
 const { environments } = useDevEnvironments()
-const { sessions: agentSessions } = useAgentSessions()
+const { sessions: everySession } = useAgentSessions()
+/** An assistant's sessions are its own, as in the sidebar. */
+const agentSessions = computed(() => everySession.value.filter(session => !session.assistantId))
 const { pending } = usePermissions()
 
 const project = computed(() => projects.value.find(item => item.id === projectId.value) ?? null)
@@ -27,12 +29,6 @@ function toggleFolder(path: string) {
 
 // A local-directory agent has no dev environment, but its cwd may still sit
 // inside this project's own checkout — the same attribution the tree makes.
-function isUnderRepo(cwd: string, repoPath: string): boolean {
-  const c = cwd.replace(/\/+$/, '')
-  const r = repoPath.replace(/\/+$/, '')
-  return c === r || c.startsWith(`${r}/`)
-}
-
 const localAgents = computed(() => {
   const repoPath = project.value?.repoPath
   if (!repoPath) return []

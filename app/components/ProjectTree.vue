@@ -77,16 +77,7 @@ function folderKey(projectId: string, path: string) {
   return `folder:${projectId}:${path}`
 }
 
-const agentsByEnvironment = computed(() => {
-  const map = new Map<string, AgentSession[]>()
-  for (const agent of agentSessions.value) {
-    if (!agent.devEnvironmentId) continue
-    const list = map.get(agent.devEnvironmentId)
-    if (list) list.push(agent)
-    else map.set(agent.devEnvironmentId, [agent])
-  }
-  return map
-})
+const agentsByEnvironment = computed(() => sessionsByEnvironment(agentSessions.value))
 
 function agentsFor(environmentId: string): AgentSession[] {
   return agentsByEnvironment.value.get(environmentId) ?? []
@@ -95,12 +86,6 @@ function agentsFor(environmentId: string): AgentSession[] {
 // A local-directory agent has no dev environment, but its cwd may still sit
 // inside a project's own checkout — attribute it to that project rather than
 // only ever showing it in the catch-all bucket.
-function isUnderRepo(cwd: string, repoPath: string): boolean {
-  const c = cwd.replace(/\/+$/, '')
-  const r = repoPath.replace(/\/+$/, '')
-  return c === r || c.startsWith(`${r}/`)
-}
-
 function localAgentsFor(project: Project) {
   return agentSessions.value.filter(agent => !agent.devEnvironmentId && isUnderRepo(agent.cwd, project.repoPath))
 }
