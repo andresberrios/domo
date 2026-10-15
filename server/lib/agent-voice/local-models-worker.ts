@@ -3,13 +3,15 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { FromWorker, LocalModelRequest, ToWorker } from './local-models-host'
 import { ensureModel, turnProbability } from './turn'
+import { ensureVadModel, speechSeconds } from './vad'
 
 /**
  * The open speech models, in a process of their own (see
  * `local-models-host.ts` for why): Whisper or Moonshine transcribe, Kokoro
- * speaks, all as ONNX through transformers.js, and Smart Turn judges a pause
- * through `onnxruntime-node`. The weights are fetched from Hugging Face into
- * the data directory the first time they are needed, and never again.
+ * speaks, all as ONNX through transformers.js; Smart Turn judges a pause and
+ * Silero VAD hears whether anything was said, through `onnxruntime-node`. The
+ * weights are fetched from Hugging Face into the data directory the first
+ * time they are needed, and never again.
  *
  * Only this process imports a model library. The server keeps what needs no
  * model (`local-speech.ts`): the turn cut into Whisper's windows and the
@@ -258,6 +260,10 @@ async function run(id: string, request: LocalModelRequest): Promise<unknown> {
       return turnProbability(request.samples, modelsDir)
     case 'turn-model':
       return ensureModel(modelsDir)
+    case 'speech':
+      return speechSeconds(request.samples, modelsDir, request.enough)
+    case 'speech-model':
+      return ensureVadModel(modelsDir)
   }
 }
 

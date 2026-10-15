@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+
 import { DEFAULT_AGENT_VOICE, SPOKEN_NOTE_PREFIX } from '../../shared/agent-voice'
 import {
   combineVocabulary,
@@ -11,6 +12,9 @@ import {
 } from '../../server/lib/agent-voice/context'
 import { looksHallucinated, transcribeWith } from '../../server/lib/agent-voice/speech'
 import { whisperWindows } from '../../server/lib/agent-voice/local-speech'
+
+// No speech detector here: every recording is transcribed, as without its model.
+vi.mock('../../server/lib/agent-voice/local-models', () => ({ requestLocalModel: async () => null }))
 
 /**
  * What a recogniser is told before it hears a turn. The failure these pin is
