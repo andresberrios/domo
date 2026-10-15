@@ -7,7 +7,7 @@ import { describeSeed } from '../dev-env/workspace-seed'
 import { pinnedAdapterVersions } from '../dev-env/runtime-volume'
 import { inspectContainer, type ContainerInspection } from '../dev-env/docker'
 import { DOOD_CONTAINER_LABEL } from '../dev-env/container'
-import { awaitMessage, startSubscriptionNotifier, watch } from '../acp/subscriptions'
+import { awaitMessage, reportTurnTo, startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import {
   adaptersAreCurrent,
   beginEnvironment,
@@ -19,7 +19,8 @@ import {
 import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPort } from '../dev-environment-ports'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment, beginProjectEnvironmentUpgrade } from '../projects'
 import { cronJobState, normalizeCronJobInput } from '../cron/input'
-import { upgradeAdapterChange, upgradeNotes } from '../../../shared/dev-environments'
+import { describeAdapterUpgrade, upgradeNotes } from '../../../shared/dev-environments'
+import { inBackground } from '../background'
 import { notifyHuman, readAgentFile, writeAgentFile } from '../notifications'
 import { getSettings } from '../settings'
 import { voiceCatalog } from '../agent-voice/assistant-voice'
@@ -90,6 +91,7 @@ export const MESH_INSTRUCTIONS = [
   'An agent session has an id (ag_…); the tools that read or change one session default to your own when agentId is omitted.',
   'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own branch and worktree of it. Agents run either on the host or inside an environment.',
   'You cannot wait for another agent: its turn ends long after yours. spawn_agent and message_agent follow the agent you hand work to by default, and subscribe_to_agent follows any other; Domo messages you when it finishes.',
+  'When you finish work another agent handed you, report to it with message_agent and turnReport: true as the last thing you do in the turn: Domo then does not also send it the note that your turn ended.',
   'To reach the human, use notify_supervisor: it stays in the UI until they have seen it.',
   'An assistant (as_…) is a named agent the human keeps talking to: it lives across many sessions chained by handoffs, so message it by its assistant id, not a session id.'
 ].join(' ')
@@ -390,10 +392,10 @@ async function assertCanGenerate(): Promise<void> {
 async function drawPictureLater(caller: AgentSession, assistantId: string, args: any): Promise<{ picture?: string }> {
   if (args.generatePicture !== true) return {}
   await assertCanGenerate()
-  generateAssistantPicture(assistantId, typeof args.pictureStyle === 'string' ? args.pictureStyle : undefined).then(
+  inBackground(generateAssistantPicture(assistantId, typeof args.pictureStyle === 'string' ? args.pictureStyle : undefined).then(
     assistant => tellAgent(caller.id, `The picture for assistant "${assistant.name}" (${assistant.id}) is generated and set.`),
     error => tellAgent(caller.id, `Generating a picture for assistant ${assistantId} failed: ${error instanceof Error ? error.message : String(error)}`)
-  )
+  ))
   return { picture: 'generating in the background (about a minute); you will be messaged when it is set' }
 }
 
@@ -528,6 +530,15 @@ export const MESH_TOOLS = [
         notifyIndefinitely: {
           type: 'boolean',
           description: 'Be told about every turn until you unsubscribe. Use deliberately, and call unsubscribe_from_agent when you no longer need updates.'
+        },
+        turnReport: {
+          type: 'boolean',
+          description:
+            'This message is your report on this turn to that agent: Domo will not also send it the "finished its turn" '
+            + 'note for your current turn, which would repeat it. For a worker\'s final report to whoever spawned or '
+            + 'follows it, sent as the last thing in the turn. If you keep working after it, that agent does not hear '
+            + 'about the rest of this turn. It is still told if the turn fails, is cancelled or waits for a permission. '
+            + 'Default false.'
         }
       },
       required: ['agentId', 'message'],
@@ -1342,6 +1353,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         if (notify) await removeMessageWatch(messageId)
         throw error
       }
+      if (args.turnReport === true && target.id !== caller.id) reportTurnTo(caller.id, target.id)
       return {
         delivered: true,
         ...assistant ? { assistantId: assistant.id, name: assistant.name } : {},
@@ -1437,7 +1449,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (notify) await subscribe(caller.id, session.id, window)
       if (creation) {
         const { environment } = creation
-        creation.built.then(
+        inBackground(creation.built.then(
           // Only what the caller would want to act on: the session's first turn
           // end says the rest.
           (ready) => {
@@ -1455,7 +1467,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
               + `did not start: ${error instanceof Error ? error.message : String(error)}`
             )
           }
-        ).catch(() => {})
+        ))
       }
       return {
         id: session.id,
@@ -1598,12 +1610,12 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
       const slug = prompt.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'image'
       const path = String(args.path ?? '').trim() || `generated-images/${slug}-${stamp}.png`
-      generateImage(prompt).then(
+      inBackground(generateImage(prompt).then(
         async (image) => {
           const saved = await writeAgentFile(caller, path, image.bytes)
           await tellAgent(caller.id, `The image you asked for is saved at ${saved} (${Math.round(image.bytes.length / 1024)} KB PNG). Prompt: ${clip(prompt, 200)}`)
         }
-      ).catch(error => tellAgent(caller.id, `Image generation failed: ${error instanceof Error ? error.message : String(error)} Prompt: ${clip(prompt, 200)}`))
+      ).catch(error => tellAgent(caller.id, `Image generation failed: ${error instanceof Error ? error.message : String(error)} Prompt: ${clip(prompt, 200)}`)))
       return { generating: true, path, note: 'About a minute; you will be messaged when it is saved.' }
     }
 
@@ -1700,7 +1712,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       // Building takes minutes, far past any tool call's patience, so the call
       // answers with the row and the result arrives as a note.
       if (args.notifyWhenReady !== false) {
-        built.then(
+        inBackground(built.then(
           ready => tellAgent(
             caller.id,
             `Development environment "${ready.name}" (${ready.id}) is running at ${ready.workspacePath}. `
@@ -1711,7 +1723,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
             `Development environment "${environment.name}" (${environment.id}) failed to build: `
             + `${error instanceof Error ? error.message : String(error)}`
           )
-        )
+        ))
       }
       return {
         id: environment.id,
@@ -1783,10 +1795,10 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       }
       const { environment, upgraded } = await beginProjectEnvironmentUpgrade(String(args.environmentId ?? ''))
       // An image build takes minutes, past any tool call's patience.
-      upgraded.then(
+      inBackground(upgraded.then(
         report => tellAgent(caller.id, [
           `Development environment "${environment.name}" (${environment.id}) was upgraded and is ${report.environment.status}. `
-          + `Coding-agent adapters: ${upgradeAdapterChange(report)}.`,
+          + `Coding-agent adapters: ${describeAdapterUpgrade(report)}.`,
           ...upgradeNotes(report)
         ].join(' ')),
         error => tellAgent(
@@ -1794,7 +1806,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           `Development environment "${environment.name}" (${environment.id}) could not be upgraded: `
           + `${error instanceof Error ? error.message : String(error)}`
         )
-      )
+      ))
       return {
         id: environment.id,
         name: environment.name,

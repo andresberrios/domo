@@ -135,10 +135,13 @@ const {
   containerExecArgs,
   createEnvironment,
   beginUpgrade,
+  ensureEnvironmentRunning,
   environmentUpgradeStatus,
   readEnvironmentFile,
   reconcileEnvironmentStatus,
   reconcileEnvironmentStatuses,
+  restoreDockerProxies,
+  resumeEnvironmentBuilds,
   retireEnvironment,
   startEnvironment,
   stopEnvironment,
@@ -475,6 +478,15 @@ describe('start, stop and remove', () => {
       status: 'error',
       lastError: expect.stringContaining('no longer exists')
     })
+  })
+
+  it('keeps a failed creation\'s own error when an agent asks for it, rather than calling the container gone', async () => {
+    repo.getDevEnvironment.mockResolvedValue(environment({ status: 'error', containerId: null, lastError: 'postCreateCommand failed: exit 1' }))
+    inspectContainer.mockResolvedValue(null)
+
+    await expect(ensureEnvironmentRunning('env_1')).rejects.toThrow('postCreateCommand failed: exit 1')
+
+    expect(repo.updateDevEnvironment).not.toHaveBeenCalled()
   })
 
   it('records an environment whose container the daemon will not start', async () => {
@@ -1432,6 +1444,30 @@ describe('createEnvironment', () => {
       // The row keeps the path everything else addresses; it is the symlink.
       workspacePath: '/workspaces/api-work'
     }))
+  })
+
+  describe('after a restart', () => {
+    it('builds again what it cut off, without the container it got to, before an agent waiting for it starts', async () => {
+      let row = environment({ name: 'api-work', workspacePath: '/workspaces/api-work', status: 'creating', containerId: 'half-built' })
+      repo.listDevEnvironments.mockResolvedValue([row])
+      repo.getDevEnvironment.mockImplementation(async () => row)
+      repo.updateDevEnvironment.mockImplementation(async (_id: string, patch: Partial<DevEnvironment>) => (row = { ...row, ...patch }))
+      let finishImage!: () => void
+      buildEnvironmentImage.mockImplementationOnce(() => new Promise(resolve => (finishImage = () => resolve('domo-dev-env_1'))))
+
+      await expect(resumeEnvironmentBuilds()).resolves.toEqual(['env_1'])
+      // The rest of the boot does not wait for it.
+      await restoreDockerProxies()
+      const started = ensureEnvironmentRunning('env_1')
+      await vi.waitFor(() => expect(buildEnvironmentImage).toHaveBeenCalled())
+      expect(row.status).toBe('creating')
+      finishImage()
+
+      await expect(started).resolves.toMatchObject({ status: 'running' })
+      expect(stepAt('rm', 'half-built')).toBeGreaterThan(-1)
+      expect(stepAt('rm', 'half-built')).toBeLessThan(stepAt('run', '--detach'))
+      expect(hostWorktree.createHostWorktree).toHaveBeenCalledWith(expect.objectContaining({ environmentId: 'env_1', branch: 'api-work' }))
+    })
   })
 
   describe('the host\'s checkout', () => {

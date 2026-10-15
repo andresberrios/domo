@@ -1,3 +1,4 @@
+import { inBackground } from '../background'
 import { bus } from '../bus'
 import { keyedSerial } from '../keyed-serial'
 import {
@@ -8,7 +9,8 @@ import {
   latestAgentMessage,
   listAgentFollowers,
   listAllSubscriptionTargets,
-  listMessageWatchIds
+  listMessageWatchIds,
+  listPermissions
 } from '../repo'
 import { acpManager } from './manager'
 import type { StreamEvent } from '../../../shared/types'
@@ -24,7 +26,9 @@ import type { StreamEvent } from '../../../shared/types'
  * A subscription lasts a number of turn ends, or indefinitely. Only a turn
  * that ends counts: a permission request or an error is worth hearing about
  * but is not the "it finished" the subscriber is waiting for, so those notify
- * without using the window up.
+ * without using the window up. An agent that reported to a subscriber itself
+ * (`message_agent` with `turnReport`) spares it the note for that turn end,
+ * which still counts.
  *
  * A message an agent sends with `message_agent` is followed the same way, but
  * from the turn that handles it, which may be several turns away: the watch on
@@ -70,6 +74,20 @@ const awaited = new Set<string>()
 /** Say that a watch on message `messageId` exists. */
 export function awaitMessage(messageId: string): void {
   awaited.add(messageId)
+}
+
+/**
+ * Who each agent has reported to on its current turn (`message_agent` with
+ * `turnReport`), taken at the turn's end. In memory: a restart ends the turn
+ * too, and then the note is sent as usual.
+ */
+const reported = new Map<string, Set<string>>()
+
+/** `senderId`'s message to `recipientId` is its report on this turn: no turn-end note to it for this turn. */
+export function reportTurnTo(senderId: string, recipientId: string): void {
+  const recipients = reported.get(senderId) ?? new Set<string>()
+  recipients.add(recipientId)
+  reported.set(senderId, recipients)
 }
 
 /** One queue per agent the events are about. */
@@ -141,8 +159,11 @@ function handle(event: StreamEvent): Promise<void> | void {
   if (!targetId) return
   const arming = event.type === 'agent-event' && event.event.type === 'user_message' ? awaitedIn(event.event.payload) : []
   // Synchronous, and the usual answer: an agent nobody follows must not turn
-  // every turn it ends into a query.
-  if (!arming.length && !watched.has(targetId)) return
+  // every turn it ends into a query. Its report, if it made one, was for this turn.
+  if (!arming.length && !watched.has(targetId)) {
+    if (event.type === 'agent-event' && (event.event.type === 'turn_end' || event.event.type === 'adapter-exit')) reported.delete(targetId)
+    return
+  }
   return serially(targetId, async () => {
     if (arming.length) {
       const armed = await armMessageWatches(targetId, arming)
@@ -174,13 +195,22 @@ async function dispatch(event: StreamEvent): Promise<void> {
   if (event.type !== 'agent-event') return
 
   switch (event.event.type) {
-    case 'turn_end':
+    case 'turn_end': {
+      const stopReason = event.event.payload?.stopReason ?? 'end_turn'
+      const told = reported.get(event.agentSessionId) ?? new Set<string>()
+      reported.delete(event.agentSessionId)
+      // Counted for everyone, told or not: the window is turn ends.
+      const subscribers = await consumeSubscriptionTurn(event.agentSessionId)
+      // A report covers a turn that ended normally; a refusal, a cancel or a
+      // waiting permission is news it did not carry.
+      const spared = told.size && stopReason === 'end_turn' && !(await listPermissions(event.agentSessionId)).length
       await notifySubscribers(
         event.agentSessionId,
-        `finished its turn (${event.event.payload?.stopReason ?? 'end_turn'})`,
-        await consumeSubscriptionTurn(event.agentSessionId)
+        `finished its turn (${stopReason})`,
+        spared ? subscribers.filter(subscriber => !told.has(subscriber.subscriberId)) : subscribers
       )
       break
+    }
     case 'error':
       await notifySubscribers(
         event.agentSessionId,
@@ -189,6 +219,8 @@ async function dispatch(event: StreamEvent): Promise<void> {
       )
       break
     case 'adapter-exit':
+      // Its turn, if any, went with it.
+      reported.delete(event.agentSessionId)
       // Domo stopped it: a shutdown, an archive or a handoff, none of which
       // is news to whoever follows the agent.
       if (event.event.payload?.requested) break
@@ -221,7 +253,7 @@ export async function startSubscriptionNotifier(): Promise<void> {
   if (g[globalKey]) return
   g[globalKey] = bus.subscribe((event) => {
     const running = handle(event)
-    if (running) void running.catch(error => console.error('[acp] subscription notifier failed', error))
+    if (running) inBackground(running.catch(error => console.error('[acp] subscription notifier failed', error)))
   })
   const [targets, messages] = await Promise.all([
     listAllSubscriptionTargets(),
@@ -240,4 +272,5 @@ export function stopSubscriptionNotifier(): void {
   g[globalKey] = null
   watched.clear()
   awaited.clear()
+  reported.clear()
 }

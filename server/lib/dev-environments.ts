@@ -482,19 +482,7 @@ async function buildEnvironment(input: {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await updateDevEnvironment(id, { status: 'error', lastError: message })
-    const current = await getDevEnvironment(id)
-    // By inspection, for a Docker-in-Docker volume named some other way; the
-    // sweep below claims the rest by name and by label.
-    if (current?.containerId) {
-      await removeContainer(current.containerId)
-    } else {
-      const found = await run('docker', [
-        'ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`
-      ], { allowFailure: true }).catch(() => ({ stdout: '', stderr: '' }))
-      for (const containerId of found.stdout.split('\n').filter(Boolean)) {
-        await removeContainer(containerId)
-      }
-    }
+    await removeBuiltContainer(id)
     // `postCreateCommand` may already have started a stack on the host daemon,
     // and nothing may add to it while it is taken down.
     await stopDoodProxy(id).catch(() => {})
@@ -510,6 +498,54 @@ async function buildEnvironment(input: {
     await sweepEnvironmentResources()
     throw error
   }
+}
+
+/**
+ * The container a build of `id` got as far as running, if any. By inspection,
+ * for a Docker-in-Docker volume named some other way; the sweep claims the
+ * rest by name and by label.
+ */
+async function removeBuiltContainer(id: string): Promise<void> {
+  const current = await getDevEnvironment(id)
+  if (current?.containerId) {
+    await removeContainer(current.containerId)
+    return
+  }
+  const found = await run('docker', [
+    'ps', '--all', '--quiet', '--filter', `label=domo.envId=${id}`
+  ], { allowFailure: true }).catch(() => ({ stdout: '', stderr: '' }))
+  for (const containerId of found.stdout.split('\n').filter(Boolean)) {
+    await removeContainer(containerId)
+  }
+}
+
+/**
+ * Build again what a restart cut off. A build runs in the server's process,
+ * so a row still `creating` at boot died with the old one. Every step is made
+ * again or reused (the worktree, the volumes, the image), after the container
+ * it may have got as far as running is removed. In the lifecycle queue, so a
+ * session spawned into it, whose prompt waits in its inbox, starts once it is
+ * up, and fails with the build's own error if it fails.
+ */
+export async function resumeEnvironmentBuilds(): Promise<string[]> {
+  const resumed: string[] = []
+  for (const environment of await listDevEnvironments()) {
+    if (environment.status !== 'creating') continue
+    const { id, name, workspacePath, containerName } = environment
+    const project = await getProject(environment.projectId)
+    if (!project || project.retiredAt) {
+      await updateDevEnvironment(id, { status: 'error', lastError: 'Domo restarted while this environment was being created, and its project is gone.' })
+      continue
+    }
+    const controller = new AbortController()
+    builds.set(id, controller)
+    lifecycle(id, async () => {
+      await removeBuiltContainer(id)
+      return buildEnvironment({ id, name, workspacePath, containerName, project, signal: controller.signal })
+    }).finally(() => builds.delete(id)).catch(() => {})
+    resumed.push(id)
+  }
+  return resumed
 }
 
 /** Everything `docker run` of an environment's container takes, worked out before anything is replaced. */
@@ -846,6 +882,9 @@ async function start(id: string): Promise<DevEnvironment> {
   assertNotRetired(environment)
   const inspection = await inspectContainer(containerReference(environment))
   if (!inspection) {
+    // Already broken, most often a failed creation, which removed its own
+    // container: what broke it says more than that the container is gone.
+    if (environment.status === 'error' && environment.lastError) throw new Error(environment.lastError)
     throw await breakEnvironment(id, MISSING_CONTAINER_ERROR)
   }
   if (hasDockerProxy(inspection)) await ensureDockerProxy(proxyTarget(environment, inspection))
@@ -1529,7 +1568,8 @@ function proxyTarget(environment: DevEnvironment, inspection: ContainerInspectio
  */
 export async function restoreDockerProxies(): Promise<void> {
   for (const environment of await listDevEnvironments()) {
-    if (environment.retiredAt) continue
+    // A resumed build brings its own up, and waiting behind it would hold the boot for minutes.
+    if (environment.retiredAt || environment.status === 'creating') continue
     await lifecycle(environment.id, async () => {
       const inspection = await inspectContainer(containerReference(environment)).catch(() => null)
       if (!hasDockerProxy(inspection)) return

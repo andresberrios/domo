@@ -1,4 +1,4 @@
-import type { DevEnvironment, EnvironmentUpgrade } from './types'
+import type { AgentAdapter, DevEnvironment, EnvironmentUpgrade } from './types'
 
 /**
  * Why git would refuse `name` as a branch, in git's own terms, or null when it
@@ -114,11 +114,19 @@ export function describeBranchOutcome(branch: { name: string, deleted: boolean, 
   return `${branch.deleted ? 'Deleted' : 'Kept'} the branch ${branch.name}: ${branch.reason}`
 }
 
-/** Whether an upgrade changed the coding-agent adapters; `unknown` when the old ones were never recorded. */
-export function upgradeAdapterChange(upgrade: Pick<EnvironmentUpgrade, 'adapters'>): 'updated' | 'unchanged' | 'unknown' {
+/**
+ * The coding-agent adapters after an upgrade, in a phrase. They are always
+ * this Domo's pinned versions then; the old ones are named only when known
+ * (another Domo's stopped container cannot be read).
+ */
+export function describeAdapterUpgrade(upgrade: Pick<EnvironmentUpgrade, 'adapters'>): string {
   const { from, to } = upgrade.adapters
-  if (!from) return 'unknown'
-  return Object.entries(to).every(([adapter, version]) => from[adapter as keyof typeof from] === version) ? 'unchanged' : 'updated'
+  const entries = Object.entries(to) as Array<[AgentAdapter, string]>
+  const versions = entries.map(([adapter, version]) => `${adapter} ${version}`).join(', ')
+  if (!from) return `current (${versions})`
+  const changed = entries.filter(([adapter, version]) => from[adapter] !== version)
+  if (!changed.length) return `already current (${versions})`
+  return `updated to current (${changed.map(([adapter, version]) => `${adapter} ${from[adapter] ?? 'none'} → ${version}`).join(', ')})`
 }
 
 /** What an upgrade left for somebody to do or know, as plain sentences; empty when nothing. */

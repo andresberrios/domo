@@ -153,14 +153,19 @@ export async function createHostWorktree(input: CreateHostWorktreeInput): Promis
   const branch = await checkBranchName(input.repoPath, input.branch)
   const existing = await run('git', ['-C', input.repoPath, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFailure: true })
     .then(output => !!output.stdout.trim(), () => false)
-  await mkdir(dirname(worktreePath), { recursive: true })
-  await run('git', [
-    '-C', input.repoPath, 'worktree', 'add', '--lock', '--reason', LOCK_REASON,
-    ...(existing ? [worktreePath, branch] : ['-b', branch, worktreePath, 'HEAD'])
-  ]).catch((error: Error) => {
-    // Git's own words say where the branch is already checked out.
-    throw new Error(`Could not check out the branch ${branch}: ${error.message.replace(/^git worktree failed: (fatal: )?/, '')}`)
-  })
+  // Already there for this environment: a build a restart cut off, made again.
+  // Nothing has worked in it yet, so it is taken as it is.
+  const resumed = await domoRegistration(input.repoPath, worktreePath) === 'domo'
+  if (!resumed) {
+    await mkdir(dirname(worktreePath), { recursive: true })
+    await run('git', [
+      '-C', input.repoPath, 'worktree', 'add', '--lock', '--reason', LOCK_REASON,
+      ...(existing ? [worktreePath, branch] : ['-b', branch, worktreePath, 'HEAD'])
+    ]).catch((error: Error) => {
+      // Git's own words say where the branch is already checked out.
+      throw new Error(`Could not check out the branch ${branch}: ${error.message.replace(/^git worktree failed: (fatal: )?/, '')}`)
+    })
+  }
   const adminPath = await worktreeAdminPath(worktreePath, commonGitDir)
   await writeFile(gitdirFilePath, canonicalGitdirFileContents(input.projectId, adminPath), 'utf8')
 

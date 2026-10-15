@@ -11,6 +11,7 @@ import {
 import {
   reconcileEnvironmentStatuses,
   restoreDockerProxies,
+  resumeEnvironmentBuilds,
   stopWatchingEnvironmentStatuses,
   watchEnvironmentStatuses
 } from '../lib/dev-environments'
@@ -35,18 +36,15 @@ export default defineNitroPlugin(async (nitro) => {
       `update agent_sessions set status = 'stopped'
        where status in ('starting', 'thinking', 'awaiting-permission')`
     )
-    // A build or an upgrade runs in this process, so one still `creating` or
-    // `upgrading` died with the old server. Left alone it would read as in
-    // progress for ever. An upgrade's volumes are all still there, so another
-    // upgrade finishes it, whichever step it died at.
+    // An upgrade runs in this process, so one still `upgrading` died with the
+    // old server. Left alone it would read as in progress for ever. Its
+    // volumes are all still there, so another upgrade finishes it, whichever
+    // step it died at. A creation is built again, below.
     await query(
       `update dev_environments
           set status = 'error', updated_at = $1,
-              last_error = case status
-                when 'creating' then 'Domo restarted while this environment was being created. Retire it and create it again.'
-                else 'Domo restarted while this environment was being upgraded. Upgrade it again.'
-              end
-        where status in ('creating', 'upgrading') and retired_at is null`,
+              last_error = 'Domo restarted while this environment was being upgraded. Upgrade it again.'
+        where status = 'upgrading' and retired_at is null`,
       [new Date().toISOString()]
     )
     await query(
@@ -69,6 +67,10 @@ export default defineNitroPlugin(async (nitro) => {
   // over a container that exited. Then kept so (`watchEnvironmentStatuses`).
   await reconcileEnvironmentStatuses().catch(error => console.error('[domo] environment status', error))
   watchEnvironmentStatuses()
+
+  // Before the inbox resume: a session spawned into one of these waits in the
+  // environment's queue behind its build, and then takes its prompt.
+  await resumeEnvironmentBuilds().catch(error => console.error('[domo] environment builds', error))
 
   // Before the ports: detecting a stack's services goes through the daemon,
   // and an environment's agent may be mid-`docker compose` right now.

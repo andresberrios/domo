@@ -7,6 +7,7 @@ import { nameAgentSession } from '../repo'
 import { getSettings } from '../settings'
 import { TITLE_MODELS } from '../../../shared/agent-adapters'
 import type { AgentAdapter, AppSettings } from '../../../shared/types'
+import { inBackground } from '../background'
 
 /**
  * Titles for sessions started without one, written by a small model and never
@@ -249,12 +250,12 @@ async function limited<T>(work: () => Promise<T>): Promise<T> {
  */
 export function nameSessionInBackground(agentSessionId: string, text: string): void {
   if (!text.trim()) return
-  void (async () => {
+  inBackground((async () => {
     const titler = await resolveTitler((await getSettings()).sessionTitles)
     if (!titler) return
     const title = cleanTitle((await writeTitle(text, titler, agentSessionId)).answer)
     if (title) await nameAgentSession(agentSessionId, title)
   })().catch((error) => {
     console.warn(`[acp:${agentSessionId}] no generated title: ${error instanceof Error ? error.message : String(error)}`)
-  })
+  }))
 }

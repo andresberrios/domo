@@ -40,6 +40,7 @@ import {
 } from './model'
 import { availableModes, currentModeId, modeConfigOption } from './mode'
 import { nameSessionInBackground } from './session-title'
+import { inBackground } from '../background'
 import {
   appendAgentEvent,
   claimInboxMessages,
@@ -2608,16 +2609,20 @@ class AcpManager {
         })
       }
       await appendAgentEvent(session.id, 'environment_pending', { environmentId: environment!.id, name: environment!.name })
-      void input.environmentBuilt.then(
+      // Tracked until the build settles; the adapter's own start is the runtime's, which a shutdown stops.
+      inBackground(input.environmentBuilt.then(
         // The attach drains the inbox, which delivers the first message.
-        () => this.runtime(session.id).ensureStarted(),
+        () => {
+          void this.runtime(session.id).ensureStarted()
+            .catch(error => console.error(`[acp:${session.id}] could not start in its new environment`, error))
+        },
         async (error) => {
           const message = `Its development environment "${environment!.name}" could not be created: `
             + `${error instanceof Error ? error.message : String(error)}`
           await updateAgentSession(session.id, { status: 'error', lastError: message })
           await appendAgentEvent(session.id, 'error', { message })
         }
-      ).catch(error => console.error(`[acp:${session.id}] could not start in its new environment`, error))
+      ).catch(error => console.error(`[acp:${session.id}] could not start in its new environment`, error)))
       return session
     }
     if (firstMessage) {

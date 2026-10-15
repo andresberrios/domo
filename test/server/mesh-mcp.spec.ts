@@ -25,6 +25,7 @@ import {
   updateDevEnvironment
 } from '../../server/lib/repo'
 import { attachmentPath } from '../../server/lib/notifications'
+import { settleBackground } from '../../server/lib/background'
 import { startSubscriptionNotifier, stopSubscriptionNotifier } from '../../server/lib/acp/subscriptions'
 import { pinnedAdapterVersions } from '../../server/lib/dev-env/runtime-volume'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
@@ -772,6 +773,24 @@ describe('projects and dev environments', () => {
     expect(body).toMatchObject({ id: 'env_new', name: 'feature-x', status: 'creating' })
   })
 
+  // What the call leaves running must be waitable, or the next test's
+  // truncate races its insert and deadlocks (`test/setup/database.ts`).
+  it('tracks the note it sends when the build ends, so a test can wait for it', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+    building.built = new Promise(resolve => setTimeout(() => resolve({
+      id: 'env_new', name: 'feature-x', status: 'running', workspacePath: '/workspaces/env_new',
+      workspaceSeed: { paths: [], total: 0, copied: [], install: null, branch: { name: 'feature-x', created: true } }
+    }), 50))
+
+    await callTool(mintMeshToken(caller.id), 'create_dev_environment', { projectId: project.id, name: 'feature-x' })
+    await settleBackground()
+
+    expect((await listInboxMessages(caller.id)).map(message => message.content[0].text)).toEqual([
+      expect.stringContaining('"feature-x" (env_new) is running')
+    ])
+  })
+
   it('starts, stops and renames a development environment', async () => {
     const caller = await session('caller')
     const project = await createProject({ name: 'domo', repoPath })
@@ -840,7 +859,7 @@ describe('projects and dev environments', () => {
     })
     expect(devEnvironments.beginUpgrade).toHaveBeenCalledWith(environment.id, expect.anything())
     await expect.poll(async () => (await listInboxMessages(caller.id)).map(message => message.content[0].text)).toEqual([
-      expect.stringMatching(/"env" \(env_\w+\) was upgraded and is running\. Coding-agent adapters: updated\. .*--force-recreate: db/)
+      expect.stringMatching(/"env" \(env_\w+\) was upgraded and is running\. Coding-agent adapters: updated to current \(codex 1\.0\.0 → 2\.0\.0\)\. .*--force-recreate: db/)
     ])
     expect(acp.stop).toHaveBeenCalledWith(inside.id)
     await expect(listAgentEvents(inside.id)).resolves.toMatchObject([
@@ -1255,6 +1274,72 @@ describe('subscription windows', () => {
     await appendAgentEvent(peer.id, 'turn_end', { stopReason: 'end_turn' })
     await new Promise(resolve => setTimeout(resolve, 100))
     await expect(notes(caller.id)).resolves.toHaveLength(4)
+  })
+
+  describe('a message an agent marks as its turn report', () => {
+    async function reportTo(from: string, to: string, turnReport?: boolean) {
+      await callTool(mintMeshToken(from), 'message_agent', { agentId: to, message: 'REPORT: 42', notifyWhenDone: false, turnReport })
+    }
+    async function endTurn(agentId: string, stopReason = 'end_turn') {
+      await appendAgentEvent(agentId, 'turn_end', { stopReason })
+      await settleBackground()
+    }
+
+    it('spares the recipient that turn\'s turn-end note, which still uses up its turn', async () => {
+      const caller = await session('caller')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id, turns: 2 })
+
+      await reportTo(peer.id, caller.id, true)
+      await endTurn(peer.id)
+
+      expect(acp.deliver).toHaveBeenCalledTimes(1)
+      await expect(notes(caller.id)).resolves.toEqual([])
+      await expect(listAgentSubscriptions(caller.id)).resolves.toMatchObject([{ remainingTurns: 1 }])
+
+      // Only that turn: the next one is noted as usual.
+      await endTurn(peer.id)
+      await expect(notes(caller.id)).resolves.toEqual([expect.stringContaining('finished its turn (end_turn)')])
+    })
+
+    it('changes nothing without the flag', async () => {
+      const caller = await session('caller')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id })
+
+      await reportTo(peer.id, caller.id)
+      await endTurn(peer.id)
+
+      await expect(notes(caller.id)).resolves.toEqual([expect.stringContaining('finished its turn (end_turn)')])
+    })
+
+    it('still tells the recipient when the turn fails or ends abnormally after it', async () => {
+      const caller = await session('caller')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id, turns: 3 })
+
+      await reportTo(peer.id, caller.id, true)
+      await appendAgentEvent(peer.id, 'error', { message: 'rate limited' })
+      await endTurn(peer.id, 'refusal')
+
+      const all = await notes(caller.id)
+      expect(all[0]).toContain('stopped with an error: rate limited')
+      expect(all[1]).toContain('finished its turn (refusal)')
+    })
+
+    it('still notes a subscriber it did not report to', async () => {
+      const caller = await session('caller')
+      const other = await session('other')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id })
+      await callTool(mintMeshToken(other.id), 'subscribe_to_agent', { agentId: peer.id })
+
+      await reportTo(peer.id, caller.id, true)
+      await endTurn(peer.id)
+
+      await expect(notes(caller.id)).resolves.toEqual([])
+      await expect(notes(other.id)).resolves.toEqual([expect.stringContaining('finished its turn')])
+    })
   })
 
   it('keeps a subscription made before windows existed indefinite', async () => {
