@@ -581,6 +581,16 @@ export interface CronJob {
   updatedAt: string
 }
 
+/** What a Run now did: started a turn, joined the running one, or waits behind it. */
+export interface CronRunNowResult {
+  jobId: string
+  /** The session that took it: an assistant's job goes to its current one. */
+  agentSessionId: string
+  /** The mode that applied; `steer` becomes `interrupt` where the adapter cannot steer. */
+  delivery: MessageDelivery
+  outcome: 'prompted' | 'steered' | 'queued'
+}
+
 export interface CronRun {
   id: string
   cronJobId: string

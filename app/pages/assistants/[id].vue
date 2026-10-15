@@ -177,6 +177,7 @@ const menuItems = computed(() => [
             size="xs"
             @click="journalOpen = true"
           />
+          <TargetSchedules :assistant-id="assistantId" />
         </template>
         <template #right>
           <USwitch v-model="condensed" size="xs" label="Condensed" :ui="{ label: 'text-xs text-muted' }" />

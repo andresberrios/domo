@@ -8,9 +8,10 @@ import {
   failCronJobSchedule,
   finishCronRun,
   getAgentSessionWithEnvironment,
-  listDueCronJobs
+  listDueCronJobs,
+  startManualCronRun
 } from '../repo'
-import type { CronJob } from '../../../shared/types'
+import type { CronJob, CronRunNowResult } from '../../../shared/types'
 
 const TICK_MS = 15_000
 
@@ -27,6 +28,24 @@ export function deliverCronJob(job: CronJob) {
   return job.assistantId
     ? deliverToAssistant(job.assistantId, input)
     : acpManager.deliver(job.agentSessionId!, input)
+}
+
+/**
+ * Fire a job now, outside its schedule: the mesh's `run_scheduled_task` and the
+ * UI's Run now. The next occurrence stays where it was, and the job's "if busy"
+ * setting decides what happens to a turn already running, as it would on time.
+ */
+export async function runCronJobNow(job: CronJob): Promise<CronRunNowResult> {
+  const run = await startManualCronRun(job.id)
+  try {
+    const result = await deliverCronJob(job)
+    await finishCronRun(run.id, 'delivered', result.outcome)
+    return { jobId: job.id, agentSessionId: result.agentSessionId, delivery: result.delivery, outcome: result.outcome }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await finishCronRun(run.id, 'failed', message).catch(() => {})
+    throw error
+  }
 }
 
 export class CronScheduler {

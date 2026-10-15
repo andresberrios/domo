@@ -29,7 +29,7 @@ import { CLONED_VOICE_PREFIX } from '../../../shared/agent-voice'
 import { createAssistant, ensureCurrentSession, generateAssistantPicture, recordHandoffNote, updateAssistantFields } from '../assistants'
 import { generateImage, hasChatGptLogin, ImageGenerationError } from '../images/generate'
 import { avatarFromSource } from '../assistants/avatar'
-import { deliverCronJob } from '../cron/scheduler'
+import { runCronJobNow } from '../cron/scheduler'
 import { newId } from '../db'
 import {
   addAgentSubscription,
@@ -38,7 +38,6 @@ import {
   deleteCronJob,
   deleteInboxMessage,
   enqueueInboxMessage,
-  finishCronRun,
   getAgentSession,
   getAgentSessionWithEnvironment,
   getAssistant,
@@ -61,7 +60,6 @@ import {
   replaceCronJob,
   removeAgentSubscription,
   removeMessageWatch,
-  startManualCronRun,
   updateDevEnvironment,
   updateProject
 } from '../repo'
@@ -1850,18 +1848,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       const job = await getCronJob(args.jobId)
       if (!job) throw new Error(`No scheduled task ${args.jobId}.`)
       await assertOwnsJob(caller, job, 'running its scheduled task')
-      const run = await startManualCronRun(job.id)
-      try {
-        // The same content, delivery and origin the scheduler uses, so a test
-        // run is the real thing.
-        const result = await deliverCronJob(job)
-        await finishCronRun(run.id, 'delivered', result.outcome)
-        return { jobId: job.id, agentId: result.agentSessionId, delivered: true, outcome: result.outcome }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        await finishCronRun(run.id, 'failed', message).catch(() => {})
-        throw error
-      }
+      const result = await runCronJobNow(job)
+      return { jobId: job.id, agentId: result.agentSessionId, delivered: true, outcome: result.outcome }
     }
 
     case 'delete_scheduled_task': {

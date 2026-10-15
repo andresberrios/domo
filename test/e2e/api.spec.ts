@@ -10,6 +10,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   appendAgentEvent,
   createAgentSession,
+  createCronJob,
   createDevEnvironmentRow,
   createNotification,
   getNotification,
@@ -17,10 +18,13 @@ import {
   createProject,
   enqueueInboxMessage,
   getAgentSession,
+  getCronJob,
+  listCronRuns,
   listPermissions,
   listProjects,
   retireDevEnvironmentRow
 } from '../../server/lib/repo'
+import { normalizeCronJobInput } from '../../server/lib/cron/input'
 import { attachmentPath } from '../../server/lib/notifications'
 import { APP_BUILD_DIR } from '../helpers/app-build'
 import { startElectricStub } from '../helpers/electric-stub'
@@ -448,6 +452,38 @@ describe('a coding agent as the UI sees it', () => {
     // session you can no longer run is the obvious thing to do with it.
     await expect($fetch(`/api/agents/${session.id}`, { method: 'PATCH', body: { archived: true } }))
       .resolves.toMatchObject({ archived: true })
+  })
+})
+
+describe('scheduled tasks', () => {
+  it('404s on running a task that does not exist', async () => {
+    expect((await fetch('/api/cron-jobs/cron_nope/run', { method: 'POST' })).status).toBe(404)
+  })
+
+  it('says why a run now failed, records it, and leaves the next occurrence alone', async () => {
+    const project = await createProject({ name: 'scheduled', repoPath: checkout })
+    const environment = await createDevEnvironmentRow({
+      projectId: project.id,
+      name: 'sched-gone',
+      containerName: `domo-e2e-sched-${Date.now()}`,
+      workspacePath: '/workspaces/sched-gone'
+    })
+    const session = await createAgentSession({
+      adapter: 'claude-code', title: 'Scheduled', cwd: '/workspaces/sched-gone', devEnvironmentId: environment.id
+    })
+    const job = await createCronJob(normalizeCronJobInput({
+      agentSessionId: session.id, name: 'Nightly', prompt: 'Check in.', cronExpression: '0 3 * * *'
+    }))
+    await retireDevEnvironmentRow(environment.id)
+    const before = (await getCronJob(job.id))!
+    expect(before.nextRunAt).toBeTruthy()
+
+    const response = await fetch(`/api/cron-jobs/${job.id}/run`, { method: 'POST' })
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toMatchObject({ statusMessage: expect.stringContaining('can no longer be started') })
+    await expect(listCronRuns(job.id)).resolves.toMatchObject([{ status: 'failed' }])
+    await expect(getCronJob(job.id)).resolves.toMatchObject({ nextRunAt: before.nextRunAt, lastStatus: 'failed', runCount: 1 })
   })
 })
 
