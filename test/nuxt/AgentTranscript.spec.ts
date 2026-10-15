@@ -337,10 +337,10 @@ describe('AgentTranscript', () => {
     })
   })
 
-  /** Scrolled to the very bottom, the newest row ends a quarter of the way down: three quarters of the box are left empty. */
-  it('leaves three quarters of the box empty under the last row', async () => {
+  /** Scrolled to the very bottom, the newest row ends 60% of the way down: 40% of the box is left empty. */
+  it('leaves 40% of the box empty under the last row', async () => {
     const component = await render([userMessage('fix the build')])
 
-    expect(component.find('[data-testid="transcript-tail"]').classes()).toContain('h-[75cqh]')
+    expect(component.find('[data-testid="transcript-tail"]').classes()).toContain('h-[40cqh]')
   })
 })

@@ -684,8 +684,8 @@ function jumpToLatest() {
  * arrived, and the follow above keeps it there.
  *
  * Until it has, the rows are not shown: the first frame could be drawn at the
- * very bottom of the box, the newest row a quarter of the way down, and the
- * next one at the end — a jump of three quarters of a screen as the
+ * very bottom of the box, the newest row 60% of the way down, and the
+ * next one at the end — a jump of 40% of a screen as the
  * transcript appeared. Hidden, the rows are laid out and measured all the
  * same, and appear once the end of the last row is at the bottom edge and
  * has held there for a frame. Measuring ahead waits until then too.
@@ -794,16 +794,15 @@ onMounted(() => nextTick(() => {
         </div>
 
         <!--
-          The empty space under the last row: three quarters of the box.
-          Scrolled all the way down, the newest row ends a quarter of the way
-          down the screen, and what the agent says next is written into the
+          The empty space under the last row: 40% of the box. Scrolled all
+          the way down, the newest row ends 60% of the way down the screen, and what the agent says next is written into the
           space below it without anything moving. Sized by CSS against the
           box (a container query unit), so it changes in the same layout as
           the box does: sized by script, it lagged a frame behind the composer
           shrinking, and the browser clamped the scroll position meanwhile and
           moved every row down.
         -->
-        <div aria-hidden="true" class="h-[75cqh]" data-testid="transcript-tail" />
+        <div aria-hidden="true" class="h-[40cqh]" data-testid="transcript-tail" />
       </div>
     </div>
 
