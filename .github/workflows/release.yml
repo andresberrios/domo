@@ -5,7 +5,10 @@
 # .github/releases-repo/README.md.
 #
 # Needs the secret DOMO_RELEASES_TOKEN: a fine-grained token with
-# "Contents: read and write" on andresberrios/domo-releases only.
+# "Contents: read and write" on andresberrios/domo-releases only. The
+# repository variable DOMO_MACOS_RUNNER, when set, is the label of the runner
+# both macOS builds run on instead of GitHub's (a self-hosted Apple silicon
+# Mac builds darwin-x64 under Rosetta); see docs/install-and-updates.md.
 name: release
 
 on:
@@ -34,10 +37,12 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { runner: ubuntu-24.04, platform: linux-x64 }
-          - { runner: ubuntu-24.04-arm, platform: linux-arm64 }
-          - { runner: macos-15, platform: darwin-arm64 }
-          - { runner: macos-15-intel, platform: darwin-x64 }
+          - { runner: ubuntu-24.04, platform: linux-x64, node-arch: x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux-arm64, node-arch: arm64 }
+          - { runner: "${{ vars.DOMO_MACOS_RUNNER || 'macos-15' }}", platform: darwin-arm64, node-arch: arm64 }
+          # An x64 Node: on Apple silicon it runs under Rosetta, and pnpm and the
+          # postinstalls pick the x64 packages for the process's architecture.
+          - { runner: "${{ vars.DOMO_MACOS_RUNNER || 'macos-15-intel' }}", platform: darwin-x64, node-arch: x64 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
@@ -52,9 +57,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ steps.tools.outputs.node }}
+          architecture: ${{ matrix.node-arch }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: node scripts/release.mjs build --out dist
+      - run: node scripts/release.mjs build --out dist --platform ${{ matrix.platform }}
       - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.platform }}

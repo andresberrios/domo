@@ -51,6 +51,21 @@ The manifest is cumulative: the publish job downloads the latest one and adds
 the new release on top. The release is a draft until every file is up, since
 `latest/download/…` is what installs read.
 
+The macOS builds can run on a self-hosted Mac instead of GitHub's, whose
+macOS minutes cost ten times as much in a private repository. On an Apple
+silicon Mac with git (Command Line Tools) and Rosetta
+(`softwareupdate --install-rosetta --agree-to-license`): add a runner under
+the repository's Settings → Actions → Runners (macOS, ARM64), give it a label
+such as `domo-mac`, run it as a service (`./svc.sh install && ./svc.sh start`),
+and set the repository variable `DOMO_MACOS_RUNNER` to that label. Both
+macOS jobs then run there, one after the other, while the Mac is awake;
+unset the variable to go back. darwin-x64 builds on an x64 Node under
+Rosetta, which makes pnpm and the postinstalls fetch the x64 packages;
+`release.mjs build --platform` fails the job if the agents' native packages
+are not the platform named. The Linux jobs stay on GitHub's runners. A
+self-hosted runner runs whatever a workflow in the repository asks, so this
+suits a private repository that takes no outside pull requests.
+
 ## Layout of an installed Domo
 
 Everything under one directory, `~/.domo` by default (`DOMO_HOME`):

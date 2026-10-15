@@ -1,6 +1,6 @@
 # Domo releases
 
-Built releases of [Domo](https://github.com/andresberrios/domo), a voice-first
+Built releases of Domo, a voice-first
 control room for coding agents. This repository holds only the releases and
 the install script; it has no source.
 

@@ -3,8 +3,10 @@
 // source in it. See docs/install-and-updates.md.
 //
 //   node scripts/release.mjs version            the version of HEAD
-//   node scripts/release.mjs build [--out dist] [--skip-build]
+//   node scripts/release.mjs build [--out dist] [--skip-build] [--platform <os>-<arch>]
 //       dist/domo-<version>-<os>-<arch>.tar.gz for the machine it runs on
+//       (the Node it runs on: an x64 Node under Rosetta builds darwin-x64);
+//       --platform fails the build when that is not the platform named
 //   node scripts/release.mjs manifest [--out dist] [--previous manifest.json]
 //       dist/manifest.json, SHA256SUMS, domo.mjs and install.sh beside the tarballs
 //   node scripts/release.mjs serve [--out dist] [--port 8765]
@@ -72,6 +74,8 @@ function platformKey() {
 
 function build(args) {
   const out = resolve(option(args, '--out', 'dist'))
+  const expected = option(args, '--platform', null)
+  if (expected && expected !== platformKey()) throw new Error(`asked for ${expected}, but this Node is ${platformKey()}`)
   const v = version()
   const commit = git('rev-parse', 'HEAD')
   const date = git('log', '-1', '--format=%cI')
@@ -101,6 +105,12 @@ function build(args) {
   ], { cwd: stage, env: { ...process.env, CI: '1' } })
   for (const file of ['pnpm-lock.yaml', 'pnpm-workspace.yaml', join('node_modules', '.modules.yaml'), join('node_modules', '.pnpm-workspace-state-v1.json')]) {
     rmSync(join(stage, file), { force: true })
+  }
+  // The agents' native packages are this platform's, or the tarball would
+  // carry another machine's binaries under this one's name.
+  const [os, cpu] = platformKey().split('-')
+  for (const name of [`@openai/codex-${os}-${cpu}`, `@anthropic-ai/claude-agent-sdk-${os}-${cpu}`, `@github/copilot-${os}-${cpu}`]) {
+    if (!existsSync(join(stage, 'node_modules', name))) throw new Error(`${name} was not installed; the release would not run on ${platformKey()}`)
   }
   // OpenCode's postinstall copied its platform's binary into `@opencode/cli/bin`;
   // the platform package it came from would be a second copy of 200 MB.
