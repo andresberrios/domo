@@ -207,6 +207,23 @@ async function tellAgent(agentId: string, text: string): Promise<void> {
   }
 }
 
+/**
+ * The project a new environment is for: the one named, else the one the caller
+ * works in — its environment's, or the one whose checkout holds its directory.
+ */
+async function projectForNewEnvironment(caller: AgentSession, projectId: unknown): Promise<string> {
+  if (typeof projectId === 'string' && projectId) return projectId
+  if (caller.devEnvironmentId) {
+    const environment = await getDevEnvironment(caller.devEnvironmentId)
+    if (environment) return environment.projectId
+  }
+  const inside = (await listProjects())
+    .filter(project => caller.cwd === project.repoPath || caller.cwd.startsWith(`${project.repoPath.replace(/\/+$/, '')}/`))
+    .sort((a, b) => b.repoPath.length - a.repoPath.length)
+  if (inside[0]) return inside[0].id
+  throw new Error('You are not working in a project, so pass newDevEnvironment.projectId (from list_projects).')
+}
+
 async function requireAgent(id: unknown): Promise<AgentSession> {
   const session = await getAgentSession(String(id ?? ''))
   if (!session) throw new Error(`No agent ${id}. Use list_agents to find ids.`)
@@ -567,11 +584,13 @@ export const MESH_TOOLS = [
     name: 'spawn_agent',
     description:
       'Start a new agent session on a task and return its id. Use it to parallelise independent work. By default you '
-      + 'are messaged when its first turn ends (see notifyWhenDone).',
+      + 'are messaged when its first turn ends (see notifyWhenDone). To run it in an environment that does not exist '
+      + 'yet, pass newDevEnvironment instead of creating one first: the call returns at once with the session '
+      + 'waiting, the prompt is delivered when the environment is running, and a failed build is the session\'s error.',
     inputSchema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Short name for the new session.' },
+        title: { type: 'string', description: 'Short name for the new session. Omit it to have one written from the prompt.' },
         prompt: { type: 'string', description: 'The task to hand to the new agent.' },
         adapter: {
           type: 'string',
@@ -589,11 +608,23 @@ export const MESH_TOOLS = [
             + 'Omit it, or pass null, for a session on the host, even when you are in an environment yourself. '
             + 'Your own environment\'s id is in $DOMO_DEV_ENVIRONMENT_ID.'
         },
+        newDevEnvironment: {
+          type: 'object',
+          description: 'Create a development environment and run the new agent in it, as create_dev_environment does: '
+            + 'its name is its branch, verbatim, and a branch that already exists is checked out with its commits '
+            + '(you are told so once it is running). Instead of devEnvironmentId.',
+          properties: {
+            name: { type: 'string', description: 'The environment\'s name and its branch, e.g. "feature-auth".' },
+            projectId: { type: 'string', description: 'Project id from list_projects. Defaults to the project you are working in.' }
+          },
+          required: ['name'],
+          additionalProperties: false
+        },
         cwd: {
           type: 'string',
           description: 'Absolute working directory on the host, for a host session. Defaults to yours when you are on '
             + 'the host, and to your environment\'s project checkout when you are in a development environment. '
-            + 'Ignored with devEnvironmentId.'
+            + 'Ignored with devEnvironmentId or newDevEnvironment.'
         },
         notifyWhenDone: {
           type: 'boolean',
@@ -605,7 +636,7 @@ export const MESH_TOOLS = [
           description: 'Be told about every turn until you unsubscribe. Use deliberately, and call unsubscribe_from_agent when you no longer need updates.'
         }
       },
-      required: ['title', 'prompt'],
+      required: ['prompt'],
       additionalProperties: false
     }
   },
@@ -900,7 +931,8 @@ export const MESH_TOOLS = [
       + 'branch of that name already exists it is checked out instead, with its commits, and the message saying it '
       + 'is running says so: tell the human, since it may not be what they meant. Uncommitted work on the host stays there; gitignored '
       + '`.env` files are copied. Returns at once with status "creating"; building takes minutes. You are messaged '
-      + 'when it is running or has failed, and get_dev_environment shows status and lastError at any time.',
+      + 'when it is running or has failed, and get_dev_environment shows status and lastError at any time. To put an '
+      + 'agent in it, use spawn_agent with newDevEnvironment instead: one call does both.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1353,7 +1385,10 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
 
     case 'spawn_agent': {
       // Only where it was asked for: an omitted id is the host, wherever the caller runs.
-      const devEnvironmentId: string | null = args.devEnvironmentId || null
+      let devEnvironmentId: string | null = args.devEnvironmentId || null
+      if (devEnvironmentId && args.newDevEnvironment) {
+        throw new Error('Pass devEnvironmentId or newDevEnvironment, not both.')
+      }
       if (devEnvironmentId) {
         const environment = await requireEnvironment(devEnvironmentId)
         if (environment.status !== 'running') {
@@ -1363,6 +1398,18 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
       if (args.adapter !== undefined && !isAgentAdapter(args.adapter)) {
         throw new Error(`Unknown adapter ${args.adapter}; use one of ${ADAPTERS.join(', ')}.`)
       }
+      if (typeof args.prompt !== 'string' || !args.prompt.trim()) throw new Error('A prompt is required.')
+      // Checked, and the environment begun, only once nothing else can refuse:
+      // a refusal after this would leave an environment nobody asked to keep.
+      let creation: Awaited<ReturnType<typeof beginEnvironment>> | null = null
+      if (args.newDevEnvironment) {
+        creation = await beginEnvironment({
+          projectId: await projectForNewEnvironment(caller, args.newDevEnvironment.projectId),
+          name: String(args.newDevEnvironment.name ?? '')
+        })
+        devEnvironmentId = creation.environment.id
+      }
+      const notify = args.notifyWhenDone !== false
       const session = await acpManager.create({
         adapter: isAgentAdapter(args.adapter) ? args.adapter : caller.adapter,
         title: args.title,
@@ -1371,13 +1418,35 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         model: args.model ?? null,
         modeId: args.modeId ?? null,
         initialPrompt: args.prompt,
-        spawnedBy: caller.id
+        spawnedBy: caller.id,
+        environmentBuilt: creation?.built
       })
       // The caller is an agent by definition here, and an agent cannot wait for
       // its peer — so following it is the default, not the opt-in.
-      const notify = args.notifyWhenDone !== false
       const window = subscriptionWindow(args.notifyTurns, args.notifyIndefinitely)
       if (notify) await subscribe(caller.id, session.id, window)
+      if (creation) {
+        const { environment } = creation
+        creation.built.then(
+          // Only what the caller would want to act on: the session's first turn
+          // end says the rest.
+          (ready) => {
+            const branch = ready.workspaceSeed.branch
+            if ((branch && !branch.created) || ready.workspaceSeed.install?.error) {
+              return tellAgent(caller.id, `Development environment "${ready.name}" (${ready.id}) for agent ${session.id} is running. ${describeSeed(ready.workspaceSeed)}`)
+            }
+          },
+          // A follower hears it as the session's error.
+          (error) => {
+            if (notify) return
+            return tellAgent(
+              caller.id,
+              `Development environment "${environment.name}" (${environment.id}) failed to build, so agent ${session.id} `
+              + `did not start: ${error instanceof Error ? error.message : String(error)}`
+            )
+          }
+        ).catch(() => {})
+      }
       return {
         id: session.id,
         title: session.title,
@@ -1387,6 +1456,13 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         cwd: session.cwd,
         model: session.model,
         mode: session.modeId,
+        ...creation
+          ? {
+              environment: { id: creation.environment.id, name: creation.environment.name, status: creation.environment.status },
+              note: 'The environment is being created, which takes minutes; the prompt is delivered when it is running. '
+                + (notify ? 'If it fails, you are told the session stopped with an error.' : 'If it fails, you are told.')
+            }
+          : {},
         notifyWhenDone: notify ? describeWindow(window) : false
       }
     }

@@ -33,6 +33,7 @@ import {
   removeAgentSubscription,
   restartBlockers,
   resolvePermissionRow,
+  nameAgentSession,
   titleUntitledAgentSession,
   UNTITLED_AGENT_TITLE,
   updateAgentSession,
@@ -272,11 +273,26 @@ describe('dev environments', () => {
 
 describe('agent sessions', () => {
   it('takes a title from its first message only while it has none', async () => {
-    const untitled = await agent({ adapter: 'claude-code', title: UNTITLED_AGENT_TITLE, cwd: '/srv/api' })
+    const untitled = await agent({ adapter: 'claude-code', title: UNTITLED_AGENT_TITLE, cwd: '/srv/api', titlePlaceholder: true })
     expect(await titleUntitledAgentSession(untitled.id, 'Fix the login test')).toBe(true)
     expect(await titleUntitledAgentSession(untitled.id, 'Something later')).toBe(false)
     expect((await getAgentSession(untitled.id))!.title).toBe('Fix the login test')
     expect(seen.types()).toContain('agent-list-changed')
+    // Somebody may call their session that, on purpose.
+    const named = await agent({ adapter: 'claude-code', title: UNTITLED_AGENT_TITLE, cwd: '/srv/api' })
+    expect(await titleUntitledAgentSession(named.id, 'Fix the login test')).toBe(false)
+  })
+
+  it('takes a generated title only while its title is a stand-in, which any rename ends', async () => {
+    const standIn = await agent({ adapter: 'claude-code', title: 'fix the login test pls', cwd: '/srv/api', titlePlaceholder: true })
+    expect(await nameAgentSession(standIn.id, 'Fix the login test')).toBe(true)
+    expect(await nameAgentSession(standIn.id, 'Another')).toBe(false)
+    expect((await getAgentSession(standIn.id))!.title).toBe('Fix the login test')
+
+    const renamed = await agent({ adapter: 'claude-code', title: 'first words', cwd: '/srv/api', titlePlaceholder: true })
+    await updateAgentSession(renamed.id, { title: 'Mine' })
+    expect(await nameAgentSession(renamed.id, 'Generated')).toBe(false)
+    expect((await getAgentSession(renamed.id))!.title).toBe('Mine')
   })
 
   it('starts in "starting", because a row exists before the adapter does', async () => {

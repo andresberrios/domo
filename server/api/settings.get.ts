@@ -3,6 +3,7 @@ import { openAiApiKey } from '../lib/openai'
 import { anthropicApiKey, claudeOauthToken } from '../lib/claude-credentials'
 import { getSettings } from '../lib/settings'
 import { openCodeCredentialState } from '../lib/opencode-credentials'
+import { defaultTitler } from '../lib/acp/session-title'
 import { SECRET_SETTING_KEYS, type AppSettings, type AppSettingsView, type SecretSettingKey } from '../../shared/types'
 
 export default defineEventHandler(async (): Promise<AppSettingsView> => {
@@ -23,6 +24,7 @@ export default defineEventHandler(async (): Promise<AppSettingsView> => {
     /** A console key, which is what a container session and the usage poll use. */
     hasOpenCodeKey: openCode.key,
     /** A login on this machine, which is all a host session needs and all Domo can see. */
-    hasOpenCodeAuth: openCode.hostLogin
+    hasOpenCodeAuth: openCode.hostLogin,
+    sessionTitlesDefault: await defaultTitler()
   }
 })

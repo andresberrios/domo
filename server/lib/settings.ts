@@ -1,6 +1,6 @@
 import { query } from './db'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
-import { AGENT_ADAPTERS } from '../../shared/agent-adapters'
+import { AGENT_ADAPTERS, isAgentAdapter } from '../../shared/agent-adapters'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector, normalizeVolumes } from '../../shared/agent-voice'
 import { rememberSecretSettings } from './secret-settings'
 import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type UpdateSettings } from '../../shared/types'
@@ -54,7 +54,10 @@ export const DEFAULTS: AppSettings = {
   // cost is one several-hundred-megabyte volume per machine, built once.
   browserTools: true,
   agentVoice: { ...DEFAULT_AGENT_VOICE },
-  updates: { ...DEFAULT_UPDATE_SETTINGS }
+  updates: { ...DEFAULT_UPDATE_SETTINGS },
+  // On, on whatever cheap model this machine can reach: a generated title
+  // costs a fraction of a cent of a plan that is already paid for.
+  sessionTitles: { enabled: true, adapter: '', model: '' }
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -69,7 +72,8 @@ export async function getSettings(): Promise<AppSettings> {
     defaultAgentConfig: storedAgentConfig(stored),
     openCodePermission: storedOpenCodePermission(stored),
     agentVoice: storedAgentVoice(stored),
-    updates: storedUpdates(stored)
+    updates: storedUpdates(stored),
+    sessionTitles: storedSessionTitles(stored)
   } as AppSettings
   // The synchronous key readers (`secret-settings.ts`) see what was just read.
   rememberSecretSettings(settings)
@@ -77,6 +81,17 @@ export async function getSettings(): Promise<AppSettings> {
 }
 
 const isSecretKey = (key: string): key is SecretSettingKey => (SECRET_SETTING_KEYS as readonly string[]).includes(key)
+
+/** The title settings, with a harness Domo knows or none. */
+function storedSessionTitles(stored: Record<string, any>): AppSettings['sessionTitles'] {
+  const current = stored.sessionTitles
+  const titles = { ...DEFAULTS.sessionTitles }
+  if (!current || typeof current !== 'object') return titles
+  if (typeof current.enabled === 'boolean') titles.enabled = current.enabled
+  if (isAgentAdapter(current.adapter)) titles.adapter = current.adapter
+  if (typeof current.model === 'string') titles.model = current.model.trim()
+  return titles
+}
 
 /** The update settings, each field kept in a range the updater can act on. */
 function storedUpdates(stored: Record<string, any>): UpdateSettings {

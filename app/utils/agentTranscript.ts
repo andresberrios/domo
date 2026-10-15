@@ -98,6 +98,8 @@ const NOTICE_LABELS: Record<string, (payload: any) => string | null> = {
       ? `Turn ended: ${String(payload.stopReason).replace(/_/g, ' ')}`
       : null,
   cancelled: () => 'Turn cancelled',
+  // Spawned into an environment still being created: its first message waits for it.
+  environment_pending: payload => `Waiting for the development environment ${payload?.name ? `“${payload.name}” ` : ''}to be created`,
   // Events from before the name was recorded fall back to the adapter's id.
   mode_changed: payload => `Mode set to ${payload?.name || payload?.modeId}${whenPending(payload)}`,
   model_changed: payload => `Model: ${payload?.name || payload?.modelId}${whenPending(payload)}`,

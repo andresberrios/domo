@@ -176,6 +176,16 @@ alter table agent_sessions drop column if exists retired_reason;
 -- edge that cross-agent powers (scheduling for it, answering its permission
 -- requests, withdrawing its queued messages) are tied to.
 alter table agent_sessions add column if not exists spawned_by text references agent_sessions(id) on delete set null;
+-- The title is Domo's stand-in — the placeholder, or the first words of the
+-- first message — and a generated one may replace it. Any title somebody set
+-- clears it. Rows from before it: only the placeholder is a stand-in.
+do $$ begin
+  if not exists (select 1 from information_schema.columns
+                  where table_name = 'agent_sessions' and column_name = 'title_placeholder') then
+    alter table agent_sessions add column title_placeholder boolean not null default false;
+    update agent_sessions set title_placeholder = true where title = 'Coding session';
+  end if;
+end $$;
 
 -- The live voice conversation is gone: talking happens in a coding session's
 -- voice bar. Its tables go, the link to them goes first, and the settings

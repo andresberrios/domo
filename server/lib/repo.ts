@@ -854,17 +854,20 @@ export async function createAgentSession(input: {
   assistantId?: string | null
   /** The adapter's own settings asked for up front; applied at attach like any later choice. */
   config?: Record<string, string> | null
+  /** The title is Domo's stand-in, which a generated one may replace. See `nameAgentSession`. */
+  titlePlaceholder?: boolean
 }): Promise<AgentSession> {
   const now = nowIso()
   const row = await queryOne(
     `insert into agent_sessions
        (id, adapter, title, cwd, dev_environment_id, status, mode_id, model, spawned_by, assistant_id,
-        config, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $10::jsonb, $11, $11) returning *`,
+        config, title_placeholder, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, 'starting', $6, $7, $8, $9, $10::jsonb, $11, $12, $12) returning *`,
     [
       newId('ag'), input.adapter, input.title, input.cwd,
       input.devEnvironmentId ?? null, input.modeId ?? null, input.model ?? null, input.spawnedBy ?? null,
-      input.assistantId ?? null, input.config && Object.keys(input.config).length ? JSON.stringify(input.config) : null, now
+      input.assistantId ?? null, input.config && Object.keys(input.config).length ? JSON.stringify(input.config) : null,
+      input.titlePlaceholder ?? false, now
     ]
   )
   bus.publish({ type: 'agent-list-changed' })
@@ -896,7 +899,11 @@ export async function updateAgentSession(
     params.push(value)
     sets.push(`${col} = $${params.length}`)
   }
-  if (patch.title !== undefined) push('title', patch.title)
+  // A title set from outside is somebody's choice, which nothing generated replaces.
+  if (patch.title !== undefined) {
+    push('title', patch.title)
+    sets.push('title_placeholder = false')
+  }
   if (patch.cwd !== undefined) push('cwd', patch.cwd)
   if (patch.status !== undefined) push('status', patch.status)
   if (patch.acpSessionId !== undefined) push('acp_session_id', patch.acpSessionId)
@@ -933,11 +940,30 @@ export async function updateAgentSession(
 /** What a session started without a title or a first prompt is called until its first message names it. */
 export const UNTITLED_AGENT_TITLE = 'Coding session'
 
-/** Name a session that still has the placeholder title. False when it already had a name. */
+/**
+ * Give a session that still has the placeholder title the first words of its
+ * first message, which are still a stand-in. False when it already had a name,
+ * so true means this was its first message.
+ */
 export async function titleUntitledAgentSession(id: string, title: string): Promise<boolean> {
   const row = await queryOne(
-    'update agent_sessions set title = $2, updated_at = $4 where id = $1 and title = $3 returning id',
+    'update agent_sessions set title = $2, updated_at = $4 where id = $1 and title = $3 and title_placeholder returning id',
     [id, title, UNTITLED_AGENT_TITLE, nowIso()]
+  )
+  if (!row) return false
+  bus.publish({ type: 'agent-changed', agentSessionId: id })
+  bus.publish({ type: 'agent-list-changed' })
+  return true
+}
+
+/**
+ * Put a generated title on a session whose title is still Domo's stand-in.
+ * False when somebody named it meanwhile, whose name stays.
+ */
+export async function nameAgentSession(id: string, title: string): Promise<boolean> {
+  const row = await queryOne(
+    'update agent_sessions set title = $2, title_placeholder = false, updated_at = $3 where id = $1 and title_placeholder returning id',
+    [id, title, nowIso()]
   )
   if (!row) return false
   bus.publish({ type: 'agent-changed', agentSessionId: id })

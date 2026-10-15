@@ -710,6 +710,21 @@ export interface AppSettings {
   agentVoice: AgentVoiceSettings
   /** How an installed Domo looks for and applies new versions. See `UpdateSettings`. */
   updates: UpdateSettings
+  /** Titles for sessions started without one. See `SessionTitleSettings`. */
+  sessionTitles: SessionTitleSettings
+}
+
+/**
+ * A session started without a title is named by a small model from its first
+ * message, in a throwaway session nothing records (`server/lib/acp/session-title.ts`).
+ * Until then, and whenever that fails, it keeps the message's first words.
+ */
+export interface SessionTitleSettings {
+  enabled: boolean
+  /** The harness that writes it. Empty: the cheapest one this machine is logged in to. */
+  adapter: AgentAdapter | ''
+  /** A model id from that harness's list. Empty: its cheap one. */
+  model: string
 }
 
 /**
@@ -924,6 +939,8 @@ export interface AppSettingsView extends Omit<AppSettings, SecretSettingKey> {
   hasOpenCodeKey: boolean
   /** A login on this machine, which is all a host session needs and all Domo can see. */
   hasOpenCodeAuth: boolean
+  /** What writes titles when `sessionTitles` names no harness; null when nothing is logged in. */
+  sessionTitlesDefault: { adapter: AgentAdapter, model: string } | null
 }
 
 /** Server -> browser events on the /api/stream SSE channel. */
