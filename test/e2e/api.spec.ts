@@ -629,6 +629,30 @@ describe('notifications', () => {
   })
 })
 
+describe('uploads', () => {
+  it('serves what the composer uploaded, by its own name only, and an image inline', async () => {
+    const form = new FormData()
+    form.append('files', new Blob(['png'], { type: 'image/png' }), 'image-1.png')
+    form.append('files', new Blob(['<svg onload="alert(1)"/>'], { type: 'image/svg+xml' }), 'evil.svg')
+    const { files } = await $fetch<{ files: Array<{ name: string, path: string }> }>('/api/uploads', { method: 'POST', body: form })
+    expect(files.map(file => file.name)).toEqual(['image-1.png', 'evil.svg'])
+
+    const image = await fetch(`/api/uploads/${files[0]!.path.split('/').pop()}`)
+    expect(image.status).toBe(200)
+    expect(image.headers.get('content-type')).toBe('image/png')
+    expect(image.headers.get('content-security-policy')).toMatch(/^sandbox/)
+    await expect(image.text()).resolves.toBe('png')
+
+    const svg = await fetch(`/api/uploads/${files[1]!.path.split('/').pop()}`)
+    expect(svg.headers.get('content-type')).toBe('application/octet-stream')
+    expect(svg.headers.get('content-disposition')).toMatch(/^attachment/)
+
+    // Nothing but an upload's own name reaches the disk.
+    expect((await fetch('/api/uploads/..%2Fsettings.json')).status).toBe(404)
+    expect((await fetch('/api/uploads/up_00000000000000000000.png')).status).toBe(404)
+  })
+})
+
 describe('the Electric shape proxy', () => {
   it('only proxies tables the browser is allowed to sync', async () => {
     const response = await fetch('/api/shape?table=settings&offset=-1')

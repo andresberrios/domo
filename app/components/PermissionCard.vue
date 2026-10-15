@@ -80,7 +80,7 @@ async function choose(optionId: string) {
         </div>
 
         <p class="text-xs text-dimmed">
-          With a voice bar open, you can also say allow or deny.
+          In voice mode, you can also say allow or deny.
         </p>
       </div>
     </div>

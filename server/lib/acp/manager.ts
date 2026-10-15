@@ -75,6 +75,7 @@ import type {
   MessageDelivery,
   MessageOrigin,
   PendingPermission,
+  QueuedDeliveryResult,
   SessionConfigOptionInfo,
   SessionModeInfo
 } from '../../../shared/types'
@@ -2042,35 +2043,89 @@ class AgentRuntime {
     // it definitely does not mean.
     if (!this.steering) return this.interruptWith(content, origin, id)
 
-    let outcome: string
+    // The turn settled inside the adapter between our check and the request,
+    // or the request failed. Queue rather than prompt: our own
+    // `session/prompt` may still be in flight, and its end is what drains the
+    // queue a moment later.
+    if (!(await this.steerRequest(content))) return this.enqueue(content, 'steer', origin, id)
+
+    await this.recordSteer(content, origin, id ? [id] : undefined)
+    return { delivery: 'steer', outcome: 'steered' }
+  }
+
+  /** Ask the adapter to take this into the turn it is running. False when it did not. */
+  private async steerRequest(content: any[]): Promise<boolean> {
     try {
       const response = (await this.connection!.agent.request(STEERING_METHOD, {
         sessionId: this.acpSessionId,
         prompt: content,
         _meta: STEERING_META
       } as any)) as any
-      outcome = String(response?.outcome ?? 'failed')
+      const outcome = String(response?.outcome ?? 'failed')
+      return outcome !== 'promptRequired' && outcome !== 'failed'
     } catch (error) {
-      console.error(`[acp:${this.agentSessionId}] steering failed, queueing instead`, error)
-      return this.enqueue(content, 'steer', origin, id)
+      console.error(`[acp:${this.agentSessionId}] steering failed`, error)
+      return false
     }
+  }
 
-    if (outcome === 'promptRequired' || outcome === 'failed') {
-      // The turn settled inside the adapter between our check and the request.
-      // Queue rather than prompt: our own `session/prompt` may still be in
-      // flight, and its end is what drains the queue a moment later.
-      return this.enqueue(content, 'steer', origin, id)
-    }
-
-    // The message joined the running turn, so the transcript has to show it in
-    // its place — the agent is about to answer it.
+  /**
+   * The message joined the running turn, so the transcript has to show it in
+   * its place — the agent is about to answer it.
+   */
+  private async recordSteer(content: any[], origin: MessageOrigin, ids?: string[]): Promise<void> {
     const block = this.takeStream()
     await this.serial(async () => {
       await this.closeStream(block)
-      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin(withMessageIds({ content, delivery: 'steer' }, id ? [id] : undefined), origin))
+      await appendAgentEvent(this.agentSessionId, 'user_message', withOrigin(withMessageIds({ content, delivery: 'steer' }, ids), origin))
       await this.touchIfStale()
     })
-    return { delivery: 'steer', outcome: 'steered' }
+  }
+
+  /**
+   * Hand over what is queued now instead of when the turn ends: the
+   * composer's "send queued now". The same two paths a message sent with
+   * that mode takes, applied to the rows that are waiting.
+   *
+   * `steer` injects them one at a time, oldest first, each as its own
+   * message with its own sender. The first one the adapter does not take —
+   * the turn ended under it, or the request failed — stops the run, and it
+   * and the rest go back to waiting under their own ids and places, for the
+   * drain at the turn's end. `interrupt` cancels the turn and prompts them as
+   * one turn, exactly as the drain would. An adapter that cannot steer gets
+   * `interrupt`, as `deliver` does.
+   */
+  deliverQueued(delivery: 'steer' | 'interrupt'): Promise<QueuedDeliveryResult> {
+    return this.serialDeliver(async () => {
+      await this.assertStartable('sending it what is queued')
+      await this.ensureStarted()
+      const waiting = async () => (await listInboxMessages(this.agentSessionId)).length
+
+      // Nothing running: the queue goes now as one turn, which is what the
+      // drain does. A turn that is only settling drains right behind this.
+      if (!this.turn) return { delivery, delivered: await this.promptWaiting(), waiting: await waiting() }
+      if (this.turn.settled) return { delivery, delivered: 0, waiting: await waiting() }
+
+      if (delivery === 'interrupt' || !this.steering) {
+        const running = this.turn
+        running.interrupted = true
+        await this.cancel()
+        await running.done
+        // The drain `cancel` asked for is queued behind this, and finds the
+        // slot taken by the turn below.
+        return { delivery: 'interrupt', delivered: await this.promptWaiting(), waiting: await waiting() }
+      }
+
+      const claimed = await claimInboxMessages(this.agentSessionId)
+      let steered = 0
+      for (const message of claimed) {
+        if (!(await this.steerRequest(message.content))) break
+        await this.recordSteer(message.content, message.origin, [message.id])
+        steered += 1
+      }
+      await releaseInboxMessages(claimed.slice(steered))
+      return { delivery: 'steer', delivered: steered, waiting: await waiting() }
+    })
   }
 
   /**
@@ -2087,27 +2142,33 @@ class AgentRuntime {
   drainInbox(): void {
     void this.serialDeliver(async () => {
       if (this.turn || !this.alive || !this.acpSessionId) return
-      const waiting = await claimInboxMessages(this.agentSessionId)
-      if (!waiting.length) return
-      // The claim is a round trip, and a turn the agent starts for itself takes
-      // the slot synchronously from `onUpdate` — which is not serialised with
-      // deliveries, so it can land inside that gap. Prompting anyway would send
-      // a `session/prompt` into a running turn, where the adapter queues it out
-      // of sight. Put them back instead: they are still waiting, in order, and
-      // the turn that took the slot drains them when it ends.
-      if (this.turn) {
-        await releaseInboxMessages(waiting)
-        return
-      }
-      // Several messages carry their senders in the dividers between them.
-      const turn = this.prompt(
-        combineInboxContent(waiting),
-        waiting.length === 1 ? waiting[0]!.origin : undefined,
-        waiting.map(message => message.id)
-      )
-      // Anything that arrives *during* this turn is drained when it ends.
-      turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
+      await this.promptWaiting()
     }).catch(error => console.error(`[acp:${this.agentSessionId}] could not drain the inbox`, error))
+  }
+
+  /** Claim what is waiting and prompt it as one turn. How many went; inside `serialDeliver` only. */
+  private async promptWaiting(): Promise<number> {
+    const waiting = await claimInboxMessages(this.agentSessionId)
+    if (!waiting.length) return 0
+    // The claim is a round trip, and a turn the agent starts for itself takes
+    // the slot synchronously from `onUpdate` — which is not serialised with
+    // deliveries, so it can land inside that gap. Prompting anyway would send
+    // a `session/prompt` into a running turn, where the adapter queues it out
+    // of sight. Put them back instead: they are still waiting, in order, and
+    // the turn that took the slot drains them when it ends.
+    if (this.turn) {
+      await releaseInboxMessages(waiting)
+      return 0
+    }
+    // Several messages carry their senders in the dividers between them.
+    const turn = this.prompt(
+      combineInboxContent(waiting),
+      waiting.length === 1 ? waiting[0]!.origin : undefined,
+      waiting.map(message => message.id)
+    )
+    // Anything that arrives *during* this turn is drained when it ends.
+    turn.catch(error => console.error(`[acp:${this.agentSessionId}] queued turn failed`, error))
+    return waiting.length
   }
 
   async cancel(): Promise<void> {
@@ -2647,6 +2708,11 @@ class AcpManager {
       id: input.id
     })
     return { ...result, agentSessionId }
+  }
+
+  /** Hand over what is queued for a working agent now; see `AgentRuntime.deliverQueued`. */
+  async deliverQueued(agentSessionId: string, delivery: 'steer' | 'interrupt'): Promise<QueuedDeliveryResult> {
+    return this.runtime(agentSessionId).deliverQueued(delivery)
   }
 
   /** Hear about every turn end. Returns the unsubscribe. */

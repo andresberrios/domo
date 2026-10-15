@@ -5,8 +5,8 @@ import { agentAdapterInfo } from '~~/shared/agent-adapters'
 /**
  * One assistant: one continuous conversation, however many sessions it has
  * been through. The transcript is its sessions' logs read as one, with a
- * divider where each took over; the composer, the voice bar and the context
- * meter belong to the session it is in now.
+ * divider where each took over; the composer, with its voice mode and its
+ * context gauge, belongs to the session it is in now.
  */
 const route = useRoute()
 const router = useRouter()
@@ -18,7 +18,6 @@ const { all: allSessions } = useAgentSessions()
 const { all: allEnvironments } = useDevEnvironments()
 const { permissions: allPermissions } = usePermissions()
 const condensed = useCondensedTranscript()
-const voiceOpen = useAgentVoiceOpen()
 
 /** Its sessions, oldest first. */
 const sessions = computed<AgentSession[]>(() =>
@@ -66,9 +65,6 @@ const environment = computed(() =>
 const startability = useSessionStartability(current)
 const blocked = computed(() => startability.value.startable ? null : startability.value.reason)
 const adapter = computed(() => current.value ? agentAdapterInfo(current.value.adapter) : null)
-const usageProvider = computed(() => current.value?.adapter === 'claude-code'
-  ? 'claude' as const
-  : current.value?.adapter === 'codex' ? 'codex' as const : current.value ? 'opencode' as const : undefined)
 const avatar = computed(() => assistant.value ? { src: assistant.value.avatar ?? undefined, alt: assistant.value.name } : undefined)
 
 const handingOff = computed(() => !!assistant.value?.handoff)
@@ -136,7 +132,6 @@ const menuItems = computed(() => [
         </template>
 
         <template #right>
-          <UsageMeter :usage="current?.usage ?? null" :provider="usageProvider" />
           <UTooltip :text="handingOff ? 'Writing a note for a fresh session…' : 'Have it write itself a note and carry on in a fresh session'">
             <UButton
               :label="handingOff ? 'Handing off' : 'Fresh start'"
@@ -148,15 +143,6 @@ const menuItems = computed(() => [
               :disabled="!current || !!blocked || assistant?.archived"
               :ui="{ label: 'hidden sm:inline' }"
               @click="freshStart"
-            />
-          </UTooltip>
-          <UTooltip :text="voiceOpen ? 'Close the voice bar' : `Talk to ${assistant?.name ?? 'it'}`">
-            <UButton
-              icon="i-lucide-mic"
-              :color="voiceOpen ? 'primary' : 'neutral'"
-              :variant="voiceOpen ? 'soft' : 'ghost'"
-              :aria-label="voiceOpen ? 'Close the voice bar' : 'Talk to this assistant'"
-              @click="voiceOpen = !voiceOpen"
             />
           </UTooltip>
           <UDropdownMenu :items="menuItems">
@@ -239,11 +225,7 @@ const menuItems = computed(() => [
         </div>
 
         <div v-if="queued.length && current" class="shrink-0 pt-2">
-          <AgentInbox :agent-session-id="current.id" :messages="queued" :readonly="!!blocked" />
-        </div>
-
-        <div v-if="!blocked && voiceOpen && current" class="shrink-0 pt-2">
-          <AgentVoiceBar :session="current" />
+          <AgentInbox :agent-session-id="current.id" :messages="queued" :readonly="!!blocked" :session="current" />
         </div>
 
         <div v-if="!blocked && current && !assistant?.archived" class="shrink-0 pt-2">

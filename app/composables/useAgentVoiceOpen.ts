@@ -1,6 +1,6 @@
 const STORAGE_KEY = 'domo:agent-voice:open'
 
-/** Whether the voice bar on an agent's page is open. One answer for every page, kept across reloads. */
+/** Whether the composer is in voice mode (`AgentComposer`). One answer for every page, kept across reloads. */
 export function useAgentVoiceOpen() {
   const open = useState<boolean>('agent-voice-open', () => {
     try {

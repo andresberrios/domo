@@ -497,6 +497,16 @@ export interface PendingPermission {
  */
 export type MessageDelivery = 'steer' | 'queue' | 'interrupt'
 
+/** What "send queued now" did; see `deliverQueued` in `server/lib/acp/manager.ts`. */
+export interface QueuedDeliveryResult {
+  /** The mode that applied — `steer` becomes `interrupt` without support. */
+  delivery: 'steer' | 'interrupt'
+  /** How many went to the agent: steered in, or prompted as one turn. */
+  delivered: number
+  /** How many are still queued, for the drain at the end of the turn. */
+  waiting: number
+}
+
 /** Who sent a message to an agent; a peer names itself. */
 export type MessageOrigin = 'user' | 'voice' | 'system' | `agent:${string}` | `cron:${string}`
 
@@ -1004,6 +1014,8 @@ export type AgentVoiceClientMessage =
   | { type: 'dictated', text: string }
   /** Read this agent message out again, from the start, whatever was playing. */
   | { type: 'replay', text: string }
+  /** The composer's attachments (`resource_link` blocks), for the next spoken turn. Replaces the last list. */
+  | { type: 'attachments', content: any[] }
   /** What the device's recogniser or voice did, for the server log: they are only debuggable from there. */
   | { type: 'dictation-log', message: string }
 
@@ -1031,6 +1043,8 @@ export type AgentVoiceServerMessage =
   | { type: 'turn', complete: boolean, probability: number | null, seconds: number }
   /** A turn was delivered to the agent. */
   | { type: 'sent', text: string }
+  /** These attachments went with a spoken turn, so the composer lets go of them. */
+  | { type: 'attachments-sent', uris: string[] }
   /** A spoken command was recognised and acted on. */
   | { type: 'command', name: 'hush' | 'cancel' | 'send' }
   /** Text for the device to say itself, when it is the speaker. */

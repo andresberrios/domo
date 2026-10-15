@@ -76,6 +76,10 @@ export function useAgentVoice(
     toolSound?: MaybeRefOrGetter<ToolSound | undefined>
     /** How loud each sound is, from Settings; read as each one plays. */
     volumes?: MaybeRefOrGetter<SoundVolumes | undefined>
+    /** What the composer has attached (`resource_link` blocks): it goes with the next spoken turn. */
+    attachments?: MaybeRefOrGetter<any[] | undefined>
+    /** Those attachments went with a turn. */
+    onAttachmentsSent?: (uris: string[]) => void
   } = {}
 ) {
   const state = ref<AgentVoiceState>('offline')
@@ -951,6 +955,9 @@ export function useAgentVoice(
         turnChimed = false
         showNotice(`Sent: ${message.text}`, 6000)
         break
+      case 'attachments-sent':
+        options.onAttachmentsSent?.(message.uris)
+        break
       case 'turn':
         holding.value = !message.complete
         if (message.complete) {
@@ -1014,6 +1021,7 @@ export function useAgentVoice(
       if (socket !== ws) return
       state.value = 'live'
       send({ type: 'speak', enabled: speakEnabled.value })
+      sendAttachments()
       if (pendingReplay) {
         send({ type: 'replay', text: pendingReplay })
         pendingReplay = null
@@ -1063,6 +1071,11 @@ export function useAgentVoice(
     old.close()
     connect()
   })
+
+  function sendAttachments() {
+    send({ type: 'attachments', content: toValue(options.attachments) ?? [] })
+  }
+  watch(() => toValue(options.attachments), sendAttachments, { deep: true })
 
   /* ------------------------------ controls ---------------------------- */
 
@@ -1199,3 +1212,6 @@ function writeStored(key: string, value: string) {
     /* private mode */
   }
 }
+
+/** One microphone, socket and speaker for one session; see `useAgentVoice`. */
+export type AgentVoice = ReturnType<typeof useAgentVoice>

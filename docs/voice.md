@@ -3,7 +3,8 @@
 Read this before you change `server/lib/agent-voice/`, its speech engines or
 turn detection.
 
-The voice bar on an agent's page (`server/lib/agent-voice/`) is a cascade, not
+The voice bar (the composer's voice mode, `AgentVoiceBar` in `AgentComposer`;
+server side `server/lib/agent-voice/`) is a cascade, not
 a live model: the browser records, an engine transcribes, the transcript is
 delivered to the agent as an ordinary spoken turn, and the agent's streamed
 text is read out sentence by sentence by an engine. The agent is the only
