@@ -1,7 +1,7 @@
 import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { UApp } from '#components'
 import { enableAutoUnmount } from '@vue/test-utils'
-import { computed, defineComponent, h, ref } from 'vue'
+import { computed, defineComponent, h, ref, toValue } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AgentComposer from '~/components/AgentComposer.vue'
@@ -44,6 +44,8 @@ function fakeVoice() {
     toggleRecording: async () => voiceCalls('toggleRecording'),
     setMode: (mode: 'click' | 'handsfree') => { voice.mode.value = mode; voiceCalls('setMode', mode) },
     setSpeak: (enabled: boolean) => voiceCalls('setSpeak', enabled),
+    unlock: async () => voiceCalls('unlock'),
+    expectReply: () => voiceCalls('expectReply'),
     hush: () => voiceCalls('hush'),
     cancel: () => voiceCalls('cancel'),
     sendHeld: () => voiceCalls('sendHeld'),
@@ -59,6 +61,8 @@ mockNuxtImport('useAgentVoice', () => (id: any, options: any) => {
   return fakeVoice()
 })
 mockNuxtImport('useSettings', () => () => ({ data: computed(() => ({ agentVoice: {} })), refresh: async () => {} }))
+
+registerEndpoint('/api/agents/ag_voice/prompt', { method: 'POST', handler: () => ({ delivery: 'steer', outcome: 'prompted' }) })
 
 registerEndpoint('/api/uploads', {
   method: 'POST',
@@ -113,6 +117,7 @@ beforeEach(() => {
   voiceOptions.length = 0
   voiceStatus = 'idle'
   useAgentVoiceOpen().value = false
+  useAgentVoiceListen().value = false
   localStorage.clear()
 })
 
@@ -145,6 +150,54 @@ describe('AgentComposer modes', () => {
     expect(component.find('[data-testid="voice-bar"]').exists()).toBe(false)
     expect((component.find('textarea').element as HTMLTextAreaElement).value).toBe('half a thought')
     expect(useAgentVoiceOpen().value).toBe(false)
+  })
+
+  /**
+   * Hearing the agent is not talking to it: typing with the speaker on keeps
+   * the text box, and still has the socket that reads replies and plays sounds.
+   */
+  it('hears the agent while typing when the speaker is on, and closes the voice when it is off', async () => {
+    const component = await mount({ session: session() })
+    expect(voiceCalls).not.toHaveBeenCalledWith('create', 'ag_voice')
+
+    await button(component, 'Hear the agent').trigger('click')
+
+    expect(useAgentVoiceListen().value).toBe(true)
+    expect(component.find('textarea').exists()).toBe(true)
+    expect(component.find('[data-testid="voice-bar"]').exists()).toBe(false)
+    expect(voiceCalls).toHaveBeenCalledWith('create', 'ag_voice')
+    expect(voiceCalls).toHaveBeenCalledWith('connect')
+    // The tap is what lets the browser start the audio.
+    await vi.waitFor(() => expect(voiceCalls).toHaveBeenCalledWith('unlock'))
+
+    await button(component, 'Mute the agent').trigger('click')
+    expect(useAgentVoiceListen().value).toBe(false)
+    expect(button(component, 'Hear the agent').exists()).toBe(true)
+  })
+
+  it('turns hearing on with voice mode, and keeps it, and the voice, when going back to typing', async () => {
+    const component = await mount({ session: session() })
+
+    await button(component, 'Talk instead').trigger('click')
+    expect(useAgentVoiceListen().value).toBe(true)
+    // The speaker is in the footer in voice mode too, and can mute it there.
+    expect(button(component, 'Mute the agent').exists()).toBe(true)
+
+    voiceCalls.mockClear()
+    await button(component, 'Type instead').trigger('click')
+    // Same voice, no reconnect: only the input changed.
+    expect(voiceCalls).not.toHaveBeenCalledWith('create', 'ag_voice')
+    expect(button(component, 'Mute the agent').exists()).toBe(true)
+  })
+
+  it('plays the working blip for a typed message while it is heard', async () => {
+    useAgentVoiceListen().value = true
+    const component = await mount({ session: session() })
+
+    await component.find('textarea').setValue('go on')
+    await component.find('textarea').trigger('keydown', { key: 'Enter' })
+
+    await vi.waitFor(() => expect(voiceCalls).toHaveBeenCalledWith('expectReply'))
   })
 
   it('opens in voice mode when it was left in voice mode', async () => {
@@ -192,7 +245,7 @@ describe('AgentComposer modes', () => {
     await vi.waitFor(() => expect(component.text()).toContain('shot.png'))
 
     const options = voiceOptions.at(-1)
-    expect(options.attachments.value).toEqual([
+    expect(toValue(options.attachments)).toEqual([
       expect.objectContaining({ type: 'resource_link', uri: 'file:///data/uploads/up_1.png' })
     ])
 

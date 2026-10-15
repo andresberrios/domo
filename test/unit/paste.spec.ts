@@ -41,32 +41,23 @@ describe('pastedFiles', () => {
 })
 
 describe('uploadName', () => {
+  const at = new Date('2026-03-04T05:06:07.000Z')
+
   it('keeps the name a real file came with', () => {
-    expect(uploadName(file('notes.pdf', 'application/pdf'))).toBe('notes.pdf')
+    expect(uploadName(file('notes.pdf', 'application/pdf'), at)).toBe('notes.pdf')
   })
 
-  /**
-   * Every browser hands a screenshot over as `image.png`, so three pastes in
-   * one message were three `image.png`s, which read as each replacing the last.
-   */
-  it('numbers clipboard images past every name already taken', () => {
-    const first = uploadName(file('image.png', 'image/png'))
-    const second = uploadName(file('image.png', 'image/png'), [first])
-    const third = uploadName(file('image.png', 'image/png'), [first, second, 'image-4.png'])
-    expect([first, second, third]).toEqual(['image-1.png', 'image-2.png', 'image-3.png'])
-    // Past the session's earlier messages too, which arrive the same way.
-    expect(uploadName(file('image.png', 'image/png'), ['image-1.png', 'IMAGE-2.PNG'])).toBe('image-3.png')
+  it('dates a clipboard image that has no name', () => {
+    expect(uploadName(file('', 'image/png'), at)).toBe('pasted-20260304-050607.png')
   })
 
-  it('names a clipboard file with no name at all by its type', () => {
-    expect(uploadName(file('', 'image/png'))).toBe('image-1.png')
-    expect(uploadName(file('', 'image/jpeg'))).toBe('image-1.jpg')
-    expect(uploadName(file('', 'application/pdf'))).toBe('pasted-1.pdf')
-    expect(uploadName(file('', ''))).toBe('pasted-1.bin')
+  it('knows the extensions that are not just the subtype', () => {
+    expect(uploadName(file('', 'image/jpeg'), at)).toBe('pasted-20260304-050607.jpg')
+    expect(uploadName(file('', 'image/svg+xml'), at)).toBe('pasted-20260304-050607.svg')
   })
 
-  it('numbers a real name only when it is taken, from 2', () => {
-    expect(uploadName(file('notes.pdf', 'application/pdf'), ['notes.pdf'])).toBe('notes-2.pdf')
-    expect(uploadName(file('Makefile', 'text/plain'), ['Makefile'])).toBe('Makefile-2')
+  it('falls back to the subtype, and to something when there is not one', () => {
+    expect(uploadName(file('', 'application/pdf'), at)).toBe('pasted-20260304-050607.pdf')
+    expect(uploadName(file('', ''), at)).toBe('pasted-20260304-050607.bin')
   })
 })

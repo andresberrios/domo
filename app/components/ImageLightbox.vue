@@ -5,7 +5,7 @@
  * shown, and null is closed. On a phone the modal takes the screen; arrows
  * (and the keyboard's) step through a message's images.
  */
-const props = defineProps<{ images: Array<{ name: string, url: string }> }>()
+const props = defineProps<{ images: Array<{ url: string }> }>()
 const index = defineModel<number | null>('index', { default: null })
 
 const open = computed({
@@ -28,7 +28,7 @@ function onKeydown(event: KeyboardEvent) {
 <template>
   <UModal
     v-model:open="open"
-    :title="image?.name ?? 'Image'"
+    title="Image"
     :description="images.length > 1 && index !== null ? `${index + 1} of ${images.length}` : undefined"
     :ui="{ content: 'sm:max-w-5xl max-sm:max-h-dvh', body: 'p-0 sm:p-0' }"
   >
@@ -37,7 +37,7 @@ function onKeydown(event: KeyboardEvent) {
         <img
           v-if="image"
           :src="image.url"
-          :alt="image.name"
+          :alt="images.length > 1 && index !== null ? `Image ${index + 1} of ${images.length}` : 'Image'"
           class="max-h-[75dvh] w-full object-contain"
         >
         <template v-if="images.length > 1">
