@@ -28,7 +28,8 @@ them on first use.
   engines. Gemini gets only the vocabulary, as spelling hints under a
   "you are a transcriber" system instruction: given the conversation as
   dialogue, it wrote the developer's likely next message for short or noisy
-  clips, which went to the agent as theirs.
+  clips, which went to the agent as theirs. OpenAI's transcribers get the
+  vocabulary alone as their `prompt` too (unmeasured: no credits).
 - **Nobody speaking means nothing is transcribed** (`agent-voice/vad.ts`,
   Silero VAD, 2 MB, fetched like the turn model). Every engine writes
   something down for room noise or hum, with or without context.
