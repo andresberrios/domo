@@ -86,6 +86,12 @@ const scroller = ref<HTMLElement | null>(null)
 const HISTORY_BAND = 40
 
 /**
+ * The room kept under the last row while following: the agent at work stands
+ * in it, and followed to the bottom edge it stood just off the screen.
+ */
+const FOLLOW_ROOM = 40
+
+/**
  * How tall to assume the box is when it says it is nothing.
  *
  * A window is only as good as the measurement behind it, and a scroller that
@@ -216,6 +222,8 @@ const virtualizer = useVirtualizer(computed(() => ({
   getItemKey: (index: number) => rows.value[index]?.id ?? index,
   overscan: 4,
   scrollMargin: HISTORY_BAND,
+  // Landing on the last row leaves the room under it that following keeps.
+  scrollPaddingEnd: FOLLOW_ROOM,
   initialRect: { width: 0, height: UNMEASURED_VIEWPORT },
   // A transcript opens at its end. Starting the window at the top drew the
   // first rows of the log, only to throw them away a frame later.
@@ -290,24 +298,29 @@ function contentEnd() {
   return HISTORY_BAND + totalSize.value
 }
 
+/** Where the view rests while following: the room under the last row on screen too. */
+function restingEnd() {
+  return contentEnd() + FOLLOW_ROOM
+}
+
 /**
  * Whether the view follows the newest row.
  *
  * Following is the default and the state we return to, because a transcript
- * is read from the bottom. It means the end of the last row is on screen:
- * anywhere in the space below it counts, so the reader can sit there and
- * watch text arrive. It is given up when the reader scrolls back far enough
- * that the end goes off the bottom of the box, and taken back when they come
- * down to it again — reading back through what an agent did must not be
- * yanked away by the next thing it says.
+ * is read from the bottom. It means the end of the last row is on screen,
+ * with `FOLLOW_ROOM` under it: anywhere in the space below counts, so the
+ * reader can sit there and watch text arrive. It is given up when the reader
+ * scrolls back far enough that that room goes off the bottom of the box, and
+ * taken back when they come down to it again — reading back through what an
+ * agent did must not be yanked away by the next thing it says.
  */
 const pinned = ref(true)
 /** How close to the end a reader scrolling down has to come to be following again. */
 const BOTTOM_THRESHOLD = 64
 
-/** How far the end of the last row is below the bottom of the box; negative when it is above. */
+/** How far the resting end is below the bottom of the box; negative when it is above. */
 function overflow(el: HTMLElement) {
-  return contentEnd() - (el.scrollTop + el.clientHeight)
+  return restingEnd() - (el.scrollTop + el.clientHeight)
 }
 
 /**
@@ -453,9 +466,10 @@ function askForEarlier() {
 }
 
 /**
- * Keep the end of the last row on screen, and do nothing else: while it is
- * in the space below, new text has room to arrive without anything moving,
- * and once it would pass the bottom of the box the view glides after it.
+ * Keep the end of the last row on screen, with `FOLLOW_ROOM` under it, and do
+ * nothing else: while it is in the space below, new text has room to arrive
+ * without anything moving, and once it would pass that room the view glides
+ * after it.
  */
 function follow({ instant = false } = {}) {
   const el = scroller.value
@@ -467,7 +481,7 @@ function follow({ instant = false } = {}) {
     if (overflow(el) > 1) pinned.value = false
     return
   }
-  const end = contentEnd() - el.clientHeight
+  const end = restingEnd() - el.clientHeight
   // Measured from where the view is headed, so a glide already under way is
   // retargeted rather than started again. A glide is for text arriving: when
   // nothing is streaming, the end moves because a row was measured, and that
@@ -491,9 +505,10 @@ function onToggle(event: Event) {
 /**
  * The box changes height when what is under it does — the composer growing a
  * line, the voice bar opening, a phone's keyboard. The end of the last row
- * stays where it was on screen if it still fits, and moves up with the bottom
- * edge if it no longer does. This runs in the resize observer, before the
- * frame is painted, so the frame between never shows the row cut off.
+ * stays where it was on screen if it still fits with its room under it, and
+ * moves up with the bottom edge if it no longer does. This runs in the resize
+ * observer, before the frame is painted, so the frame between never shows the
+ * row cut off.
  */
 function onViewportResize(height: number) {
   if (height === viewport) return
@@ -696,7 +711,7 @@ useResizeObserver(list, ([entry]) => {
 function jumpToLatest() {
   pinned.value = true
   const el = scroller.value
-  if (el) moveTo(contentEnd() - el.clientHeight)
+  if (el) moveTo(restingEnd() - el.clientHeight)
 }
 
 /**
@@ -709,7 +724,7 @@ function jumpToLatest() {
  * very bottom of the box, the newest row 60% of the way down, and the
  * next one at the end — a jump of 40% of a screen as the
  * transcript appeared. Hidden, the rows are laid out and measured all the
- * same, and appear once the end of the last row is at the bottom edge and
+ * same, and appear once the view rests at the end (see `FOLLOW_ROOM`) and
  * has held there for a frame. Measuring ahead waits until then too.
  */
 const landed = ref(false)
@@ -718,20 +733,20 @@ let landingStarted = 0
 let landingSize = -1
 
 /**
- * Landed: the end of the last row is at the bottom edge, and the height of
- * the content has held for a frame — rows mounted at the end are estimates
- * until they are measured, and the end moves when they are. Asked once a
+ * Landed: the view rests at the end, and the height of the content has held
+ * for a frame — rows mounted at the end are estimates until they are
+ * measured, and the end moves when they are. Asked once a
  * frame: asked twice in one, the height had always held.
  */
 function tryLanding() {
   const el = scroller.value
   if (landed.value || !el || !landingStarted) return
   // A correction the virtualiser retried can overshoot into the space below
-  // the last row; the end is put back at the bottom edge.
-  if (overflow(el) < -1 && contentEnd() > el.clientHeight) scrollTo(contentEnd() - el.clientHeight)
+  // the last row; the view is put back where it rests.
+  if (overflow(el) < -1 && restingEnd() > el.clientHeight) scrollTo(restingEnd() - el.clientHeight)
   const steady = totalSize.value === landingSize
   landingSize = totalSize.value
-  const atEnd = Math.abs(overflow(el)) <= 1 || contentEnd() <= el.clientHeight
+  const atEnd = Math.abs(overflow(el)) <= 1 || restingEnd() <= el.clientHeight
   if ((steady && atEnd) || performance.now() - landingStarted > LANDING_LIMIT_MS) {
     landed.value = true
     measureAhead()

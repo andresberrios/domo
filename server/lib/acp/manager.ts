@@ -755,17 +755,23 @@ class AgentRuntime {
 
   private async flushStream(block: StreamBlock): Promise<void> {
     if (block.written === block.text) return
-    const text = block.text
     try {
       await this.serial(async () => {
-        const row = await block.row
-        await writeAgentStream(row.id, text, true)
+        await this.writeStream(block)
         await this.touchIfStale()
       })
-      block.written = text
     } catch (error) {
       console.error(`[acp:${this.agentSessionId}] could not flush streamed text`, error)
     }
+  }
+
+  /** Write the deltas a block has received so far, and leave it open. Runs in `serial`. */
+  private async writeStream(block: StreamBlock): Promise<void> {
+    if (block.written === block.text) return
+    const text = block.text
+    const row = await block.row
+    await writeAgentStream(row.id, text, true)
+    block.written = text
   }
 
   get sessionId() {
@@ -1442,9 +1448,17 @@ class AgentRuntime {
     // delta, which is already below this event's, so continuing to write into
     // it renders the whole sentence above the tool card, which is where it
     // belongs.
-    const block = kind === 'tool_call' && update.status === 'pending' ? null : this.takeStream()
+    //
+    // Left open, the block still has its text so far written before the card
+    // goes in. Claude Code announces every call `pending`, right after the
+    // last delta of the text before it, and that delta waited for the next
+    // flush: the browser drew the card, then the line above it grew and
+    // pushed the card down.
+    const continued = kind === 'tool_call' && update.status === 'pending' ? this.stream : null
+    const block = continued ? null : this.takeStream()
     await this.serial(async () => {
       await this.closeStream(block)
+      if (continued) await this.writeStream(continued).catch(error => console.error(`[acp:${this.agentSessionId}] could not flush streamed text`, error))
       await appendAgentEvent(this.agentSessionId, kind, update)
       if (kind === 'tool_call') await this.setStatus('thinking')
       // The agent may switch its own mode mid-turn, and the row is what gets
