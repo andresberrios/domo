@@ -39,56 +39,59 @@ watch(settings, (value) => {
       </template>
 
       <template #default="{ collapsed }">
-        <div v-if="!collapsed" class="flex flex-col gap-4">
-          <div class="flex flex-col gap-3">
-            <!-- Each as wide as its label needs, sharing the rest; a narrow sidebar puts them on two lines. -->
-            <div class="flex flex-wrap gap-1.5">
-              <UTooltip :text="talkLabel">
+        <!-- Collapsing changes the sidebar's width at once, never over time: a width in motion re-lays the transcript out every frame. What is inside fades in. -->
+        <Transition name="swap">
+          <div v-if="!collapsed" class="flex flex-col gap-4">
+            <div class="flex flex-col gap-3">
+              <!-- Each as wide as its label needs, sharing the rest; a narrow sidebar puts them on two lines. -->
+              <div class="flex flex-wrap gap-1.5">
+                <UTooltip :text="talkLabel">
+                  <UButton
+                    label="Talk"
+                    icon="i-lucide-mic"
+                    block
+                    class="flex-1"
+                    :loading="creating"
+                    :aria-label="talkLabel"
+                    @click="talk"
+                  />
+                </UTooltip>
                 <UButton
-                  label="Talk"
-                  icon="i-lucide-mic"
+                  label="New session"
+                  icon="i-lucide-plus"
+                  color="neutral"
+                  variant="subtle"
                   block
-                  class="flex-1"
-                  :loading="creating"
-                  :aria-label="talkLabel"
-                  @click="talk"
+                  class="flex-1 whitespace-nowrap"
+                  to="/agents/new"
                 />
-              </UTooltip>
-              <UButton
-                label="New session"
-                icon="i-lucide-plus"
-                color="neutral"
-                variant="subtle"
-                block
-                class="flex-1 whitespace-nowrap"
-                to="/agents/new"
-              />
+              </div>
+              <nav class="flex flex-col gap-px">
+                <UButton
+                  to="/schedules"
+                  label="Schedules"
+                  icon="i-lucide-clock-3"
+                  color="neutral"
+                  variant="ghost"
+                  block
+                  class="justify-start"
+                />
+                <NotificationsButton />
+              </nav>
             </div>
-            <nav class="flex flex-col gap-px">
-              <UButton
-                to="/schedules"
-                label="Schedules"
-                icon="i-lucide-clock-3"
-                color="neutral"
-                variant="ghost"
-                block
-                class="justify-start"
-              />
-              <NotificationsButton />
-            </nav>
+
+            <SidebarAssistants />
+
+            <ProjectTree />
           </div>
 
-          <SidebarAssistants />
-
-          <ProjectTree />
-        </div>
-
-        <div v-else class="flex flex-col items-center gap-2">
-          <UButton icon="i-lucide-mic" :loading="creating" :aria-label="talkLabel" @click="talk" />
-          <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New session" to="/agents/new" />
-          <UButton to="/schedules" icon="i-lucide-clock-3" color="neutral" variant="ghost" aria-label="Schedules" />
-          <NotificationsButton collapsed />
-        </div>
+          <div v-else class="flex flex-col items-center gap-2">
+            <UButton icon="i-lucide-mic" :loading="creating" :aria-label="talkLabel" @click="talk" />
+            <UButton icon="i-lucide-plus" color="neutral" variant="ghost" aria-label="New session" to="/agents/new" />
+            <UButton to="/schedules" icon="i-lucide-clock-3" color="neutral" variant="ghost" aria-label="Schedules" />
+            <NotificationsButton collapsed />
+          </div>
+        </Transition>
       </template>
 
       <template #footer="{ collapsed }">

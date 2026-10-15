@@ -218,11 +218,11 @@ const menuItems = computed(() => [
           @load-earlier="loadEarlier"
         />
 
-        <div v-if="pending.length && !blocked" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
+        <MotionList v-if="pending.length && !blocked" tag="div" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
           <PermissionCard v-for="permission in pending" :key="permission.id" :permission="permission" />
-        </div>
+        </MotionList>
 
-        <div v-if="queued.length && current" class="shrink-0 pt-2">
+        <div v-if="queued.length && current" class="motion-fade shrink-0 pt-2">
           <AgentInbox :agent-session-id="current.id" :messages="queued" :readonly="!!blocked" :session="current" />
         </div>
 

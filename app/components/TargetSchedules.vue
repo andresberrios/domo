@@ -66,7 +66,7 @@ function next(job: CronJob) {
     />
     <template #content>
       <div class="w-80 max-w-[calc(100vw-2rem)]">
-        <ul class="max-h-96 divide-y divide-default overflow-y-auto">
+        <MotionList class="max-h-96 divide-y divide-default overflow-y-auto">
           <li v-for="job in jobs" :key="job.id" class="space-y-1 p-3">
             <div class="flex items-center gap-2">
               <UIcon
@@ -131,9 +131,11 @@ function next(job: CronJob) {
               </template>
             </div>
             <p v-if="job.lastError" class="line-clamp-2 ps-6 text-xs text-error">{{ job.lastError }}</p>
-            <SchedulePrompt v-if="expanded.has(job.id)" :text="job.prompt" class="ms-6 mt-2" />
+            <Transition name="disclose">
+              <SchedulePrompt v-if="expanded.has(job.id)" :text="job.prompt" class="ms-6 mt-2" />
+            </Transition>
           </li>
-        </ul>
+        </MotionList>
         <div class="flex items-center justify-between border-t border-default p-2">
           <UButton label="Add a schedule" icon="i-lucide-plus" color="neutral" variant="ghost" size="xs" :to="addTo" @click="open = false" />
           <UButton label="All schedules" color="neutral" variant="link" size="xs" to="/schedules" @click="open = false" />

@@ -356,7 +356,14 @@ const listening = useAgentVoiceListen()
 const typedHere = ref(!props.session)
 const voiceMode = computed(() => !!props.session && voiceOpen.value && !typedHere.value)
 
+/**
+ * Set once the person switches mode here, so the box or the bar that takes
+ * the other's place fades in — and nothing fades as the page first draws.
+ */
+const switchedMode = ref(false)
+
 function setVoiceMode(on: boolean) {
+  switchedMode.value = true
   typedHere.value = false
   voiceOpen.value = on
   if (on) listening.value = true
@@ -464,6 +471,7 @@ async function stop() {
   >
     <MessageAttachments
       v-if="attachments.length || uploading"
+      class="motion-fade"
       :attachments="attachmentViews"
       removable
       @remove="index => removeAttachment(attachments[index]!.path)"
@@ -482,7 +490,7 @@ async function stop() {
       :maxrows="10"
       :submit-on-enter="!isTouch"
       variant="outline"
-      :ui="{ base: 'min-h-10' }"
+      :ui="{ base: ['min-h-10', switchedMode && 'motion-fade'] }"
       @submit="submit"
       @paste="onPaste"
     >
@@ -491,7 +499,7 @@ async function stop() {
         `h-10` in the bar), so switching modes does not move the transcript.
       -->
       <template v-if="voiceMode && voice" #body>
-        <AgentVoiceBar :voice="voice" />
+        <AgentVoiceBar :voice="voice" :class="switchedMode && 'motion-fade'" />
       </template>
 
       <template #footer>
@@ -530,108 +538,36 @@ async function stop() {
             <UsageMeter v-if="session" :usage="session.usage ?? null" :provider="usageProviderOf(session.adapter)" />
           </div>
 
-          <div v-if="voiceMode && voice" class="flex shrink-0 items-center gap-1">
-            <!-- One button that flips between the two on a phone, where the pair would crowd out the settings card. -->
-            <UTooltip :text="`${voiceModeInfo.label} — tap for ${voiceModeOther.label.toLowerCase()}`">
-              <UButton
-                :icon="voiceModeInfo.icon"
-                color="neutral"
-                variant="ghost"
-                size="sm"
-                class="sm:hidden"
-                :aria-label="`${voiceModeInfo.label}. Switch to ${voiceModeOther.label.toLowerCase()}`"
-                @click="voice.setMode(voiceModeOther.value)"
-              />
-            </UTooltip>
-            <UFieldGroup size="sm" class="hidden sm:inline-flex">
-              <UTooltip v-for="item in voiceModes" :key="item.value" :text="item.label">
+          <!-- Each mode's controls replace the other's in place (`swap`); a control a turn brings pops in. -->
+          <Transition name="swap" mode="out-in">
+            <div v-if="voiceMode && voice" class="flex shrink-0 items-center gap-1">
+              <!-- One button that flips between the two on a phone, where the pair would crowd out the settings card. -->
+              <UTooltip :text="`${voiceModeInfo.label} — tap for ${voiceModeOther.label.toLowerCase()}`">
                 <UButton
-                  :icon="item.icon"
-                  color="neutral"
-                  :variant="voice.mode.value === item.value ? 'solid' : 'ghost'"
-                  :aria-label="item.label"
-                  :aria-pressed="voice.mode.value === item.value"
-                  @click="voice.setMode(item.value)"
-                >
-                  <span class="hidden lg:inline">{{ item.label }}</span>
-                </UButton>
-              </UTooltip>
-            </UFieldGroup>
-            <AgentVoiceQuickSettings />
-            <UTooltip :text="listening ? 'Replies and sounds are on. Tap to mute.' : 'Hear the agent: replies read aloud, and its sounds'">
-              <UButton
-                :icon="listening ? 'i-lucide-volume-2' : 'i-lucide-volume-off'"
-                :color="listening ? 'primary' : 'neutral'"
-                :variant="listening ? 'soft' : 'ghost'"
-                size="sm"
-                :aria-label="listening ? 'Mute the agent' : 'Hear the agent'"
-                :aria-pressed="listening"
-                @click="setListening(!listening)"
-              />
-            </UTooltip>
-            <UTooltip text="Type instead">
-              <UChip :show="!!text.trim()" size="sm" inset>
-                <UButton
-                  icon="i-lucide-keyboard"
+                  :icon="voiceModeInfo.icon"
                   color="neutral"
                   variant="ghost"
                   size="sm"
-                  aria-label="Type instead"
-                  @click="setVoiceMode(false)"
-                />
-              </UChip>
-            </UTooltip>
-            <UTooltip v-if="turnRunning" text="Cancel the agent's turn">
-              <UButton
-                icon="i-lucide-square"
-                color="neutral"
-                variant="subtle"
-                size="md"
-                aria-label="Cancel the turn"
-                @click="voice.cancel()"
-              />
-            </UTooltip>
-          </div>
-
-          <div v-else class="flex shrink-0 items-center gap-1">
-            <!--
-              While the agent works, `UChatPromptSubmit` is a stop button and
-              nothing else, so on a touch screen — where Enter deliberately
-              types a line break — there was no way to send at all. Steering a
-              running turn is the normal thing to do here, so it gets its own
-              button rather than a rule about which key to press — and the
-              delivery mode hangs off that button as a split control, because
-              it is a choice about the message this button is about to send.
-            -->
-            <UFieldGroup v-if="busy">
-              <UTooltip :text="`Send — ${deliveryInfo.description.toLowerCase()}`">
-                <UButton
-                  icon="i-lucide-arrow-up"
-                  color="neutral"
-                  size="md"
-                  aria-label="Send"
-                  :loading="sending"
-                  :disabled="!canSend"
-                  @click="submit"
+                  class="sm:hidden"
+                  :aria-label="`${voiceModeInfo.label}. Switch to ${voiceModeOther.label.toLowerCase()}`"
+                  @click="voice.setMode(voiceModeOther.value)"
                 />
               </UTooltip>
-              <UDropdownMenu :items="deliveryItems" :content="{ side: 'top', align: 'end' }">
-                <UTooltip text="What happens to this message mid-turn">
+              <UFieldGroup size="sm" class="hidden sm:inline-flex">
+                <UTooltip v-for="item in voiceModes" :key="item.value" :text="item.label">
                   <UButton
-                    icon="i-lucide-chevron-up"
+                    :icon="item.icon"
                     color="neutral"
-                    size="md"
-                    :aria-label="`Delivery: ${deliveryInfo.label}`"
-                  />
+                    :variant="voice.mode.value === item.value ? 'solid' : 'ghost'"
+                    :aria-label="item.label"
+                    :aria-pressed="voice.mode.value === item.value"
+                    @click="voice.setMode(item.value)"
+                  >
+                    <span class="hidden lg:inline">{{ item.label }}</span>
+                  </UButton>
                 </UTooltip>
-              </UDropdownMenu>
-            </UFieldGroup>
-            <!-- Typing while hearing the agent: the one way to stop a reply short of muting. -->
-            <UTooltip v-if="voice && (voice.speaking.value || voice.synthesizing.value)" text="Stop reading this reply. The agent keeps working.">
-              <UButton icon="i-lucide-volume-x" color="neutral" variant="subtle" size="sm" aria-label="Hush" @click="voice.hush()" />
-            </UTooltip>
-            <!-- Hearing and voice mode both need a session, which a draft does not have yet. -->
-            <template v-if="session">
+              </UFieldGroup>
+              <AgentVoiceQuickSettings />
               <UTooltip :text="listening ? 'Replies and sounds are on. Tap to mute.' : 'Hear the agent: replies read aloud, and its sounds'">
                 <UButton
                   :icon="listening ? 'i-lucide-volume-2' : 'i-lucide-volume-off'"
@@ -643,24 +579,100 @@ async function stop() {
                   @click="setListening(!listening)"
                 />
               </UTooltip>
-              <UTooltip text="Talk instead">
+              <UTooltip text="Type instead">
+                <UChip :show="!!text.trim()" size="sm" inset>
+                  <UButton
+                    icon="i-lucide-keyboard"
+                    color="neutral"
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Type instead"
+                    @click="setVoiceMode(false)"
+                  />
+                </UChip>
+              </UTooltip>
+              <UTooltip v-if="turnRunning" text="Cancel the agent's turn">
                 <UButton
-                  icon="i-lucide-mic"
+                  icon="i-lucide-square"
                   color="neutral"
-                  variant="ghost"
-                  size="sm"
-                  aria-label="Talk instead"
-                  @click="setVoiceMode(true)"
+                  variant="subtle"
+                  size="md"
+                  class="motion-pop"
+                  aria-label="Cancel the turn"
+                  @click="voice.cancel()"
                 />
               </UTooltip>
-            </template>
-            <UChatPromptSubmit
-              :status="status"
-              :loading="sending"
-              @stop="stop"
-              @reload="submit"
-            />
-          </div>
+            </div>
+
+            <div v-else class="flex shrink-0 items-center gap-1">
+              <!--
+                While the agent works, `UChatPromptSubmit` is a stop button and
+                nothing else, so on a touch screen — where Enter deliberately
+                types a line break — there was no way to send at all. Steering a
+                running turn is the normal thing to do here, so it gets its own
+                button rather than a rule about which key to press — and the
+                delivery mode hangs off that button as a split control, because
+                it is a choice about the message this button is about to send.
+              -->
+              <UFieldGroup v-if="busy" class="motion-pop">
+                <UTooltip :text="`Send — ${deliveryInfo.description.toLowerCase()}`">
+                  <UButton
+                    icon="i-lucide-arrow-up"
+                    color="neutral"
+                    size="md"
+                    aria-label="Send"
+                    :loading="sending"
+                    :disabled="!canSend"
+                    @click="submit"
+                  />
+                </UTooltip>
+                <UDropdownMenu :items="deliveryItems" :content="{ side: 'top', align: 'end' }">
+                  <UTooltip text="What happens to this message mid-turn">
+                    <UButton
+                      icon="i-lucide-chevron-up"
+                      color="neutral"
+                      size="md"
+                      :aria-label="`Delivery: ${deliveryInfo.label}`"
+                    />
+                  </UTooltip>
+                </UDropdownMenu>
+              </UFieldGroup>
+              <!-- Typing while hearing the agent: the one way to stop a reply short of muting. -->
+              <UTooltip v-if="voice && (voice.speaking.value || voice.synthesizing.value)" text="Stop reading this reply. The agent keeps working.">
+                <UButton icon="i-lucide-volume-x" color="neutral" variant="subtle" size="sm" aria-label="Hush" class="motion-pop" @click="voice.hush()" />
+              </UTooltip>
+              <!-- Hearing and voice mode both need a session, which a draft does not have yet. -->
+              <template v-if="session">
+                <UTooltip :text="listening ? 'Replies and sounds are on. Tap to mute.' : 'Hear the agent: replies read aloud, and its sounds'">
+                  <UButton
+                    :icon="listening ? 'i-lucide-volume-2' : 'i-lucide-volume-off'"
+                    :color="listening ? 'primary' : 'neutral'"
+                    :variant="listening ? 'soft' : 'ghost'"
+                    size="sm"
+                    :aria-label="listening ? 'Mute the agent' : 'Hear the agent'"
+                    :aria-pressed="listening"
+                    @click="setListening(!listening)"
+                  />
+                </UTooltip>
+                <UTooltip text="Talk instead">
+                  <UButton
+                    icon="i-lucide-mic"
+                    color="neutral"
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Talk instead"
+                    @click="setVoiceMode(true)"
+                  />
+                </UTooltip>
+              </template>
+              <UChatPromptSubmit
+                :status="status"
+                :loading="sending"
+                @stop="stop"
+                @reload="submit"
+              />
+            </div>
+          </Transition>
         </div>
       </template>
     </UChatPrompt>

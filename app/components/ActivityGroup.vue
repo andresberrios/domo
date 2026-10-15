@@ -68,7 +68,8 @@ const current = computed(() => {
       size="sm"
       block
       icon="i-lucide-layers"
-      :trailing-icon="open ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+      trailing-icon="i-lucide-chevron-down"
+      :ui="{ trailingIcon: ['transition-transform', open ? 'rotate-180' : ''] }"
     >
       <span class="flex min-w-0 flex-1 items-center gap-2">
         <span class="shrink-0">{{ label }}</span>

@@ -3,7 +3,7 @@
  * projects, folders, environments and agents read as one list.
  */
 export const ROW_CLASS
-  = 'group flex h-8 items-center gap-1 rounded-md pe-1 text-sm pointer-coarse:h-10 hover:bg-elevated has-[a.row-active]:bg-accented/70 has-[a.row-active]:font-medium'
+  = 'group flex h-8 items-center gap-1 rounded-md pe-1 text-sm transition-colors pointer-coarse:h-10 hover:bg-elevated has-[a.row-active]:bg-accented/70 has-[a.row-active]:font-medium'
 
 /**
  * A row's one-click action (a plus). With a fine pointer it appears on hover

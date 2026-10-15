@@ -457,6 +457,13 @@ function askForEarlier() {
 function follow({ instant = false } = {}) {
   const el = scroller.value
   if (!el || !pinned.value) return
+  // A row the reader opened grows under their pointer, and stays where it
+  // is: chasing the end would carry what they clicked up the screen. If
+  // the end has gone off the bottom, they are reading, not following.
+  if (performance.now() - toggledAt < TOGGLE_HOLD_MS) {
+    if (overflow(el) > 1) pinned.value = false
+    return
+  }
   const end = contentEnd() - el.clientHeight
   // Measured from where the view is headed, so a glide already under way is
   // retargeted rather than started again. A glide is for text arriving: when
@@ -464,6 +471,18 @@ function follow({ instant = false } = {}) {
   // is followed at once — so is everything while landing, where gliding
   // after each measured row kept the transcript hidden for most of a second.
   if (end > (glideTarget ?? el.scrollTop)) moveTo(end, { instant: instant || !landed.value || !live.value })
+}
+
+/**
+ * When the reader last opened or closed something in a row (a tool group, a
+ * card): every `aria-expanded` toggle in the list is one. The row takes its
+ * new height in the next frame or two, which this window covers.
+ */
+let toggledAt = 0
+const TOGGLE_HOLD_MS = 300
+
+function onToggle(event: Event) {
+  if ((event.target as Element | null)?.closest?.('[aria-expanded]')) toggledAt = performance.now()
 }
 
 /**
@@ -757,7 +776,7 @@ onMounted(() => nextTick(() => {
           </template>
         </div>
 
-        <div ref="list" class="relative" :style="{ height: `${totalSize}px` }">
+        <div ref="list" class="relative" :style="{ height: `${totalSize}px` }" @click.capture="onToggle">
           <div
             v-for="row in virtualRows"
             :key="row.key as string"

@@ -72,6 +72,89 @@
   --color-bark-800: #362920;
   --color-bark-900: #261e18;
   --color-bark-950: #17110d;
+
+  /* Motion: three durations and one curve, for everything that moves.
+   * `quick` is a reply to the pointer (hover, a chevron, a menu opening),
+   * `base` is something arriving (content opening, a row joining a list, a
+   * status changing), `slow` is a whole surface (a modal, a slideover, a
+   * toast, a page). Nuxt UI's own animations read `--ease-out`, so redefining
+   * it here gives its menus and modals the same curve; app.config.ts points
+   * their durations at these tokens. A front-loaded curve: most of the
+   * distance is covered in the first third, so short reads as fast rather
+   * than abrupt. */
+  --motion-quick: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 220ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --default-transition-duration: var(--motion-quick);
+  --default-transition-timing-function: var(--ease-out);
+}
+
+/* -------------------------------------------------------------------------
+ * Motion
+ *
+ * Opacity and transform only: nothing here changes a box's size, so nothing
+ * moves what is around it and the transcript's measured rows stay exact.
+ * Content that opens takes its full height at once and fades up into it.
+ *
+ * - `disclose`: content opening under its header (`<Transition name="disclose">`,
+ *   and every `UCollapsible` through app.config.ts).
+ * - `list`: a row joining or leaving a list (`MotionList`).
+ * - `swap`: one thing replacing another in place (a status label, the
+ *   composer's mode). The old one goes at once; the new one fades in.
+ * - `.motion-page`: the page under the sidebar changing. On the dashboard
+ *   panel's root (app.config.ts), as it mounts: `UDashboardPanel` renders a
+ *   fragment, which `<NuxtPage :transition>` cannot animate. Nothing waits
+ *   for the old page to go.
+ * - `.motion-pop`: something small appearing on mount (a badge, a button).
+ *
+ * Reduced motion keeps the fades and drops every movement.
+ * ------------------------------------------------------------------------- */
+
+@keyframes motion-rise {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes motion-sink {
+  to { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes motion-slide {
+  from { opacity: 0; transform: translateX(-6px); }
+}
+@keyframes motion-pop {
+  from { opacity: 0; transform: scale(0.85); }
+}
+@keyframes motion-fade {
+  from { opacity: 0; }
+}
+
+.disclose-enter-active { animation: motion-rise var(--motion-base) var(--ease-out); }
+.disclose-leave-active { animation: motion-sink var(--motion-quick) var(--ease-out) forwards; }
+
+.list-enter-active { animation: motion-slide var(--motion-base) var(--ease-out); }
+.list-leave-active { animation: motion-fade var(--motion-quick) var(--ease-out) reverse forwards; position: absolute; }
+.list-move { transition: transform var(--motion-base) var(--ease-out); }
+
+.swap-enter-active { animation: motion-fade var(--motion-base) var(--ease-out); }
+.swap-leave-active { display: none; }
+
+.motion-page { animation: motion-fade var(--motion-slow) var(--ease-out); }
+
+.motion-pop { animation: motion-pop var(--motion-base) var(--ease-out); }
+.motion-fade { animation: motion-fade var(--motion-base) var(--ease-out); }
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes motion-rise { from { opacity: 0; } }
+  @keyframes motion-sink { to { opacity: 0; } }
+  @keyframes motion-slide { from { opacity: 0; } }
+  @keyframes motion-pop { from { opacity: 0; } }
+  /* Nuxt UI's collapsible animates height; the app config swaps it for `disclose`, this is the backstop. */
+  @keyframes collapsible-down { from { opacity: 0; } }
+  @keyframes collapsible-up { to { opacity: 0; } }
+  .list-move { transition: none; }
+  /* A chevron turning is movement too; it takes its new angle at once. */
+  .transition-transform { transition-duration: 0s; }
+  /* A spinner still says "working", by fading instead of turning. */
+  .animate-spin { animation: pulse 1.5s var(--ease-in-out) infinite; }
 }
 
 /* Markdown rendered by MarkdownView — scoped, minimal, theme-aware. */

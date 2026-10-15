@@ -127,8 +127,12 @@ const Harness = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(ProjectTree) })
 })
 
+/**
+ * Real transitions, not Test Utils' stubs: the tree's lists are `MotionList`s,
+ * and a stubbed `TransitionGroup` renders no list element at all.
+ */
 async function mountTree() {
-  return await mountSuspended(Harness, { attachTo: document.body })
+  return await mountSuspended(Harness, { attachTo: document.body, global: { stubs: { transition: false, 'transition-group': false } } })
 }
 
 function buttonLabelled(label: string): HTMLButtonElement | undefined {

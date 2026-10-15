@@ -76,7 +76,7 @@ const outcome = computed(() => {
   <div class="rounded-lg border border-default bg-elevated/30" data-testid="mesh-message">
     <button
       type="button"
-      class="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-start hover:bg-elevated/60"
+      class="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-start transition-colors hover:bg-elevated/60"
       :aria-expanded="open"
       @click="open = !open"
     >
@@ -98,27 +98,30 @@ const outcome = computed(() => {
       />
     </button>
 
-    <div v-if="open" class="space-y-2 border-t border-default px-3 py-3">
-      <MarkdownView v-if="item.text" :text="item.text" />
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-        <span v-if="outcome">{{ outcome }}</span>
-        <NuxtLink
-          v-if="item.via === 'schedule'"
-          to="/schedules"
-          class="inline-flex items-center gap-1 text-primary hover:underline"
-        >
-          Open schedules
-          <UIcon name="i-lucide-arrow-up-right" class="size-3" />
-        </NuxtLink>
-        <NuxtLink
-          v-else-if="item.peer.id"
-          :to="`/agents/${item.peer.id}`"
-          class="inline-flex items-center gap-1 text-primary hover:underline"
-        >
-          Open {{ peerTitle }}
-          <UIcon name="i-lucide-arrow-up-right" class="size-3" />
-        </NuxtLink>
+    <!-- As a tool card opens (see ToolCallCard): full height at once, the message fading up into it. -->
+    <Transition name="disclose">
+      <div v-if="open" class="space-y-2 border-t border-default px-3 py-3">
+        <MarkdownView v-if="item.text" :text="item.text" />
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+          <span v-if="outcome">{{ outcome }}</span>
+          <NuxtLink
+            v-if="item.via === 'schedule'"
+            to="/schedules"
+            class="inline-flex items-center gap-1 text-primary hover:underline"
+          >
+            Open schedules
+            <UIcon name="i-lucide-arrow-up-right" class="size-3" />
+          </NuxtLink>
+          <NuxtLink
+            v-else-if="item.peer.id"
+            :to="`/agents/${item.peer.id}`"
+            class="inline-flex items-center gap-1 text-primary hover:underline"
+          >
+            Open {{ peerTitle }}
+            <UIcon name="i-lucide-arrow-up-right" class="size-3" />
+          </NuxtLink>
+        </div>
       </div>
-    </div>
+    </Transition>
   </div>
 </template>
