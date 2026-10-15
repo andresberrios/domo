@@ -15,12 +15,26 @@ a live pid, not a timestamp.
 
 ## Releases
 
-Every push to `release` runs `.github/workflows/release.yml`: it builds on
-each platform (macOS arm64 and x64, Linux x64 and arm64, glibc) and publishes
-a GitHub Release to `andresberrios/domo-releases`, a public repository with
-no source. Installs read it without an account. The version is the commit's
-UTC date and short hash, `2026.10.15-ab18e19`, so every job that builds one
-commit agrees on it. Each release holds:
+A release is a GitHub Release on `andresberrios/domo-releases`, a public
+repository with no source, which installs read without an account. Releasing
+is `pnpm release:publish` on Andrés's Mac (`scripts/publish-release.mjs`),
+after the change is merged and pushed to `main`. It takes the tip of
+origin/main (or `--ref`, which must be on it), exports it with `git archive`,
+never the working tree, and builds the four platforms (macOS arm64 and x64,
+Linux x64 and arm64, glibc): darwin-arm64 on an arm64 Node, darwin-x64 on an
+x64 Node under Rosetta with pnpm installed through it, and the Linux ones in
+`node` containers of their architecture (linux/amd64 through Docker
+Desktop's emulation). Then it writes the manifest, publishes with the `gh`
+login of whoever runs it (a draft, every file uploaded, then marked latest),
+and only then pushes the commit to `release`: an install built from git
+learns of a new launcher through `release`, so the feed must have that
+commit's release first. Each step is skipped when already done, under
+`~/.cache/domo-release/<version>`, so after a failure the same command goes
+on from where it stopped. `--no-publish` builds only; `--platforms` picks
+some. It needs Docker, Rosetta and `gh auth login`.
+
+The version is the commit's UTC date and short hash, `2026.10.15-ab18e19`,
+so every build of one commit agrees on it. Each release holds:
 
 - `domo-<version>-<os>-<arch>.tar.gz`, about 55 MB: one directory `domo/`
   with the built app (`.output`), `agents/` (the coding agents' pins, below),
@@ -64,24 +78,17 @@ so the server resolves the adapters through it with the release as its cwd,
 and a rollback finds the agents its release pins. An install no kept release
 pins is removed.
 
-The manifest is cumulative: the publish job downloads the latest one and adds
+The manifest is cumulative: publishing downloads the latest one and adds
 the new release on top. The release is a draft until every file is up, since
 `latest/download/…` is what installs read.
 
-The macOS builds can run on a self-hosted Mac instead of GitHub's, whose
-macOS minutes cost ten times as much in a private repository. On an Apple
-silicon Mac with git (Command Line Tools) and Rosetta
-(`softwareupdate --install-rosetta --agree-to-license`): add a runner under
-the repository's Settings → Actions → Runners (macOS, ARM64), give it a label
-such as `domo-mac`, run it as a service (`./svc.sh install && ./svc.sh start`),
-and set the repository variable `DOMO_MACOS_RUNNER` to that label. Both
-macOS jobs then run there, one after the other, while the Mac is awake;
-unset the variable to go back. darwin-x64 builds on an x64 Node under
-Rosetta, which makes pnpm fetch the x64 packages; `release.mjs build
---platform` fails the job if that Node, or the sharp build `.output` traced,
-is not the platform named. The Linux jobs stay on GitHub's runners. A
-self-hosted runner runs whatever a workflow in the repository asks, so this
-suits a private repository that takes no outside pull requests.
+`.github/workflows/release.yml` does the same build in CI, run by hand
+for now; with "publish" it publishes too, and `release` is then pushed by
+hand after it. It is kept for when CI moves to Blacksmith: each platform's
+runner is a repository variable (`DOMO_LINUX_X64_RUNNER`,
+`DOMO_LINUX_ARM64_RUNNER`, `DOMO_MACOS_RUNNER`), so the move is setting them.
+`release.mjs build --platform` fails a build whose Node, or whose traced
+sharp, is not the platform named.
 
 ## Layout of an installed Domo
 
@@ -322,8 +329,8 @@ on the development stack, whose Postgres is the one `pnpm test` uses.
 3. Stop `pnpm dev` for good, and `domo start`. An install needs no `.env`;
    if `~/.domo/.env` sets `NUXT_DATA_DIR`, it must point at `~/.domo/data`. The checkout becomes a
    development checkout only: merge freely, run tests, work in environments.
-   Deploy by pushing `release`: CI publishes it, and the install picks it up
-   within the hour. For an in-browser check of unmerged work, use the scratch
+   Release with `pnpm release:publish`, and the install picks it up within
+   the hour. For an in-browser check of unmerged work, use the scratch
    recipe below.
 
 ## Testing a change to any of this

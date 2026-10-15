@@ -22,12 +22,12 @@
 // (bin/domo.mjs, `ensureAgents()`). `.output` traces sharp and the ONNX
 // runtime for this machine, so each platform is built on its own
 // (.github/workflows/release.yml).
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { arch, platform } from 'node:os'
-import { join, resolve } from 'node:path'
+import { arch, platform, tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 /** How many releases the manifest remembers, for the changelog of an install that is several behind. */
@@ -38,8 +38,18 @@ function run(command, args, options = {}) {
   return result
 }
 
+/**
+ * The repository and commit being released: this checkout's HEAD, or, for
+ * `scripts/publish-release.mjs`, which builds from an export of a commit, the
+ * repository it came from and that commit. A build with no git at all (in a
+ * container) is told the commit's facts instead (`DOMO_RELEASE_COMMIT` and the
+ * rest, as `info` prints them).
+ */
+const GIT_DIR = process.env.DOMO_RELEASE_GIT_DIR || ROOT
+const REF = process.env.DOMO_RELEASE_REF || 'HEAD'
+
 function git(...args) {
-  return spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' }).stdout.trim()
+  return spawnSync('git', ['-C', GIT_DIR, ...args], { encoding: 'utf8' }).stdout.trim()
 }
 
 function option(args, name, fallback) {
@@ -51,24 +61,90 @@ function sha256(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex')
 }
 
-/** `2026.10.15-ab18e19`: the commit's UTC date and short hash, so every job that builds one commit agrees. */
-function version() {
-  const [sha, epoch] = git('log', '-1', '--format=%h %ct', '--abbrev=7').split(' ')
+/**
+ * The commit's hash, subject, date and the version named after it:
+ * `2026.10.15-ab18e19`, its UTC date and short hash, so every build of one
+ * commit agrees.
+ */
+function commitInfo() {
+  const env = process.env
+  if (env.DOMO_RELEASE_COMMIT) {
+    return { commit: env.DOMO_RELEASE_COMMIT, version: env.DOMO_RELEASE_VERSION, date: env.DOMO_RELEASE_DATE, epoch: env.DOMO_RELEASE_EPOCH, subject: env.DOMO_RELEASE_SUBJECT }
+  }
+  const [commit, short, epoch, date, subject] = git('log', '-1', '--abbrev=7', '--format=%H%x1f%h%x1f%ct%x1f%cI%x1f%s', REF).split('\x1f')
+  if (!commit) throw new Error(`no commit ${REF} in ${GIT_DIR}`)
   const d = new Date(Number(epoch) * 1000)
-  return `${d.getUTCFullYear()}.${d.getUTCMonth() + 1}.${d.getUTCDate()}-${sha}`
+  return { commit, version: `${d.getUTCFullYear()}.${d.getUTCMonth() + 1}.${d.getUTCDate()}-${short}`, date, epoch, subject }
 }
 
 function platformKey() {
   return `${platform() === 'darwin' ? 'darwin' : 'linux'}-${arch() === 'arm64' ? 'arm64' : 'x64'}`
 }
 
-function build(args) {
+/**
+ * Nitro keeps two versions of one package (zod 4.6.5 and 4.6.7, say) under
+ * `node_modules/.nitro/<name>@<version>` and links to them by absolute path,
+ * into the directory it built in: on any other machine those links point
+ * nowhere. Each becomes a relative link inside the copy; one that leads out
+ * of `.output` is an error.
+ */
+function relativeLinks(built, copy) {
+  // As Nitro saw it, which on macOS may be /private/var where this sees /var.
+  const roots = [built, realpathSync(built)]
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name)
+      const stat = lstatSync(path)
+      if (stat.isSymbolicLink()) {
+        const target = readlinkSync(path)
+        if (!isAbsolute(target)) continue
+        const inside = roots.map(root => relative(root, target)).find(rest => !rest.startsWith('..') && !isAbsolute(rest))
+        if (inside === undefined) throw new Error(`${relative(copy, path)} links out of .output, to ${target}`)
+        rmSync(path)
+        symlinkSync(relative(dirname(path), join(copy, inside)), path)
+      } else if (stat.isDirectory()) {
+        walk(path)
+      }
+    }
+  }
+  walk(copy)
+}
+
+/**
+ * Start `.output` where no `node_modules` is above it, against no database,
+ * and require the app shell: it must run on what it carries. A package it
+ * only found by resolving upward (once the agents' zod) would be found in a
+ * release only while the agents' install happens to have it.
+ */
+async function selfContained(stage) {
+  const dir = mkdtempSync(join(tmpdir(), 'domo-release-check-'))
+  cpSync(join(stage, '.output'), join(dir, '.output'), { recursive: true, verbatimSymlinks: true })
+  const port = String(40_000 + Math.floor(Math.random() * 10_000))
+  const child = spawn(process.execPath, [join(dir, '.output', 'server', 'index.mjs')], {
+    cwd: dir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, PORT: port, HOST: '127.0.0.1', DATABASE_URL: 'postgresql://x:x@127.0.0.1:1/none', ELECTRIC_URL: 'http://127.0.0.1:1', NUXT_DATA_DIR: join(dir, 'data') }
+  })
+  let output = ''
+  child.stdout.on('data', d => (output += d))
+  child.stderr.on('data', d => (output += d))
+  let exited = false
+  child.on('exit', () => (exited = true))
+  let ok = false
+  for (let i = 0; i < 60 && !exited && !ok; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    ok = await fetch(`http://127.0.0.1:${port}/`).then(r => r.ok, () => false)
+  }
+  child.kill('SIGKILL')
+  rmSync(dir, { recursive: true, force: true })
+  if (!ok) throw new Error(`.output does not run on its own:\n${output.trim().split('\n').slice(-12).join('\n')}`)
+}
+
+async function build(args) {
   const out = resolve(option(args, '--out', 'dist'))
   const expected = option(args, '--platform', null)
   if (expected && expected !== platformKey()) throw new Error(`asked for ${expected}, but this Node is ${platformKey()}`)
-  const v = version()
-  const commit = git('rev-parse', 'HEAD')
-  const date = git('log', '-1', '--format=%cI')
+  const { version: v, commit, date, epoch, subject } = commitInfo()
   if (!args.includes('--skip-build')) run('pnpm', ['build'], { env: { ...process.env, DOMO_RELEASE_BUILD: '1', DOMO_BUILD_ID: commit } })
   if (!existsSync(join(ROOT, '.output', 'server', 'index.mjs'))) throw new Error('no .output: run pnpm build')
 
@@ -76,7 +152,8 @@ function build(args) {
   rmSync(join(out, 'stage'), { recursive: true, force: true })
   mkdirSync(stage, { recursive: true })
   // Source maps embed the source they map.
-  cpSync(join(ROOT, '.output'), join(stage, '.output'), { recursive: true, filter: src => !src.endsWith('.map') })
+  cpSync(join(ROOT, '.output'), join(stage, '.output'), { recursive: true, verbatimSymlinks: true, filter: src => !src.endsWith('.map') })
+  relativeLinks(join(ROOT, '.output'), join(stage, '.output'))
 
   // This platform's native packages only: the ONNX runtime ships every one's.
   const [os, cpu] = platformKey().split('-')
@@ -110,13 +187,14 @@ function build(args) {
   writeFileSync(join(stage, '.tool-versions'), `${tools.join('\n')}\n`)
   const nodeVersion = tools.find(line => line.startsWith('nodejs '))?.split(/\s+/)[1]
   writeFileSync(join(stage, 'build.json'), `${JSON.stringify({
-    version: v, commit, subject: git('log', '-1', '--format=%s'), builtAt: date, nodeVersion, platform: platformKey()
+    version: v, commit, subject, builtAt: date, nodeVersion, platform: platformKey()
   }, null, 2)}\n`)
+
+  await selfContained(stage)
 
   const file = join(out, `domo-${v}-${platformKey()}.tar.gz`)
   // GNU tar can make the archive byte-for-byte reproducible; bsdtar (macOS) cannot sort.
   const tar = ['gtar', 'tar'].find(name => spawnSync(name, ['--version'], { encoding: 'utf8' }).stdout?.includes('GNU tar'))
-  const epoch = git('log', '-1', '--format=%ct')
   const flags = tar ? ['--sort=name', `--mtime=@${epoch}`, '--owner=0', '--group=0', '--numeric-owner'] : []
   run(tar ?? 'tar', ['-C', join(out, 'stage'), ...flags, '-cf', file.replace(/\.gz$/, ''), 'domo'])
   rmSync(file, { force: true })
@@ -135,9 +213,7 @@ function manifest(args) {
   const out = resolve(option(args, '--out', 'dist'))
   const previousFile = option(args, '--previous', null)
   const previous = previousFile && existsSync(previousFile) ? JSON.parse(readFileSync(previousFile, 'utf8')) : null
-  const v = version()
-  const commit = git('rev-parse', 'HEAD')
-  const date = git('log', '-1', '--format=%cI')
+  const { version: v, commit, date } = commitInfo()
 
   const artifacts = {}
   for (const name of readdirSync(out).filter(n => n.startsWith(`domo-${v}-`) && n.endsWith('.tar.gz'))) {
@@ -148,10 +224,10 @@ function manifest(args) {
 
   // The commits since the previous release; without one, or after a rewrite
   // of the branch, only this one.
-  const since = previous?.commit && spawnSync('git', ['merge-base', '--is-ancestor', previous.commit, commit], { cwd: ROOT }).status === 0
-    ? `${previous.commit}..${commit}`
-    : '-1'
-  const commits = git('log', '--format=%H%x1f%s%x1f%aI', since).split('\n').filter(Boolean).map((line) => {
+  const since = previous?.commit && spawnSync('git', ['-C', GIT_DIR, 'merge-base', '--is-ancestor', previous.commit, commit]).status === 0
+    ? [`${previous.commit}..${commit}`]
+    : ['-1', commit]
+  const commits = git('log', '--format=%H%x1f%s%x1f%aI', ...since).split('\n').filter(Boolean).map((line) => {
     const [sha, subject, at] = line.split('\x1f')
     return { sha, subject, date: at }
   })
@@ -192,8 +268,9 @@ function serve(args) {
 
 const [command, ...args] = process.argv.slice(2)
 switch (command) {
-  case 'version': console.log(version()); break
-  case 'build': build(args); break
+  case 'version': console.log(commitInfo().version); break
+  case 'info': console.log(JSON.stringify(commitInfo())); break
+  case 'build': await build(args); break
   case 'manifest': manifest(args); break
   case 'serve': serve(args); break
   default:

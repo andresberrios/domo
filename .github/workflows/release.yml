@@ -1,21 +1,26 @@
-# Every push to `release` becomes a release of Domo: built on each platform,
-# then published with its manifest to the public releases repository, which
-# holds no source. Installs read it anonymously (bin/domo.mjs, `feed()`).
-# See docs/install-and-updates.md. The releases repository's README is
+# Builds a release of Domo on each platform and, when asked, publishes it
+# with its manifest to the public releases repository, which holds no source.
+# Installs read it anonymously (bin/domo.mjs, `feed()`). See
+# docs/install-and-updates.md. The releases repository's README is
 # .github/releases-repo/README.md.
 #
+# Releases are built and published on Andrés's Mac for now
+# (`pnpm release:publish`), so this runs only by hand. It is kept for when CI
+# moves to Blacksmith: each platform's runner is a repository variable
+# (DOMO_LINUX_X64_RUNNER, DOMO_LINUX_ARM64_RUNNER, DOMO_MACOS_RUNNER), so that
+# move is setting them to Blacksmith's labels; unset, they are GitHub's. When
+# it publishes, `release` is pushed after it, never before (see
+# scripts/publish-release.mjs).
+#
 # Needs the secret DOMO_RELEASES_TOKEN: a fine-grained token with
-# "Contents: read and write" on andresberrios/domo-releases only. The
-# repository variable DOMO_MACOS_RUNNER, when set, is the label of the runner
-# both macOS builds run on instead of GitHub's (a self-hosted Apple silicon
-# Mac builds darwin-x64 under Rosetta); see docs/install-and-updates.md.
+# "Contents: read and write" on andresberrios/domo-releases only. A
+# self-hosted Apple silicon Mac as DOMO_MACOS_RUNNER builds darwin-x64 under
+# Rosetta.
 name: release
 
 on:
-  push:
-    branches: [release]
-  # By hand: builds every platform, and publishes only when asked, so the
-  # builds can be checked without releasing anything.
+  # Builds every platform, and publishes only when asked, so the builds can be
+  # checked without releasing anything.
   workflow_dispatch:
     inputs:
       publish:
@@ -23,7 +28,7 @@ on:
         type: boolean
         default: false
 
-# One publish at a time, in push order: each manifest builds on the last.
+# One publish at a time: each manifest builds on the last.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -37,8 +42,8 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { runner: ubuntu-24.04, platform: linux-x64, node-arch: x64 }
-          - { runner: ubuntu-24.04-arm, platform: linux-arm64, node-arch: arm64 }
+          - { runner: "${{ vars.DOMO_LINUX_X64_RUNNER || 'ubuntu-24.04' }}", platform: linux-x64, node-arch: x64 }
+          - { runner: "${{ vars.DOMO_LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}", platform: linux-arm64, node-arch: arm64 }
           - { runner: "${{ vars.DOMO_MACOS_RUNNER || 'macos-15' }}", platform: darwin-arm64, node-arch: arm64 }
           # An x64 Node: on Apple silicon it runs under Rosetta, and pnpm picks
           # the x64 packages for the process's architecture.
@@ -70,7 +75,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.event_name == 'push' || inputs.publish
+    if: inputs.publish
     runs-on: ubuntu-24.04
     steps:
       # The whole history: the manifest lists the commits since the last release.

@@ -12,6 +12,7 @@
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
     "typecheck": "nuxt typecheck",
+    "release:publish": "node scripts/publish-release.mjs",
     "test": "vitest run --project unit --project nuxt --project integration --project electric",
     "test:unit": "vitest run --project unit",
     "test:nuxt": "vitest run --project nuxt",
