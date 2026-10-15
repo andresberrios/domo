@@ -33,6 +33,9 @@ describe('the supervisor and the compose stack', () => {
     await writeFile(join(release, 'Caddyfile'), '')
     await writeFile(join(release, '.output', 'server', 'index.mjs'), [
       'import { createServer } from "node:http"',
+      'import { writeFileSync } from "node:fs"',
+      'const keys = ["DATABASE_URL", "ELECTRIC_URL", "NUXT_DATA_DIR", "NUXT_DEV_ENV_RESOURCE_PREFIX", "NUXT_GEMINI_API_KEY"]',
+      'writeFileSync(process.env.DOMO_TEST_DOCKER_LOG + ".server-env", JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key] ?? null]))))',
       'createServer((_, res) => res.end("ok")).listen(Number(process.env.PORT), "127.0.0.1")',
       'process.on("SIGTERM", () => process.exit(0))'
     ].join('\n'))
@@ -57,8 +60,10 @@ describe('the supervisor and the compose stack', () => {
   /** Runs the supervisor until the server is up, then stops it; the docker calls it made, one per line. */
   async function dockerCallsOfARun(): Promise<string[]> {
     const port = await freePort()
+    // The test run's own database and data settings must not reach the launcher.
+    const { DATABASE_URL: _db, ELECTRIC_URL: _electric, NUXT_DATA_DIR: _data, NUXT_DEV_ENV_RESOURCE_PREFIX: _prefix, NUXT_GEMINI_API_KEY: _key, ...env } = process.env
     const child = spawn(process.execPath, [LAUNCHER, 'run'], {
-      env: { ...process.env, DOMO_HOME: home, DOMO_PORT: String(port), SHELL: '/bin/sh', DOMO_TEST_DOCKER_LOG: dockerLog },
+      env: { ...env, DOMO_HOME: home, DOMO_PORT: String(port), SHELL: '/bin/sh', DOMO_TEST_DOCKER_LOG: dockerLog },
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let output = ''
@@ -79,6 +84,28 @@ describe('the supervisor and the compose stack', () => {
     expect(await dockerCallsOfARun()).toEqual([
       `compose -f ${join(home, 'releases', 'r1', 'docker-compose.prod.yml')} up -d`
     ])
+  })
+
+  // An install writes no `.env`: people set Domo up in the app.
+  it('runs the server against the production stack with no .env at all', async () => {
+    await dockerCallsOfARun()
+    expect(JSON.parse(await readFile(`${dockerLog}.server-env`, 'utf8'))).toEqual({
+      DATABASE_URL: 'postgresql://postgres:password@localhost:54322/domo',
+      ELECTRIC_URL: 'http://localhost:30002',
+      NUXT_DATA_DIR: join(home, 'data'),
+      NUXT_DEV_ENV_RESOURCE_PREFIX: 'domo-prod-',
+      NUXT_GEMINI_API_KEY: null
+    })
+  })
+
+  it('still lets a developer\'s .env override those', async () => {
+    await writeFile(join(home, '.env'), 'DATABASE_URL=postgresql://postgres:password@localhost:54331/domo\nNUXT_GEMINI_API_KEY="from-env"\n')
+    await dockerCallsOfARun()
+    expect(JSON.parse(await readFile(`${dockerLog}.server-env`, 'utf8'))).toMatchObject({
+      DATABASE_URL: 'postgresql://postgres:password@localhost:54331/domo',
+      ELECTRIC_URL: 'http://localhost:30002',
+      NUXT_GEMINI_API_KEY: 'from-env'
+    })
   })
 
   // `caddy trust` asks the running server for its root certificate over this socket.

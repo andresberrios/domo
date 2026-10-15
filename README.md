@@ -78,7 +78,6 @@ Needs the Node and pnpm in `.tool-versions` and [Caddy](https://caddyserver.com)
 (`brew install caddy`); browsers allow the microphone only on HTTPS.
 
 ```bash
-cp .env.example .env     # optional server overrides; keys go in through the app
 docker compose up -d     # Postgres :54321, Electric :30000
 pnpm install
 pnpm dev                 # open https://localhost:3766

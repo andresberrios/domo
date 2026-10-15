@@ -8,6 +8,7 @@ useHead({
 
 <template>
   <UApp>
+    <NewBuildReload />
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>

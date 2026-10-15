@@ -2,8 +2,9 @@
 
 People set Domo up in the app: keys are saved in the database through the
 setup guide and each settings page. A variable here is a developer's or
-operator's override. It goes in `.env` (`~/.domo/.env` for an install, read
-by the launcher at every server start), wins over the value saved in the app,
+operator's override. It goes in `.env` (`~/.domo/.env` for an install, which
+has none until someone makes one, and which the launcher reads at every server
+start), wins over the value saved in the app,
 and the app then says "set by the server's configuration" without naming it.
 Never name a variable or `.env` in UI copy, help text or errors.
 

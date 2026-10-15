@@ -91,7 +91,11 @@ function alive(pid) {
   }
 }
 
-/** `KEY=value` lines of `.env`, without touching what the caller already has. */
+/**
+ * `KEY=value` lines of `.env`, without touching what the caller already has.
+ * An install has none: the launcher's defaults below are all it needs, and
+ * people set Domo up in the app. A developer may add one to override them.
+ */
 function readDotenv(file = P.env) {
   const out = {}
   if (!existsSync(file)) return out
@@ -802,8 +806,6 @@ async function install(args) {
   await ensureTools(P.app)
   mkdirSync(P.data, { recursive: true })
   mkdirSync(P.logs, { recursive: true })
-  // The server's own overrides, for whoever needs one; keys go in through the app's setup guide.
-  if (!existsSync(P.env)) cpSync(join(P.app, '.env.example'), P.env)
   if (!existsSync(P.launcher)) cpSync(fileURLToPath(import.meta.url), P.launcher)
 
   await update(['--no-restart', '--force', ...(channel ? ['--channel', channel] : [])])
@@ -852,7 +854,7 @@ const HELP = `domo <command>
                       finish an installation (used by scripts/install.sh)
   uninstall           remove the login service (keeps ${HOME})
 
-Environment: DOMO_HOME (${HOME}). Settings live in ${P.env}.`
+Environment: DOMO_HOME (${HOME}). Domo is set up in the app; \`domo status\` shows its address.`
 
 const [command, ...args] = process.argv.slice(2)
 try {
