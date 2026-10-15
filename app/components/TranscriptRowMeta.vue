@@ -29,7 +29,7 @@ const buttons = computed(() => props.revealed
 
 <template>
   <div
-    class="absolute top-full mt-1 flex h-6 items-center gap-0.5 text-xs text-dimmed"
+    class="absolute top-full translate-y-1 flex h-6 items-center gap-0.5 text-xs text-dimmed"
     :class="side === 'right' ? 'right-0 flex-row-reverse' : 'left-0'"
     data-testid="row-meta"
   >

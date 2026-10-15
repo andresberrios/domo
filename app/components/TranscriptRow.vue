@@ -110,15 +110,11 @@ const message = computed(() => props.item as CondensedItem)
     @pointerup="reveal(message.id, $event)"
   >
     <template #content>
-      <ActivityGroup v-if="message.kind === 'activity'" :group="message" />
-      <TranscriptItemView
-        v-else
-        :item="message"
-        :pending-permission-ids="pendingPermissionIds"
-      />
       <!--
         In the strip Nuxt UI leaves under every message: outside the
-        content's box, so nothing here changes a row's height.
+        content's box, so nothing here changes a row's height. First, so the
+        content's `space-y-4` and `*:last:mb-0` treat the message as the last
+        child and leave no margin under it.
       -->
       <TranscriptRowMeta
         :at="message.at"
@@ -128,6 +124,12 @@ const message = computed(() => props.item as CondensedItem)
         :always="alwaysShowTimes"
         :replay="message.kind === 'assistant' ? () => replay((message as { text: string }).text) : undefined"
         @toggle-always="alwaysShowTimes = !alwaysShowTimes"
+      />
+      <ActivityGroup v-if="message.kind === 'activity'" :group="message" />
+      <TranscriptItemView
+        v-else
+        :item="message"
+        :pending-permission-ids="pendingPermissionIds"
       />
     </template>
   </UChatMessage>
