@@ -33,6 +33,19 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
+// No machine's own login, ever: on macOS the Claude check spawns `security`,
+// which the fake `spawn` above would turn into an adapter that never exits,
+// and either check would read the developer's real home. With no login,
+// `adapterEnv` hands over any API key it has, which the titler must drop.
+vi.mock('../../server/lib/claude-credentials', async importOriginal => ({
+  ...await importOriginal<typeof import('../../server/lib/claude-credentials')>(),
+  hasClaudeSubscriptionLogin: async () => false
+}))
+vi.mock('../../server/lib/codex-credentials', async importOriginal => ({
+  ...await importOriginal<typeof import('../../server/lib/codex-credentials')>(),
+  hasCodexSubscriptionLogin: async () => false
+}))
+
 class FakeAdapter extends EventEmitter {
   readonly stdin = new PassThrough()
   readonly stdout = new PassThrough()
@@ -141,6 +154,8 @@ describe('asking for a title', () => {
     expect(calls[1]!.params).toMatchObject({ configId: 'model', value: 'haiku' })
     expect(calls[2]!.params).toMatchObject({ configId: 'effort', value: 'low' })
     expect(promptText(calls[3]!.params)).toBe('the login test fails one run in five, can you look?')
+    // The adapter and nothing else: no `security`, no real Claude Code.
+    expect(state.spawned).toHaveLength(1)
     expect(state.spawned[0]!.env.ANTHROPIC_API_KEY).toBeUndefined()
     expect(state.spawned[0]!.adapter.killed).toBe(true)
   })
