@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentInboxMessage } from '~~/shared/types'
+import type { AgentInboxMessage, AgentSession, QueuedDeliveryResult } from '~~/shared/types'
 
 /**
  * What is queued for an agent that is still working.
@@ -17,10 +17,92 @@ const props = withDefaults(defineProps<{
    * button that only ever errored would be worse than no button.
    */
   readonly?: boolean
-}>(), { readonly: false })
+  /** The session they wait for: whether it is working, and whether it can be steered. */
+  session?: AgentSession | null
+}>(), { readonly: false, session: null })
 
 const toast = useToast()
 const removing = ref<string | null>(null)
+const open = ref(props.messages.length <= 3)
+
+/* --------------------------- send queued now --------------------------- */
+
+const busy = computed(() => props.session?.status === 'thinking' || props.session?.status === 'awaiting-permission')
+/** `steering` is read off the row, as the composer does; null is "never measured", not "cannot". */
+const steers = computed(() => props.session?.steering !== false)
+
+/**
+ * What "Send now" does with a turn running: the two modes of a message that
+ * means "now" (`message_agent`'s), applied to what is queued. With no turn
+ * there is nothing to choose: they go as the next turn, as the drain sends
+ * them, so the button has no dropdown then.
+ */
+const sendModes = computed(() => [
+  {
+    value: 'steer' as const,
+    label: 'Steer',
+    icon: 'i-lucide-git-branch',
+    description: steers.value
+      ? 'Put them into the turn it is running now, in order'
+      : 'This agent cannot take a message mid-turn — it stops the current turn instead'
+  },
+  { value: 'interrupt' as const, label: 'Interrupt', icon: 'i-lucide-octagon-x', description: 'Stop the current turn, then send them as the next one' }
+])
+const sendMode = ref<'steer' | 'interrupt'>('steer')
+const sendInfo = computed(() => sendModes.value.find(item => item.value === sendMode.value)!)
+const sendItems = computed(() => [
+  sendModes.value.map(item => ({
+    label: item.label,
+    description: item.description,
+    icon: item.icon,
+    type: 'checkbox' as const,
+    checked: item.value === sendMode.value,
+    onUpdateChecked: () => { sendMode.value = item.value }
+  }))
+])
+const sendTip = computed(() => busy.value
+  ? `Send them now — ${sendInfo.value.description.toLowerCase()}`
+  : 'Send them now, as the next turn')
+
+const sending = ref(false)
+
+/**
+ * The server sends them oldest first and stops at the first one the agent
+ * does not take (the turn ended under it, or the adapter refused); those stay
+ * here, in their places, and go when the turn ends. Only that case needs
+ * words: everything that went is in the transcript.
+ */
+async function sendNow() {
+  if (!props.session) return
+  sending.value = true
+  try {
+    const result = await $fetch<QueuedDeliveryResult>(`/api/agents/${props.session.id}/inbox/deliver`, {
+      method: 'POST',
+      body: { delivery: sendMode.value }
+    })
+    if (result.waiting && result.delivered) {
+      toast.add({
+        title: `${result.delivered} joined the turn; ${result.waiting} still queued`,
+        description: 'The agent stopped taking messages mid-turn. The rest go when this turn ends.',
+        color: 'neutral'
+      })
+    } else if (result.waiting) {
+      toast.add({
+        title: 'Still queued',
+        description: 'The turn was ending, so they go next, as soon as it has.',
+        color: 'neutral'
+      })
+    }
+  } catch (error: any) {
+    toast.add({
+      title: 'Could not send them',
+      description: error?.data?.statusMessage ?? error?.data?.message ?? error?.message,
+      color: 'error'
+    })
+  } finally {
+    sending.value = false
+  }
+}
 
 function preview(message: AgentInboxMessage): string {
   const text = (message.content ?? [])
@@ -57,18 +139,45 @@ async function remove(message: AgentInboxMessage) {
 
 <template>
   <div class="mx-auto w-full max-w-3xl">
-    <UCollapsible :default-open="messages.length <= 3">
+    <div class="flex items-center gap-1.5">
       <UButton
         color="neutral"
         variant="subtle"
         size="sm"
         block
+        class="min-w-0 flex-1"
         icon="i-lucide-inbox"
         trailing-icon="i-lucide-chevron-down"
         :label="readonly ? `${messages.length} never delivered` : `${messages.length} queued`"
-        :ui="{ trailingIcon: 'group-data-[state=open]:rotate-180 transition-transform' }"
+        :aria-expanded="open"
+        :ui="{ trailingIcon: ['transition-transform', open ? 'rotate-180' : ''] }"
+        @click="open = !open"
       />
+      <UFieldGroup v-if="!readonly && session" size="sm" class="shrink-0">
+        <UTooltip :text="sendTip">
+          <UButton
+            :icon="busy ? sendInfo.icon : 'i-lucide-send'"
+            label="Send now"
+            color="neutral"
+            variant="subtle"
+            :loading="sending"
+            @click="sendNow"
+          />
+        </UTooltip>
+        <UDropdownMenu v-if="busy" :items="sendItems" :content="{ side: 'top', align: 'end' }">
+          <UTooltip text="How they go into a running turn">
+            <UButton
+              icon="i-lucide-chevron-up"
+              color="neutral"
+              variant="subtle"
+              :aria-label="`Send now as: ${sendInfo.label}`"
+            />
+          </UTooltip>
+        </UDropdownMenu>
+      </UFieldGroup>
+    </div>
 
+    <UCollapsible v-model:open="open">
       <template #content>
         <div class="mt-2 max-h-[28vh] space-y-1.5 overflow-y-auto">
           <div

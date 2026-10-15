@@ -104,6 +104,11 @@ export class AgentVoiceRuntime {
   private hearing: Promise<void> = Promise.resolve()
   /** Words the device's own recogniser heard, not yet taken into a turn. */
   private dictated = ''
+  /**
+   * The composer's attachments while it is in voice mode: they go with the
+   * next spoken turn, as they would with a typed one.
+   */
+  private attachments: any[] = []
   /** What the recogniser is told; made again once the conversation has moved on. */
   private context: { at: number, value: Promise<SpeechContext> } | null = null
 
@@ -411,6 +416,13 @@ export class AgentVoiceRuntime {
     await this.sendHeld()
   }
 
+  /** What is attached in the composer now; replaces whatever it said before. */
+  setAttachments(blocks: unknown) {
+    this.attachments = Array.isArray(blocks)
+      ? blocks.filter(block => block?.type === 'resource_link' && typeof block.uri === 'string')
+      : []
+  }
+
   discard() {
     this.clearHold()
     this.held = ''
@@ -445,13 +457,18 @@ export class AgentVoiceRuntime {
     this.replyStarted = false
     this.refreshContext()
     this.emit({ type: 'sent', text })
+    const attachments = this.attachments
     try {
       const full = needsFullInstructions(await listRecentUserMessages(session.id))
       await acpManager.deliver(session.id, {
-        content: spokenContent(text, { full }),
+        content: [...attachments, ...spokenContent(text, { full })],
         delivery: 'steer',
         origin: 'voice'
       })
+      if (attachments.length) {
+        this.attachments = this.attachments.filter(block => !attachments.includes(block))
+        this.emit({ type: 'attachments-sent', uris: attachments.map(block => block.uri) })
+      }
     } catch (error) {
       this.emit({ type: 'error', message: `The agent could not take that: ${describe(error)}` })
     }

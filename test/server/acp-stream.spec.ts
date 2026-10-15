@@ -1734,6 +1734,120 @@ describe('delivering a message to an agent that is already working', () => {
   })
 })
 
+/**
+ * "Send queued now": what piled up behind a working turn goes in at once,
+ * the way a message sent with that mode would have. Order is the whole
+ * contract, and so is what is left when the adapter stops taking them.
+ */
+describe('sending what is queued now', () => {
+  async function workingWithQueue(options: ServeOptions = {}) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const prompts: any[] = []
+    const steered: any[] = []
+    let cancelled = 0
+    const held = heldTurn()
+
+    const running = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, held.turn, {
+      ...options,
+      onPrompt: params => prompts.push(params),
+      onSteer: (params) => {
+        steered.push(params)
+        options.onSteer?.(params)
+      },
+      onCancel: () => {
+        cancelled++
+        held.release()
+      }
+    })
+    await held.started
+    for (const [text, origin] of [['first', 'user'], ['second', 'agent:ag_peer'], ['third', 'user']] as const) {
+      await acpManager.deliver(agent.id, { content: [{ type: 'text', text }], delivery: 'queue', origin })
+    }
+    const queued = await listInboxMessages(agent.id)
+    expect(queued).toHaveLength(3)
+    return { acpManager, agent, prompts, steered, running, queued, release: held.release, cancelled: () => cancelled }
+  }
+
+  const userTexts = async (id: string) => (await listAgentEvents(id))
+    .filter(event => event.type === 'user_message')
+    .map(event => event.payload.content.map((block: any) => block.text).join(''))
+
+  it('steers each one into the running turn, oldest first, under its own sender and id', async () => {
+    const { acpManager, agent, prompts, steered, running, queued, release } = await workingWithQueue()
+
+    const result = await acpManager.deliverQueued(agent.id, 'steer')
+
+    expect(result).toEqual({ delivery: 'steer', delivered: 3, waiting: 0 })
+    expect(steered.map(params => promptText(params))).toEqual(['first', 'second', 'third'])
+    // Nothing went in as a second prompt while the turn was running.
+    expect(prompts).toHaveLength(1)
+    await expect(listInboxMessages(agent.id)).resolves.toEqual([])
+
+    release()
+    await running
+    expect(await userTexts(agent.id)).toEqual(['fix the build', 'first', 'second', 'third'])
+    const user = (await listAgentEvents(agent.id)).filter(event => event.type === 'user_message').slice(1)
+    expect(user.map(event => event.payload.origin)).toEqual(['user', 'agent:ag_peer', 'user'])
+    expect(user.map(event => event.payload.delivery)).toEqual(['steer', 'steer', 'steer'])
+    // The id is what tells a sender its message was answered.
+    expect(user.map(event => event.payload.messageIds)).toEqual(queued.map(message => [message.id]))
+  })
+
+  it('stops at the first one the adapter refuses and leaves it and the rest queued, in order', async () => {
+    let calls = 0
+    const { acpManager, agent, running, queued, release, prompts } = await workingWithQueue({
+      onSteer: () => {
+        calls += 1
+        if (calls === 2) throw acp.RequestError.internalError({}, 'turn is ending')
+      }
+    })
+
+    const result = await acpManager.deliverQueued(agent.id, 'steer')
+
+    expect(result).toEqual({ delivery: 'steer', delivered: 1, waiting: 2 })
+    // The same rows, under the same ids, in the same order.
+    await expect(listInboxMessages(agent.id)).resolves.toMatchObject([
+      { id: queued[1]!.id, deliveredAt: null },
+      { id: queued[2]!.id, deliveredAt: null }
+    ])
+
+    // And the turn's end drains them, as it would have anyway.
+    release()
+    await running
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    expect(promptText(prompts[1])).toBe('[Message from agent ag_peer]\nsecond\n[From the human]\nthird')
+  })
+
+  it('cancels the turn and sends them all as the next one when told to interrupt', async () => {
+    const { acpManager, agent, prompts, running, cancelled } = await workingWithQueue()
+
+    const result = await acpManager.deliverQueued(agent.id, 'interrupt')
+
+    expect(result).toEqual({ delivery: 'interrupt', delivered: 3, waiting: 0 })
+    expect(cancelled()).toBe(1)
+    await expect(running).resolves.toEqual({ stopReason: 'cancelled' })
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    expect(promptText(prompts[1])).toBe('[From the human]\nfirst\n[Message from agent ag_peer]\nsecond\n[From the human]\nthird')
+    const types = (await listAgentEvents(agent.id)).map(event => event.type)
+    expect(types).toContain('cancelled')
+    expect(types).not.toContain('error')
+  })
+
+  it('interrupts instead of steering on an adapter that cannot steer', async () => {
+    const { acpManager, agent, prompts, steered, cancelled } = await workingWithQueue({ steering: false })
+
+    const result = await acpManager.deliverQueued(agent.id, 'steer')
+
+    expect(result).toEqual({ delivery: 'interrupt', delivered: 3, waiting: 0 })
+    expect(steered).toEqual([])
+    expect(cancelled()).toBe(1)
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+  })
+})
+
 describe('delivering a message to an agent that is idle', () => {
   /** Boot a session without giving it a turn. */
   async function idle(options: ServeOptions = {}) {

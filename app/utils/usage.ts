@@ -1,4 +1,4 @@
-import type { UsageLimit } from '~~/shared/types'
+import type { AgentAdapter, UsageLimit, UsageProviderId } from '~~/shared/types'
 
 /**
  * Formatters for everything the usage surfaces render.
@@ -155,4 +155,12 @@ export function weeklyLimit(limits: UsageLimit[]): UsageLimit | null {
   const candidates = limits.filter(l => l.windowMinutes !== null && l.windowMinutes! > 360)
   if (!candidates.length) return null
   return candidates.find(l => l.limitId === 'seven_day') ?? worstLimit(candidates)
+}
+
+/** Whose plan limits a session's usage is counted against. */
+export function usageProviderOf(adapter: AgentAdapter | null | undefined): UsageProviderId | undefined {
+  if (adapter === 'claude-code') return 'claude'
+  if (adapter === 'codex') return 'codex'
+  if (adapter === 'opencode') return 'opencode'
+  return undefined
 }

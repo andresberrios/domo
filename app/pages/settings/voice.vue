@@ -54,13 +54,13 @@ async function save() {
 <template>
   <SettingsShell
     title="Voice"
-    description="The voice bar on an agent's page. One engine hears you, one speaks the agent's replies; the agent itself does the thinking. The bar's own settings button changes the common ones on the spot."
+    description="Voice mode in an agent's composer (the microphone beside Send). One engine hears you, one speaks the agent's replies; the agent itself does the thinking. Its own settings button changes the common ones on the spot."
     :saving="saving"
     :save="save"
   >
     <UFormField
       label="Talk opens"
-      description="The Talk button opens this assistant with the voice bar on. With no assistant at all, it starts a fresh session instead."
+      description="The Talk button opens this assistant in voice mode. With no assistant at all, it starts a fresh session instead."
     >
       <USelect v-model="talkTarget" :items="talkItems" value-key="value" class="w-full sm:w-80" />
     </UFormField>

@@ -190,21 +190,6 @@ const startability = useSessionStartability(session)
 const blocked = computed(() => startability.value.startable ? null : startability.value.reason)
 const closed = computed(() => !!blocked.value || handedOff.value)
 const adapter = computed(() => session.value ? agentAdapterInfo(session.value.adapter) : null)
-const usageProvider = computed(() => session.value?.adapter === 'claude-code'
-  ? 'claude' as const
-  : session.value?.adapter === 'codex'
-    ? 'codex' as const
-    : session.value?.adapter === 'opencode'
-      ? 'opencode' as const
-      : undefined)
-
-
-/**
- * Whether the voice bar is open. Remembered across pages and reloads: someone
- * who talks to their agents does not want to find the microphone every time.
- */
-const voiceOpen = useAgentVoiceOpen()
-
 const renaming = ref(false)
 const titleDraft = ref('')
 const starting = ref(false)
@@ -285,11 +270,6 @@ const menuItems = computed(() => [
         </template>
 
         <template #right>
-          <UsageMeter
-            v-if="session"
-            :usage="session.usage ?? null"
-            :provider="usageProvider"
-          />
           <UButton
             v-if="session && !closed && (session.status === 'stopped' || session.status === 'error')"
             :label="'Start'"
@@ -299,16 +279,6 @@ const menuItems = computed(() => [
             :ui="{ label: 'hidden sm:inline' }"
             @click="start"
           />
-          <!-- The voice bar talks to a session, so a draft has none to open. -->
-          <UTooltip v-if="session && !closed" :text="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'">
-            <UButton
-              icon="i-lucide-mic"
-              :color="voiceOpen ? 'primary' : 'neutral'"
-              :variant="voiceOpen ? 'soft' : 'ghost'"
-              :aria-label="voiceOpen ? 'Close the voice bar' : 'Talk to this agent'"
-              @click="voiceOpen = !voiceOpen"
-            />
-          </UTooltip>
           <UDropdownMenu v-if="session" :items="menuItems">
             <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
           </UDropdownMenu>
@@ -417,7 +387,7 @@ const menuItems = computed(() => [
             <p class="mt-1 text-sm text-muted">
               {{ blocked
                 ? 'It never did anything, and it can no longer be started.'
-                : 'Send this agent a task below, or open the voice bar and say it.' }}
+                : 'Send this agent a task below, or tap the microphone and say it.' }}
             </p>
           </div>
         </div>
@@ -454,11 +424,7 @@ const menuItems = computed(() => [
         -->
         <!-- The first message is in the transcript already while it waits there. -->
         <div v-if="queued.length && !firstMessage" class="shrink-0 pt-2">
-          <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" />
-        </div>
-
-        <div v-if="!closed && voiceOpen && session" class="shrink-0 pt-2">
-          <AgentVoiceBar :session="session" />
+          <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" :session="session" />
         </div>
 
         <div v-if="isDraft && draft" class="shrink-0 space-y-2 pt-2">

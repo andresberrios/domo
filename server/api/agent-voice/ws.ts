@@ -81,6 +81,9 @@ export default defineWebSocketHandler({
         case 'dictated':
           if (typeof parsed.text === 'string') runtime.addDictation(parsed.text)
           break
+        case 'attachments':
+          runtime.setAttachments(parsed.content)
+          break
         case 'replay':
           if (typeof parsed.text === 'string') runtime.replay(parsed.text)
           break

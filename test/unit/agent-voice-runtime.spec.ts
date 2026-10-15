@@ -141,6 +141,28 @@ describe('the agent voice runtime', () => {
     runtime.close()
   })
 
+  it('sends what the composer has attached with the next spoken turn, once', async () => {
+    const runtime = new AgentVoiceRuntime('ag_attach')
+    const messages: AgentVoiceServerMessage[] = []
+    runtime.addListener(message => messages.push(message))
+    const shot = { type: 'resource_link', uri: 'file:///data/uploads/up_1.png', name: 'shot.png' }
+    // Anything that is not a link is not an attachment, and is dropped.
+    runtime.setAttachments([shot, { type: 'text', text: 'smuggled' }])
+
+    await speak(runtime, 'what is wrong here')
+    const content = (deliver.mock.calls[0] as any)[1].content
+    expect(content[0]).toEqual(shot)
+    expect(content.filter((block: any) => block.type === 'text').map((block: any) => block.text)[0]).toBe('from the engine')
+    expect(content).not.toContainEqual({ type: 'text', text: 'smuggled' })
+    // The composer lets go of it.
+    expect(messages).toContainEqual({ type: 'attachments-sent', uris: [shot.uri] })
+
+    deliver.mockClear()
+    await speak(runtime, 'and now')
+    expect((deliver.mock.calls[0] as any)[1].content.some((block: any) => block.type === 'resource_link')).toBe(false)
+    runtime.close()
+  })
+
   it('drops the device\'s words with a discarded turn, so they never join the next one', async () => {
     settings.agentVoice.transcriber = 'browser'
     const runtime = new AgentVoiceRuntime('ag_discard')
