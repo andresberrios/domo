@@ -59,8 +59,9 @@ const hasDetail = computed(() =>
   <div class="rounded-lg border border-default bg-elevated/30">
     <button
       type="button"
-      class="flex w-full items-center gap-2.5 px-3 py-2 text-start"
+      class="flex w-full items-center gap-2.5 px-3 py-2 text-start transition-colors"
       :class="hasDetail ? 'cursor-pointer hover:bg-elevated/60' : 'cursor-default'"
+      :aria-expanded="hasDetail ? open : undefined"
       @click="hasDetail && (open = !open)"
     >
       <UIcon :name="icon" class="size-4 shrink-0 text-muted" />
@@ -93,58 +94,65 @@ const hasDetail = computed(() =>
       />
     </button>
 
-    <div v-if="open && hasDetail" class="space-y-3 border-t border-default px-3 py-3">
-      <div v-if="tool.locations?.length" class="flex flex-wrap gap-1.5">
-        <UBadge
-          v-for="location in tool.locations"
-          :key="location.path"
-          color="neutral"
-          variant="outline"
-          size="sm"
-          class="font-mono"
-          :label="location.line ? `${shortPath(location.path, 3)}:${location.line}` : shortPath(location.path, 3)"
+    <!--
+      Opened by the reader only, never on its own: the detail takes its full
+      height at once and fades up into it (`disclose`), so the row is its
+      final height in the frame after the click and the list measures it once.
+    -->
+    <Transition name="disclose">
+      <div v-if="open && hasDetail" class="space-y-3 border-t border-default px-3 py-3">
+        <div v-if="tool.locations?.length" class="flex flex-wrap gap-1.5">
+          <UBadge
+            v-for="location in tool.locations"
+            :key="location.path"
+            color="neutral"
+            variant="outline"
+            size="sm"
+            class="font-mono"
+            :label="location.line ? `${shortPath(location.path, 3)}:${location.line}` : shortPath(location.path, 3)"
+          />
+        </div>
+
+        <div v-if="children.length" class="space-y-2 border-s-2 border-accented ps-3">
+          <ToolCallCard
+            v-for="child in children"
+            :key="child.toolCallId"
+            :tool="child"
+          />
+        </div>
+
+        <DiffView
+          v-for="(diff, index) in diffs"
+          :key="index"
+          :path="diff.path"
+          :old-text="diff.oldText"
+          :new-text="diff.newText"
         />
+
+        <div v-if="terminals.length" class="text-xs text-muted">
+          Ran in terminal {{ terminals.map((terminal: any) => terminal.terminalId).join(', ') }}
+        </div>
+
+        <pre v-if="domoResult" class="max-h-72 overflow-auto rounded-lg bg-default p-2 font-mono text-[11px] text-muted">{{ domoResult }}</pre>
+
+        <div v-else-if="textOutput" class="max-h-72 overflow-auto rounded-lg bg-default p-2">
+          <MarkdownView :text="textOutput" />
+        </div>
+
+        <UCollapsible v-if="tool.rawInput">
+          <UButton
+            label="Input"
+            color="neutral"
+            variant="link"
+            size="xs"
+            trailing-icon="i-lucide-chevron-down"
+            class="px-0"
+          />
+          <template #content>
+            <pre class="mt-1 max-h-60 overflow-auto rounded bg-default p-2 font-mono text-[11px] text-muted">{{ JSON.stringify(tool.rawInput, null, 2) }}</pre>
+          </template>
+        </UCollapsible>
       </div>
-
-      <div v-if="children.length" class="space-y-2 border-s-2 border-accented ps-3">
-        <ToolCallCard
-          v-for="child in children"
-          :key="child.toolCallId"
-          :tool="child"
-        />
-      </div>
-
-      <DiffView
-        v-for="(diff, index) in diffs"
-        :key="index"
-        :path="diff.path"
-        :old-text="diff.oldText"
-        :new-text="diff.newText"
-      />
-
-      <div v-if="terminals.length" class="text-xs text-muted">
-        Ran in terminal {{ terminals.map((terminal: any) => terminal.terminalId).join(', ') }}
-      </div>
-
-      <pre v-if="domoResult" class="max-h-72 overflow-auto rounded-lg bg-default p-2 font-mono text-[11px] text-muted">{{ domoResult }}</pre>
-
-      <div v-else-if="textOutput" class="max-h-72 overflow-auto rounded-lg bg-default p-2">
-        <MarkdownView :text="textOutput" />
-      </div>
-
-      <UCollapsible v-if="tool.rawInput">
-        <UButton
-          label="Input"
-          color="neutral"
-          variant="link"
-          size="xs"
-          trailing-icon="i-lucide-chevron-down"
-          class="px-0"
-        />
-        <template #content>
-          <pre class="mt-1 max-h-60 overflow-auto rounded bg-default p-2 font-mono text-[11px] text-muted">{{ JSON.stringify(tool.rawInput, null, 2) }}</pre>
-        </template>
-      </UCollapsible>
-    </div>
+    </Transition>
   </div>
 </template>

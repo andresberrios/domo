@@ -13,9 +13,11 @@ const items = computed(() => [actions()])
 
 <template>
   <div :class="ROW_CLASS">
+    <!-- Nothing to open, but the chevron's slot all the same: every row of a level has its icon in one column. -->
+    <SidebarDisclosure :expanded="false" :label="agent.title" empty />
     <NuxtLink
       :to="`/agents/${agent.id}`"
-      class="flex min-w-0 flex-1 items-center gap-2 self-stretch rounded-md ps-1.5 text-sm"
+      class="flex min-w-0 flex-1 items-center gap-2 self-stretch rounded-md text-sm"
       active-class="row-active"
       :title="agent.title"
     >

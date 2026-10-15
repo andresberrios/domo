@@ -179,7 +179,7 @@ async function remove(message: AgentInboxMessage) {
 
     <UCollapsible v-model:open="open">
       <template #content>
-        <div class="mt-2 max-h-[28vh] space-y-1.5 overflow-y-auto">
+        <MotionList tag="div" class="mt-2 max-h-[28vh] space-y-1.5 overflow-y-auto">
           <div
             v-for="message in messages"
             :key="message.id"
@@ -204,7 +204,7 @@ async function remove(message: AgentInboxMessage) {
               />
             </UTooltip>
           </div>
-        </div>
+        </MotionList>
       </template>
     </UCollapsible>
   </div>

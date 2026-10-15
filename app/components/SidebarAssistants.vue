@@ -45,7 +45,7 @@ function pendingFor(sessionId: string | null) {
       manager — with one conversation that carries on across sessions.
     </button>
 
-    <ul v-else class="flex flex-col gap-px">
+    <MotionList v-else class="flex flex-col gap-px">
       <li v-for="assistant in assistants" :key="assistant.id">
         <div :class="ROW_CLASS">
           <NuxtLink
@@ -68,7 +68,7 @@ function pendingFor(sessionId: string | null) {
           />
         </div>
       </li>
-    </ul>
+    </MotionList>
 
     <AssistantModal v-model:open="creating" />
   </section>

@@ -358,13 +358,13 @@ const menuItems = computed(() => [[
           @load-earlier="loadEarlier"
         />
 
-        <div v-if="pending.length && !blocked" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
+        <MotionList v-if="pending.length && !blocked" tag="div" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
           <PermissionCard
             v-for="permission in pending"
             :key="permission.id"
             :permission="permission"
           />
-        </div>
+        </MotionList>
 
         <!--
           Still rendered when the session cannot run: what was waiting when its
@@ -373,7 +373,7 @@ const menuItems = computed(() => [[
           still wrote to a session nothing can reach.
         -->
         <!-- The first message is in the transcript already while it waits there. -->
-        <div v-if="queued.length && !firstMessage" class="shrink-0 pt-2">
+        <div v-if="queued.length && !firstMessage" class="motion-fade shrink-0 pt-2">
           <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" :session="session" />
         </div>
 

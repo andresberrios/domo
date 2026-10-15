@@ -14,7 +14,7 @@ const meta = computed(() => AGENT_STATUS_META[props.status] ?? AGENT_STATUS_META
 
 <template>
   <span class="inline-flex shrink-0 items-center">
-    <UIcon name="i-lucide-bot" :class="[size, meta.icon]" />
+    <UIcon name="i-lucide-bot" class="transition-colors duration-(--motion-base)" :class="[size, meta.icon]" />
     <slot :label="meta.label">
       <span class="sr-only">{{ meta.label }}</span>
     </slot>

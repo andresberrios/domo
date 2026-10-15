@@ -3,7 +3,7 @@
  * projects, folders, environments and agents read as one list.
  */
 export const ROW_CLASS
-  = 'group flex h-8 items-center gap-1 rounded-md pe-1 text-sm pointer-coarse:h-10 hover:bg-elevated has-[a.row-active]:bg-accented/70 has-[a.row-active]:font-medium'
+  = 'group flex h-8 items-center gap-1 rounded-md pe-1 text-sm transition-colors pointer-coarse:h-10 hover:bg-elevated has-[a.row-active]:bg-accented/70 has-[a.row-active]:font-medium'
 
 /**
  * A row's one-click action (a plus). With a fine pointer it appears on hover
@@ -34,3 +34,8 @@ export const ROW_MENU_CLASS
  */
 export const ROW_BADGE_CLASS
   = 'group-hover:hidden group-focus-within:hidden pointer-coarse:hidden group-has-[[data-state=open]]:hidden'
+
+/** A tree row's depth (a project's own row is 0), for `.tree-indent` in main.css. */
+export function treeDepth(depth: number) {
+  return { '--depth': depth }
+}
