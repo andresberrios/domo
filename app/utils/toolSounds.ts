@@ -69,20 +69,23 @@ function typing(): Key[] {
 /** The level the sounds below are drawn at; `volume` scales from it. */
 const DRAWN_AT = 0.2
 
-/** `volume` is the sound's peak, 0..1 of full scale (`SoundVolumes.tool`). */
-export function playToolSound(context: BaseAudioContext, destination: AudioNode, kind: ToolSound, volume = DRAWN_AT) {
-  if (kind === 'off' || volume <= 0) return
+/** A keystroke's last sound, the key coming back up, ends this long after it is struck. */
+const KEY_SECONDS = 0.12
+
+/**
+ * `volume` is the sound's peak, 0..1 of full scale (`SoundVolumes.tool`).
+ * Returns how long it plays, in seconds.
+ */
+export function playToolSound(context: BaseAudioContext, destination: AudioNode, kind: ToolSound, volume = DRAWN_AT): number {
+  if (kind === 'off' || volume <= 0) return 0
   const out = context.createGain()
   out.gain.value = volume / DRAWN_AT
   out.connect(destination)
-  switch (kind) {
-    case 'tick':
-      play(context, out, noiseBurst(context, 0.02, 0.004), 0, 0.18, 'bandpass', 2400, 1.2)
-      return
-    case 'laptop':
-      for (const key of typing()) keystroke(context, out, key, true)
-      return
-    default:
-      for (const key of typing()) keystroke(context, out, key, false)
+  if (kind === 'tick') {
+    play(context, out, noiseBurst(context, 0.02, 0.004), 0, 0.18, 'bandpass', 2400, 1.2)
+    return 0.02
   }
+  const keys = typing()
+  for (const key of keys) keystroke(context, out, key, kind === 'laptop')
+  return Math.max(...keys.map(key => key.at)) + KEY_SECONDS
 }

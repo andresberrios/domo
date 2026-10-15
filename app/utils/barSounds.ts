@@ -19,10 +19,11 @@ const CHIMES: Record<Chime, Array<[number, number, number]>> = {
 /**
  * A sound that means something, for when the screen is in a pocket. Made on
  * the spot in an audio graph a tap already unlocked, so it costs no request
- * and no file. `volume` is its peak, 0..1 of full scale.
+ * and no file. `volume` is its peak, 0..1 of full scale. Returns how long it
+ * plays, in seconds.
  */
-export function playChime(context: BaseAudioContext, out: AudioNode, kind: Chime, volume: number) {
-  if (volume <= 0) return
+export function playChime(context: BaseAudioContext, out: AudioNode, kind: Chime, volume: number): number {
+  if (volume <= 0) return 0
   for (const [frequency, at, length] of CHIMES[kind]) {
     const oscillator = context.createOscillator()
     const gain = context.createGain()
@@ -36,6 +37,7 @@ export function playChime(context: BaseAudioContext, out: AudioNode, kind: Chime
     oscillator.start(start)
     oscillator.stop(start + length + 0.02)
   }
+  return Math.max(...CHIMES[kind].map(([, at, length]) => at + length))
 }
 
 let previewContext: AudioContext | null = null

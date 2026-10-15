@@ -23,8 +23,12 @@ const SPEECH_ABOVE_NOISE = 2.5
 const MAX_SEGMENT_MS = 15_000
 /** Speech this long while the agent is talking is an interruption, not a cough. */
 const BARGE_IN_MS = 400
+/** Hands-free: a segment with less sound than this that comes back empty was a noise, not a try. */
+const BLIP_MS = 500
 /** After the speaker goes quiet, the room still rings with it for a moment. */
 const ECHO_TAIL_MS = 500
+/** A chime or a keystroke rings for less: a word said just after one must not wait out a voice's tail. */
+const EFFECT_TAIL_MS = 150
 /** How many frames before speech was noticed are sent with it, so the first syllable is not clipped. */
 const PRE_ROLL_FRAMES = 2
 /** Device dictation: how long a segment's end waits for the recogniser to finalise its last words. */
@@ -137,6 +141,8 @@ export function useAgentVoice(
   /** A message to read again, waiting for the socket. */
   let pendingReplay: string | null = null
   let lastPlaybackEndedAt = 0
+  /** Until when the bar's own chimes and tool sounds are playing, by the clock. */
+  let effectsUntil = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let intentionalClose = false
   let commandTimer: ReturnType<typeof setTimeout> | null = null
@@ -167,6 +173,9 @@ export function useAgentVoice(
   // hands-free segmentation
   let silentMs = 0
   let segmentMs = 0
+  /** How much of the segment was loud, and whether the last one to end was only a blip (`BLIP_MS`). */
+  let segmentLoudMs = 0
+  let lastSegmentBlip = false
   let bargeMs = 0
   let preRoll: string[] = []
   let candidates: string[] = []
@@ -339,7 +348,8 @@ export function useAgentVoice(
   /** One of the bar's signals (`playChime`), at its volume from Settings. */
   function chime(kind: Chime) {
     if (!playbackContext || playbackContext.state !== 'running') return
-    playChime(playbackContext, output(playbackContext), kind, volume(kind))
+    const seconds = playChime(playbackContext, output(playbackContext), kind, volume(kind))
+    effectsUntil = Math.max(effectsUntil, Date.now() + seconds * 1000)
   }
 
   /** The tool call sound chosen in Settings (`playToolSound`), at most one burst at a time. */
@@ -348,7 +358,8 @@ export function useAgentVoice(
     const now = Date.now()
     if (now - lastToolSoundAt < TOOL_SOUND_GAP_MS) return
     lastToolSoundAt = now
-    playToolSound(playbackContext, output(playbackContext), toValue(options.toolSound) ?? 'typing', volume('tool'))
+    const seconds = playToolSound(playbackContext, output(playbackContext), toValue(options.toolSound) ?? 'typing', volume('tool'))
+    effectsUntil = Math.max(effectsUntil, Date.now() + seconds * 1000)
   }
 
   /**
@@ -620,8 +631,11 @@ export function useAgentVoice(
 
     // While the agent is talking, and for a moment after, the room may still
     // carry some of it past the echo canceller; that is what the barge-in
-    // guard below is for.
-    const outputActive = speaking.value || synthesizing.value || Date.now() - lastPlaybackEndedAt < ECHO_TAIL_MS
+    // guard below is for. The bar's own chimes and tool sounds leak the same
+    // way (a leaked chime started a segment, whose "nothing" chime leaked in
+    // turn), so they count as output too.
+    const speechActive = speaking.value || synthesizing.value || Date.now() - lastPlaybackEndedAt < ECHO_TAIL_MS
+    const outputActive = speechActive || Date.now() < effectsUntil + EFFECT_TAIL_MS
 
     const data = floatToPcm16Base64(samples)
     // The room is whatever the quiet frames settle at: it follows a drop
@@ -644,11 +658,13 @@ export function useAgentVoice(
         candidates.push(data)
         bargeMs += frameMs
         if (bargeMs < BARGE_IN_MS) return
-        hush()
+        // Only the agent's voice is stopped; a chime is over in a moment.
+        if (speechActive) hush()
       }
       recording.value = true
       silentMs = 0
       segmentMs = 0
+      segmentLoudMs = outputActive ? bargeMs : frameMs
       for (const frame of [...preRoll, ...candidates]) send({ type: 'audio', data: frame })
       preRoll = []
       candidates = []
@@ -658,11 +674,13 @@ export function useAgentVoice(
 
     send({ type: 'audio', data })
     segmentMs += frameMs
+    if (loud) segmentLoudMs += frameMs
     silentMs = loud ? 0 : silentMs + frameMs
     if (silentMs >= SEGMENT_SILENCE_MS || segmentMs >= MAX_SEGMENT_MS) {
       recording.value = false
       silentMs = 0
       segmentMs = 0
+      lastSegmentBlip = segmentLoudMs < BLIP_MS
       void endSegment(false)
     }
   }
@@ -898,6 +916,12 @@ export function useAgentVoice(
       case 'nothing-heard':
         holding.value = false
         turnChimed = false
+        // A blip the bar took for speech is not the person's failed try, and
+        // a chime for it could leak back in as the next blip.
+        if (mode.value === 'handsfree' && lastSegmentBlip) {
+          lastSegmentBlip = false
+          break
+        }
         chime('nothing')
         showNotice(
           message.reason === 'no-speech'

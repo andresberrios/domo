@@ -130,7 +130,11 @@ them on first use.
   because audio received over a peer connection is what Chrome's canceller
   reliably subtracts; a media element was not enough, and a phone's
   loudspeaker made the agent interrupt itself. The bar logs what the
-  microphone was granted (`device: microphone: …`).
+  microphone was granted (`device: microphone: …`). What still leaks is the
+  barge-in guard's: while the bar plays anything, its chimes and tool sound
+  included, a sound must hold 400 ms to be the person. Some Chromium builds
+  (Dia) leak the low chimes, and an empty blip gets no "nothing" chime, or the
+  two fed each other.
 - **On Android the speaker opens after the microphone.** Opening the
   microphone puts the phone in call mode, and Chrome fixes an output's
   channel when it opens: one opened first stays on the media channel, where
