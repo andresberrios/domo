@@ -679,7 +679,8 @@ export class AgentVoiceRuntime {
 
   /** Read out what an agent sent the human with `notify_supervisor`. */
   sayNotification(notification: DomoNotification) {
-    const message = notification.message.replace(/\s+/g, ' ').trim()
+    // Made speakable whole: a note's list items end as sentences, as a reply's do.
+    const message = plainForSpeech(notification.message)
     let spoken = message
     if (message.length > NOTICE_CHARS) {
       const cut = message.slice(0, NOTICE_CHARS)
