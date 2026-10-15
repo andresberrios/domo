@@ -1276,6 +1276,72 @@ describe('subscription windows', () => {
     await expect(notes(caller.id)).resolves.toHaveLength(4)
   })
 
+  describe('a message an agent marks as its turn report', () => {
+    async function reportTo(from: string, to: string, turnReport?: boolean) {
+      await callTool(mintMeshToken(from), 'message_agent', { agentId: to, message: 'REPORT: 42', notifyWhenDone: false, turnReport })
+    }
+    async function endTurn(agentId: string, stopReason = 'end_turn') {
+      await appendAgentEvent(agentId, 'turn_end', { stopReason })
+      await settleBackground()
+    }
+
+    it('spares the recipient that turn\'s turn-end note, which still uses up its turn', async () => {
+      const caller = await session('caller')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id, turns: 2 })
+
+      await reportTo(peer.id, caller.id, true)
+      await endTurn(peer.id)
+
+      expect(acp.deliver).toHaveBeenCalledTimes(1)
+      await expect(notes(caller.id)).resolves.toEqual([])
+      await expect(listAgentSubscriptions(caller.id)).resolves.toMatchObject([{ remainingTurns: 1 }])
+
+      // Only that turn: the next one is noted as usual.
+      await endTurn(peer.id)
+      await expect(notes(caller.id)).resolves.toEqual([expect.stringContaining('finished its turn (end_turn)')])
+    })
+
+    it('changes nothing without the flag', async () => {
+      const caller = await session('caller')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id })
+
+      await reportTo(peer.id, caller.id)
+      await endTurn(peer.id)
+
+      await expect(notes(caller.id)).resolves.toEqual([expect.stringContaining('finished its turn (end_turn)')])
+    })
+
+    it('still tells the recipient when the turn fails or ends abnormally after it', async () => {
+      const caller = await session('caller')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id, turns: 3 })
+
+      await reportTo(peer.id, caller.id, true)
+      await appendAgentEvent(peer.id, 'error', { message: 'rate limited' })
+      await endTurn(peer.id, 'refusal')
+
+      const all = await notes(caller.id)
+      expect(all[0]).toContain('stopped with an error: rate limited')
+      expect(all[1]).toContain('finished its turn (refusal)')
+    })
+
+    it('still notes a subscriber it did not report to', async () => {
+      const caller = await session('caller')
+      const other = await session('other')
+      const peer = await session('peer')
+      await callTool(mintMeshToken(caller.id), 'subscribe_to_agent', { agentId: peer.id })
+      await callTool(mintMeshToken(other.id), 'subscribe_to_agent', { agentId: peer.id })
+
+      await reportTo(peer.id, caller.id, true)
+      await endTurn(peer.id)
+
+      await expect(notes(caller.id)).resolves.toEqual([])
+      await expect(notes(other.id)).resolves.toEqual([expect.stringContaining('finished its turn')])
+    })
+  })
+
   it('keeps a subscription made before windows existed indefinite', async () => {
     const caller = await session('caller')
     const peer = await session('peer')

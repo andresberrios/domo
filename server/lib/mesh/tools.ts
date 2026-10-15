@@ -7,7 +7,7 @@ import { describeSeed } from '../dev-env/workspace-seed'
 import { pinnedAdapterVersions } from '../dev-env/runtime-volume'
 import { inspectContainer, type ContainerInspection } from '../dev-env/docker'
 import { DOOD_CONTAINER_LABEL } from '../dev-env/container'
-import { awaitMessage, startSubscriptionNotifier, watch } from '../acp/subscriptions'
+import { awaitMessage, reportTurnTo, startSubscriptionNotifier, watch } from '../acp/subscriptions'
 import {
   adaptersAreCurrent,
   beginEnvironment,
@@ -91,6 +91,7 @@ export const MESH_INSTRUCTIONS = [
   'An agent session has an id (ag_…); the tools that read or change one session default to your own when agentId is omitted.',
   'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own branch and worktree of it. Agents run either on the host or inside an environment.',
   'You cannot wait for another agent: its turn ends long after yours. spawn_agent and message_agent follow the agent you hand work to by default, and subscribe_to_agent follows any other; Domo messages you when it finishes.',
+  'When you finish work another agent handed you, report to it with message_agent and turnReport: true as the last thing you do in the turn: Domo then does not also send it the note that your turn ended.',
   'To reach the human, use notify_supervisor: it stays in the UI until they have seen it.',
   'An assistant (as_…) is a named agent the human keeps talking to: it lives across many sessions chained by handoffs, so message it by its assistant id, not a session id.'
 ].join(' ')
@@ -529,6 +530,15 @@ export const MESH_TOOLS = [
         notifyIndefinitely: {
           type: 'boolean',
           description: 'Be told about every turn until you unsubscribe. Use deliberately, and call unsubscribe_from_agent when you no longer need updates.'
+        },
+        turnReport: {
+          type: 'boolean',
+          description:
+            'This message is your report on this turn to that agent: Domo will not also send it the "finished its turn" '
+            + 'note for your current turn, which would repeat it. For a worker\'s final report to whoever spawned or '
+            + 'follows it, sent as the last thing in the turn. If you keep working after it, that agent does not hear '
+            + 'about the rest of this turn. It is still told if the turn fails, is cancelled or waits for a permission. '
+            + 'Default false.'
         }
       },
       required: ['agentId', 'message'],
@@ -1343,6 +1353,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         if (notify) await removeMessageWatch(messageId)
         throw error
       }
+      if (args.turnReport === true && target.id !== caller.id) reportTurnTo(caller.id, target.id)
       return {
         delivered: true,
         ...assistant ? { assistantId: assistant.id, name: assistant.name } : {},
