@@ -56,6 +56,12 @@ export function contentSecurityPolicy(host: string | undefined, nonce: string): 
     // plaintext remote image is never a real need, and local ones are already
     // covered by `'self'`.
     `img-src 'self' data: https:`,
+    // Recorded and synthesised audio played through `<audio>`: the clone
+    // recorder's draft and the Pocket voice preview are `blob:` URLs, and the
+    // preview's tap-time Safari unlock is a tiny `data:` WAV. Without this,
+    // `media-src` falls back to `default-src` and the preview fails with "no
+    // supported source".
+    `media-src 'self' blob: data:`,
     // @nuxt/fonts downloads the webfonts at build time; nothing is fetched from
     // a font CDN at runtime.
     `font-src 'self'`,

@@ -69,6 +69,6 @@ describe('contentSecurityPolicy', () => {
     const offOrigin = [...parsed]
       .filter(([name]) => name !== 'connect-src')
       .flatMap(([name, values]) => values.filter(v => v.includes(':') && !v.startsWith(`'`)).map(v => `${name} ${v}`))
-    expect(offOrigin).toEqual(['script-src blob:', 'img-src data:', 'img-src https:'])
+    expect(offOrigin).toEqual(['script-src blob:', 'img-src data:', 'img-src https:', 'media-src blob:', 'media-src data:'])
   })
 })
