@@ -123,6 +123,15 @@ them on first use.
   directory (see `warm.ts` for when), or read from `NUXT_SMART_TURN_MODEL`; without it a
   pause ends the turn. The `kyutai` detector reads the Kyutai transcriber's
   two-second pause head instead, and `silence` waits `silenceSeconds`.
+- **The agent never starts talking over the person** (`midTurn` in
+  `runtime.ts`). While a segment is coming in, a hands-free turn is judged or
+  heard, or a turn is held as unfinished, speech is made but held in order. A
+  click or Send releases it at once. Hands-free waits until the turn is
+  heard, because Smart Turn calls a sentence's pause "complete" mid-thought:
+  released at the verdict, the reply started just as the person went on, and
+  barge-in hushed it. A turn being sent does not drop held speech (it was
+  never heard), and it takes the place of a held turn's "yes?". A "stop"
+  stops it like any speech. What was already playing is barge-in's.
 - **The echo canceller is the browser's, and it is told everything.** The
   microphone asks for `echoCancellation: true` on desktop, like call apps,
   and `"all"` on Android (`micEchoCancellation`). On desktop `"all"` delays

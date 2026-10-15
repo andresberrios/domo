@@ -368,11 +368,11 @@ export function useAgentVoice(
   /**
    * While a spoken turn is being worked on and nothing is being said, a soft
    * blip every couple of seconds, so a phone in a pocket knows the agent is
-   * still on it. Stops at the first word of the answer, or when the agent
-   * goes idle.
+   * still on it. Stops at the first word of the answer, when the agent goes
+   * idle, and while the developer is talking.
    */
   function syncWorking() {
-    const working = awaitingReply.value && toValue(options.busy) !== false && !speaking.value && !synthesizing.value
+    const working = awaitingReply.value && toValue(options.busy) !== false && !speaking.value && !synthesizing.value && !recording.value
     if (working && !workingTimer) {
       // The first blip soon after the turn went, then every couple of seconds.
       workingTimer = setTimeout(function tick() {
@@ -384,7 +384,7 @@ export function useAgentVoice(
       workingTimer = null
     }
   }
-  watch([awaitingReply, speaking, synthesizing, () => toValue(options.busy)], syncWorking)
+  watch([awaitingReply, speaking, synthesizing, recording, () => toValue(options.busy)], syncWorking)
 
   function stopPlayback() {
     for (const source of scheduled) {
