@@ -119,7 +119,7 @@ export function doodSocketPath(environmentId: string): string {
     throw new Error(
       `The Docker socket path for ${environmentId} is ${Buffer.byteLength(path)} bytes (${path}), and Docker Desktop `
       + `only forwards a socket a container mounts from a path of at most ${SUN_PATH_MAX}. `
-      + 'Set NUXT_DOOD_SOCKET_DIR to a shorter directory (not under /tmp, which macOS cleans).'
+      + 'Domo\'s server configuration has to name a shorter socket directory (not under /tmp, which macOS cleans).'
     )
   }
   return path

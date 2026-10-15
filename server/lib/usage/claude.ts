@@ -111,7 +111,7 @@ export async function fetchClaudeUsage(
     return {
       outcome: 'unconfigured',
       limits: [],
-      message: 'Add a Claude Code token (from `claude setup-token`) in Settings → General to see plan limits.'
+      message: 'Add a Claude Code token (from `claude setup-token`) in Settings → Claude Code to see plan limits.'
     }
   }
 
@@ -202,7 +202,7 @@ export async function probeClaudeHeaders(
     return {
       outcome: 'unconfigured',
       limits: [],
-      message: 'Add a Claude Code token (from `claude setup-token`) in Settings → General to see plan limits.'
+      message: 'Add a Claude Code token (from `claude setup-token`) in Settings → Claude Code to see plan limits.'
     }
   }
 

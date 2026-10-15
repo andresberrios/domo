@@ -97,8 +97,8 @@ onMounted(() => {
 })
 
 function keyWarning(engine: AgentVoiceSettings['transcriber'] | AgentVoiceSettings['speaker']): string | null {
-  if (engine === 'gemini' && props.hasGeminiKey === false) return 'No Gemini key is set, so this engine will fail.'
-  if (engine === 'openai' && props.hasOpenAiKey === false) return 'No OpenAI key is set, so this engine will fail.'
+  if (engine === 'gemini' && props.hasGeminiKey === false) return 'No Gemini key yet, so this engine will fail. Add one under Keys.'
+  if (engine === 'openai' && props.hasOpenAiKey === false) return 'No OpenAI key yet, so this engine will fail. Add one under Keys.'
   return null
 }
 
@@ -334,7 +334,7 @@ const uses = computed(() => new Set([
     </div>
 
     <div v-if="uses.has('kyutai')" class="grid gap-4 sm:grid-cols-2">
-      <UFormField label="Kyutai server" description="A moshi-server, as Unmute runs it. The key comes from NUXT_KYUTAI_API_KEY.">
+      <UFormField label="Kyutai server" description="A moshi-server, as Unmute runs it. If it asks for a key, add it under Keys above.">
         <UInput v-model="form.kyutaiUrl" class="w-full font-mono text-xs" placeholder="ws://127.0.0.1:8080" />
       </UFormField>
       <UFormField v-if="form.speaker === 'kyutai'" label="Kyutai voice" hint="a path in kyutai/tts-voices">

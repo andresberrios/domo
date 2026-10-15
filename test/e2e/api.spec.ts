@@ -35,7 +35,9 @@ import type {
   AppSettings,
   PendingPermission,
   Project,
-  ProjectPathState
+  ProjectPathState,
+  SetupProgress,
+  SetupStatus
 } from '~~/shared/types'
 
 /**
@@ -487,11 +489,42 @@ describe('scheduled tasks', () => {
   })
 })
 
+describe('setup guide', () => {
+  it('reports every coding agent and voice, and opens by itself on a new install', async () => {
+    const status = await $fetch<SetupStatus>('/api/setup')
+
+    expect(status.agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'opencode'])
+    for (const agent of status.agents) {
+      expect(agent.installed).toBe(true)
+      expect(['subscription', 'api-key', 'free', 'none']).toContain(agent.login)
+    }
+    // The test server has no Gemini key, and Gemini is the default engine.
+    expect(status.voice.problem).toMatch(/Gemini/)
+    expect(status.progress).toEqual({ finishedAt: null, skipped: [], checks: {} })
+  })
+
+  it('remembers skips and the end of the guide, which only its own route can write', async () => {
+    await $fetch('/api/setup', { method: 'PATCH', body: { skip: 'codex' } })
+    await $fetch('/api/setup', { method: 'PATCH', body: { skip: 'voice' } })
+    await $fetch('/api/setup', { method: 'PATCH', body: { unskip: 'voice' } })
+    // A whole-object write through the settings route is ignored.
+    await $fetch('/api/settings', { method: 'PATCH', body: { setup: { finishedAt: 'x', skipped: [], checks: {} } } })
+    await expect($fetch('/api/setup', { method: 'PATCH', body: { skip: 'gemini' } })).rejects.toMatchObject({ statusCode: 400 })
+
+    expect((await $fetch<SetupStatus>('/api/setup')).progress).toMatchObject({ finishedAt: null, skipped: ['codex'] })
+
+    const finished = await $fetch<SetupProgress>('/api/setup', { method: 'PATCH', body: { finished: true } })
+    expect(finished.finishedAt).toEqual(expect.any(String))
+    await expect($fetch('/api/settings')).resolves.toMatchObject({ setupDue: false })
+  })
+})
+
 describe('settings', () => {
   it('serves the defaults, and says which keys are configured', async () => {
     const settings = await $fetch<AppSettings & { hasGeminiKey: boolean }>('/api/settings')
 
-    expect(settings).toMatchObject({ autoApprovePermissions: false, vscodeSshHost: '', hasGeminiKey: false })
+    expect(settings).toMatchObject({ vscodeSshHost: '', hasGeminiKey: false })
+    expect(settings).not.toHaveProperty('autoApprovePermissions')
     expect(settings.agentVoice.geminiVoice).toBe('Puck')
   })
 
@@ -499,6 +532,7 @@ describe('settings', () => {
     await $fetch('/api/settings', { method: 'PATCH', body: { geminiApiKey: ' AIza-test ' } })
     const configured = await $fetch<Record<string, unknown>>('/api/settings')
     expect(configured.hasGeminiKey).toBe(true)
+    expect(configured.credentialSources).toMatchObject({ geminiApiKey: 'saved', kyutaiApiKey: null })
     expect(configured).not.toHaveProperty('geminiApiKey')
     expect(JSON.stringify(configured)).not.toContain('AIza-test')
 
@@ -509,11 +543,10 @@ describe('settings', () => {
   })
 
   it('persists a patch and leaves the rest alone', async () => {
-    await $fetch('/api/settings', { method: 'PATCH', body: { vscodeSshHost: 'mac', autoApprovePermissions: true } })
+    await $fetch('/api/settings', { method: 'PATCH', body: { vscodeSshHost: 'mac' } })
 
     await expect($fetch<AppSettings>('/api/settings')).resolves.toMatchObject({
       vscodeSshHost: 'mac',
-      autoApprovePermissions: true,
       browserTools: true
     })
   })

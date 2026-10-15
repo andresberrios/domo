@@ -1,12 +1,15 @@
 import { bus } from '../lib/bus'
 import { normalizeHomeMount, validateHomeMounts } from '../lib/dev-env/home-overlay'
 import { patchSettings } from '../lib/settings'
+import { clearAdapterModelCache } from '../lib/acp/models'
 import { isAgentAdapter } from '../../shared/agent-adapters'
 import { SECRET_SETTING_KEYS, type AppSettings } from '../../shared/types'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<Partial<AppSettings>>(event)
   const patch = { ...(body ?? {}) }
+  // The setup guide's progress is merged by `/api/setup`, never replaced whole.
+  delete patch.setup
 
   for (const key of SECRET_SETTING_KEYS) {
     if (patch[key] !== undefined && typeof patch[key] !== 'string') {
@@ -40,6 +43,8 @@ export default defineEventHandler(async (event) => {
   }
 
   const settings = await patchSettings(patch)
+  // What an adapter offers depends on what it signs in with.
+  if (SECRET_SETTING_KEYS.some(key => patch[key] !== undefined)) clearAdapterModelCache()
   bus.publish({ type: 'settings-changed' })
   return settings
 })

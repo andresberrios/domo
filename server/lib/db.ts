@@ -204,6 +204,30 @@ delete from settings where key in (
   'systemInstruction', 'proactiveNotifications', 'language', 'autoTitle'
 );
 
+-- Domo's own auto-approve is gone: the adapters' permission modes do the same
+-- without a round trip through Domo. An install that had it on keeps agents
+-- that do not ask, through those modes, wherever the mode was still the
+-- adapter's own default; a mode somebody chose stays.
+insert into settings (key, value)
+  select 'defaultAgentModes', '{"v": {}}'::jsonb
+    from settings where key = 'autoApprovePermissions' and value->'v' = 'true'::jsonb
+  on conflict (key) do nothing;
+update settings
+   set value = jsonb_set(jsonb_set(value, '{v,claude-code}',
+         case when coalesce(value->'v'->>'claude-code',
+                            (select value->>'v' from settings where key = 'defaultAgentMode'), 'default') = 'default'
+              then '"bypassPermissions"'::jsonb else value->'v'->'claude-code' end),
+         '{v,codex}',
+         case when coalesce(value->'v'->>'codex', 'agent') = 'agent'
+              then '"agent-full-access"'::jsonb else value->'v'->'codex' end)
+ where key = 'defaultAgentModes'
+   and exists (select 1 from settings where key = 'autoApprovePermissions' and value->'v' = 'true'::jsonb);
+insert into settings (key, value)
+  select 'openCodePermission', '{"v": {"host": "allow", "environment": "allow"}}'::jsonb
+    from settings where key = 'autoApprovePermissions' and value->'v' = 'true'::jsonb
+  on conflict (key) do update set value = jsonb_set(settings.value, '{v,host}', '"allow"'::jsonb);
+delete from settings where key = 'autoApprovePermissions';
+
 -- An assistant: a named identity that outlives any one coding session. Its
 -- sessions are ordinary agent_sessions rows chained by handoffs; this row says
 -- who it is, what the next session starts on, and which session is current.

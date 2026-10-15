@@ -568,7 +568,7 @@ describe('permissions', () => {
       resolvedOptionId: 'allow',
       resolvedBy: 'agent:ag_parent'
     })
-    // The UI, a spawning agent and auto-approve all race for the same row.
+    // The UI, a spawning agent and the voice bar all race for the same row.
     await expect(resolvePermissionRow(permission.id, 'deny', 'user')).resolves.toBeNull()
   })
 

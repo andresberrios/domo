@@ -31,17 +31,27 @@ export function codexHomeDir(inContainer: boolean, env: NodeJS.ProcessEnv = proc
  * each other out.
  */
 export async function hasCodexSubscriptionLogin(inContainer: boolean, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  return await codexLogin(inContainer, env) === 'chatgpt'
+}
+
+/**
+ * What Codex's own `auth.json` holds: a ChatGPT login, an API key that a
+ * `codex login --with-api-key` (or a fallback run) saved there, or nothing.
+ */
+export async function codexLogin(inContainer: boolean, env: NodeJS.ProcessEnv = process.env): Promise<'chatgpt' | 'apikey' | null> {
   const dir = codexHomeDir(inContainer, env)
-  if (!dir) return false
+  if (!dir) return null
   try {
     const auth = JSON.parse(await readFile(join(dir, 'auth.json'), 'utf8')) as {
       auth_mode?: string
+      OPENAI_API_KEY?: string | null
       tokens?: { refresh_token?: string, access_token?: string } | null
     }
-    if (auth.auth_mode === 'apikey') return false
-    return Boolean(auth.tokens?.refresh_token || auth.tokens?.access_token)
+    if (auth.auth_mode === 'apikey') return auth.OPENAI_API_KEY ? 'apikey' : null
+    if (auth.tokens?.refresh_token || auth.tokens?.access_token) return 'chatgpt'
+    return auth.OPENAI_API_KEY ? 'apikey' : null
   } catch {
-    return false
+    return null
   }
 }
 

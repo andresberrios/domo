@@ -35,10 +35,11 @@ With Domo you can:
 ## Requirements
 
 - Docker and git
+- At least one coding agent account: a Claude, ChatGPT or OpenCode plan.
+  See [Signing in](#signing-in).
 - For the default speech engines, a Gemini API key
-  ([AI Studio](https://aistudio.google.com/apikey)). The local and on-device
-  engines need no key.
-- At least one coding agent account. See [Authentication](#authentication).
+  ([AI Studio](https://aistudio.google.com/apikey)). The open models and your
+  device's own voices need no key.
 
 ## Install
 
@@ -48,20 +49,21 @@ curl -fsSL https://raw.githubusercontent.com/andresberrios/domo/release/scripts/
 
 This puts Domo under `~/.domo` with its own Node, pnpm and Caddy, builds it,
 starts it as a login service (launchd on macOS, systemd on Linux) and opens
-`https://localhost:3666`. Keys go in `~/.domo/.env` or in Settings. Then:
+`https://localhost:3666`, where a setup guide checks each coding agent and
+voice and tells you what is missing. Then:
 
 ```bash
 ~/.domo/bin/domo status    # what is installed, and is it answering
 ~/.domo/bin/domo update    # build and switch to the newest commit; --check only looks
-~/.domo/bin/domo restart   # after editing .env
+~/.domo/bin/domo restart
 ~/.domo/bin/domo trust     # if the browser warns about the certificate; asks for your password
 ~/.domo/bin/domo logs
 ~/.domo/bin/domo uninstall # stop starting at login; keeps ~/.domo
 ```
 
-`DOMO_HOME` moves the directory. `DOMO_CHANNEL` picks the branch to follow
-(default `release`). `DOMO_PORT` and `DOMO_HTTPS_ADDRESS` in `.env` change the
-addresses.
+`DOMO_HOME` moves the directory and `DOMO_CHANNEL` picks the branch to follow
+(default `release`); other server overrides are in
+[docs/configuration.md](docs/configuration.md).
 
 Domo looks at its branch every hour and says in the sidebar how many commits
 behind it is. **Settings → Updates** shows what is new, updates on request,
@@ -76,7 +78,7 @@ Needs the Node and pnpm in `.tool-versions` and [Caddy](https://caddyserver.com)
 (`brew install caddy`); browsers allow the microphone only on HTTPS.
 
 ```bash
-cp .env.example .env     # keys can also go in Settings later
+cp .env.example .env     # optional server overrides; keys go in through the app
 docker compose up -d     # Postgres :54321, Electric :30000
 pnpm install
 pnpm dev                 # open https://localhost:3766
@@ -99,41 +101,51 @@ agent.
 To change the addresses, set `DOMO_HTTPS_ADDRESS` (default `localhost:3766`) or
 `DOMO_DEV_PORT` (default `3767`). Always open the HTTPS address.
 
-## Authentication
+## Signing in
 
-**Claude Code.** Run `claude setup-token` once and put the token in Settings →
-General (or in `.env` as `NUXT_CLAUDE_CODE_OAUTH_TOKEN`). Claude Code signs in
-with it, and needs it inside development environments; Domo needs it to show
-your Claude plan limits. Without it, host sessions use your local Claude login.
+The setup guide (it opens on a new install, and is under **Settings → Setup
+guide** after that) checks each coding agent: is it installed, is it signed in
+and on what, and, when you ask, can it answer one tiny request on a cheap
+model. It says what to do for anything missing. Each agent's settings page
+holds its own keys. The steps that run a command happen in a terminal on the
+computer Domo runs on; pasting a key works from a phone too.
+
+**Claude Code.** Run `claude setup-token` once and paste the token on the
+Claude Code settings page. Claude Code signs in with it, development
+environments included, and Domo reads your Claude plan limits with it. Without
+it, sessions on this computer use your own Claude login.
 
 Domo never copies your Claude login into a container. Claude Code rotates its
 refresh token every time it refreshes, so two copies of one login log each
 other out, and the one that loses can be your own machine. For the same
 reason, `.claude` and `.claude.json` cannot be mounted into an environment.
 
-`NUXT_ANTHROPIC_API_KEY` is optional. It **bills the API, not your
-subscription**, so Domo passes it only when there is no other Claude
-credential.
+An Anthropic API key is optional. It **bills the API, not your subscription**,
+and inside Claude Code it overrides a subscription, so Domo passes it only when
+there is no other Claude credential.
 
-**Codex.** Run `codex login`. Domo mounts `~/.codex` into environments.
-`NUXT_CODEX_API_KEY` or `NUXT_OPENAI_API_KEY` bills the API, so Domo passes
-them to Codex only when there is no ChatGPT login.
+**Codex.** Run `codex login`. Domo mounts `~/.codex` into environments. An
+OpenAI API key on the Codex page bills the API, so Domo passes it to Codex
+only when there is no ChatGPT login.
 
 **Image generation** (assistant pictures, and the `generate_image` tool every
 agent has) uses Codex's built-in image tool on your ChatGPT login, so it counts
 against your Codex plan limits and bills nothing per image. Domo never uses an
 OpenAI API key for it; without a ChatGPT `codex login` it is unavailable.
 
-**OpenCode.** Host sessions use your `opencode auth login`. A development
-environment needs an OpenCode console service-account key in
-`NUXT_OPENCODE_API_KEY` or on the OpenCode settings page (for the same
-refresh-token reason as Claude). The key also enables the OpenCode Go plan
-limits. Without a credential, only OpenCode's free models work. Priced models
-fail as unroutable.
+**OpenCode.** Sessions on this computer use your `opencode auth login`. A
+development environment needs a console key from the
+[OpenCode console](https://opencode.ai/console), pasted on the OpenCode
+settings page (for the same refresh-token reason as Claude). The key also
+enables the OpenCode Go plan limits. Without a credential, only OpenCode's free
+models work.
 
 Check the model prefix before you run OpenCode. `openai/*` models bill your
 ChatGPT login, and `opencode/*` models bill OpenCode console usage per token.
 Some model names exist under both prefixes.
+
+**Voice.** The Gemini key goes on the Voice settings page. The OpenAI speech
+engine uses the same OpenAI key as Codex, and bills per token.
 
 ## Development environments
 
@@ -271,40 +283,16 @@ is `.ssh`, `.gitconfig`, `.config/gh`, `.config/gcloud`, `.aws` and `.kube`.
   the credential helper, and turns commit signing off.
 - Domo wraps your `~/.ssh/config` so macOS-only options such as `UseKeychain`
   do not break Linux `ssh`. Your SSH agent is forwarded.
-- Environment sessions get `GH_TOKEN` from `NUXT_GH_TOKEN`, or from
-  `gh auth token` on your machine.
+- Environment sessions get a GitHub token from `gh auth token` on your
+  machine.
 - `.docker` is not mounted by default. Docker Desktop's credential helper does
   not exist in the container, so every `docker pull` there would fail.
 
 ## Configuration
 
-The Gemini, OpenAI and Anthropic keys and the Claude Code token can be set in
-**Settings → General**, and the OpenCode key in **Settings → OpenCode**. Every
-variable below can go in `.env`, which wins over Settings and is read when the
-server starts. `.env.example` lists the common ones.
-
-| Variable | Purpose |
-| --- | --- |
-| `NUXT_GEMINI_API_KEY` | Gemini key, for the Gemini speech engines |
-| `NUXT_CLAUDE_CODE_OAUTH_TOKEN` | From `claude setup-token` |
-| `NUXT_ANTHROPIC_API_KEY` | Optional. Bills the API, not your subscription |
-| `NUXT_OPENAI_API_KEY` | OpenAI key, for the OpenAI speech engines. Codex uses it only when there is no ChatGPT login, and it bills the API |
-| `NUXT_CODEX_API_KEY` | Optional. Codex uses it only when there is no ChatGPT login, and it bills the API |
-| `NUXT_OPENCODE_API_KEY` | OpenCode console service-account key |
-| `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
-| `NUXT_GH_TOKEN` | GitHub token for environment sessions |
-| `DATABASE_URL`, `ELECTRIC_URL` | Default to the compose services |
-| `NUXT_DEFAULT_CWD` | Default for **Settings → Coding agents → Default folder**, where new sessions start |
-| `NUXT_DATA_DIR` | Where uploads are stored (default `./.data`) |
-| `NUXT_DEV_ENV_IMAGE` | Base image when a project has no `.domo.json` |
-| `NUXT_DEV_ENV_RUNTIME_IMAGE` | Image that provides Node and the adapters to environments (default `node:22-bookworm-slim`) |
-| `NUXT_DEV_ENV_HELPER_IMAGE` | Small image Domo runs for chores on environment volumes (default `busybox:1.37`) |
-| `NUXT_DEV_ENV_RESOURCE_PREFIX` | Prefix for Docker resources Domo creates (default `domo-dev-` under `pnpm dev`, `domo-prod-` when installed) |
-| `NUXT_DEV_ENV_DOCKER_READY_MS` | How long Docker in a new environment has to answer before creation fails (default `30000`) |
-| `NUXT_DOOD_SOCKET_DIR` | Where each environment's Docker socket is created (default `~/.domo/s/<install>`). Docker Desktop forwards a socket only if its path is at most 88 bytes, so set this if your home directory is longer than 53 characters. Do not use `/tmp`: macOS cleans it |
-| `NUXT_CLAUDE_CONFIG_DIR` | Where the Claude config copied into a new environment is read from (default `~/.claude`). Only `CLAUDE.md`, `settings.json`, `skills/`, `commands/` and `agents/` are copied |
-| `NUXT_CODEX_CONFIG_DIR` | Codex config mounted into environments (default `~/.codex`) |
-| `NUXT_HOME_OVERLAY_DIR` | Home directory the environment mounts come from (default `$HOME`) |
+Everything is set in the app, and keys are saved in Domo's database. A
+developer can override settings with server variables; see
+[docs/configuration.md](docs/configuration.md).
 
 ## Development
 
@@ -321,9 +309,9 @@ See `AGENTS.md` and `test/AGENTS.md`.
 
 - Single user, no login: anyone who can reach this machine's Domo ports can
   drive your agents. Keep them off networks you do not trust.
-- Coding agents run with your files and your accounts. **Auto-approve
-  permission requests** in Settings lets an agent edit and run things with no
-  one watching.
+- Coding agents run with your files and your accounts. A permission mode
+  that does not ask (Claude Code's bypass, Codex's full access) lets an agent
+  edit and run things with no one watching.
 - A development environment is a trusted development machine, not a sandbox. With
   `"docker": true`, its agents drive the host's Docker daemon, which gives
   them the host.

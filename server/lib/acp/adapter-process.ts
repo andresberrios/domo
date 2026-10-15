@@ -62,8 +62,8 @@ export function adapterEntry(adapter: AgentAdapter): string {
   }
 
   throw new Error(
-    `Could not find ${definition.packageName}. Run \`pnpm install\` in the Domo directory, `
-    + `or point ${definition.entryOverride} at the adapter entry file.`
+    `${definition.packageName} is missing from this Domo install. Update or reinstall Domo; `
+    + 'in a development checkout, run `pnpm install`.'
   )
 }
 

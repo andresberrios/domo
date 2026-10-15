@@ -68,7 +68,7 @@ export async function fetchOpenCodeUsage(
     return {
       outcome: 'unconfigured',
       limits: [],
-      message: 'No OpenCode console key. Add a service-account key in Settings, or set NUXT_OPENCODE_API_KEY. '
+      message: 'No OpenCode console key. Add a service-account key in Settings → OpenCode. '
         + 'A host `opencode auth login` is not enough: the console rejects that credential here.'
     }
   }

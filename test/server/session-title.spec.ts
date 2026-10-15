@@ -11,6 +11,7 @@ import { createAgentSession, getAgentSession, updateAgentSession } from '../../s
 import { patchSettings } from '../../server/lib/settings'
 import { askForTitle, cleanTitle, nameSessionInBackground, resolveTitler, writeTitle } from '../../server/lib/acp/session-title'
 import { codexAccessToken } from '../../server/lib/codex-credentials'
+import { checkAgent } from '../../server/lib/setup'
 
 /**
  * The title writer is a throwaway ACP session. Driven here against the SDK's
@@ -361,5 +362,34 @@ describe('asking the provider directly', () => {
     adapterServing({ models: ['haiku'], answer: 'Via Claude' })
     await expect(writeTitle('hi', { adapter: 'claude-code', model: 'haiku' }, 'ag_1')).resolves.toMatchObject({ via: 'acp' })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('the setup guide\'s live check', () => {
+  it('signs in the way a session would, the API key included when it is all there is', async () => {
+    adapterServing({ models: ['gpt-5.6-terra', 'gpt-5.6-luna'], modes: ['agent', 'read-only'], answer: 'ready' })
+    // No ChatGPT login in this home, so a session would bill the key, and the
+    // guide said so before the button was pressed.
+    const home = process.env.HOME
+    process.env.HOME = await mkdtemp(join(tmpdir(), 'domo-setup-home-'))
+    process.env.NUXT_OPENAI_API_KEY = 'sk-openai-test'
+    try {
+      const result = await checkAgent('codex')
+      expect(result).toMatchObject({ ok: true, reply: 'ready', summary: expect.stringMatching(/^gpt-5\.6-luna answered in/) })
+      expect(state.spawned[0]!.env.OPENAI_API_KEY).toBe('sk-openai-test')
+      expect(promptText(calls.at(-1)!.params)).toMatch(/connection test/)
+    } finally {
+      process.env.HOME = home
+    }
+  })
+
+  it('runs OpenCode without an account on a free model, and says what failed in words', async () => {
+    adapterServing({ models: ['opencode/big-pickle', 'opencode/cat-jam-free'], answer: 'ready' })
+    await expect(checkAgent('opencode')).resolves.toMatchObject({ ok: true, summary: expect.stringMatching(/^opencode\/cat-jam-free answered/) })
+
+    adapterServing({ models: ['sonnet'] })
+    const failed = await checkAgent('claude-code')
+    expect(failed).toMatchObject({ ok: false, reply: null })
+    expect(failed.summary).toBe('Claude Code started, but its account does not offer a cheap model to test with.')
   })
 })

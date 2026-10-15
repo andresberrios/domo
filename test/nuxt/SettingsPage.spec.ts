@@ -37,9 +37,17 @@ registerEndpoint('/api/adapters/models', (event) => {
   }
 })
 
+let setupStatus: any
+registerEndpoint('/api/setup', () => setupStatus)
+
+function agentStatus(id: string, login: string) {
+  return { id, installed: true, installProblem: null, login, loginDetail: `${id} ${login}`, environments: login !== 'none', testModel: 'cheap', usage: null }
+}
+
 function settings() {
   return {
-    defaultCwd: '/work', autoApprovePermissions: false,
+    defaultCwd: '/work',
+    credentialSources: { geminiApiKey: null, openAiApiKey: 'server', anthropicApiKey: null, claudeCodeOauthToken: null, openCodeApiKey: null, kyutaiApiKey: null },
     defaultAgentModes: { 'claude-code': 'plan', codex: 'agent', opencode: 'build' },
     defaultAgentModels: { 'claude-code': '', codex: '', opencode: '' },
     defaultAgentConfig: { 'claude-code': {}, codex: {}, opencode: {} },
@@ -59,6 +67,11 @@ function button(label: string) {
 
 beforeEach(() => {
   stored = settings()
+  setupStatus = {
+    agents: [agentStatus('claude-code', 'none'), agentStatus('codex', 'subscription'), agentStatus('opencode', 'free')],
+    voice: { transcriber: 'gemini', speaker: 'gemini', problem: null },
+    progress: { finishedAt: null, skipped: [], checks: {} }
+  }
   patched.length = 0
   document.body.innerHTML = ''
 })
@@ -129,6 +142,37 @@ describe('adapter settings page', () => {
     button('Save')!.click()
     await vi.waitFor(() => expect(patched).toHaveLength(1))
     expect(patched[0].defaultAgentModes).toEqual({ 'claude-code': 'plan', codex: 'agent', opencode: 'build' })
+    wrapper.unmount()
+  })
+
+  it('tells a signed-out agent how to sign in, and saves only a typed token', async () => {
+    const wrapper = await mountSuspended(AdapterSettingsPage, {
+      route: '/settings/adapters/claude-code', attachTo: document.body
+    })
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Not signed in'))
+    expect(document.body.textContent).toContain('claude setup-token')
+    expect(document.body.textContent).not.toMatch(/\.env|NUXT_/)
+
+    const input = document.body.querySelector<HTMLInputElement>('input[placeholder="sk-ant-oat…"]')!
+    input.value = ' sk-ant-oat-typed '
+    input.dispatchEvent(new Event('input'))
+    await vi.waitFor(() => expect(button('Save')).toBeTruthy())
+    const saves = [...document.body.querySelectorAll<HTMLButtonElement>('button')].filter(element => element.textContent?.trim() === 'Save')
+    saves.at(-1)!.click()
+    await vi.waitFor(() => expect(patched).toContainEqual({ claudeCodeOauthToken: 'sk-ant-oat-typed' }))
+    wrapper.unmount()
+  })
+
+  it('says a key the server sets is set there, with nothing to change or remove', async () => {
+    const wrapper = await mountSuspended(AdapterSettingsPage, {
+      route: '/settings/adapters/codex', attachTo: document.body
+    })
+    await vi.waitFor(() => expect(document.body.textContent).toContain('OpenAI API key (optional fallback)'))
+    expect(document.body.textContent).not.toContain('Sign in with your ChatGPT plan')
+    // Open whenever a key is in force, so its billing warning is in view.
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Set by the server\'s configuration'))
+    expect(document.body.textContent).toContain('Bills per token through the OpenAI API')
+    expect(button('Remove')).toBeUndefined()
     wrapper.unmount()
   })
 })

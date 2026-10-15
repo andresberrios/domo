@@ -757,6 +757,11 @@ export async function listAgentSessions(includeArchived = false): Promise<AgentS
   return rows.map(mapAgentSession)
 }
 
+/** Whether this install has ever had a coding session, archived ones included. */
+export async function hasAnyAgentSession(): Promise<boolean> {
+  return (await query('select 1 from agent_sessions limit 1')).length > 0
+}
+
 /** Every session that ran in one environment, archived ones included. */
 export async function listAgentSessionsInEnvironment(devEnvironmentId: string): Promise<AgentSession[]> {
   const rows = await query(
@@ -791,8 +796,8 @@ export async function getAgentSessionWithEnvironment(
  *
  * The adapter is gone and its waiter was resolved with null, so the request was
  * cancelled whether or not anything wrote that down. `retired` rather than
- * `auto`, because "nobody ever answered this" and "the auto-approve setting
- * answered it" are different facts about the same row.
+ * `auto`, because "nobody ever answered this" and "Domo closed it on a
+ * restart" are different facts about the same row.
  */
 export async function cancelPendingPermissions(agentSessionId: string): Promise<number> {
   const rows = await query(

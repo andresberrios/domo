@@ -50,7 +50,7 @@ export const DEFAULT_HOME_MOUNTS = [
  */
 const REFUSED: Record<string, string> = {
   '.claude': 'holds `.credentials.json`, and a second Claude Code refreshing that chain logs this machine out. '
-    + 'Add a Claude Code token (from `claude setup-token`) in Settings → General instead; the safe parts are copied in already.',
+    + 'Add a Claude Code token (from `claude setup-token`) in Settings → Claude Code instead; the safe parts are copied in already.',
   '.claude.json': 'is Claude Code\'s own state file, and Domo seeds one in the environment already.',
   '.codex': 'is already mounted into every environment by its own mechanism.'
 }

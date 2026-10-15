@@ -213,7 +213,7 @@ describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev e
         + 'Then read it back and reply with its contents.'
     }])
 
-    // Auto-approve is off, so the write raises a permission row the test has to
+    // Domo answers nothing itself, so the write raises a permission row the test has to
     // answer before the turn can finish. Some adapters/modes do not ask at all,
     // which is what `askedForPermission` below records.
     const answered = answerPermissions(session.id)
@@ -241,7 +241,7 @@ describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode'])('%s in a dev e
   it('raises a permission as a row, and waits for the answer', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const { listPermissions } = await import('../../server/lib/repo')
-    // Auto-approve is off (the default), so nothing resolves this but the test.
+    // Domo answers nothing itself, so nothing resolves this but the test.
     const { modeId, prompt } = ASKS[adapter]
     const session = await start(adapter, { modeId })
 

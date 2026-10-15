@@ -109,7 +109,8 @@ values ('ag_thinking', 'vs_renamed', 'Voice thinking', '/srv/api', 'now', 'now')
 insert into settings (key, value)
 values ('voiceName', '{"v": "Kore"}'), ('systemInstruction', '{"v": "Be terse."}'),
        ('voiceProvider', '{"v": "openai"}'), ('agentVoice', '{"v": {"speaker": "gemini"}}'),
-       ('autoApprovePermissions', '{"v": true}');
+       ('autoApprovePermissions', '{"v": true}'),
+       ('defaultAgentModes', '{"v": {"claude-code": "default", "codex": "read-only"}}');
 
 insert into mcp_servers (id, name, transport, url, scope, created_at, updated_at)
 values ('mcp_voice', 'calendar', 'http', 'https://calendar.test/mcp', 'voice', 'now', 'now');
@@ -169,10 +170,19 @@ describe('booting on top of an old database', () => {
   it('moves the Gemini voice to the voice bar and forgets the settings only the conversation read', async () => {
     const rows = await query<{ key: string, value: any }>('select key, value from settings order by key')
 
-    expect(rows).toEqual([
-      { key: 'agentVoice', value: { v: { speaker: 'gemini', geminiVoice: 'Kore' } } },
-      { key: 'autoApprovePermissions', value: { v: true } }
+    expect(rows.filter(row => row.key === 'agentVoice')).toEqual([
+      { key: 'agentVoice', value: { v: { speaker: 'gemini', geminiVoice: 'Kore' } } }
     ])
+    expect(rows.map(row => row.key)).not.toContain('voiceName')
+  })
+
+  it('replaces auto-approve with the adapters\' own modes, keeping a mode somebody chose', async () => {
+    const rows = await query<{ key: string, value: any }>('select key, value from settings order by key')
+    const byKey = Object.fromEntries(rows.map(row => [row.key, row.value]))
+
+    expect(byKey).not.toHaveProperty('autoApprovePermissions')
+    expect(byKey.defaultAgentModes).toEqual({ v: { 'claude-code': 'bypassPermissions', 'codex': 'read-only' } })
+    expect(byKey.openCodePermission).toEqual({ v: { host: 'allow', environment: 'allow' } })
   })
 
   it('gives every MCP server to the coding agents, the voice agent\'s too', async () => {

@@ -96,6 +96,9 @@ not in the UI.
 
 ## Topic docs
 
+- `docs/configuration.md`: read before you add a setting, a key or a server
+  variable. People configure Domo in the app; a variable is only a developer
+  override, and UI copy never names one or `.env`.
 - `docs/working-on-domo.md`: read before you change Domo from inside Domo
   (parallel tasks, applying changes that restart the server, a second dev
   server), or before you point anything at a database: which one is for what.

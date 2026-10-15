@@ -6,13 +6,11 @@ const toast = useToast()
 const { data: settings, refresh } = await useSettingsForm()
 const form = reactive({
   defaultCwd: '',
-  autoApprovePermissions: false,
   sessionTitles: { enabled: true, adapter: 'claude-code', model: TITLE_MODELS['claude-code'] } as SessionTitleSettings
 })
 watchEffect(() => {
   if (!settings.value) return
   form.defaultCwd = settings.value.defaultCwd
-  form.autoApprovePermissions = settings.value.autoApprovePermissions
   // Nothing chosen yet shows what would be used: the cheapest harness this
   // machine is logged in to, on its cheap model.
   const titles = settings.value.sessionTitles
@@ -71,11 +69,6 @@ async function save() {
     <UFormField label="Default folder" hint="Where agents on this machine start">
       <DirectoryPicker v-model="form.defaultCwd" />
     </UFormField>
-    <USwitch
-      v-model="form.autoApprovePermissions"
-      label="Auto-approve permission requests"
-      description="Answers every prompt with its first “allow once” option. Convenient and dangerous — agents can edit and run things unattended."
-    />
 
     <USeparator />
     <section class="space-y-4">
