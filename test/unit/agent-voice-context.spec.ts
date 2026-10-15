@@ -5,7 +5,7 @@ import { DEFAULT_AGENT_VOICE, SPOKEN_NOTE_PREFIX } from '../../shared/agent-voic
 import {
   combineVocabulary,
   conversationPrompt,
-  instructionPrompt,
+  vocabularyPrompt,
   precedingTextPrompt,
   termsFromPaths,
   termsFromText
@@ -76,10 +76,10 @@ describe('combineVocabulary', () => {
 describe('prompts', () => {
   const context = { conversation: 'Developer: switch to Kokoro\nAgent: Done, Kokoro speaks now.', vocabulary: ['Kokoro', 'Moonshine'] }
 
-  it('tells an instruction-following recogniser the terms and the conversation', () => {
-    const prompt = instructionPrompt(context)
-    expect(prompt).toContain('Kokoro, Moonshine')
-    expect(prompt).toContain('Agent: Done, Kokoro speaks now.')
+  it('gives OpenAI\'s transcribers the terms, and never the conversation', () => {
+    expect(vocabularyPrompt(context)).toBe('Terms from this software project, spelled as written: Kokoro, Moonshine.')
+    const terms = Array.from({ length: 60 }, (_, i) => `term${i}`)
+    expect(vocabularyPrompt({ ...context, vocabulary: terms }, { whisper: true })).toBe(`Glossary: ${terms.slice(0, 40).join(', ')}.`)
   })
 
   it('gives Whisper preceding text that ends with the latest words, within its budget', () => {
@@ -90,7 +90,7 @@ describe('prompts', () => {
   })
 
   it('is empty with nothing to say, so no prompt is sent', () => {
-    expect(instructionPrompt({ conversation: '', vocabulary: [] })).toBe('')
+    expect(vocabularyPrompt({ conversation: 'Agent: hi', vocabulary: [] })).toBe('')
     expect(precedingTextPrompt({ conversation: '', vocabulary: [] })).toBe('')
   })
 })
@@ -111,10 +111,13 @@ describe('the OpenAI transcriber', () => {
     return (fetch.mock.calls[0] as any)[1].body as FormData
   }
 
-  it('sends the language and the context as its prompt', async () => {
-    const form = await formSent({ language: 'en' }, { conversation: 'Agent: Kokoro is loaded.', vocabulary: ['Kokoro'] })
+  it('sends the language and the vocabulary as its prompt, not the conversation', async () => {
+    const context = { conversation: 'Developer: write about the moon\nAgent: Kokoro is loaded.', vocabulary: ['Kokoro'] }
+    const form = await formSent({ language: 'en', openaiTranscribeModel: 'gpt-4o-transcribe' }, context)
     expect(form.get('language')).toBe('en')
-    expect(String(form.get('prompt'))).toContain('Kokoro is loaded.')
+    expect(form.get('prompt')).toBe('Terms from this software project, spelled as written: Kokoro.')
+    const whisper = await formSent({ openaiTranscribeModel: 'whisper-1' }, context)
+    expect(whisper.get('prompt')).toBe('Glossary: Kokoro.')
   })
 
   it('lets the model guess the language only when told to, and sends no empty prompt', async () => {
