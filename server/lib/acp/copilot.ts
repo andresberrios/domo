@@ -114,6 +114,7 @@ export function withCopilotModels<T extends { agent: { request: (...args: any[])
 const LOGIN_TTL_MS = 5 * 60_000
 const LOGIN_TIMEOUT_MS = 20_000
 let loginCache: { at: number, value: boolean } | null = null
+let loginAsking: Promise<boolean> | null = null
 
 /**
  * Whether Copilot on this computer is signed in by itself, through
@@ -123,10 +124,26 @@ let loginCache: { at: number, value: boolean } | null = null
  * no request against the plan, and the empty session is closed again.
  */
 export async function copilotHostLogin(): Promise<boolean> {
-  if (loginCache && Date.now() - loginCache.at < LOGIN_TTL_MS) return loginCache.value
-  const value = await askHostLogin().catch(() => false)
-  loginCache = { at: Date.now(), value }
-  return value
+  // Asking starts Copilot, which takes seconds on a Mac, and the settings and
+  // the setup guide wait on this: an answer that is old is given at once and
+  // asked again behind it. Only the first ever waits, and the server asks
+  // that at boot (`boot.ts`).
+  if (loginCache) {
+    if (Date.now() - loginCache.at >= LOGIN_TTL_MS) void askHostLoginOnce()
+    return loginCache.value
+  }
+  return askHostLoginOnce()
+}
+
+/** One ask at a time, however many readers want the answer. */
+function askHostLoginOnce(): Promise<boolean> {
+  loginAsking ??= askHostLogin().catch(() => false).then((value) => {
+    loginCache = { at: Date.now(), value }
+    return value
+  }).finally(() => {
+    loginAsking = null
+  })
+  return loginAsking
 }
 
 async function askHostLogin(): Promise<boolean> {

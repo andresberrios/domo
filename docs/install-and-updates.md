@@ -52,7 +52,12 @@ lockfile once into `~/.domo/agents/<the first 16 hex of its sha256>`
 (`ensureAgents()`): `npm ci --ignore-scripts` with the bundled Node's npm,
 which checks every package against the lockfile; then OpenCode's postinstall
 alone, which places its binary for this machine; the musl builds, which npm
-installs too, are dropped; and each agent's CLI has to answer `--version`.
+installs too, are dropped. Then every agent is started the way the server
+starts it and has to answer ACP's `initialize` (the log has how long each
+took): that is its first start, paid in the install and not in someone's
+first session. Copilot unpacks its runtime into `~/.cache/copilot` then, and
+macOS scans each new native file the first time it loads, which made a first
+session or setup check take over a minute.
 It is built in a temporary directory and renamed into place with
 `.installed`. Each release's `node_modules` is a link to the install it pins,
 so the server resolves the adapters through it with the release as its cwd,

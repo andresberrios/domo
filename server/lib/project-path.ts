@@ -4,12 +4,16 @@ import { dirname, join } from 'node:path'
 
 import type { ProjectPathState } from '../../shared/types'
 import { run } from './dev-env/docker'
-import { normalizeCwd } from './paths'
+import { expandPath, insideOwnInstall } from './paths'
 
 /** Look at a path without writing anything: what making a project of it would take. */
 export async function inspectProjectPath(input: string): Promise<ProjectPathState> {
-  const path = normalizeCwd(input)
+  const path = expandPath(input)
   const state: ProjectPathState = { path, kind: 'missing', empty: false, toCreate: [], enclosingRepository: null, problem: null }
+  if (insideOwnInstall(path)) {
+    state.problem = `${path} is inside Domo's own install, which updates replace. Choose a folder outside it.`
+    return state
+  }
   let existing = path
   for (;;) {
     const found = await stat(existing).catch(() => null)

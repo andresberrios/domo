@@ -23,6 +23,7 @@ import { stopLocalModels } from '../lib/agent-voice/local-models'
 import { updater } from '../lib/updates'
 import { getSettings } from '../lib/settings'
 import { warmAgentVoice } from '../lib/agent-voice/warm'
+import { copilotHostLogin } from '../lib/acp/copilot'
 import { migrateDeviceSpeaker } from '../lib/agent-voice/device-speaker'
 
 export default defineNitroPlugin(async (nitro) => {
@@ -109,6 +110,10 @@ export default defineNitroPlugin(async (nitro) => {
   // on the first spoken turn. Not under `pnpm dev`: a developer's reload must
   // not start downloads or a Pocket server.
   if (process.env.DOMO_HOME) void warmAgentVoice().catch(error => console.error('[agent-voice] warm-up', error))
+  // Whether Copilot is signed in on this computer is asked by starting it,
+  // seconds on a Mac; asked now, the settings and the setup guide do not wait
+  // on it after a restart.
+  if (process.env.DOMO_HOME) void copilotHostLogin()
 
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()

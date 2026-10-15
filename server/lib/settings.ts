@@ -1,5 +1,5 @@
 import { query } from './db'
-import { defaultWorkDir } from './paths'
+import { defaultWorkDir, insideOwnInstall } from './paths'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
 import { AGENT_ADAPTERS, isAgentAdapter } from '../../shared/agent-adapters'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector, normalizeVolumes } from '../../shared/agent-voice'
@@ -67,6 +67,10 @@ export async function getSettings(): Promise<AppSettings> {
   const settings = {
     ...DEFAULTS,
     ...stored,
+    // Saved when the default was the release the server ran from, which an update deletes.
+    defaultCwd: typeof stored.defaultCwd === 'string' && stored.defaultCwd.trim() && !insideOwnInstall(stored.defaultCwd)
+      ? stored.defaultCwd
+      : DEFAULTS.defaultCwd,
     defaultAgentModes: storedAgentModes(stored),
     defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored),

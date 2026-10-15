@@ -111,6 +111,19 @@ describe('the socket path', () => {
     expect(doodSocketDir()).not.toBe(path.slice(0, path.lastIndexOf('/')))
   })
 
+  it('is under DOMO_HOME for an install outside ~/.domo, so a scratch install keeps its own', () => {
+    delete process.env.NUXT_DOOD_SOCKET_DIR
+    process.env.HOME = '/Users/dev'
+    process.env.NUXT_DATA_DIR = dataA
+    process.env.DOMO_HOME = '/tmp/scratch-domo'
+    try {
+      expect(doodSocketDir()).toMatch(/^\/tmp\/scratch-domo\/s\/[0-9a-f]{8}$/)
+    } finally {
+      delete process.env.DOMO_HOME
+    }
+    expect(doodSocketDir()).toMatch(/^\/Users\/dev\/\.domo\/s\/[0-9a-f]{8}$/)
+  })
+
   // The id is the install's and not its path's: the data directory can move,
   // and every environment's mounts name the directory it had at creation.
   it('keeps the install id in the data directory, so the directory survives a move', () => {

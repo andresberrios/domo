@@ -221,13 +221,14 @@ async function startSession(assistant: Assistant, handoff?: HandoffPayload): Pro
     if (!environment || environment.retiredAt) {
       fail(`"${assistant.name}" works in a development environment that was retired. Choose another workspace in its settings.`, 409)
     }
-  } else {
-    await mkdir(assistant.cwd, { recursive: true }).catch(() => {})
   }
+  // Normalized here too, so a folder inside Domo's own install is not made again.
+  const cwd = assistant.devEnvironmentId ? undefined : normalizeCwd(assistant.cwd)
+  if (cwd) await mkdir(cwd, { recursive: true }).catch(() => {})
   const session = await acpManager.create({
     adapter: assistant.adapter,
     title: assistant.name,
-    cwd: assistant.devEnvironmentId ? undefined : assistant.cwd,
+    cwd,
     devEnvironmentId: assistant.devEnvironmentId,
     model: assistant.model,
     modeId: assistant.modeId,

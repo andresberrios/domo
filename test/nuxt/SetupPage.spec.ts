@@ -70,6 +70,25 @@ describe('setup guide', () => {
     wrapper.unmount()
   })
 
+  // An earlier check that finished later is what the guide keeps; the reply
+  // of the check this page ran belongs to a result no longer shown.
+  it('shows what the agent said only beside the result it came with', async () => {
+    registerEndpoint('/api/setup/check', {
+      method: 'POST',
+      handler: async () => {
+        const answered = { ok: true, at: '2026-10-15T10:00:30.000Z', summary: 'gpt-5.6-luna answered in 2.0 s.' }
+        status.progress.checks.codex = { ok: false, at: '2026-10-15T10:00:40.000Z', summary: 'Codex did not answer within 90 seconds.' }
+        return { ...answered, reply: 'ready', progress: status.progress }
+      }
+    })
+    const wrapper = await mountSuspended(SetupPage, { route: '/setup', attachTo: document.body })
+    await vi.waitFor(() => expect(button('Test Codex')).toBeTruthy())
+    button('Test Codex')!.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('did not answer within 90 seconds'))
+    expect(document.body.textContent).not.toContain('It said')
+    wrapper.unmount()
+  })
+
   it('remembers a skipped step and finishing', async () => {
     const wrapper = await mountSuspended(SetupPage, { route: '/setup', attachTo: document.body })
     await vi.waitFor(() => expect(button('I don\'t use OpenCode')).toBeTruthy())

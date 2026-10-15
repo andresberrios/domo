@@ -746,6 +746,7 @@ export type SetupTarget = AgentAdapter | 'voice'
 /** The outcome of a live check the person started from the setup guide. */
 export interface SetupCheckResult {
   ok: boolean
+  /** When the check started: of two checks that overlap, the later one's result is kept. */
   at: string
   /** One plain sentence: what answered, or what went wrong. */
   summary: string

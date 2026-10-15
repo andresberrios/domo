@@ -780,7 +780,7 @@ async function ensureAgents(dir) {
         const dir = join(tmp, 'node_modules', scope)
         for (const name of existsSync(dir) ? readdirSync(dir).filter(n => /musl/.test(n)) : []) rmSync(join(dir, name), { recursive: true, force: true })
       }
-      checkAgents(tmp)
+      await checkAgents(tmp)
       writeFileSync(join(tmp, '.installed'), new Date().toISOString())
       rmSync(target, { recursive: true, force: true })
       renameSync(tmp, target)
@@ -791,21 +791,78 @@ async function ensureAgents(dir) {
   relink(join(dir, 'node_modules'), relative(dir, join(target, 'node_modules')))
 }
 
-/** Each agent's CLI starts on this machine: the platform packages are there and run. */
-function checkAgents(dir) {
+/**
+ * Start every agent the way the server does and wait for each to answer ACP's
+ * `initialize`, with the time each took in the log. This is the agents' first
+ * start, paid here instead of in someone's first session: Copilot unpacks its
+ * runtime (native modules, ripgrep and more) into ~/.cache/copilot on its
+ * first start, Codex's adapter starts `codex app-server`, and macOS scans each
+ * native file the first time one is loaded, which made a first check take
+ * over a minute. No session is made, so nothing lands in anyone's history.
+ * Claude Code's own binary starts only with a session, so it answers
+ * `--version` instead, as does Codex's CLI.
+ */
+async function checkAgents(dir) {
   const os = platform() === 'darwin' ? 'darwin' : 'linux'
   const cpu = arch() === 'arm64' ? 'arm64' : 'x64'
   const modules = join(dir, 'node_modules')
-  const commands = [
-    [P.node, join(modules, '@openai', 'codex', 'bin', 'codex.js')],
-    [join(modules, '@opencode', 'cli', 'bin', 'opencode.exe')],
-    [join(modules, '@github', `copilot-${os}-${cpu}`, 'copilot')],
-    [join(modules, '@anthropic-ai', `claude-agent-sdk-${os}-${cpu}`, 'claude')]
-  ]
-  for (const [command, ...args] of commands) {
-    const result = spawnSync(command, [...args, '--version'], { encoding: 'utf8', timeout: 60_000 })
-    if (result.status !== 0) throw new Error(`${[command, ...args].pop()} --version failed: ${(result.stderr || result.error?.message || `exit ${result.status}`).trim().split('\n').pop()}`)
+  for (const command of [[P.node, join(modules, '@openai', 'codex', 'bin', 'codex.js')], [join(modules, '@anthropic-ai', `claude-agent-sdk-${os}-${cpu}`, 'claude')]]) {
+    const result = spawnSync(command[0], [...command.slice(1), '--version'], { encoding: 'utf8', timeout: 300_000 })
+    if (result.status !== 0) throw new Error(`${command.at(-1)} --version failed: ${(result.stderr || result.error?.message || `exit ${result.status}`).trim().split('\n').pop()}`)
   }
+  // As `adapterLaunch()` in server/lib/acp/adapter-process.ts starts them.
+  const adapters = {
+    'Claude Code': [P.node, join(modules, '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js')],
+    'Codex': [P.node, join(modules, '@agentclientprotocol', 'codex-acp', 'dist', 'index.js')],
+    'OpenCode': [join(modules, '@opencode', 'cli', 'bin', 'opencode.exe'), 'acp'],
+    'Copilot': [join(modules, '@github', `copilot-${os}-${cpu}`, 'copilot'), '--acp', '--no-auto-update']
+  }
+  await Promise.all(Object.entries(adapters).map(async ([name, [command, ...args]]) => {
+    const started = Date.now()
+    await acpInitialize(command, args)
+    log(`${name} started and answered in ${((Date.now() - started) / 1000).toFixed(1)}s`)
+  }))
+}
+
+/** Spawn an ACP agent, send `initialize`, and stop it once it answers. */
+function acpInitialize(command, args, timeoutMs = 300_000) {
+  return new Promise((done, reject) => {
+    const env = { ...process.env, PATH: `${dirname(P.node)}:${process.env.PATH || '/usr/bin:/bin'}` }
+    const child = spawn(command, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.kill('SIGKILL')
+      if (error) reject(error)
+      else done()
+    }
+    const timer = setTimeout(() => finish(new Error(`${basename(command)} did not answer initialize within ${timeoutMs / 1000}s`)), timeoutMs)
+    child.on('error', error => finish(error))
+    child.on('exit', code => finish(new Error(`${basename(command)} exited ${code} before answering initialize: ${err.trim().split('\n').pop() ?? ''}`)))
+    child.stderr.on('data', (data) => {
+      err = (err + data).slice(-4000)
+    })
+    child.stdout.on('data', (data) => {
+      out += data
+      for (const line of out.split('\n').slice(0, -1)) {
+        let message
+        try {
+          message = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (message?.id !== 1) continue
+        finish(message.error ? new Error(`${basename(command)} refused initialize: ${message.error.message}`) : null)
+      }
+      out = out.slice(out.lastIndexOf('\n') + 1)
+    })
+    child.stdin.on('error', () => {})
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } })}\n`)
+  })
 }
 
 /** Agents' installs no kept release pins. */
