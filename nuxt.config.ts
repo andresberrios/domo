@@ -9,6 +9,11 @@ function kokoroVoices(): string[] {
   }
 }
 
+// `scripts/release.mjs build`: what is shipped carries no source. Source maps
+// embed it, and the server bundle is otherwise readable as written. The build
+// id is the commit's, not a random one, so a rebuild comes out the same.
+const release = process.env.DOMO_RELEASE_BUILD === '1'
+
 export default defineNuxtConfig({
   compatibilityDate: '2026-09-01',
   devtools: { enabled: false },
@@ -36,7 +41,11 @@ export default defineNuxtConfig({
     '/**': { ssr: false }
   },
 
+  sourcemap: { server: !release, client: false },
+  ...(release && process.env.DOMO_BUILD_ID ? { buildId: process.env.DOMO_BUILD_ID } : {}),
+
   nitro: {
+    minify: release,
     experimental: {
       websocket: true
     },

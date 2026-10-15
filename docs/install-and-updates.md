@@ -1,14 +1,94 @@
 # Installing Domo and keeping it updated
 
-How an installed Domo is laid out, run and updated, and why. The code is
-`bin/domo.mjs`, `scripts/install.sh` and `server/lib/updates.ts`. Read this
-before you change any of them.
+How Domo is released, and how an installed Domo is laid out, run and updated,
+and why. The code is `scripts/release.mjs` and
+`.github/workflows/release.yml` (releases), `bin/domo.mjs`,
+`scripts/install.sh` and `server/lib/updates.ts`. Read this before you change
+any of them.
 
-The rules everything below follows: git is the only record of what is
-installed; the running server never rebuilds or replaces itself, a separate
-process does; a new version is built beside the running one and switched to,
-never in place; a rebuild happens only when the commit changed; a lock is
-held by a live pid, not a timestamp.
+The rules everything below follows: an install runs only what a release
+ships, built by CI, never source and never a build on the user's machine;
+the running server never replaces itself, a separate process does; a new
+version is downloaded beside the running one and switched to, never in
+place, and only after it matched its checksum and started; a lock is held by
+a live pid, not a timestamp.
+
+## Releases
+
+A release is a GitHub Release on `andresberrios/domo-releases`, a public
+repository with no source, which installs read without an account. Releasing
+is `pnpm release:publish` on Andrés's Mac (`scripts/publish-release.mjs`),
+after the change is merged and pushed to `main`. It takes the tip of
+origin/main (or `--ref`, which must be on it), exports it with `git archive`,
+never the working tree, and builds the four platforms (macOS arm64 and x64,
+Linux x64 and arm64, glibc): darwin-arm64 on an arm64 Node, darwin-x64 on an
+x64 Node under Rosetta with pnpm installed through it, and the Linux ones in
+`node` containers of their architecture (linux/amd64 through Docker
+Desktop's emulation). Then it writes the manifest, publishes with the `gh`
+login of whoever runs it (a draft, every file uploaded, then marked latest),
+and only then pushes the commit to `release`: an install built from git
+learns of a new launcher through `release`, so the feed must have that
+commit's release first. Each step is skipped when already done, under
+`~/.cache/domo-release/<version>`, so after a failure the same command goes
+on from where it stopped. `--no-publish` builds only; `--platforms` picks
+some. It needs Docker, Rosetta and `gh auth login`.
+
+The version is the commit's UTC date and short hash, `2026.10.15-ab18e19`,
+so every build of one commit agrees on it. Each release holds:
+
+- `domo-<version>-<os>-<arch>.tar.gz`, about 55 MB: one directory `domo/`
+  with the built app (`.output`), `agents/` (the coding agents' pins, below),
+  the launcher, the `Caddyfile`, the production compose file,
+  `.tool-versions` (without pnpm: nothing is built) and `build.json`
+  (`version`, `commit`, `subject`, `builtAt`, `platform`).
+  No source: the release build (`DOMO_RELEASE_BUILD=1` in `nuxt.config.ts`)
+  writes no source maps, which embed the source, and minifies the server.
+- `manifest.json`: the version, the Node it runs on, the launcher's checksum,
+  each platform's tarball with its sha256 and size, and the last hundred
+  releases with the commits each brought, newest first, so an install several
+  releases behind can list what it would get. `version`, `node` and
+  `launcherSha256` sit on lines of their own: `install.sh` reads them with sed.
+- `SHA256SUMS`, `domo.mjs` (the launcher) and `install.sh`.
+
+A release is built on the platform it is for: `.output` traces sharp and
+the ONNX runtime for the machine it runs on (the build keeps only this
+platform's ONNX binaries).
+
+The coding agents are not in the tarball. They are over a gigabyte, they
+change far less often than Domo, and Nitro's tracing does not carry their
+platform binaries anyway. `agents/package.json` and `agents/package-lock.json`
+pin them: every package `adapterEntry()` and `codexBinary()` resolve from the
+server's working directory, at the versions `ADAPTER_PACKAGES` names (a unit
+test keeps the three pin sites equal; `docs/acp-adapters.md`). npm's
+lockfile lists every platform's binary packages, so one lockfile serves all
+four builds, and it records each package's sha512. The launcher installs a
+lockfile once into `~/.domo/agents/<the first 16 hex of its sha256>`
+(`ensureAgents()`): `npm ci --ignore-scripts` with the bundled Node's npm,
+which checks every package against the lockfile; then OpenCode's postinstall
+alone, which places its binary for this machine; the musl builds, which npm
+installs too, are dropped. Then every agent is started the way the server
+starts it and has to answer ACP's `initialize` (the log has how long each
+took): that is its first start, paid in the install and not in someone's
+first session. Copilot unpacks its runtime into `~/.cache/copilot` then, and
+macOS scans each new native file the first time it loads, which made a first
+session or setup check take over a minute.
+It is built in a temporary directory and renamed into place with
+`.installed`. Each release's `node_modules` is a link to the install it pins,
+so the server resolves the adapters through it with the release as its cwd,
+and a rollback finds the agents its release pins. An install no kept release
+pins is removed.
+
+The manifest is cumulative: publishing downloads the latest one and adds
+the new release on top. The release is a draft until every file is up, since
+`latest/download/…` is what installs read.
+
+`.github/workflows/release.yml` does the same build in CI, run by hand
+for now; with "publish" it publishes too, and `release` is then pushed by
+hand after it. It is kept for when CI moves to Blacksmith: each platform's
+runner is a repository variable (`DOMO_LINUX_X64_RUNNER`,
+`DOMO_LINUX_ARM64_RUNNER`, `DOMO_MACOS_RUNNER`), so the move is setting them.
+`release.mjs build --platform` fails a build whose Node, or whose traced
+sharp, is not the platform named.
 
 ## Layout of an installed Domo
 
@@ -16,38 +96,29 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
 
 ```
 ~/.domo/
-  app/          shallow clone (--depth 1) of andresberrios/domo; only fetched, never run
-  releases/     one git worktree per commit, with its own node_modules and .output
-  current  ->   releases/<sha>      the release the server runs from
-  previous ->   releases/<sha>      the one before it, kept for rollback
+  releases/     one unpacked release per version; its node_modules links into agents/
+  agents/       the coding agents, one install per lockfile (<hash>/node_modules)
+  current  ->   releases/<version>      the release the server runs from
+  previous ->   releases/<version>      the one before it, kept for rollback
   node/         the official Node tarball for this platform (.tool-versions)
-  bin/          caddy, uv, pnpm, domo.mjs (the launcher) and `domo`, a shim for it
+  bin/          caddy, uv, domo.mjs (the launcher) and `domo`, a shim for it
   data/         uploads, models, voices, install-id, pocket-tts.pid (NUXT_DATA_DIR)
   .env          absent: Domo is set up in the app. A developer's overrides (docs/configuration.md) if one is made
-  state.json    channel, last apply; logs/domo.log, logs/update.log
+  state.json    feed (when not the default), last apply; logs/domo.log, logs/update.log
   supervisor.pid, update.lock (a live pid), restart-requested, update-failed.json
 ```
 
 Docker, git and a browser come from the machine; the installer installs git
-when it is missing (below). Everything else comes with Domo: Node, pnpm,
-Caddy, `uv` (for Pocket TTS), the ACP adapters and the
-coding-agent CLIs (already npm dependencies; Claude Code ships inside the
-Claude ACP adapter, Codex and OpenCode ship their binaries), the ONNX speech
-models (fetched into `data/models` at boot, see `docs/voice.md`). Postgres and
-Electric run in Docker from the checked-in `docker-compose.prod.yml`: those
-two services only, project `domo-prod`, ports 54322 and 30002, a volume of
-its own. The development stack (`docker-compose.yml`: project `domo`, ports
-54321 and 30000, plus the test layer's database) is a different stack, so a
-machine that develops Domo runs both. Never give the two one compose project
-name: `compose up` of one stops the other's containers as surplus replicas.
-
-A release is a worktree with a full `pnpm install`, not just the `.output`.
-Nitro's tracing carries the adapters' JavaScript but not the platform
-packages they resolve at run time (Codex's binary, Claude Code's, OpenCode
-altogether), and `adapterEntry()` resolves from the working directory first,
-so the server runs with the worktree as its cwd. pnpm links every package
-from one store, so a second release costs little disk and installs in
-seconds.
+when it is missing (below). Everything else comes with Domo: Node, Caddy,
+`uv` (for Pocket TTS), the ACP adapters and the coding-agent CLIs, the ONNX
+speech models (fetched into `data/models` at boot, see `docs/voice.md`).
+Postgres and Electric run in Docker from the release's
+`docker-compose.prod.yml`: those two services only, project `domo-prod`,
+ports 54322 and 30002, a volume of its own. The development stack
+(`docker-compose.yml`: project `domo`, ports 54321 and 30000, plus the test
+layer's database) is a different stack, so a machine that develops Domo runs
+both. Never give the two one compose project name: `compose up` of one stops
+the other's containers as surplus replicas.
 
 ## Processes
 
@@ -75,7 +146,7 @@ Three processes, and no more:
    `DATABASE_URL` and `ELECTRIC_URL`, and any `.env` overrides, with the
    PATH of the user's login shell so agents find git, docker and Homebrew.
    Readiness is `GET /` answering, not `/api/health`: that route waits on
-   Postgres, and a database that is down is the UI's banner, not a bad build.
+   Postgres, and a database that is down is the UI's banner, not a bad release.
 
 ## The update check
 
@@ -85,74 +156,74 @@ every `pnpm dev`).
 
 - Every `checkIntervalMinutes` (default 60, minimum 5), twenty seconds after
   boot, and when settings change, the server runs
-  `domo update --check --json`. That is a plain `git fetch` of the channel
-  (explicit refspec, so a channel other than the one cloned works) in the
-  shallow `app/` clone, which brings only the commits between the installed
-  one and the tip; then, when the installed commit is an ancestor of the tip,
-  `git rev-list --count` and `git log` for the changelog, otherwise `behind`
-  is `null`: "an update, count unknown". `--depth` on the fetch is avoided on
-  purpose; it re-measures from the tip and can pull the whole history. No
-  GitHub compare API: an unknown count is shown as such.
+  `domo update --check --json`, which reads `<feed>/latest/download/manifest.json`.
+  The feed is `https://github.com/andresberrios/domo-releases/releases`, or
+  `DOMO_FEED` (environment, `.env`, or `state.json`, where `domo install`
+  keeps the one it was given). `behind` is the number of commits in the
+  releases between the installed one and the newest, from the manifest's
+  history; `null` is "an update, count unknown": the installed release is
+  older than the history, or was built from git (below).
 - The result is one row of the synced table `app_update` (`REPLICA IDENTITY
   FULL`, written once per check or state change): see `AppUpdate` in
-  `shared/types`. The UI renders only this row. A failed fetch leaves
-  `behind` as it was and records the error; it never writes zero.
-- **Channel** is a branch name, default `release`. Deploying from the dev
-  checkout is then `git push origin main:release`, and the installed Domo
-  picks it up within the hour. Anyone else installs on `release` and gets
-  what was pushed there; `main` is available for the brave. The channel is
-  a setting whose default is what the installer was given (`DOMO_CHANNEL`,
-  kept in `state.json` and passed to the server by the launcher).
+  `shared/types`. Its `installedCommit` and `targetCommit` hold release
+  versions; `shared/releases.ts` shows a commit short and a version whole.
+  The UI renders only this row. A failed check leaves `behind` as it was and
+  records the error; it never writes zero.
+- There is one feed and no channel: `--channel` is still accepted from a
+  server that passes it, and ignored.
 
 Settings, in `AppSettings.updates`, with a card at Settings → Updates:
 
 ```
 updates: {
-  channel: 'release',
   checkIntervalMinutes: 60,
   autoApply: false,
   minHoursBetweenApplies: 1
 }
 ```
 
-`app/pages/settings/updates.vue` shows the installed commit and date, the
+`app/pages/settings/updates.vue` shows the installed version and date, the
 state, the changelog, "Check now", "Update now" (or "Restart now" once a
-build is waiting), the auto-apply switch and the two intervals, and the last
-error. `UpdateBadge.vue` in the sidebar footer shows "3 commits behind" and
-links there. Both read `useAppUpdate()`.
+release is waiting), the auto-apply switch and the two intervals, and the
+last error. `UpdateBadge.vue` in the sidebar footer shows "3 commits behind"
+and links there. Both read `useAppUpdate()`.
 
 ## Applying an update
 
 Applying is a job run by **a detached updater process**,
 `domo update --no-restart`, the same file as the supervisor with a different
 subcommand. The server spawns it detached with its output appended to
-`logs/update.log`, keeps the row at `building`, and reads the result from the
-exit code and from where `current` points. If the server is restarted under
-it, the build goes on; the next server finds the live `update.lock` and
-watches it. Steps:
+`logs/update.log`, keeps the row at `building` (shown as downloading), and
+reads the result from the exit code and from where `current` points. If the
+server is restarted under it, the job goes on; the next server finds the live
+`update.lock` and watches it. Steps:
 
 1. Take `~/.domo/update.lock` holding the updater's pid. A lock whose pid is
    dead is stale and taken over. No expiry by time.
-2. `git fetch origin <channel>` in `app/`, which is never checked out or
-   edited, so there is nothing to stash and nothing to merge. If
-   `releases/<sha>/build.json` exists, skip to step 5; a worktree without it
-   did not finish and is removed and built again.
-3. `git worktree add --detach releases/<sha> <sha>`, then
-   `pnpm install --frozen-lockfile` and `pnpm build` inside it with the
-   bundled Node and pnpm, then write `build.json` (`commit`, `builtAt`,
-   `nodeVersion`, `subject`).
-4. Smoke test: start the release on a spare port with
+2. Read the manifest. If `releases/<version>/build.json` exists, skip to
+   step 4.
+3. Stream this platform's tarball into `releases/.download-*`, hashing it on
+   the way; a sha256 that differs from the manifest's stops here. Unpack it
+   beside the download and rename it to `releases/<version>` whole, so a
+   release directory with `build.json` is always complete.
+4. Bring the tools the release's `.tool-versions` names (`ensureTools`: Node
+   by swapping the directory, Caddy, `uv`), so a release moves any of them,
+   and the agents its lockfile pins, when no earlier release installed them
+   (`ensureAgents`, above). An ordinary update downloads only the app.
+5. Smoke test: start the release on a spare port with
    `DATABASE_URL=postgresql://127.0.0.1:1/none` and `ELECTRIC_URL` likewise, and
    require `GET /` to answer within thirty seconds. This proves the bundle
    loads and serves without ever touching the real database (a real boot
-   marks every session stopped).
-5. Point `previous` at the old `current` and `current` at the new release,
-   delete every other release, and exit. The server, seeing `current` differ
-   from its own commit, marks the row `ready` and waits for a quiet moment
-   (see below); then it writes `restart-requested`, marks `restarting`, and
-   sends itself SIGTERM, which runs Nitro's close hooks. The supervisor does
-   the rest, including rollback. On any failure before step 5 the unfinished
-   worktree is removed and the running release is untouched.
+   marks every session stopped). A release that fails is deleted, so the
+   next attempt downloads it again.
+6. Point `previous` at the old `current` and `current` at the new release,
+   delete every other release and the agents' installs neither pins, replace
+   the launcher if the release's differs, and exit. The server, seeing `current` differ from its own
+   release, marks the row `ready` and waits for a quiet moment (see below);
+   then it writes `restart-requested`, marks `restarting`, and sends itself
+   SIGTERM, which runs Nitro's close hooks. The supervisor does the rest,
+   including rollback. On any failure before this step the running release
+   is untouched.
 
 **A quiet moment** means all of these, checked by the server, which is the
 only process that knows:
@@ -173,42 +244,54 @@ it, and says that it interrupts whatever is running.
 
 **Auto-apply** (`shouldAutoApply()`, pure and unit-tested) starts the same
 path when the check finds the setting on, something new that is not the
-target that just failed, no build or restart in progress, and the last
-switch more than `minHoursBetweenApplies` ago. Building runs while agents
+target that just failed, no update or restart in progress, and the last
+switch more than `minHoursBetweenApplies` ago. Downloading runs while agents
 work, since it touches nothing they use; only the restart waits.
 
 **Rollback** is the supervisor's: a release that does not come up within
 sixty seconds of starting is swapped back for `previous`.
 
+### Installs that were built from git
+
+Before releases, an install was a shallow clone in `~/.domo/app` and each
+release a git worktree of it, built on the machine. Such an install moves
+onto releases by itself: its old launcher takes the commit that brought this
+launcher from `release` as an ordinary update, builds and switches to it,
+and copies the new launcher into `bin/`. From then on its checks read the
+feed. A release built from git has a `.git` file; it always counts as
+behind, even against the release of its own commit, so the next update
+downloads that release. The git-built one stays as `previous` for rollback;
+the update after that prunes it, and with no release left that came from
+git, `app/` is removed. A git-built release has its own `node_modules` and
+no `agents/`, so it pins no agents' install. `.env`, `data/` and the
+database are never touched.
+Running the install one-liner over such an install does the same at once.
+
 ## Installing
 
-`scripts/install.sh` in the repo, fetched from its raw GitHub URL and run as
-`curl -fsSL … | sh`:
+`install.sh`, published with each release and run as
+`curl -fsSL https://github.com/andresberrios/domo-releases/releases/latest/download/install.sh | sh`:
 
 1. Check for `docker` (running), `curl`, `tar` and a supported
-   platform (macOS arm64/x64, Linux x64/arm64). Stop with one line saying
-   what is missing. Then make sure of git (next section).
-2. `git clone --depth 1 --branch release` into `~/.domo/app`. (git ignores
-   `--depth` for a plain local path, so a test against a local checkout
-   names it as `file:///…`.)
-3. Download the Node named in the checkout's `.tool-versions` into
-   `~/.domo/node`: the launcher runs on it. The launcher then brings pnpm,
-   Caddy and `uv` at the versions the same file names (`ensureTools`), on
-   install and before every build, so a release moves any of them — Node
-   included, by swapping the directory — by editing that one file.
-4. Hand over to `domo install`, which writes no `.env` (the launcher's
-   defaults are all an install needs), runs `domo update --force --no-restart` to build and place the
-   first release, installs the launchd or systemd unit, starts it, runs
-   `caddy trust` against the running server's admin socket (`~/.domo/caddy.sock`;
-   `caddy trust` asks a running server for its root certificate, so it cannot
-   go before the start) and opens the browser. `--no-service` stops after the
-   build, for running `domo run` under a supervisor of one's own.
+   platform (macOS arm64/x64, Linux x64/arm64 with glibc). Stop with one
+   line saying what is missing. Then make sure of git (next section).
+2. Read the newest manifest; download the Node it names into `~/.domo/node`
+   and the launcher into `~/.domo/bin`, checked against `launcherSha256`.
+3. Hand over to `domo install`, which writes no `.env` (the launcher's
+   defaults are all an install needs), keeps `DOMO_FEED` in `state.json` if
+   one was given, runs `domo update --force --no-restart` to download and
+   place the first release, installs the launchd or systemd unit, starts it,
+   runs `caddy trust` against the running server's admin socket
+   (`~/.domo/caddy.sock`; `caddy trust` asks a running server for its root
+   certificate, so it cannot go before the start) and opens the browser.
+   `--no-service` stops after placing the release, for running `domo run`
+   under a supervisor of one's own.
 
 ### When the machine has no git
 
-The installer needs git before anything else (it clones Domo), and so do the
-server (worktrees, project creation) and all three coding agents, which run
-`git` from the PATH.
+Domo itself is downloaded, but the server (worktrees, project creation) and
+all three coding agents run `git` from the PATH, so the installer makes sure
+of it first.
 
 - **macOS**: `/usr/bin/git` always exists, but without the Command Line Tools
   it is a stub that opens their installer and fails, so the check is
@@ -222,7 +305,7 @@ server (worktrees, project creation) and all three coding agents, which run
   through sudo when not root.
 
 `domo` subcommands: `run` (the supervisor), `start`, `stop`, `restart`,
-`status`, `trust`, `logs`, `update [--check] [--json] [--channel …] [--force]
+`status`, `trust`, `logs`, `update [--check] [--json] [--force]
 [--no-restart]`, `install`, `uninstall`. One plain `.mjs` file at
 `bin/domo.mjs`, so it needs no build step and runs on the bundled Node.
 
@@ -231,7 +314,7 @@ server (worktrees, project creation) and all three coding agents, which run
 The installed Domo gets its own stack and a copy of the data. It never runs
 on the development stack, whose Postgres is the one `pnpm test` uses.
 
-1. Install (`scripts/install.sh`). The first start creates the schema in the
+1. Install (the one-liner in the README). The first start creates the schema in the
    empty `domo-prod` database.
 2. `domo stop`, stop prod's Electric, and copy the data over:
    ```sh
@@ -246,15 +329,20 @@ on the development stack, whose Postgres is the one `pnpm test` uses.
 3. Stop `pnpm dev` for good, and `domo start`. An install needs no `.env`;
    if `~/.domo/.env` sets `NUXT_DATA_DIR`, it must point at `~/.domo/data`. The checkout becomes a
    development checkout only: merge freely, run tests, work in environments.
-   Deploy by pushing `release`. For an in-browser check of unmerged work, use
-   the scratch recipe below.
+   Release with `pnpm release:publish`, and the install picks it up within
+   the hour. For an in-browser check of unmerged work, use the scratch
+   recipe below.
 
 ## Testing a change to any of this
 
-Install the branch into a scratch home against a scratch stack, so the real
-`domo` database and the real service are never touched:
+Build a release of the branch, serve it as a feed, and install it into a
+scratch home against a scratch stack, so the real `domo` database and the
+real service are never touched:
 
 ```sh
+node scripts/release.mjs build --out /tmp/domo-dist
+node scripts/release.mjs manifest --out /tmp/domo-dist
+node scripts/release.mjs serve --out /tmp/domo-dist --port 8765 &
 COMPOSE_PROJECT_NAME=domo-inst DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
   docker compose -f docker-compose.prod.yml up -d
 mkdir -p /tmp/domo-home && printf '%s\n' \
@@ -263,29 +351,33 @@ mkdir -p /tmp/domo-home && printf '%s\n' \
   DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010 \
   DOMO_PORT=3867 DOMO_HTTPS_ADDRESS=localhost:3866 \
   NUXT_DEV_ENV_RESOURCE_PREFIX=domo-inst- > /tmp/domo-home/.env
-DOMO_HOME=/tmp/domo-home DOMO_REPO=file://$PWD DOMO_CHANNEL=<branch> \
+DOMO_HOME=/tmp/domo-home DOMO_FEED=http://localhost:8765 \
   DOMO_INSTALL_ARGS="--skip-trust --no-open" sh scripts/install.sh
 ```
 
-Then open `https://localhost:3866`, commit to the branch, and watch Settings →
-Updates. Afterwards `DOMO_HOME=/tmp/domo-home /tmp/domo-home/bin/domo uninstall`,
-`docker compose -p domo-inst down -v`, and remove `/tmp/domo-home`. The
-launchd label is `com.domo.app` whichever home is used, so the scratch
-service and a real one cannot run at the same time.
+Then open `https://localhost:3866`. For an update, commit, build and
+`manifest --previous` the old `manifest.json` into a new directory, serve
+that, and watch Settings → Updates. Afterwards
+`DOMO_HOME=/tmp/domo-home /tmp/domo-home/bin/domo uninstall`,
+`docker compose -p domo-inst down -v`, and remove `/tmp/domo-home`. A home
+other than `~/.domo` gets a service of its own (`com.domo.app.<hash of its
+path>`, `domo-<hash>.service`), so the scratch one runs beside the real one.
+To test the move from
+git, install `main`'s `scripts/install.sh` first with `DOMO_REPO` set to a
+bare clone (`file:///…`) whose `release` is the old commit, then push the
+branch to that `release`.
 
 For Linux, `test/helpers/install-linux.sh` runs the same install with
 `--no-service` and `domo run` in a Debian container with the host's Docker
-socket, cloning from a bare copy of the branch (a worktree's `.git` is a
-pointer the container cannot follow):
+socket, from a feed served on the host:
 
 ```sh
-git clone --bare . /tmp/domo-src.git
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/src:ro \
-  -v /tmp/domo-src.git:/repo.git:ro -v $PWD/test/helpers/install-linux.sh:/test.sh:ro \
-  --add-host host.docker.internal:host-gateway debian:bookworm-slim sh /test.sh <branch>
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $PWD/test/helpers/install-linux.sh:/test.sh:ro -v $PWD/scripts/install.sh:/install.sh:ro \
+  --add-host host.docker.internal:host-gateway debian:bookworm-slim sh /test.sh http://host.docker.internal:8765
 ```
 
-It proves the downloads, the build, the supervisor, the update check and
+It proves the downloads, the checksums, the supervisor, the update check and
 creating a project on Linux; the systemd unit itself is not exercised, since
 a container has no systemd. The image has no git, so it also proves the
 installer installs Debian's.

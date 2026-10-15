@@ -53,7 +53,12 @@ describe('installInfo', () => {
     expect(installInfo({}, dir)).toBeNull()
   })
 
-  it('reads the release it runs from', async () => {
+  it('reads the release it runs from, by its version', async () => {
+    await writeFile(join(dir, 'build.json'), JSON.stringify({ version: '2026.10.15-abc1234', commit: 'abc', builtAt: '2026-10-02T00:00:00Z' }))
+    expect(installInfo({ DOMO_HOME: '/x' }, dir)).toEqual({ home: '/x', commit: '2026.10.15-abc1234', builtAt: '2026-10-02T00:00:00Z' })
+  })
+
+  it('reads a release an older launcher built from git, by its commit', async () => {
     await writeFile(join(dir, 'build.json'), JSON.stringify({ commit: 'abc', builtAt: '2026-10-02T00:00:00Z' }))
     expect(installInfo({ DOMO_HOME: '/x' }, dir)).toEqual({ home: '/x', commit: 'abc', builtAt: '2026-10-02T00:00:00Z' })
   })

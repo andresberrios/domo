@@ -1,4 +1,5 @@
 import { query } from './db'
+import { defaultWorkDir, insideOwnInstall } from './paths'
 import { DEFAULT_HOME_MOUNTS } from './dev-env/home-overlay'
 import { AGENT_ADAPTERS, isAgentAdapter } from '../../shared/agent-adapters'
 import { DEFAULT_AGENT_VOICE, isSpeaker, isToolSound, isTranscriber, isTurnDetector, normalizeVolumes } from '../../shared/agent-voice'
@@ -6,19 +7,17 @@ import { rememberSecretSettings } from './secret-settings'
 import { SECRET_SETTING_KEYS, type AgentVoiceSettings, type AppSettings, type SecretSettingKey, type SetupProgress, type SetupTarget, type UpdateSettings } from '../../shared/types'
 
 /**
- * Follow `release`, look every hour, and never switch by itself: an unasked
- * restart is the one thing an update must not do until the operator says so.
+ * Look every hour, and never switch by itself: an unasked restart is the one
+ * thing an update must not do until the operator says so.
  */
 export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
-  // The launcher passes the channel the installer was given.
-  channel: process.env.DOMO_CHANNEL || 'release',
   checkIntervalMinutes: 60,
   autoApply: false,
   minHoursBetweenApplies: 1
 }
 
 export const DEFAULTS: AppSettings = {
-  defaultCwd: process.env.NUXT_DEFAULT_CWD || process.cwd(),
+  defaultCwd: defaultWorkDir(),
   defaultAssistantId: '',
   // Each adapter's own starting mode, so the default changes nothing until the
   // operator picks something: Claude Code's `default` ("Manual") and Codex's
@@ -68,6 +67,10 @@ export async function getSettings(): Promise<AppSettings> {
   const settings = {
     ...DEFAULTS,
     ...stored,
+    // Saved when the default was the release the server ran from, which an update deletes.
+    defaultCwd: typeof stored.defaultCwd === 'string' && stored.defaultCwd.trim() && !insideOwnInstall(stored.defaultCwd)
+      ? stored.defaultCwd
+      : DEFAULTS.defaultCwd,
     defaultAgentModes: storedAgentModes(stored),
     defaultAgentModels: storedAgentModels(stored),
     defaultAgentConfig: storedAgentConfig(stored),
@@ -119,7 +122,6 @@ function storedUpdates(stored: Record<string, any>): UpdateSettings {
   const updates = { ...DEFAULT_UPDATE_SETTINGS }
   const current = stored.updates
   if (!current || typeof current !== 'object') return updates
-  if (typeof current.channel === 'string' && /^[\w./-]+$/.test(current.channel.trim())) updates.channel = current.channel.trim()
   if (Number.isFinite(current.checkIntervalMinutes)) updates.checkIntervalMinutes = Math.max(5, Math.round(current.checkIntervalMinutes))
   if (typeof current.autoApply === 'boolean') updates.autoApply = current.autoApply
   if (Number.isFinite(current.minHoursBetweenApplies)) updates.minHoursBetweenApplies = Math.max(0, current.minHoursBetweenApplies)

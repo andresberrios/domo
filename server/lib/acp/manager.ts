@@ -17,7 +17,7 @@ import {
 import { browserMcpServer } from '../dev-env/browser-volume'
 import { internalBaseUrl } from '../internal-url'
 import { mintMeshToken } from '../mesh/token'
-import { normalizeCwd } from '../paths'
+import { defaultWorkDir, insideOwnInstall, normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
 import { adapterEnv, adapterLaunch } from './adapter-process'
 import { copilotMcpConfig, copilotModels, withCopilotModels } from './copilot'
@@ -878,6 +878,16 @@ class AgentRuntime {
     // session whose directory has been deleted used to have it silently
     // recreated, empty, and the agent would work in it — creating the directory
     // belongs to `create()`, where somebody actually asked for it.
+    //
+    // A host session working inside Domo's own install (a release, which an
+    // update deletes; the default directory once was the release) moves to the
+    // default directory instead. Its transcript stays; the adapter may not find
+    // its own history there and start fresh, as after any failed load.
+    if (!session.devEnvironmentId && insideOwnInstall(session.cwd)) {
+      console.log(`[acp:${this.agentSessionId}] ${session.cwd} is inside Domo's own install; moving the session to ${defaultWorkDir()}`)
+      session.cwd = defaultWorkDir()
+      await updateAgentSession(this.agentSessionId, { cwd: session.cwd })
+    }
     const cwdPresent = session.devEnvironmentId
       ? null
       : await access(session.cwd).then(() => true, () => false)

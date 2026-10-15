@@ -8,23 +8,36 @@
 // docs/install-and-updates.md for the layout. Development uses `pnpm dev`
 // and never this file.
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
-  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+  cpSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
   renameSync, rmSync, symlinkSync, writeFileSync
 } from 'node:fs'
 import { arch, homedir, platform, tmpdir, userInfo } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 
 const HOME = resolve(process.env.DOMO_HOME || join(homedir(), '.domo'))
+/**
+ * Where releases are published: a GitHub repository's releases, read without
+ * an account. `<feed>/latest/download/manifest.json` is the newest release,
+ * `<feed>/download/v<version>/<file>` its files. DOMO_FEED, kept in
+ * `state.json` by `domo install`, points a test install at a local server.
+ */
+const DEFAULT_FEED = 'https://github.com/andresberrios/domo-releases/releases'
 const P = {
+  // The git checkout installs before 2026-10 built from. Kept only while a
+  // release built from it is still `current` or `previous`.
   app: join(HOME, 'app'),
   releases: join(HOME, 'releases'),
+  // The coding agents, one install per lockfile, shared by the releases that pin it.
+  agents: join(HOME, 'agents'),
   current: join(HOME, 'current'),
   previous: join(HOME, 'previous'),
   nodeDir: join(HOME, 'node'),
   node: join(HOME, 'node', 'bin', 'node'),
-  pnpm: join(HOME, 'bin', 'pnpm'),
   caddy: join(HOME, 'bin', 'caddy'),
   uv: join(HOME, 'bin', 'uv'),
   caddySocket: join(HOME, 'caddy.sock'),
@@ -49,7 +62,15 @@ const P = {
  * asks with the `restart-requested` file instead and stops normally.
  */
 export const RESTART_EXIT_CODE = 75
-const SERVICE_LABEL = 'com.domo.app'
+/**
+ * The login service's name. launchd and systemd are per user, not per home,
+ * so an install in any home but the default one gets its own name, from its
+ * path: a test install's `install`, `stop` or `uninstall` never reaches the
+ * real one's service.
+ */
+const SERVICE_SUFFIX = HOME === resolve(homedir(), '.domo') ? '' : createHash('sha256').update(HOME).digest('hex').slice(0, 8)
+const SERVICE_LABEL = SERVICE_SUFFIX ? `com.domo.app.${SERVICE_SUFFIX}` : 'com.domo.app'
+const SYSTEMD_UNIT = SERVICE_SUFFIX ? `domo-${SERVICE_SUFFIX}` : 'domo'
 const HEALTH_TIMEOUT_MS = 60_000
 
 // --------------------------------------------------------------------------
@@ -153,9 +174,6 @@ function serverEnv() {
   env.DATABASE_URL ||= 'postgresql://postgres:password@localhost:54322/domo'
   env.ELECTRIC_URL ||= 'http://localhost:30002'
   env.NODE_ENV = 'production'
-  // What the installer was told to follow, which is the server's default
-  // channel until Settings says otherwise.
-  env.DOMO_CHANNEL ||= readState().channel
   // Nitro waits this long for open connections on SIGTERM. Electric's shape
   // long-polls are always open, so the default thirty seconds is a restart
   // that takes thirty seconds; the browser reconnects anyway.
@@ -163,16 +181,36 @@ function serverEnv() {
   return env
 }
 
-function currentRelease() {
+/** Where a release link points, or null. */
+function linked(link) {
   try {
-    return realpathSync(P.current)
+    return realpathSync(link)
   } catch {
     return null
   }
 }
 
+function currentRelease() {
+  return linked(P.current)
+}
+
 function releaseInfo(dir) {
   return dir ? readJson(join(dir, 'build.json'), { commit: basename(dir) }) : null
+}
+
+/** A release's name: its version, or the commit of one built from a git checkout. */
+function releaseId(info) {
+  return info ? (info.version ?? info.commit) : null
+}
+
+/** A commit is shown short; a version as it is. */
+function label(id) {
+  return /^[0-9a-f]{40}$/.test(id ?? '') ? id.slice(0, 7) : id
+}
+
+/** Built from the git checkout by an earlier launcher: a worktree, so it has a `.git` file. */
+function isCheckoutRelease(dir) {
+  return existsSync(join(dir, '.git'))
 }
 
 /** Point `link` at `target` atomically: a symlink that is never missing. */
@@ -190,14 +228,6 @@ function git(args, options = {}) {
     throw new Error(`git ${args.join(' ')}: ${(result.stderr || result.stdout || '').trim() || `exit ${result.status}`}`)
   }
   return result.stdout.trim()
-}
-
-function runStreaming(command, args, options) {
-  return new Promise((done, reject) => {
-    const child = spawn(command, args, { stdio: 'inherit', ...options })
-    child.on('error', reject)
-    child.on('exit', code => (code === 0 ? done() : reject(new Error(`${basename(command)} ${args.join(' ')} exited ${code}`))))
-  })
 }
 
 /**
@@ -222,7 +252,7 @@ async function healthy(env, timeoutMs, abort = () => false) {
 }
 
 // --------------------------------------------------------------------------
-// The bundled tools: Node, pnpm, Caddy and uv at the versions a checkout's
+// The bundled tools: Node, Caddy and uv at the versions a release's
 // `.tool-versions` names, so a release can move any of them.
 // --------------------------------------------------------------------------
 
@@ -241,10 +271,20 @@ function installedVersion(file, args, pattern) {
   return result.status === 0 ? (result.stdout.match(pattern)?.[1] ?? null) : null
 }
 
-async function download(url, file) {
+/** Stream `url` into `file`; with `sha256`, fail unless the bytes match it. */
+async function download(url, file, sha256 = null) {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`${url}: ${response.status}`)
-  writeFileSync(file, Buffer.from(await response.arrayBuffer()))
+  if (!response.ok || !response.body) throw new Error(`${url}: ${response.status}`)
+  const hash = createHash('sha256')
+  const tap = new Transform({
+    transform(chunk, _encoding, done) {
+      hash.update(chunk)
+      done(null, chunk)
+    }
+  })
+  await pipeline(Readable.fromWeb(response.body), tap, createWriteStream(file))
+  const actual = hash.digest('hex')
+  if (sha256 && actual !== sha256) throw new Error(`${basename(file)} does not match its checksum (expected ${sha256}, got ${actual}); not installing it`)
 }
 
 function untar(file, dir, ...args) {
@@ -278,17 +318,6 @@ async function ensureTools(dir) {
       if (existsSync(P.nodeDir)) renameSync(P.nodeDir, old)
       renameSync(fresh, P.nodeDir)
       rmSync(old, { recursive: true, force: true })
-    }
-    if (wanted.pnpm && installedVersion(P.pnpm, ['-v'], /(\S+)/) !== wanted.pnpm) {
-      log(`downloading pnpm ${wanted.pnpm}`)
-      const tgz = join(tmp, 'pnpm.tgz')
-      await download(`https://github.com/pnpm/pnpm/releases/download/v${wanted.pnpm}/pnpm-${os}-${cpu}.tar.gz`, tgz)
-      const into = join(tmp, 'pnpm')
-      mkdirSync(into)
-      untar(tgz, into)
-      const binary = readdirSync(into).find(name => name.startsWith('pnpm'))
-      if (!binary) throw new Error('the pnpm archive holds no pnpm binary')
-      cpSync(join(into, binary), P.pnpm)
     }
     if (wanted.caddy && installedVersion(P.caddy, ['version'], /v?(\d+\.\d+\.\d+)/) !== wanted.caddy) {
       log(`downloading Caddy ${wanted.caddy}`)
@@ -379,7 +408,7 @@ async function run() {
     env = serverEnv()
     const release = currentRelease()
     const info = releaseInfo(release)
-    log(`starting ${basename(release)} (${info?.commit?.slice(0, 7) ?? '?'}, built ${info?.builtAt ?? '?'})`)
+    log(`starting ${label(releaseId(info)) ?? '?'} (built ${info?.builtAt ?? '?'})`)
     const candidate = restartRequested
     restartRequested = false
     const child = spawn(P.node, [join(release, '.output', 'server', 'index.mjs')], { env, stdio: 'inherit', cwd: release })
@@ -456,7 +485,7 @@ function servicePaths() {
   if (platform() === 'darwin') {
     return { kind: 'launchd', file: join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`), domain: `gui/${userInfo().uid}` }
   }
-  return { kind: 'systemd', file: join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', 'domo.service') }
+  return { kind: 'systemd', file: join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', `${SYSTEMD_UNIT}.service`) }
 }
 
 function writeService() {
@@ -522,7 +551,7 @@ function serviceStart() {
     if (!result.ok) fail(`launchctl bootstrap: ${result.err}`)
   } else {
     sh('systemctl', ['--user', 'daemon-reload'])
-    const result = sh('systemctl', ['--user', 'enable', '--now', 'domo'])
+    const result = sh('systemctl', ['--user', 'enable', '--now', SYSTEMD_UNIT])
     if (!result.ok) fail(`systemctl: ${result.err}`)
   }
   log(`service started (${service.kind})`)
@@ -531,7 +560,7 @@ function serviceStart() {
 function serviceStop() {
   const service = servicePaths()
   if (service.kind === 'launchd') sh('launchctl', ['bootout', `${service.domain}/${SERVICE_LABEL}`])
-  else sh('systemctl', ['--user', 'stop', 'domo'])
+  else sh('systemctl', ['--user', 'stop', SYSTEMD_UNIT])
   const pid = supervisorPid()
   if (pid) process.kill(pid, 'SIGTERM')
   log('service stopped')
@@ -540,10 +569,11 @@ function serviceStop() {
 function serviceUninstall() {
   serviceStop()
   const service = servicePaths()
-  if (service.kind === 'systemd') sh('systemctl', ['--user', 'disable', 'domo'])
+  if (service.kind === 'systemd') sh('systemctl', ['--user', 'disable', SYSTEMD_UNIT])
   rmSync(service.file, { force: true })
   if (service.kind === 'systemd') sh('systemctl', ['--user', 'daemon-reload'])
-  console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p domo-prod down\` stops them, add \`-v\` to delete the database.`)
+  const project = { ...readDotenv(), ...process.env }.COMPOSE_PROJECT_NAME || 'domo-prod'
+  console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p ${project} down\` stops them, add \`-v\` to delete the database.`)
 }
 
 function supervisorPid() {
@@ -568,8 +598,8 @@ async function status() {
   const pid = supervisorPid()
   const ok = release && pid ? await healthy(env, 2500) : false
   console.log(`home       ${HOME}`)
-  console.log(`release    ${release ? `${basename(release)} (built ${info?.builtAt ?? '?'})` : 'none'}`)
-  console.log(`channel    ${readState().channel}`)
+  console.log(`release    ${release ? `${label(releaseId(info))} (built ${info?.builtAt ?? '?'})` : 'none'}`)
+  console.log(`feed       ${feed()}`)
   console.log(`supervisor ${pid ? `running (pid ${pid})` : 'not running'}`)
   console.log(`server     ${ok ? `answering at https://${env.DOMO_HTTPS_ADDRESS}` : 'not answering'}`)
   const failed = readJson(P.updateFailed)
@@ -587,7 +617,7 @@ function logs() {
 // --------------------------------------------------------------------------
 
 function readState() {
-  return { channel: 'release', ...readJson(P.state, {}) }
+  return readJson(P.state, {})
 }
 
 function writeState(patch) {
@@ -604,80 +634,246 @@ function takeUpdateLock() {
   return release
 }
 
-/**
- * The clone is shallow (`--depth 1` at install) and stays so: a plain fetch
- * brings only what is new between the installed commit and the channel's
- * tip, which is exactly the history the count needs. (`--depth` on the fetch
- * would be the wrong tool: it re-measures from the tip and, over some
- * transports, pulls the whole history.) The refspec is explicit because a
- * single-branch clone's default refspec names only the branch it was made
- * from, and the channel is a setting that can change.
- */
-function fetchChannel(channel) {
-  git(['fetch', '--quiet', 'origin', `+refs/heads/${channel}:refs/remotes/origin/${channel}`], { timeout: 120_000 })
-  return git(['rev-parse', `origin/${channel}`])
+function feed() {
+  return (process.env.DOMO_FEED || readDotenv().DOMO_FEED || readState().feed || DEFAULT_FEED).replace(/\/+$/, '')
 }
 
-function updateCheck(channel) {
-  const target = fetchChannel(channel)
-  const installed = releaseInfo(currentRelease())?.commit ?? git(['rev-parse', 'HEAD'])
-  if (installed === target) return { installed, target, behind: 0, commits: [] }
-  const countable = git(['merge-base', '--is-ancestor', installed, target], { lenient: true }) !== null
-  // Not an ancestor: the branch was rewritten, or the installed commit is
-  // older than the clone's history. "An update, count unknown", never a number.
-  if (!countable) return { installed, target, behind: null, commits: [] }
-  const behind = Number(git(['rev-list', '--count', `${installed}..${target}`]))
-  const commits = git(['log', '--format=%H%x1f%s%x1f%aI', `${installed}..${target}`])
-    .split('\n').filter(Boolean)
-    .map((line) => {
-      const [sha, subject, date] = line.split('\x1f')
-      return { sha, subject, date }
-    })
-  return { installed, target, behind, commits }
+function platformKey() {
+  return `${platform() === 'darwin' ? 'darwin' : 'linux'}-${arch() === 'arm64' ? 'arm64' : 'x64'}`
+}
+
+/** The newest release: its version, a build per platform, and the releases before it with their commits. */
+async function fetchManifest() {
+  const url = `${feed()}/latest/download/manifest.json`
+  const response = await fetch(url, { signal: AbortSignal.timeout(60_000) })
+  if (!response.ok) throw new Error(`${url}: ${response.status}`)
+  const manifest = await response.json()
+  if (manifest?.schema !== 1 || typeof manifest.version !== 'string') throw new Error(`${url} is not a Domo release manifest`)
+  return manifest
 }
 
 /**
- * Build `commit` into releases/<commit>: a git worktree of the checkout at
- * that commit, with its own `node_modules` and `.output`. The server runs
- * from the worktree, so the native adapter binaries (Claude Code, Codex,
- * OpenCode) resolve from a full install, which Nitro's tracing does not
- * carry, and `pnpm` hard-links every package from one store, so a second
- * release costs little disk. A worktree without `build.json` did not finish
- * and is built again.
+ * Where the install stands against the newest release. `behind` counts the
+ * commits of the releases in between, from the manifest's history; null is
+ * "an update, count unknown": the installed one is older than the history, or
+ * it was built from git, which always moves onto a release, even of its own
+ * commit.
  */
-async function buildRelease(commit, env) {
-  const dir = join(P.releases, commit)
+async function updateCheck() {
+  const manifest = await fetchManifest()
+  const release = currentRelease()
+  const info = releaseInfo(release)
+  const installed = releaseId(info)
+  const fromCheckout = Boolean(release && isCheckoutRelease(release))
+  const result = { installed, target: manifest.version, behind: 0, commits: [], manifest }
+  if (installed === manifest.version && !fromCheckout) return result
+  const history = Array.isArray(manifest.history) ? manifest.history : []
+  const at = history.findIndex(entry => entry.version === installed || (fromCheckout && entry.commit === info.commit))
+  const newer = at >= 0 ? history.slice(0, at) : []
+  result.commits = newer.flatMap(entry => entry.commits ?? [])
+  result.behind = result.commits.length || null
+  return result
+}
+
+/**
+ * Download the manifest's build for this platform into releases/<version>,
+ * check it against the manifest's checksum, and unpack it beside the running
+ * one. It is renamed into place whole, so a release directory with
+ * `build.json` is always complete.
+ */
+async function fetchRelease(manifest) {
+  const dir = join(P.releases, manifest.version)
   if (existsSync(join(dir, 'build.json'))) {
-    log(`release ${commit.slice(0, 7)} is already built`)
+    log(`release ${manifest.version} is already downloaded`)
     return dir
   }
+  const artifact = manifest.artifacts?.[platformKey()]
+  if (!artifact) throw new Error(`release ${manifest.version} has no build for ${platformKey()}`)
   mkdirSync(P.releases, { recursive: true })
-  removeRelease(dir)
-
-  log(`checking out ${commit.slice(0, 7)}`)
-  git(['worktree', 'add', '--quiet', '--detach', dir, commit])
-  await ensureTools(dir)
-  const buildEnv = { ...env, CI: '1', COREPACK_ENABLE_STRICT: '0' }
-  delete buildEnv.NODE_ENV
-  log('pnpm install --frozen-lockfile')
-  await runStreaming(P.pnpm, ['install', '--frozen-lockfile'], { cwd: dir, env: buildEnv })
-  log('pnpm build')
-  await runStreaming(P.pnpm, ['build'], { cwd: dir, env: buildEnv })
-
-  writeJson(join(dir, 'build.json'), {
-    commit,
-    builtAt: new Date().toISOString(),
-    nodeVersion: process.version,
-    subject: git(['log', '-1', '--format=%s', commit])
-  })
-  return dir
+  const tmp = mkdtempSync(join(P.releases, '.download-'))
+  try {
+    const file = join(tmp, artifact.file)
+    log(`downloading ${artifact.file} (${Math.round(artifact.size / 1e6)} MB)`)
+    await download(`${feed()}/download/v${manifest.version}/${artifact.file}`, file, artifact.sha256)
+    const into = join(tmp, 'release')
+    mkdirSync(into)
+    untar(file, into, '--strip-components=1')
+    if (!existsSync(join(into, 'build.json'))) throw new Error(`${artifact.file} holds no build.json`)
+    removeRelease(dir)
+    renameSync(into, dir)
+    return dir
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 }
 
 function removeRelease(dir) {
   if (!existsSync(dir)) return
-  git(['worktree', 'remove', '--force', dir], { lenient: true })
+  const worktree = isCheckoutRelease(dir) && existsSync(P.app)
+  if (worktree) git(['worktree', 'remove', '--force', dir], { lenient: true })
   rmSync(dir, { recursive: true, force: true })
-  git(['worktree', 'prune'], { lenient: true })
+  if (worktree) git(['worktree', 'prune'], { lenient: true })
+}
+
+/** The git checkout of an older install, once no release kept for rollback was built from it. */
+function forgetCheckout() {
+  if (!existsSync(P.app)) return
+  if (readdirSync(P.releases).some(name => isCheckoutRelease(join(P.releases, name)))) return
+  log(`removing ${P.app}: releases are downloaded now, not built from git`)
+  rmSync(P.app, { recursive: true, force: true })
+}
+
+// --------------------------------------------------------------------------
+// The coding agents: installed apart from the app, since they are most of the
+// weight and change far less often. A release carries only their pins
+// (`agents/package.json` and its lockfile); every release that pins the same
+// ones shares one install, `agents/<the lockfile's hash>`, which the release's
+// `node_modules` links to and the server resolves the adapters through.
+// --------------------------------------------------------------------------
+
+/** The name of the agents' install a release pins, or null for one that carries its own (built from git). */
+function agentsKey(dir) {
+  const lock = join(dir, 'agents', 'package-lock.json')
+  return existsSync(lock) ? createHash('sha256').update(readFileSync(lock)).digest('hex').slice(0, 16) : null
+}
+
+function runStep(command, args, options) {
+  return new Promise((done, reject) => {
+    const child = spawn(command, args, { stdio: 'inherit', ...options })
+    child.on('error', reject)
+    child.on('exit', code => (code === 0 ? done() : reject(new Error(`${basename(command)} ${args.slice(0, 2).join(' ')} exited ${code}`))))
+  })
+}
+
+/**
+ * Install the agents `dir` pins, unless an earlier release already did, and
+ * link the release's `node_modules` to them. `npm ci` from the lockfile, with
+ * the bundled Node's npm: every package is checked against the lockfile's
+ * integrity hash, and the lockfile came in the checked tarball. No package's
+ * install script runs but OpenCode's, which places its binary for this
+ * machine. Built beside and renamed into place, then each agent is started
+ * once, so an install directory with `.installed` is always whole.
+ */
+async function ensureAgents(dir) {
+  const key = agentsKey(dir)
+  if (!key) return
+  const target = join(P.agents, key)
+  if (!existsSync(join(target, '.installed'))) {
+    log(`installing the coding agents (${key}); this downloads them once, not on every update`)
+    mkdirSync(P.agents, { recursive: true })
+    const tmp = mkdtempSync(join(P.agents, '.install-'))
+    try {
+      for (const file of ['package.json', 'package-lock.json']) cpSync(join(dir, 'agents', file), join(tmp, file))
+      const env = { ...process.env, PATH: `${dirname(P.node)}:${process.env.PATH || '/usr/bin:/bin'}`, npm_config_update_notifier: 'false' }
+      const npm = join(P.nodeDir, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      await runStep(P.node, [npm, 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--cache', join(tmp, '.npm')], { cwd: tmp, env })
+      rmSync(join(tmp, '.npm'), { recursive: true, force: true })
+      const opencode = join(tmp, 'node_modules', '@opencode', 'cli')
+      if (existsSync(join(opencode, 'postinstall.mjs'))) {
+        await runStep(P.node, ['postinstall.mjs'], { cwd: opencode, env })
+        // It copied its platform's binary into `bin`; the platform package is a second copy.
+        for (const name of readdirSync(dirname(opencode)).filter(n => n.startsWith('cli-'))) rmSync(join(dirname(opencode), name), { recursive: true, force: true })
+      }
+      // npm installs the musl builds beside the glibc ones (it does not read
+      // `libc`); a release runs on glibc only.
+      for (const scope of ['@anthropic-ai', '@github', '@openai']) {
+        const dir = join(tmp, 'node_modules', scope)
+        for (const name of existsSync(dir) ? readdirSync(dir).filter(n => /musl/.test(n)) : []) rmSync(join(dir, name), { recursive: true, force: true })
+      }
+      await checkAgents(tmp)
+      writeFileSync(join(tmp, '.installed'), new Date().toISOString())
+      rmSync(target, { recursive: true, force: true })
+      renameSync(tmp, target)
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+  relink(join(dir, 'node_modules'), relative(dir, join(target, 'node_modules')))
+}
+
+/**
+ * Start every agent the way the server does and wait for each to answer ACP's
+ * `initialize`, with the time each took in the log. This is the agents' first
+ * start, paid here instead of in someone's first session: Copilot unpacks its
+ * runtime (native modules, ripgrep and more) into ~/.cache/copilot on its
+ * first start, Codex's adapter starts `codex app-server`, and macOS scans each
+ * native file the first time one is loaded, which made a first check take
+ * over a minute. No session is made, so nothing lands in anyone's history.
+ * Claude Code's own binary starts only with a session, so it answers
+ * `--version` instead, as does Codex's CLI.
+ */
+async function checkAgents(dir) {
+  const os = platform() === 'darwin' ? 'darwin' : 'linux'
+  const cpu = arch() === 'arm64' ? 'arm64' : 'x64'
+  const modules = join(dir, 'node_modules')
+  for (const command of [[P.node, join(modules, '@openai', 'codex', 'bin', 'codex.js')], [join(modules, '@anthropic-ai', `claude-agent-sdk-${os}-${cpu}`, 'claude')]]) {
+    const result = spawnSync(command[0], [...command.slice(1), '--version'], { encoding: 'utf8', timeout: 300_000 })
+    if (result.status !== 0) throw new Error(`${command.at(-1)} --version failed: ${(result.stderr || result.error?.message || `exit ${result.status}`).trim().split('\n').pop()}`)
+  }
+  // As `adapterLaunch()` in server/lib/acp/adapter-process.ts starts them.
+  const adapters = {
+    'Claude Code': [P.node, join(modules, '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js')],
+    'Codex': [P.node, join(modules, '@agentclientprotocol', 'codex-acp', 'dist', 'index.js')],
+    'OpenCode': [join(modules, '@opencode', 'cli', 'bin', 'opencode.exe'), 'acp'],
+    'Copilot': [join(modules, '@github', `copilot-${os}-${cpu}`, 'copilot'), '--acp', '--no-auto-update']
+  }
+  await Promise.all(Object.entries(adapters).map(async ([name, [command, ...args]]) => {
+    const started = Date.now()
+    await acpInitialize(command, args)
+    log(`${name} started and answered in ${((Date.now() - started) / 1000).toFixed(1)}s`)
+  }))
+}
+
+/** Spawn an ACP agent, send `initialize`, and stop it once it answers. */
+function acpInitialize(command, args, timeoutMs = 300_000) {
+  return new Promise((done, reject) => {
+    const env = { ...process.env, PATH: `${dirname(P.node)}:${process.env.PATH || '/usr/bin:/bin'}` }
+    const child = spawn(command, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.kill('SIGKILL')
+      if (error) reject(error)
+      else done()
+    }
+    const timer = setTimeout(() => finish(new Error(`${basename(command)} did not answer initialize within ${timeoutMs / 1000}s`)), timeoutMs)
+    child.on('error', error => finish(error))
+    child.on('exit', code => finish(new Error(`${basename(command)} exited ${code} before answering initialize: ${err.trim().split('\n').pop() ?? ''}`)))
+    child.stderr.on('data', (data) => {
+      err = (err + data).slice(-4000)
+    })
+    child.stdout.on('data', (data) => {
+      out += data
+      for (const line of out.split('\n').slice(0, -1)) {
+        let message
+        try {
+          message = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (message?.id !== 1) continue
+        finish(message.error ? new Error(`${basename(command)} refused initialize: ${message.error.message}`) : null)
+      }
+      out = out.slice(out.lastIndexOf('\n') + 1)
+    })
+    child.stdin.on('error', () => {})
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } })}\n`)
+  })
+}
+
+/** Agents' installs no kept release pins. */
+function pruneAgents() {
+  if (!existsSync(P.agents)) return
+  const pinned = new Set(readdirSync(P.releases).map(name => agentsKey(join(P.releases, name))).filter(Boolean))
+  for (const name of readdirSync(P.agents)) {
+    if (pinned.has(name)) continue
+    log(`removing agents ${name}, which no kept release uses`)
+    rmSync(join(P.agents, name), { recursive: true, force: true })
+  }
 }
 
 /** Start the release on a spare port against no database: proves the bundle loads and serves. */
@@ -739,7 +935,7 @@ function serviceRestart() {
     const result = sh('launchctl', ['kickstart', '-k', `${service.domain}/${SERVICE_LABEL}`])
     if (!result.ok) fail(`launchctl kickstart: ${result.err}`)
   } else {
-    const result = sh('systemctl', ['--user', 'restart', 'domo'])
+    const result = sh('systemctl', ['--user', 'restart', SYSTEMD_UNIT])
     if (!result.ok) fail(`systemctl restart: ${result.err}`)
   }
   log('service restarted')
@@ -747,23 +943,19 @@ function serviceRestart() {
 
 async function update(args) {
   const checkOnly = args.includes('--check')
-  const channelFlag = args.indexOf('--channel')
-  const channel = channelFlag >= 0 ? args[channelFlag + 1] : readState().channel
-  if (!channel) fail('--channel needs a branch name')
-  if (!existsSync(join(P.app, '.git'))) fail(`${P.app} is not a git checkout; run the installer`)
-  if (channelFlag >= 0) writeState({ channel })
-
   const json = args.includes('--json')
-  const check = updateCheck(channel)
+  // `--channel` is still accepted from a server that passes it; there is one feed.
+  const check = await updateCheck()
+  const { manifest, ...summary } = check
   if (checkOnly) {
-    if (json) console.log(JSON.stringify({ channel, ...check }))
-    else if (check.behind === 0) console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
-    else if (check.behind === null) console.log(`${channel} has moved (${check.installed.slice(0, 7)} -> ${check.target.slice(0, 7)}); the commits between cannot be counted`)
-    else console.log(`${check.behind} commit${check.behind === 1 ? '' : 's'} behind ${channel}:\n  ${check.commits.map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n  ')}`)
+    if (json) console.log(JSON.stringify({ channel: 'release', ...summary }))
+    else if (check.behind === 0) console.log(`up to date (${label(check.installed)})`)
+    else if (check.behind === null) console.log(`${check.target} is out (installed: ${label(check.installed) ?? 'nothing'})`)
+    else console.log(`${check.target} is out, ${check.behind} commit${check.behind === 1 ? '' : 's'} newer:\n  ${check.commits.map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n  ')}`)
     return
   }
   if (check.behind === 0 && !args.includes('--force') && currentRelease()) {
-    console.log(`up to date with ${channel} (${check.installed.slice(0, 7)})`)
+    console.log(`up to date (${label(check.installed)})`)
     return
   }
 
@@ -772,15 +964,25 @@ async function update(args) {
   const started = Date.now()
   try {
     rmSync(P.updateFailed, { force: true })
-    const dir = await buildRelease(check.target, env)
-    await smokeTest(dir, env)
+    const dir = await fetchRelease(manifest)
     const old = currentRelease()
-    if (old && old !== dir) relink(P.previous, old)
+    try {
+      await ensureTools(dir)
+      await ensureAgents(dir)
+      await smokeTest(dir, env)
+    } catch (error) {
+      // Not kept: the next attempt downloads it again rather than trust it.
+      if (![old, linked(P.previous)].includes(realpathSync(dir))) removeRelease(dir)
+      throw error
+    }
+    if (old && old !== realpathSync(dir)) relink(P.previous, old)
     relink(P.current, dir)
-    writeState({ channel, lastAppliedAt: new Date().toISOString() })
+    writeState({ lastAppliedAt: new Date().toISOString() })
     pruneReleases([dir, old].filter(Boolean))
+    pruneAgents()
+    forgetCheckout()
     const launcherChanged = refreshLauncher(dir)
-    log(`current is now ${check.target.slice(0, 7)} (${Math.round((Date.now() - started) / 1000)}s)`)
+    log(`current is now ${manifest.version} (${Math.round((Date.now() - started) / 1000)}s)`)
     if (!args.includes('--no-restart')) {
       if (!supervisorPid()) log('the service is not running; start it with `domo start`')
       // The supervisor runs the launcher it started with, so a new one needs
@@ -798,19 +1000,18 @@ async function update(args) {
 // --------------------------------------------------------------------------
 
 async function install(args) {
-  const channel = (args.indexOf('--channel') >= 0 ? args[args.indexOf('--channel') + 1] : null) || readState().channel
-  writeState({ channel })
-  if (!existsSync(join(P.app, '.git'))) fail(`there is no checkout at ${P.app}; run scripts/install.sh`)
+  // The service starts without the installer's environment, so a feed it was given is kept.
+  if (process.env.DOMO_FEED) writeState({ feed: process.env.DOMO_FEED })
   mkdirSync(P.bin, { recursive: true })
-  // The installer brought Node, which this runs on; the rest come here, as they do on every update.
-  await ensureTools(P.app)
   mkdirSync(P.data, { recursive: true })
   mkdirSync(P.logs, { recursive: true })
   if (!existsSync(P.launcher)) cpSync(fileURLToPath(import.meta.url), P.launcher)
 
-  await update(['--no-restart', '--force', ...(channel ? ['--channel', channel] : [])])
+  // The installer brought Node, which this runs on; the update brings the
+  // release and the tools its `.tool-versions` names, as every update does.
+  await update(['--no-restart', '--force'])
   if (args.includes('--no-service')) {
-    console.log(`\n  Built. Start Domo with \`${P.bin}/domo run\` (no login service was installed).\n`)
+    console.log(`\n  Installed. Start Domo with \`${P.bin}/domo run\` (no login service was installed).\n`)
     return
   }
 
@@ -848,8 +1049,8 @@ const HELP = `domo <command>
   status              what is installed and whether it answers
   trust               make the browser accept the local certificate (asks for your password)
   logs                follow the log
-  update [--check] [--json] [--channel <branch>] [--force] [--no-restart]
-                      fetch, build and switch to the newest commit of the channel
+  update [--check] [--json] [--force] [--no-restart]
+                      download the newest release and switch to it
   install [--no-service] [--skip-trust] [--no-open]
                       finish an installation (used by scripts/install.sh)
   uninstall           remove the login service (keeps ${HOME})

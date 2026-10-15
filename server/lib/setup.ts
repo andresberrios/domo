@@ -194,7 +194,10 @@ export async function updateSetup(change: {
   if (change.finished !== undefined) next.finishedAt = change.finished ? new Date().toISOString() : null
   if (change.skip && !next.skipped.includes(change.skip)) next.skipped.push(change.skip)
   if (change.unskip) next.skipped = next.skipped.filter(target => target !== change.unskip)
-  if (change.check) {
+  // A check that started before the one already kept finished after it (the
+  // first of two clicks, slow on a cold start): it is not news.
+  const kept = change.check && current.checks[change.check.target]
+  if (change.check && !(kept && kept.at > change.check.result.at)) {
     next.checks[change.check.target] = change.check.result
     // Done is not skipped.
     if (change.check.result.ok) next.skipped = next.skipped.filter(target => target !== change.check!.target)
@@ -248,6 +251,7 @@ function firstLine(message: string): string {
  */
 export async function checkAgent(adapter: AgentAdapter): Promise<SetupCheckResult & { reply: string | null }> {
   const started = Date.now()
+  const at = new Date(started).toISOString()
   try {
     const { answer, model } = await askOnce({
       adapter,
@@ -260,15 +264,15 @@ export async function checkAgent(adapter: AgentAdapter): Promise<SetupCheckResul
     })
     const reply = answer.trim()
     const seconds = ((Date.now() - started) / 1000).toFixed(1)
-    if (!reply) return result(false, `${agentAdapterInfo(adapter).label} started on ${model} but answered nothing.`, null)
-    return result(true, `${model} answered in ${seconds} s.`, reply)
+    if (!reply) return result(false, `${agentAdapterInfo(adapter).label} started on ${model} but answered nothing.`, null, at)
+    return result(true, `${model} answered in ${seconds} s.`, reply, at)
   } catch (error) {
-    return result(false, explainCheckFailure(adapter, error instanceof Error ? error.message : String(error)), null)
+    return result(false, explainCheckFailure(adapter, error instanceof Error ? error.message : String(error)), null, at)
   }
 }
 
-function result(ok: boolean, summary: string, reply: string | null) {
-  return { ok, summary, at: new Date().toISOString(), reply }
+function result(ok: boolean, summary: string, reply: string | null, at: string) {
+  return { ok, summary, at, reply }
 }
 
 export const VOICE_CHECK_TEXT = 'Domo can hear you and talk back.'
@@ -287,9 +291,10 @@ export function heardRight(expected: string, heard: string): boolean {
  * browser's to check.
  */
 export async function checkVoice(): Promise<SetupCheckResult & { audio: string | null, heard: string | null }> {
+  const at = new Date().toISOString()
   const settings = (await getSettings()).agentVoice
   const problem = voiceProblem(settings, settings)
-  if (problem) return { ...result(false, problem, null), audio: null, heard: null }
+  if (problem) return { ...result(false, problem, null, at), audio: null, heard: null }
   try {
     const chunks: Int16Array[] = []
     let rate = 0
@@ -298,18 +303,18 @@ export async function checkVoice(): Promise<SetupCheckResult & { audio: string |
       const bytes = Buffer.from(chunk.data, 'base64')
       chunks.push(new Int16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length - (bytes.length % 2))))
     })
-    if (!rate) return { ...result(false, 'The voice answered with no sound.', null), audio: null, heard: null }
+    if (!rate) return { ...result(false, 'The voice answered with no sound.', null, at), audio: null, heard: null }
     const samples = concatPcm16(chunks)
     const audio = wavFromPcm16(samples, rate).toString('base64')
     if (settings.transcriber === 'browser') {
-      return { ...result(true, 'Domo spoke. This device does the listening, so try the microphone in a session.', null), audio, heard: null }
+      return { ...result(true, 'Domo spoke. This device does the listening, so try the microphone in a session.', null, at), audio, heard: null }
     }
     const heard = (await transcribeWith(settings, samples, rate)).trim()
     if (!heardRight(VOICE_CHECK_TEXT, heard)) {
-      return { ...result(false, heard ? `Domo spoke, but heard it back as “${heard}”.` : 'Domo spoke, but heard nothing back.', null), audio, heard }
+      return { ...result(false, heard ? `Domo spoke, but heard it back as “${heard}”.` : 'Domo spoke, but heard nothing back.', null, at), audio, heard }
     }
-    return { ...result(true, `Domo spoke and heard itself back: “${heard}”.`, null), audio, heard }
+    return { ...result(true, `Domo spoke and heard itself back: “${heard}”.`, null, at), audio, heard }
   } catch (error) {
-    return { ...result(false, `Voice failed: ${firstLine(error instanceof Error ? error.message : String(error))}`, null), audio: null, heard: null }
+    return { ...result(false, `Voice failed: ${firstLine(error instanceof Error ? error.message : String(error))}`, null, at), audio: null, heard: null }
   }
 }

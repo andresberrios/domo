@@ -7,10 +7,13 @@ or when an adapter acts in an unexpected way. Everything else is in
 - **A new Claude Code or Codex model reaches Domo only through an adapter
   version bump.** Their model lists are built into the bundled CLI binaries.
   OpenCode fetches its list, so its models change without one. A bump must
-  change both pin sites together: `package.json` for host sessions, and
+  change the three pin sites together: `package.json` for `pnpm dev`,
+  `agents/package.json` for an installed Domo (then `npm install
+  --package-lock-only` in `agents/` to update its lockfile), and
   `ADAPTER_PACKAGES` in `server/lib/dev-env/runtime-volume.ts` for container
   sessions (a unit test fails when they differ). The Codex CLI is pinned the
-  same way, through `overrides` in `pnpm-workspace.yaml` and `ADAPTER_OVERRIDES`,
+  same way, through `overrides` in `pnpm-workspace.yaml` and `agents/package.json` and
+  `ADAPTER_OVERRIDES`,
   because codex-acp's own range would install an older second copy. To confirm
   a bump, compare the model option *descriptions*: in claude-agent-acp 0.90.0,
   `sonnet` and `haiku` kept their ids and moved to Sonnet 5.5 and Haiku 5.5.

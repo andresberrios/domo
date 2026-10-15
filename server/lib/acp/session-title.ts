@@ -79,7 +79,7 @@ async function titlerEnv(adapter: AgentAdapter): Promise<NodeJS.ProcessEnv> {
 
 /**
  * The model's answer as a title: its first line, without the quotes, markup
- * and "Title:" small models add, cut at a word to `TITLE_LIMIT`. Empty when
+ * and "Title:" or "Session title:" small models add, cut at a word to `TITLE_LIMIT`. Empty when
  * nothing usable is left.
  */
 export function cleanTitle(raw: string): string {
@@ -87,7 +87,7 @@ export function cleanTitle(raw: string): string {
   let title = line
     .replace(/^#+\s*/, '')
     .replace(/^\*\*(.*)\*\*$/, '$1')
-    .replace(/^title\s*:\s*/i, '')
+    .replace(/^(?:session\s+)?title\s*:\s*/i, '')
     .replace(/^\*\*(.*)\*\*$/, '$1')
     .replace(/[.。!]+$/, '')
     .replace(/^["'“‘`]+|["'”’`]+$/g, '')

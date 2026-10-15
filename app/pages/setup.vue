@@ -73,7 +73,13 @@ function costNote(id: AgentAdapter): string {
 }
 
 const checking = ref<Partial<Record<SetupTarget, boolean>>>({})
-const replies = ref<Partial<Record<SetupTarget, string | null>>>({})
+// What each check's agent said, with the time of the result it came with: a
+// reply is shown only beside that result, never beside a later one.
+const replies = ref<Partial<Record<SetupTarget, { at: string, text: string }>>>({})
+function replyFor(target: SetupTarget): string | null {
+  const reply = replies.value[target]
+  return reply && reply.at === progress.value.checks[target]?.at ? reply.text : null
+}
 
 async function runCheck(target: SetupTarget) {
   checking.value[target] = true
@@ -82,7 +88,7 @@ async function runCheck(target: SetupTarget) {
       '/api/setup/check', { method: 'POST', body: { target } }
     )
     if (setup.value) setup.value = { ...setup.value, progress: answer.progress }
-    replies.value[target] = answer.reply ?? null
+    replies.value = { ...replies.value, [target]: answer.reply ? { at: answer.at, text: answer.reply } : undefined }
     if (answer.audio) await playWav(base64ToArrayBuffer(answer.audio), 1).catch(() => {})
     await refreshSetup()
   } catch (error: any) {
@@ -227,7 +233,7 @@ function when(at: string) {
                       variant="subtle"
                       :icon="progress.checks[step.id]!.ok ? 'i-lucide-circle-check' : 'i-lucide-circle-x'"
                       :title="progress.checks[step.id]!.ok ? 'It answered' : 'It did not work'"
-                      :description="`${progress.checks[step.id]!.summary}${replies[step.id] ? ` It said: “${replies[step.id]}”.` : ''} (${when(progress.checks[step.id]!.at)})`"
+                      :description="`${progress.checks[step.id]!.summary}${replyFor(step.id) ? ` It said: “${replyFor(step.id)}”.` : ''} (${when(progress.checks[step.id]!.at)})`"
                     />
                     <p v-if="agentStatus(step.id)?.usage?.state === 'ok'" class="text-xs text-muted">
                       Your plan limits show in the sidebar.

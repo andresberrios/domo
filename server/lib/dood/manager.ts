@@ -102,10 +102,15 @@ function installId(): string {
   return id
 }
 
+/**
+ * `<DOMO_HOME>/s/<install id>`: an installed Domo keeps its sockets in its own
+ * home, which is `~/.domo` unless it was installed elsewhere; `pnpm dev`,
+ * which has no DOMO_HOME, uses `~/.domo` too.
+ */
 export function doodSocketDir(): string {
   const configured = process.env.NUXT_DOOD_SOCKET_DIR
   if (configured) return configured
-  return join(nestedSocketRoot() ?? join(homedir(), '.domo', 's'), installId())
+  return join(nestedSocketRoot() ?? join(process.env.DOMO_HOME || join(homedir(), '.domo'), 's'), installId())
 }
 
 /** The socket's file name, which is the same in every install: only the directory is this one's. */
