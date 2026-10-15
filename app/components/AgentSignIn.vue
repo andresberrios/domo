@@ -101,6 +101,26 @@ const needsSteps = computed(() => !!props.status && props.status.installed
       </div>
     </template>
 
+    <template v-if="needsSteps && adapter === 'copilot'">
+      <div class="space-y-2 text-sm">
+        <p class="font-medium">Sign in with your Copilot plan</p>
+        <ol class="list-decimal space-y-2 ps-5 text-muted">
+          <li>
+            Open
+            <ULink to="https://github.com/settings/personal-access-tokens/new" target="_blank" class="text-primary">a new fine-grained token</ULink>
+            on GitHub. Under <span class="text-default">Permissions</span>, add <span class="text-default">Copilot Requests</span>.
+          </li>
+          <li>Generate it, and paste it (it starts with <code>github_pat_</code>) into <span class="text-default">GitHub token</span> below.</li>
+        </ol>
+        <p class="text-xs text-muted">
+          The token works everywhere, development environments included, and lets Domo show your Copilot limits and models.
+          On this computer only, signing in with Copilot itself also works:
+        </p>
+        <CopyCommand command="npx @github/copilot login" />
+        <UButton label="Check again" icon="i-lucide-refresh-cw" color="neutral" variant="subtle" size="sm" @click="emit('changed')" />
+      </div>
+    </template>
+
     <template v-if="adapter === 'claude-code'">
       <CredentialField
         :settings="settings"
@@ -151,6 +171,19 @@ const needsSteps = computed(() => !!props.status && props.status.installed
           />
         </template>
       </UCollapsible>
+    </template>
+
+    <template v-if="adapter === 'copilot'">
+      <CredentialField
+        :settings="settings"
+        credential="copilotGithubToken"
+        label="GitHub token"
+        :help="settings?.hasCopilotAuth
+          ? 'Sessions on this computer already use your Copilot login. A token is what a development environment signs in with, because that login is never copied into one.'
+          : 'A fine-grained token with the Copilot Requests permission, billed to your Copilot plan. Copilot signs in with it everywhere, development environments included.'"
+        placeholder="github_pat_…"
+        @saved="emit('changed')"
+      />
     </template>
 
     <template v-if="adapter === 'opencode'">

@@ -28,7 +28,9 @@ vi.mock('node:child_process', async (importOriginal) => {
       const invocation = `${command} ${args.join(' ')}`
       const which: AgentAdapter = invocation.includes('/@opencode/cli/')
         ? 'opencode'
-        : invocation.includes('/codex-acp/') ? 'codex' : 'claude-code'
+        : invocation.includes('/codex-acp/')
+          ? 'codex'
+          : invocation.includes('/@github/copilot-') ? 'copilot' : 'claude-code'
       const adapter = new FakeAdapter(which)
       state.adapters.push(adapter)
       return adapter
@@ -334,7 +336,9 @@ describe('listAdapterCatalog', () => {
     const stop = autoServe({
       'claude-code': { current: 'sonnet', ids: ['sonnet', 'haiku'] },
       codex: { current: 'gpt-5.6-terra', ids: ['gpt-5.6-terra', 'gpt-5.6-luna'] },
-      opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] }
+      opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] },
+      // Copilot publishes no model option; Domo's own is Auto when GitHub cannot be asked.
+      copilot: null
     })
     const catalog = listAdapterCatalog().finally(stop)
 
@@ -366,6 +370,15 @@ describe('listAdapterCatalog', () => {
           modes: [],
           defaultMode: null,
           configOptions: []
+        },
+        {
+          id: 'copilot',
+          name: 'Copilot',
+          models: [{ id: 'auto', name: 'Auto' }],
+          default: 'auto',
+          modes: [],
+          defaultMode: null,
+          configOptions: []
         }
       ]
     })
@@ -377,12 +390,14 @@ describe('listAdapterCatalog', () => {
       {
         'claude-code': { current: 'sonnet', ids: ['sonnet'] },
         codex: { current: 'gpt-5.5', ids: ['gpt-5.5'] },
-        opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] }
+        opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] },
+        copilot: null
       },
       {
         'claude-code': { current: 'default', ids: ['default', 'acceptEdits'] },
         codex: { current: 'agent', ids: ['read-only', 'agent'] },
-        opencode: { current: 'build', ids: ['build', 'plan'] }
+        opencode: { current: 'build', ids: ['build', 'plan'] },
+        copilot: { current: 'agent', ids: ['agent', 'plan', 'autopilot'] }
       }
     )
 
@@ -403,6 +418,7 @@ describe('listAdapterCatalog', () => {
       defaultMode: 'build',
       modes: [{ id: 'build', name: 'BUILD' }, { id: 'plan', name: 'PLAN' }]
     })
+    expect(adapters[3]).toMatchObject({ id: 'copilot', defaultMode: 'agent', default: 'auto' })
   })
 
   it('asks only the harness it was filtered to', async () => {
@@ -420,7 +436,8 @@ describe('listAdapterCatalog', () => {
     const stop = autoServe({
       'claude-code': { current: 'sonnet', ids: ['sonnet'] },
       codex: 'fail',
-      opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] }
+      opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] },
+      copilot: 'fail'
     })
 
     const { adapters } = await listAdapterCatalog().finally(stop)

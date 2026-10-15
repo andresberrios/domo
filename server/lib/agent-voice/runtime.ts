@@ -32,6 +32,10 @@ import type { AgentEvent, AgentVoiceServerMessage, DomoNotification, PendingPerm
  * `agent_events`. Speech follows those rows on the bus, the same way a
  * subscriber agent does.
  *
+ * **The agent never talks over the developer.** While they are mid-turn
+ * (`midTurn`), speech is still made but held, in order, and goes out when
+ * their turn is over. What was playing when they started is barge-in's to stop.
+ *
  * **Interrupting speech never interrupts work.** `hush` drops the queue and
  * aborts the sentence being synthesised, and marks the rest of the current
  * answer as not worth reading; the agent's turn runs on. Only `cancel` stops
@@ -102,6 +106,8 @@ export class AgentVoiceRuntime {
   private transcribing = 0
   /** Segments are heard in the order they were spoken, however long each takes to transcribe. */
   private hearing: Promise<void> = Promise.resolve()
+  /** Hands-free pauses being judged, with the turns they ended until those are heard. */
+  private judging = 0
   /** Words the device's own recogniser heard, not yet taken into a turn. */
   private dictated = ''
   /**
@@ -132,6 +138,10 @@ export class AgentVoiceRuntime {
   private blocks = new Map<string, Block>()
   /** Something of the current answer has been said, so the rest waits for whole sentences. */
   private replyStarted = false
+  /** The developer is mid-turn (`midTurn`), as of the last `syncGate`. */
+  private gated = false
+  /** What was made to be said while they were, in order. */
+  private heldSpeech: AgentVoiceServerMessage[] = []
 
   /** The permission request last read out, which a spoken "allow" or "deny" answers. */
   private asked: PendingPermission | null = null
@@ -155,7 +165,15 @@ export class AgentVoiceRuntime {
     void this.dictationConfig().then((message) => {
       if (this.listeners.has(listener)) listener(message)
     })
-    return () => this.listeners.delete(listener)
+    return () => {
+      this.listeners.delete(listener)
+      // The page went mid-segment, so that segment will never end.
+      if (!this.listeners.size && this.audioSamples) {
+        this.audio = []
+        this.audioSamples = 0
+        this.syncGate()
+      }
+    }
   }
 
   /** Tells the browser whether to transcribe on the device, and with which words. */
@@ -181,7 +199,7 @@ export class AgentVoiceRuntime {
     return {
       type: 'status',
       transcribing: this.transcribing > 0,
-      speaking: this.speakingText !== null,
+      speaking: this.speakingText !== null && !this.gated,
       speak: this.speak
     }
   }
@@ -194,6 +212,7 @@ export class AgentVoiceRuntime {
     this.prompted = 0
     this.dictated = joinUtterance(this.dictated, text.trim())
     this.emit({ type: 'utterance', text: joinUtterance(this.held, this.dictated) })
+    this.syncGate()
   }
 
   addAudio(base64: string) {
@@ -205,7 +224,41 @@ export class AgentVoiceRuntime {
     const samples = pcm16FromBase64(base64)
     this.audio.push(samples)
     this.audioSamples += samples.length
+    this.syncGate()
   }
+
+  /**
+   * The developer is in the middle of their turn: a segment is coming in;
+   * hands-free, a pause is being judged, or a turn it ended is being heard,
+   * or a turn judged unfinished is held and its pause has not yet had a
+   * "yes?". A click or a Send ends a turn at once. Hands-free waits for the
+   * turn to be heard, because "complete" is the detector's guess: someone
+   * who goes on meanwhile is still holding the floor, and speech that had
+   * started would only be barged into and hushed.
+   */
+  private midTurn(): boolean {
+    return this.audioSamples > 0 || this.judging > 0 || (this.turnSamples > 0 && this.prompted === 0)
+  }
+
+  /** Speech waits while the developer is mid-turn, and what waited goes out once they are not. */
+  private syncGate() {
+    const gated = this.midTurn()
+    if (gated === this.gated) return
+    this.gated = gated
+    if (!gated) {
+      const held = this.heldSpeech
+      this.heldSpeech = []
+      for (const message of held) this.emit(message)
+    }
+    this.emit(this.status())
+  }
+
+  /** What the speaker says (`speaking`, `audio`), held while the developer is mid-turn. */
+  private speech(message: AgentVoiceServerMessage) {
+    if (this.gated) this.heldSpeech.push(message)
+    else this.emit(message)
+  }
+
 
   /**
    * The browser stopped hearing speech. What was recorded is transcribed, and
@@ -217,10 +270,20 @@ export class AgentVoiceRuntime {
     const total = this.audioSamples
     this.audio = []
     this.audioSamples = 0
+    if (!final) this.judging += 1
+    this.syncGate()
     this.hearing = this.hearing
       .then(() => final ? this.hear(chunks, total, true, false) : this.judge(chunks, total))
       .catch(error => this.emit({ type: 'error', message: describe(error) }))
+      .finally(() => {
+        if (!final) this.judged()
+      })
     return this.hearing
+  }
+
+  private judged() {
+    this.judging -= 1
+    this.syncGate()
   }
 
   /**
@@ -303,7 +366,8 @@ export class AgentVoiceRuntime {
     this.holdTimer = setTimeout(() => {
       this.holdTimer = null
       this.emit({ type: 'turn', complete: true, probability: null, seconds: Math.round((this.turnSamples / CLIENT_INPUT_SAMPLE_RATE) * 10) / 10 })
-      this.hearing = this.hearing.then(() => this.finishTurn()).catch(() => {})
+      this.judging += 1
+      this.hearing = this.hearing.then(() => this.finishTurn()).catch(() => {}).finally(() => this.judged())
     }, delay)
   }
 
@@ -315,6 +379,11 @@ export class AgentVoiceRuntime {
       this.holdTimer = null
       if (!this.turnSamples || this.closed) return
       this.prompted += 1
+      // What the agent said meanwhile waited for this pause, and is the word
+      // from this side instead.
+      const waiting = this.heldSpeech.length > 0 || this.pumping
+      this.syncGate()
+      if (waiting) return
       this.say(PROMPTS[Math.floor(Math.random() * PROMPTS.length)]!, { aside: true })
       this.scheduleHoldPrompt(PROMPT_AGAIN_MS)
     }, delay)
@@ -333,6 +402,7 @@ export class AgentVoiceRuntime {
     this.turnAudio = []
     this.turnSamples = 0
     this.prompted = 0
+    this.syncGate()
     if (!total) return
     await this.hear(chunks, total, true, true)
   }
@@ -435,6 +505,7 @@ export class AgentVoiceRuntime {
     this.turnSamples = 0
     this.prompted = 0
     this.emit({ type: 'utterance', text: '' })
+    this.syncGate()
   }
 
   private async sendHeld(): Promise<void> {
@@ -451,10 +522,9 @@ export class AgentVoiceRuntime {
       return
     }
 
-    // The developer has spoken again, so whatever was still being read out
-    // is stale, and the answer to *this* is wanted out loud even if they had
-    // said "stop" before.
-    this.dropSpeech()
+    // Whatever they talked over was stopped then (barge-in); what waited for
+    // them was never heard, and still goes. The answer to *this* is wanted
+    // out loud even if they had said "stop" before.
     this.hushed = false
     this.replyStarted = false
     this.refreshContext()
@@ -513,6 +583,7 @@ export class AgentVoiceRuntime {
 
   private dropSpeech() {
     this.queue = []
+    this.heldSpeech = []
     this.current?.abort()
     this.current = null
     this.emit({ type: 'hushed' })
@@ -554,10 +625,10 @@ export class AgentVoiceRuntime {
         const controller = new AbortController()
         this.current = controller
         this.speakingText = text
-        this.emit({ type: 'speaking', text })
+        this.speech({ type: 'speaking', text })
         this.emit(this.status())
         const play = (chunk: SpeechChunk) => {
-          if (!controller.signal.aborted) this.emit({ type: 'audio', ...chunk })
+          if (!controller.signal.aborted) this.speech({ type: 'audio', ...chunk })
         }
         let spoke = false
         try {
@@ -594,7 +665,7 @@ export class AgentVoiceRuntime {
     } finally {
       this.pumping = false
       this.speakingText = null
-      this.emit({ type: 'speaking', text: null })
+      this.speech({ type: 'speaking', text: null })
       this.emit(this.status())
     }
   }
@@ -736,6 +807,7 @@ export class AgentVoiceRuntime {
     this.clearHold()
     this.unsubscribe()
     this.queue = []
+    this.heldSpeech = []
     this.current?.abort()
     this.current = null
     this.listeners.clear()

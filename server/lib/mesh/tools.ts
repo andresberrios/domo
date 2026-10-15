@@ -78,7 +78,7 @@ import { isAgentAdapter } from '../../../shared/agent-adapters'
 
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 const STATUSES: AgentSessionStatus[] = ['idle', 'starting', 'thinking', 'awaiting-permission', 'error', 'stopped']
-const ADAPTERS = ['claude-code', 'codex', 'opencode'] as const
+const ADAPTERS = ['claude-code', 'codex', 'opencode', 'copilot'] as const
 
 /**
  * What every agent is told about the mesh when it connects (MCP `instructions`).
@@ -86,7 +86,7 @@ const ADAPTERS = ['claude-code', 'codex', 'opencode'] as const
  * tool descriptions are the whole of their documentation.
  */
 export const MESH_INSTRUCTIONS = [
-  'Domo runs coding agents (Claude Code, Codex, OpenCode) for one human, who watches them in a web UI and can talk to any of them out loud through its voice bar.',
+  'Domo runs coding agents (Claude Code, Codex, OpenCode, Copilot) for one human, who watches them in a web UI and can talk to any of them out loud through its voice bar.',
   'You are one of those agents. These tools are how you see and act on the rest of Domo.',
   'An agent session has an id (ag_…); the tools that read or change one session default to your own when agentId is omitted.',
   'A project is a git checkout on the human\'s machine; a development environment (env_…) is an isolated container with its own branch and worktree of it. Agents run either on the host or inside an environment.',
@@ -428,7 +428,7 @@ export const MESH_TOOLS = [
   {
     name: 'list_models',
     description:
-      'List the coding-agent harnesses (claude-code, codex, opencode), the models each offers and its permission '
+      'List the coding-agent harnesses (claude-code, codex, opencode, copilot), the models each offers and its permission '
       + 'modes. Call before spawn_agent or manage_agent_session with a model or modeId, so you pass a real id.',
     inputSchema: {
       type: 'object',
@@ -1181,11 +1181,11 @@ export const MESH_TOOLS = [
   {
     name: 'get_usage_limits',
     description:
-      'How much of the human\'s Claude, Codex and OpenCode plan limits is used, and when each window resets. Check '
+      'How much of the human\'s Claude, Codex, OpenCode and Copilot plan limits is used, and when each window resets. Check '
       + 'before starting a lot of work on one harness.',
     inputSchema: {
       type: 'object',
-      properties: { provider: { type: 'string', enum: ['claude', 'codex', 'opencode'], description: 'Only this account.' } },
+      properties: { provider: { type: 'string', enum: ['claude', 'codex', 'opencode', 'copilot'], description: 'Only this account.' } },
       additionalProperties: false
     }
   }
@@ -1979,7 +1979,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
     }
 
     case 'get_usage_limits': {
-      const wanted = args.provider === 'claude' || args.provider === 'codex' || args.provider === 'opencode'
+      const wanted = args.provider === 'claude' || args.provider === 'codex' || args.provider === 'opencode' || args.provider === 'copilot'
         ? args.provider
         : undefined
       const [limits, providers] = await Promise.all([listUsageLimits(wanted), listUsageProviders()])

@@ -1,7 +1,7 @@
 import { usagePoller } from '../../lib/usage/poller'
 import type { UsageProviderId } from '../../../shared/types'
 
-const PROVIDERS: UsageProviderId[] = ['claude', 'codex', 'opencode']
+const PROVIDERS: UsageProviderId[] = ['claude', 'codex', 'opencode', 'copilot']
 
 /**
  * Ask the poller to look again, now.

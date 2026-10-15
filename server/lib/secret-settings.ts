@@ -25,6 +25,8 @@ export const SECRET_ENV: Record<SecretSettingKey, readonly string[]> = {
   anthropicApiKey: ['NUXT_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY'],
   claudeCodeOauthToken: ['NUXT_CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'],
   openCodeApiKey: ['NUXT_OPENCODE_API_KEY', 'OPENCODE_API_KEY'],
+  // Not `GH_TOKEN`: that one is `gh`'s, for git, and may be a classic token Copilot refuses.
+  copilotGithubToken: ['NUXT_COPILOT_GITHUB_TOKEN', 'COPILOT_GITHUB_TOKEN'],
   kyutaiApiKey: ['NUXT_KYUTAI_API_KEY']
 }
 

@@ -35,6 +35,7 @@ export const DEFAULTS: AppSettings = {
   // into it: a default that copied the environment in would be written back to
   // the row by the first save (`secret-settings.ts`).
   openCodeApiKey: '',
+  copilotGithubToken: '',
   geminiApiKey: '',
   openAiApiKey: '',
   anthropicApiKey: '',

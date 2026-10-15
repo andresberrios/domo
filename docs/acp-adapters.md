@@ -57,3 +57,17 @@ or when an adapter acts in an unexpected way. Everything else is in
   Domo ends its turn at that prompt's own result instead, the cost
   `usage_update` with origin `human`. A prompt sent while one is held settles
   the held one. A subagent's updates carry `_meta.claudeCode.parentToolUseId`.
+- **Copilot (`@github/copilot`) is its own ACP server, `copilot --acp`.**
+  Domo runs the platform package's executable directly: the package's `copilot`
+  bin is a Node loader that does not pass a stop on. `--no-auto-update` keeps
+  the pinned version; without it the CLI downloads newer ones into `~/.copilot`.
+  A bump changes `package.json` and `ADAPTER_PACKAGES` together, as above.
+- **Copilot publishes no model option over ACP** (copilot-cli#4880, still so on
+  1.0.98). Domo adds one (`server/lib/acp/copilot.ts`) from the account's
+  `/models` picker list and sets it with `session/set_model`. On Copilot Free
+  the picker is empty and the CLI refuses any named model, so the list is
+  `auto` alone. Setting a named model is unverified on a paid plan.
+- **Copilot refuses stdio MCP servers given over ACP**, with only a log line.
+  They go in at launch through `--additional-mcp-config`.
+- **Copilot cannot be steered.** A second `session/prompt` cancels the running
+  turn, so `steer` falls back to `interrupt` as for OpenCode.

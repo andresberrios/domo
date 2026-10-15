@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 
 import { anthropicApiKey, claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
 import { hasCodexSubscriptionLogin } from '../codex-credentials'
+import { copilotGithubToken } from '../copilot-credentials'
 import { storedSecret } from '../secret-settings'
 import {
   loadOpenCodeSettings,
@@ -29,8 +30,19 @@ export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride
   opencode: {
     packageName: '@opencode/cli',
     entryOverride: 'NUXT_OPENCODE_ACP_ENTRY'
+  },
+  copilot: {
+    packageName: '@github/copilot',
+    entryOverride: 'NUXT_COPILOT_ACP_ENTRY'
   }
 }
+
+/**
+ * Copilot's flags. `--no-auto-update`: the CLI otherwise downloads a newer
+ * version of itself into `~/.copilot` and runs that at the next start, and the
+ * pinned version is what Domo was tested against.
+ */
+export const COPILOT_ARGS = ['--acp', '--no-auto-update']
 
 /**
  * Resolve an ACP adapter entry point.
@@ -53,6 +65,7 @@ export function adapterEntry(adapter: AgentAdapter): string {
   for (const resolvePkg of resolvers) {
     try {
       const pkgPath = resolvePkg()
+      if (adapter === 'copilot') return copilotBinary(pkgPath)
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { bin?: Record<string, string> | string }
       const bin = typeof pkg.bin === 'string' ? pkg.bin : Object.values(pkg.bin ?? {})[0]
       return join(dirname(pkgPath), bin ?? 'dist/index.js')
@@ -68,6 +81,27 @@ export function adapterEntry(adapter: AgentAdapter): string {
 }
 
 /**
+ * Copilot's native executable, out of the platform package `@github/copilot`
+ * depends on. Its own `copilot` bin is a Node loader that runs the executable
+ * with `spawnSync` and forwards no signal, so stopping the loader would leave
+ * Copilot running.
+ */
+function copilotBinary(pkgPath: string): string {
+  const require = createRequire(pkgPath)
+  const glibc = !!(process.report?.getReport() as any)?.header?.glibcVersionRuntime
+  const platforms = process.platform === 'linux' ? (glibc ? ['linux'] : ['linuxmusl', 'linux']) : [process.platform]
+  for (const platform of platforms) {
+    try {
+      // The platform package exports the executable itself, and not its package.json.
+      return require.resolve(`@github/copilot-${platform}-${process.arch}`)
+    } catch {
+      /* the next platform */
+    }
+  }
+  throw new Error(`@github/copilot has no executable for ${process.platform}-${process.arch} in this Domo install.`)
+}
+
+/**
  * The actual process invocation for an adapter.
  *
  * Claude and Codex ship JavaScript ACP adapters, while OpenCode is a native
@@ -76,6 +110,11 @@ export function adapterEntry(adapter: AgentAdapter): string {
  */
 export function adapterLaunch(adapter: AgentAdapter): { command: string, args: string[] } {
   const entry = adapterEntry(adapter)
+  if (adapter === 'copilot') {
+    return /\.[cm]?js$/.test(entry)
+      ? { command: process.execPath, args: [entry, ...COPILOT_ARGS] }
+      : { command: entry, args: COPILOT_ARGS }
+  }
   if (adapter === 'opencode' && /\.[cm]?js$/.test(entry)) {
     return { command: process.execPath, args: [entry, 'acp'] }
   }
@@ -271,6 +310,15 @@ export async function adapterEnv(
       if (openAiKey) env.OPENAI_API_KEY = openAiKey
       env.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: 'api-key' })
     }
+  } else if (adapter === 'copilot') {
+    // Ahead of `GH_TOKEN` and of a `copilot login` in Copilot's own order, so
+    // the token saved in Settings is the one that signs in. Without one, an
+    // environment session signs in with its `GH_TOKEN` and a host session with
+    // this computer's `copilot login`. Neither token rotates; see
+    // `copilot-credentials.ts`.
+    const token = copilotGithubToken()
+    if (token) env.COPILOT_GITHUB_TOKEN = token
+    env.COPILOT_AUTO_UPDATE = 'false'
   } else {
     // OpenCode can use dozens of providers from its own `opencode auth login`
     // store. These explicit values cover headless installs without turning the

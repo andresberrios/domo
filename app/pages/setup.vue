@@ -170,7 +170,7 @@ function when(at: string) {
         <header class="space-y-2">
           <h1 class="text-lg font-semibold">Let's get your agents talking</h1>
           <p class="text-sm text-muted">
-            Domo runs Claude Code, Codex and OpenCode for you, and lets you talk to them. Below, each one is checked:
+            Domo runs Claude Code, Codex, OpenCode and Copilot for you, and lets you talk to them. Below, each one is checked:
             is it there, is it signed in, and does it answer. You need at least one coding agent; skip anything you don't use.
           </p>
           <p class="flex gap-2 text-xs text-muted">

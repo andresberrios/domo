@@ -28,6 +28,7 @@
     "@agentclientprotocol/sdk": "^1.8.0",
     "@devcontainers/cli": "^0.89.0",
     "@electric-sql/client": "^1.5.28",
+    "@github/copilot": "1.0.98",
     "@google/genai": "^2.22.0",
     "@huggingface/transformers": "^3.8.1",
     "@modelcontextprotocol/sdk": "^1.30.0",

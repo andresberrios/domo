@@ -37,6 +37,16 @@ export const AGENT_ADAPTERS: Array<{
     defaultMode: 'build',
     modeLabel: 'Agent',
     modeDescription: 'Which visible OpenCode agent handles the session.'
+  },
+  {
+    id: 'copilot',
+    label: 'Copilot',
+    icon: 'i-lucide-github',
+    // Copilot names its modes by ACP's own URLs. Permissions are its separate
+    // "Allow All" setting, so the mode is how it works, not how much it asks.
+    defaultMode: 'https://agentclientprotocol.com/protocol/session-modes#agent',
+    modeLabel: 'Mode',
+    modeDescription: 'Whether Copilot works with you, plans first, or runs on autopilot.'
   }
 ]
 
@@ -54,5 +64,8 @@ export function agentAdapterInfo(adapter: AgentAdapter) {
 export const TITLE_MODELS: Record<AgentAdapter, string> = {
   'claude-code': 'haiku',
   codex: 'gpt-5.6-luna',
-  opencode: 'opencode-go/glm-5.3-flash'
+  opencode: 'opencode-go/glm-5.3-flash',
+  // The one model every Copilot plan offers: Free has nothing else. Its router
+  // picks a small model for a short request.
+  copilot: 'auto'
 }
