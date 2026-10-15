@@ -523,6 +523,22 @@ export interface ActivityGroup {
 
 export type CondensedItem = TranscriptItem | ActivityGroup
 
+/** What a working agent is doing, as far as the end of its transcript says: for `AgentAtWork`. */
+export type AgentActivity = 'tool' | 'thinking' | 'writing'
+
+/**
+ * Read off the last condensed item: a reply still streaming is writing, a
+ * live run of tool calls is a tool unless its newest item is a thought, and
+ * anything else — a turn that has only just started — is thinking.
+ */
+export function currentActivity(items: readonly CondensedItem[]): AgentActivity {
+  const last = items[items.length - 1]
+  if (last?.kind === 'assistant' && last.streaming) return 'writing'
+  if (last?.kind === 'activity' && last.live) return last.items[last.items.length - 1]?.kind === 'thought' ? 'thinking' : 'tool'
+  if (last?.kind === 'tool') return 'tool'
+  return 'thinking'
+}
+
 export interface CondenseOptions {
   /** The session is still working, so the trailing run is still open. */
   live?: boolean

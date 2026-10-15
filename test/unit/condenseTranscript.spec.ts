@@ -5,6 +5,7 @@ import {
   activityLabel,
   buildTranscript,
   condenseTranscript,
+  currentActivity,
   reconcileCondensed,
   type ActivityGroup,
   type CondensedItem
@@ -351,5 +352,26 @@ describe('activityLabel', () => {
     [0, 2, '2 thoughts']
   ])('says %i tool calls and %i thoughts as "%s"', (toolCalls, thoughts, expected) => {
     expect(activityLabel(group(toolCalls, thoughts))).toBe(expected)
+  })
+})
+
+describe('currentActivity', () => {
+  const live = (events: Parameters<typeof buildTranscript>[0]) => currentActivity(condenseTranscript(transcript(events), { live: true }))
+
+  it('is thinking when the turn has only just started', () => {
+    expect(live([userMessage('hi')])).toBe('thinking')
+    expect(currentActivity([])).toBe('thinking')
+  })
+
+  it('is a tool while a live run of calls ends on a call', () => {
+    expect(live([userMessage('hi'), tool('t1', 'Bash', 'in_progress')])).toBe('tool')
+  })
+
+  it('is thinking while a live run ends on a thought', () => {
+    expect(live([userMessage('hi'), tool('t1'), thoughtChunk('let me see')])).toBe('thinking')
+  })
+
+  it('is writing while a reply streams', () => {
+    expect(live([userMessage('hi'), tool('t1'), textChunk('Here is')])).toBe('writing')
   })
 })

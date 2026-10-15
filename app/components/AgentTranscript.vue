@@ -48,6 +48,9 @@ const items = computed<CondensedItem[]>(() => {
   return lastItems
 })
 
+/** What the agent is doing, for the scene under the last row while it works. */
+const activity = computed(() => currentActivity(items.value))
+
 /* -------------------------------------------------------------------------
  * When each row happened
  *
@@ -821,7 +824,16 @@ onMounted(() => nextTick(() => {
           shrinking, and the browser clamped the scroll position meanwhile and
           moved every row down.
         -->
-        <div aria-hidden="true" class="h-[40cqh]" data-testid="transcript-tail" />
+        <div aria-hidden="true" class="relative h-[40cqh]" data-testid="transcript-tail">
+          <!--
+            The agent at work, in this space and out of the flow: it comes and
+            goes without moving a row, and nothing measures it — the follow
+            and the landing reckon from the rows' total, not from the box.
+          -->
+          <Transition name="fade">
+            <AgentAtWork v-if="live" :activity="activity" class="pointer-events-none absolute inset-x-0 top-0" />
+          </Transition>
+        </div>
       </div>
     </div>
 

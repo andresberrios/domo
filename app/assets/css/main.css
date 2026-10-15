@@ -100,6 +100,7 @@
  * - `disclose`: content opening under its header (`<Transition name="disclose">`,
  *   and every `UCollapsible` through app.config.ts).
  * - `list`: a row joining or leaving a list (`MotionList`).
+ * - `fade`: something coming and going where nothing else moves for it.
  * - `swap`: one thing replacing another in place (a status label, the
  *   composer's mode). The old one goes at once; the new one fades in.
  * - `.motion-page`: the page under the sidebar changing. On the dashboard
@@ -133,6 +134,9 @@
 .list-enter-active { animation: motion-slide var(--motion-base) var(--ease-out); }
 .list-leave-active { animation: motion-fade var(--motion-quick) var(--ease-out) reverse forwards; position: absolute; }
 .list-move { transition: transform var(--motion-base) var(--ease-out); }
+
+.fade-enter-active { animation: motion-fade var(--motion-base) var(--ease-out); }
+.fade-leave-active { animation: motion-fade var(--motion-base) var(--ease-out) reverse forwards; }
 
 .swap-enter-active { animation: motion-fade var(--motion-base) var(--ease-out); }
 .swap-leave-active { display: none; }
