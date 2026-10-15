@@ -200,6 +200,17 @@ describe('createHostWorktree', () => {
     expect(await exists(join(root, '.domo-worktrees', 'env_none', '.env'))).toBe(false)
   })
 
+  it('takes its own worktree as it is when a build a restart cut off runs again', async () => {
+    const first = await create()
+    await writeFile(join(first.worktreePath, 'half-done.txt'), 'from the first attempt\n')
+
+    const again = await create()
+
+    expect(again.worktreePath).toBe(first.worktreePath)
+    expect(await readFile(join(again.worktreePath, 'half-done.txt'), 'utf8')).toBe('from the first attempt\n')
+    expect(await git(again.worktreePath, 'branch', '--show-current')).toBe('env_1')
+  })
+
   it('refuses a checkout with no commits, before making anything', async () => {
     const empty = join(root, 'empty')
     await mkdir(empty)
