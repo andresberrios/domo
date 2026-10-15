@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { AgentDraft, AgentEvent, AgentSession } from '~~/shared/types'
-import { agentAdapterInfo } from '~~/shared/agent-adapters'
 import { agentPageKey, draftRequest, freshDraftPage, initialDraft, promoteDraftPage } from '~/utils/agentDraft'
 import { rememberDraftSettings, rememberedDraftSettings } from '~/composables/rememberedDraft'
 
@@ -44,14 +43,6 @@ const { queued } = useAgentInbox(sessionId)
  */
 const session = computed<AgentSession | null>(() => synced.value)
 
-/**
- * The environment *including* a retired one, whatever the sidebar switch says.
- * A session's whole point is that it still says where it ran, and the banner
- * needs the retired row to explain why it cannot be started.
- */
-const environment = computed(() =>
-  allEnvironments.value.find(item => item.id === session.value?.devEnvironmentId) ?? null
-)
 const { all: allSessions } = useAgentSessions()
 
 /* ------------------------------ the draft ------------------------------ */
@@ -72,8 +63,6 @@ watch([isDraft, projectsReady, environmentsReady], () => {
     rememberedDraftSettings()
   )
 }, { immediate: true })
-
-const draftEnvironment = computed(() => environments.value.find(item => item.id === draft.value?.devEnvironmentId) ?? null)
 
 const creating = ref(false)
 const createError = ref<string | null>(null)
@@ -163,11 +152,6 @@ async function startFromDraft(content: any[]): Promise<boolean> {
 
 /* ----------------------------- the session ----------------------------- */
 
-/** The agent that spawned this one over the mesh: the edge its cross-agent powers follow. */
-const spawner = computed(() => {
-  const id = session.value?.spawnedBy
-  return id ? { id, title: allSessions.value.find(item => item.id === id)?.title ?? id } : null
-})
 /** The assistant this session is one chapter of, and whether it has since handed off. */
 const { assistant } = useAssistant(() => session.value?.assistantId)
 const handedOff = computed(() => !!assistant.value && assistant.value.currentSessionId !== session.value?.id)
@@ -188,7 +172,6 @@ const startability = useSessionStartability(session)
  */
 const blocked = computed(() => startability.value.startable ? null : startability.value.reason)
 const closed = computed(() => !!blocked.value || handedOff.value)
-const adapter = computed(() => session.value ? agentAdapterInfo(session.value.adapter) : null)
 const renaming = ref(false)
 const titleDraft = ref('')
 const starting = ref(false)
@@ -250,10 +233,10 @@ async function purge() {
   }
 }
 
-const menuItems = computed(() => [
+const alwaysShowTimes = useAlwaysShowTimes()
+
+const menuItems = computed(() => [[
   { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
-  // A session that cannot start has nothing to restart.
-  ...closed.value ? [] : [{ label: 'Restart agent', icon: 'i-lucide-rotate-ccw', onSelect: start }],
   session.value?.archived
     ? { label: 'Unarchive', icon: 'i-lucide-archive-restore', onSelect: unarchive }
     : { label: 'Archive', icon: 'i-lucide-archive', onSelect: archive },
@@ -261,7 +244,17 @@ const menuItems = computed(() => [
   ...session.value?.archived
     ? [{ label: 'Delete permanently', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => { confirmingPurge.value = true } }]
     : []
-])
+], [
+  // Every transcript's, not this one's: the same switch as in Settings.
+  {
+    label: 'Always show times',
+    icon: 'i-lucide-clock',
+    type: 'checkbox' as const,
+    checked: alwaysShowTimes.value,
+    onUpdateChecked: (checked: boolean) => { alwaysShowTimes.value = checked },
+    onSelect: (event: Event) => event.preventDefault()
+  }
+]])
 </script>
 
 <template>
@@ -294,63 +287,9 @@ const menuItems = computed(() => [
         </template>
       </UDashboardNavbar>
 
-      <UDashboardToolbar>
+      <UDashboardToolbar :ui="{ left: 'min-w-0 flex-1', right: 'shrink-0' }">
         <template #left>
-          <!--
-            A draft says where it is about to work in the same places a session
-            says where it works, so the bar does not jump when it becomes one.
-          -->
-          <UBadge v-if="session || (draft && !draft.devEnvironmentId)" color="neutral" variant="subtle" size="sm" class="font-mono">
-            <UIcon name="i-lucide-folder" class="me-1 size-3" />
-            {{ session?.cwd ?? draft?.cwd }}
-          </UBadge>
-          <UBadge
-            color="neutral"
-            variant="subtle"
-            size="sm"
-            :label="adapter?.label ?? (draft ? agentAdapterInfo(draft.adapter).label : 'Coding agent')"
-          />
-          <UBadge
-            v-if="!session && draftEnvironment"
-            color="primary"
-            variant="subtle"
-            size="sm"
-            :label="draftEnvironment.name"
-          >
-            <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
-          </UBadge>
-          <UBadge
-            v-if="environment"
-            :color="environment.retiredAt ? 'neutral' : 'primary'"
-            variant="subtle"
-            size="sm"
-            :label="environment.retiredAt ? `${environment.name} (retired)` : environment.name"
-          >
-            <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
-          </UBadge>
-          <UBadge
-            v-if="assistant"
-            color="primary"
-            variant="subtle"
-            size="sm"
-            :label="handedOff ? `${assistant.name}, an earlier session` : `${assistant.name}'s current session`"
-            as="NuxtLink"
-            :to="`/assistants/${assistant.id}`"
-          >
-            <template #leading><UAvatar :src="assistant.avatar ?? undefined" :alt="assistant.name" size="3xs" /></template>
-          </UBadge>
-          <UBadge
-            v-if="spawner"
-            color="neutral"
-            variant="subtle"
-            size="sm"
-            :label="`Started by ${spawner.title}`"
-            as="NuxtLink"
-            :to="`/agents/${spawner.id}`"
-          >
-            <template #leading><UIcon name="i-lucide-git-fork" class="size-3" /></template>
-          </UBadge>
-          <TargetSchedules v-if="session" :agent-session-id="session.id" :assistant-id="handedOff ? null : assistant?.id" />
+          <AgentSessionChips :session="session" :draft="draft" :closed="closed" />
         </template>
         <template #right>
           <span class="text-xs text-dimmed">{{ relativeTime(session?.lastActivityAt) }}</span>

@@ -18,6 +18,8 @@ const rows = computed(() => {
     { id: 'voice', label: 'Voice', icon: 'i-lucide-audio-lines', to: '/settings/voice', badge: voiceBadge(status.voice, status.progress.checks.voice) }
   ]
 })
+
+const alwaysShowTimes = useAlwaysShowTimes()
 </script>
 
 <template>
@@ -48,6 +50,15 @@ const rows = computed(() => {
           <USkeleton v-for="n in 4" :key="n" class="h-6 w-full" />
         </div>
       </div>
+    </section>
+
+    <section class="space-y-3">
+      <h2 class="text-sm font-semibold">Transcripts</h2>
+      <USwitch
+        v-model="alwaysShowTimes"
+        label="Always show message times"
+        description="Otherwise a message's time shows when you point at it or tap it. Saved in this browser."
+      />
     </section>
   </SettingsShell>
 </template>

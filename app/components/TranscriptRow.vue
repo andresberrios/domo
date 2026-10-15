@@ -121,9 +121,7 @@ const message = computed(() => props.item as CondensedItem)
         :side="rowProps.side"
         :shown="alwaysShowTimes || revealed === message.id"
         :revealed="revealed === message.id"
-        :always="alwaysShowTimes"
         :replay="message.kind === 'assistant' ? () => replay((message as { text: string }).text) : undefined"
-        @toggle-always="alwaysShowTimes = !alwaysShowTimes"
       />
       <ActivityGroup v-if="message.kind === 'activity'" :group="message" />
       <TranscriptItemView
