@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough, Readable, Writable } from 'node:stream'
 
 import * as acp from '@agentclientprotocol/sdk'
@@ -6,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentSession, getAgentSession, updateAgentSession } from '../../server/lib/repo'
 import { patchSettings } from '../../server/lib/settings'
-import { askForTitle, cleanTitle, nameSessionInBackground, resolveTitler } from '../../server/lib/acp/session-title'
+import { askForTitle, cleanTitle, nameSessionInBackground, resolveTitler, writeTitle } from '../../server/lib/acp/session-title'
+import { codexAccessToken } from '../../server/lib/codex-credentials'
 
 /**
  * The title writer is a throwaway ACP session. Driven here against the SDK's
@@ -28,6 +32,19 @@ vi.mock('node:child_process', async (importOriginal) => {
     }
   }
 })
+
+// No machine's own login, ever: on macOS the Claude check spawns `security`,
+// which the fake `spawn` above would turn into an adapter that never exits,
+// and either check would read the developer's real home. With no login,
+// `adapterEnv` hands over any API key it has, which the titler must drop.
+vi.mock('../../server/lib/claude-credentials', async importOriginal => ({
+  ...await importOriginal<typeof import('../../server/lib/claude-credentials')>(),
+  hasClaudeSubscriptionLogin: async () => false
+}))
+vi.mock('../../server/lib/codex-credentials', async importOriginal => ({
+  ...await importOriginal<typeof import('../../server/lib/codex-credentials')>(),
+  hasCodexSubscriptionLogin: async () => false
+}))
 
 class FakeAdapter extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -137,6 +154,8 @@ describe('asking for a title', () => {
     expect(calls[1]!.params).toMatchObject({ configId: 'model', value: 'haiku' })
     expect(calls[2]!.params).toMatchObject({ configId: 'effort', value: 'low' })
     expect(promptText(calls[3]!.params)).toBe('the login test fails one run in five, can you look?')
+    // The adapter and nothing else: no `security`, no real Claude Code.
+    expect(state.spawned).toHaveLength(1)
     expect(state.spawned[0]!.env.ANTHROPIC_API_KEY).toBeUndefined()
     expect(state.spawned[0]!.adapter.killed).toBe(true)
   })
@@ -232,5 +251,115 @@ describe('naming a session in the background', () => {
     nameSessionInBackground(session.id, 'first words')
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(state.spawned).toHaveLength(1)
+  })
+})
+
+/** A Codex home holding a ChatGPT login whose access token expires at `exp` (seconds). */
+async function codexHome(exp: number, mode = 'chatgpt') {
+  const home = await mkdtemp(join(tmpdir(), 'domo-codex-home-'))
+  await mkdir(join(home, '.codex'))
+  const token = ['e30', Buffer.from(JSON.stringify({ exp })).toString('base64url'), 'sig'].join('.')
+  await writeFile(join(home, '.codex', 'auth.json'), JSON.stringify({
+    auth_mode: mode,
+    tokens: { access_token: token, refresh_token: 'rt-single-use', account_id: 'acct_1', id_token: 'x' }
+  }))
+  vi.stubEnv('HOME', home)
+  return { home, token }
+}
+
+/** A streamed Responses answer, the way Codex's backend sends one. */
+function responsesStream(text: string) {
+  return [
+    `data: ${JSON.stringify({ type: 'response.created' })}`,
+    `data: ${JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', content: [{ type: 'output_text', text }] }] } })}`
+  ].join('\n\n')
+}
+
+describe('asking the provider directly', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let homes: string[]
+
+  beforeEach(() => {
+    homes = []
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  afterEach(async () => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+    for (const home of homes) await rm(home, { recursive: true, force: true })
+  })
+
+  it('asks Codex\'s backend with the ChatGPT login, at no effort, and spawns nothing', async () => {
+    const { home, token } = await codexHome(Math.floor(Date.now() / 1000) + 3600)
+    homes.push(home)
+    fetchMock.mockResolvedValue(new Response(responsesStream('Fix empty password login'), { status: 200 }))
+
+    const result = await writeTitle('the login 500s on an empty password', { adapter: 'codex', model: 'gpt-5.6-luna' }, 'ag_1')
+
+    expect(result).toEqual({ answer: 'Fix empty password login', via: 'direct' })
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://chatgpt.com/backend-api/codex/responses')
+    expect(init.headers).toMatchObject({ 'authorization': `Bearer ${token}`, 'chatgpt-account-id': 'acct_1', 'user-agent': 'domo/1.0' })
+    expect(JSON.parse(init.body)).toMatchObject({ model: 'gpt-5.6-luna', reasoning: { effort: 'none' }, store: false, stream: true })
+    expect(JSON.parse(init.body).instructions).toContain('Reply with only a title')
+    expect(state.spawned).toHaveLength(0)
+  })
+
+  it('takes the effort a model offers when it does not do none', async () => {
+    homes.push((await codexHome(Math.floor(Date.now() / 1000) + 3600)).home)
+    fetchMock
+      .mockResolvedValueOnce(new Response(`data: ${JSON.stringify({ type: 'error', error: { param: 'reasoning.effort', code: 'unsupported_value' } })}`, { status: 200 }))
+      .mockResolvedValueOnce(new Response(responsesStream('A title'), { status: 200 }))
+
+    await expect(writeTitle('hi', { adapter: 'codex', model: 'gpt-5.6-sol' }, 'ag_1')).resolves.toMatchObject({ via: 'direct' })
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).reasoning).toEqual({ effort: 'low' })
+  })
+
+  it('leaves an expiring token, and an API-key login, to Codex, never refreshing either', async () => {
+    adapterServing({ models: ['gpt-5.6-luna'], answer: 'Through ACP' })
+    const { home } = await codexHome(Math.floor(Date.now() / 1000) + 30)
+    homes.push(home)
+    expect(await codexAccessToken()).toBeNull()
+    await expect(writeTitle('hi', { adapter: 'codex', model: 'gpt-5.6-luna' }, 'ag_1')).resolves.toEqual({ answer: 'Through ACP', via: 'acp' })
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    homes.push((await codexHome(Math.floor(Date.now() / 1000) + 3600, 'apikey')).home)
+    expect(await codexAccessToken()).toBeNull()
+  })
+
+  it('asks OpenCode Go with the console key, naming itself and the session, and only for Go models', async () => {
+    vi.stubEnv('NUXT_OPENCODE_API_KEY', 'oc_sk_test')
+    fetchMock.mockResolvedValue(Response.json({ choices: [{ message: { content: 'Fix login on empty password' } }] }))
+
+    const result = await writeTitle('the login 500s', { adapter: 'opencode', model: 'opencode-go/glm-5.3-flash' }, 'ag_42')
+
+    expect(result).toEqual({ answer: 'Fix login on empty password', via: 'direct' })
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://opencode.ai/inference/go/v1/chat/completions')
+    expect(init.headers).toMatchObject({ 'authorization': 'Bearer oc_sk_test', 'user-agent': 'domo/1.0', 'x-opencode-session': 'ag_42' })
+    expect(JSON.parse(init.body)).toMatchObject({ model: 'glm-5.3-flash', reasoning_effort: 'none' })
+
+    // Zen bills per token: through OpenCode itself, as any session on it is.
+    fetchMock.mockClear()
+    adapterServing({ models: ['opencode/glm-5.3'], answer: 'Via OpenCode' })
+    await expect(writeTitle('hi', { adapter: 'opencode', model: 'opencode/glm-5.3' }, 'ag_42')).resolves.toMatchObject({ via: 'acp' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the ACP session when the direct call fails, and never calls out for Claude Code', async () => {
+    vi.stubEnv('NUXT_OPENCODE_API_KEY', 'oc_sk_test')
+    fetchMock.mockResolvedValue(Response.json({ error: 'overloaded' }, { status: 503 }))
+    adapterServing({ models: ['opencode-go/glm-5.3-flash'], answer: 'Via OpenCode' })
+    await expect(writeTitle('hi', { adapter: 'opencode', model: 'opencode-go/glm-5.3-flash' }, 'ag_1'))
+      .resolves.toEqual({ answer: 'Via OpenCode', via: 'acp' })
+
+    fetchMock.mockClear()
+    adapterServing({ models: ['haiku'], answer: 'Via Claude' })
+    await expect(writeTitle('hi', { adapter: 'claude-code', model: 'haiku' }, 'ag_1')).resolves.toMatchObject({ via: 'acp' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
