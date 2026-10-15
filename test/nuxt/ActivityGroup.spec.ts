@@ -1,10 +1,11 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import ActivityGroup from '~/components/ActivityGroup.vue'
 import { buildTranscript, condenseTranscript, type ActivityGroup as ActivityGroupItem } from '~/utils/agentTranscript'
 import type { AgentEvent } from '~~/shared/types'
 import { agentEvent, thoughtChunk } from '../helpers/events'
+import { forgetExpandedRows } from '~/composables/useRowOpen'
 
 const tool = (id: string, name: string, status = 'completed', payload: any = {}) =>
   agentEvent('tool_call', {
@@ -26,6 +27,9 @@ function groupOf(events: AgentEvent[], live = false): ActivityGroupItem {
 function render(events: AgentEvent[], live = false) {
   return mountSuspended(ActivityGroup, { props: { group: groupOf(events, live) } })
 }
+
+// Expanded state is kept per id for the whole tab; each case starts collapsed.
+beforeEach(() => forgetExpandedRows())
 
 describe('ActivityGroup', () => {
   it('sums the run up in one line', async () => {
@@ -76,6 +80,26 @@ describe('ActivityGroup', () => {
 
     await component.find('button').trigger('click')
     await expect.poll(() => component.text()).not.toContain('pnpm test --silent')
+  })
+
+  /**
+   * A virtual transcript takes a row down when it scrolls out of the window
+   * and puts it back on the way in. Opened, it has to come back open — and so
+   * the same height the list laid it out at.
+   */
+  it('is still open when it is drawn again', async () => {
+    const events = [
+      tool('c1', 'Read', 'completed', { rawInput: { file_path: '/srv/api/src/index.ts' } }),
+      tool('c2', 'Bash', 'completed', { rawInput: { command: 'pnpm test --silent' } })
+    ]
+    const first = await render(events)
+    await first.find('button').trigger('click')
+    await expect.poll(() => first.text()).toContain('pnpm test --silent')
+    first.unmount()
+
+    const again = await render(events)
+
+    await expect.poll(() => again.text()).toContain('pnpm test --silent')
   })
 
   it('expands thoughts along with the tool calls', async () => {

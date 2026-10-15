@@ -1,8 +1,9 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import MeshMessageCard from '~/components/MeshMessageCard.vue'
 import type { MeshItem } from '~/utils/agentTranscript'
+import { forgetExpandedRows } from '~/composables/useRowOpen'
 
 function item(overrides: Partial<MeshItem> = {}): MeshItem {
   return {
@@ -22,6 +23,9 @@ function item(overrides: Partial<MeshItem> = {}): MeshItem {
 function render(overrides: Partial<MeshItem> = {}) {
   return mountSuspended(MeshMessageCard, { props: { item: item(overrides) } })
 }
+
+// Expanded state is kept per id for the whole tab; each case starts collapsed.
+beforeEach(() => forgetExpandedRows())
 
 describe('MeshMessageCard', () => {
   /** The action and the name are drawn apart, so the verb never reads as part of an agent's title. */

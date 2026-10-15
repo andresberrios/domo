@@ -7,8 +7,9 @@ import type { ActivityGroup, TranscriptItem } from '~/utils/agentTranscript'
  * `TranscriptItemView`, so what is behind the row is not a second rendering of
  * the transcript — it is the transcript.
  *
- * The open state is component-local and the group's id is stable, so a group
- * the user opened stays open while events stream in below it.
+ * The open state is kept by the group's id (`useRowOpen`), and that id is
+ * stable, so a group the user opened stays open while events stream in below
+ * it and when it scrolls out of the window and back.
  *
  * A live group's last item is what the agent is doing right now. Collapsed,
  * the header says so in place of the breakdown, on the same one line, so a
@@ -17,7 +18,7 @@ import type { ActivityGroup, TranscriptItem } from '~/utils/agentTranscript'
  */
 const props = defineProps<{ group: ActivityGroup }>()
 
-const open = ref(false)
+const open = useRowOpen(() => props.group.id)
 
 const label = computed(() => activityLabel(props.group))
 const breakdown = computed(() => activityBreakdown(props.group))

@@ -8,6 +8,7 @@ import {
 } from '~~/shared/assistants'
 import type { AgentEvent, HandoffReason, PendingPermission } from '~~/shared/types'
 import { domoCall, domoToolLabel, domoToolName } from '~/utils/domoTools'
+import { dayKey } from '~/utils/format'
 
 export interface ToolCallView {
   toolCallId: string
@@ -755,4 +756,48 @@ export function reconcileCondensed(
 /** "Fresh session · the context window was filling up" — the line a handoff draws. */
 export function handoffLabel(reason: HandoffReason): string {
   return `New session · ${HANDOFF_REASON_LABELS[reason] ?? 'handed off'}`
+}
+
+/** The line naming a day, above the first row of that day: a row of its own. */
+export interface DayRow {
+  id: string
+  kind: 'day'
+  at: string
+}
+
+/** What a transcript draws, one virtual row each. */
+export type TranscriptRowModel = CondensedItem | DayRow
+
+/**
+ * The rows to draw: a day's line before the first row of each day, as a row
+ * of its own rather than part of the row under it.
+ *
+ * Part of the row, it made that row's height depend on the row before it — and
+ * the row before the first loaded one arrives later, with the page above it.
+ * The row then lost its line and changed height under the reader. As a row of
+ * its own, keyed by its day, the line just moves up to the new first row of
+ * that day, and no row changes height.
+ *
+ * `previous` holds the lines drawn last time, so one that has not moved keeps
+ * its identity, as every other row does.
+ */
+export function withDayRows(
+  items: CondensedItem[],
+  previous: Map<string, DayRow> = new Map()
+): TranscriptRowModel[] {
+  const out: TranscriptRowModel[] = []
+  let day: string | null = null
+  for (const item of items) {
+    const key = dayKey(item.at)
+    if (key !== day) {
+      day = key
+      const id = `day:${key}`
+      const kept = previous.get(id)
+      const row = kept && kept.at === item.at ? kept : { id, kind: 'day' as const, at: item.at }
+      previous.set(id, row)
+      out.push(row)
+    }
+    out.push(item)
+  }
+  return out
 }
