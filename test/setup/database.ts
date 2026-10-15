@@ -3,7 +3,7 @@ import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterAll } from 'vitest'
+import { afterAll, afterEach } from 'vitest'
 
 import { TEST_DATABASE, ensureTestDatabase, resetTestDatabase, unavailableError } from '../helpers/database'
 
@@ -41,6 +41,14 @@ await resetTestDatabase()
 // leftover from one cannot be read by the next.
 const dataDir = join(tmpdir(), 'domo-test', randomUUID().slice(0, 8))
 process.env.NUXT_DATA_DIR = dataDir
+
+// What a test started and did not wait for (a note once a build ends, a
+// generated title) would otherwise still be writing when the next test
+// truncates, and the two deadlock.
+afterEach(async () => {
+  const { settleBackground } = await import('../../server/lib/background')
+  await settleBackground()
+})
 
 afterAll(async () => {
   const { closeDb } = await import('../../server/lib/db')

@@ -25,6 +25,7 @@ import {
   updateDevEnvironment
 } from '../../server/lib/repo'
 import { attachmentPath } from '../../server/lib/notifications'
+import { settleBackground } from '../../server/lib/background'
 import { startSubscriptionNotifier, stopSubscriptionNotifier } from '../../server/lib/acp/subscriptions'
 import { pinnedAdapterVersions } from '../../server/lib/dev-env/runtime-volume'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
@@ -770,6 +771,24 @@ describe('projects and dev environments', () => {
     })
     // At once, not when the build is done: that takes minutes.
     expect(body).toMatchObject({ id: 'env_new', name: 'feature-x', status: 'creating' })
+  })
+
+  // What the call leaves running must be waitable, or the next test's
+  // truncate races its insert and deadlocks (`test/setup/database.ts`).
+  it('tracks the note it sends when the build ends, so a test can wait for it', async () => {
+    const caller = await session('caller')
+    const project = await createProject({ name: 'domo', repoPath })
+    building.built = new Promise(resolve => setTimeout(() => resolve({
+      id: 'env_new', name: 'feature-x', status: 'running', workspacePath: '/workspaces/env_new',
+      workspaceSeed: { paths: [], total: 0, copied: [], install: null, branch: { name: 'feature-x', created: true } }
+    }), 50))
+
+    await callTool(mintMeshToken(caller.id), 'create_dev_environment', { projectId: project.id, name: 'feature-x' })
+    await settleBackground()
+
+    expect((await listInboxMessages(caller.id)).map(message => message.content[0].text)).toEqual([
+      expect.stringContaining('"feature-x" (env_new) is running')
+    ])
   })
 
   it('starts, stops and renames a development environment', async () => {

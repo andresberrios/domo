@@ -1,3 +1,4 @@
+import { inBackground } from '../background'
 import { bus } from '../bus'
 import { keyedSerial } from '../keyed-serial'
 import {
@@ -221,7 +222,7 @@ export async function startSubscriptionNotifier(): Promise<void> {
   if (g[globalKey]) return
   g[globalKey] = bus.subscribe((event) => {
     const running = handle(event)
-    if (running) void running.catch(error => console.error('[acp] subscription notifier failed', error))
+    if (running) inBackground(running.catch(error => console.error('[acp] subscription notifier failed', error)))
   })
   const [targets, messages] = await Promise.all([
     listAllSubscriptionTargets(),
