@@ -3,9 +3,9 @@ import { geminiApiKey } from '../gemini'
 import { getSettings } from '../settings'
 import type { AgentVoiceSettings } from '../../../shared/types'
 import { languageName } from '../../../shared/agent-voice'
-import { EMPTY_SPEECH_CONTEXT, instructionPrompt, type SpeechContext } from './context'
+import { EMPTY_SPEECH_CONTEXT, type SpeechContext } from './context'
 import { synthesizeKyutai, transcribeKyutai } from './kyutai-speech'
-import { synthesizeLocal, transcribeLocal } from './local-speech'
+import { synthesizeLocal, transcribeLocal, voicedSeconds } from './local-speech'
 import { synthesizeMac, transcribeMac } from './mac-speech'
 import { synthesizePocket } from './pocket-speech'
 import { synthesizeOpenAi, transcribeOpenAi } from './openai-speech'
@@ -24,15 +24,31 @@ import { synthesizeOpenAi, transcribeOpenAi } from './openai-speech'
  */
 
 /**
- * A general model would answer the audio instead of writing it down, so the
- * Gemini request always says what is wanted, and the context comes after it.
+ * A general model would answer the audio, or go on with it, instead of
+ * writing it down, so Gemini is told it is a transcriber, as a system
+ * instruction, and given the project's terms as spelling hints only. Never
+ * the conversation: given it as dialogue, gemini-3.5-flash wrote the
+ * developer's plausible next message for a short or noisy clip ("Now do the
+ * same for Venus." for "Go ahead."). Measured October 2026: on TTS'd turns
+ * with the vocabulary alone, no clip with speech came back with an invented
+ * word and the terms were spelled as often as with the conversation; on
+ * real people (`scripts/stt-bench`) the word error rate did not move.
  */
-const TRANSCRIBE_PROMPT = 'Transcribe the speech verbatim. Output only the transcript, nothing else. '
-  + 'If there is no speech, output nothing.'
+function transcribeInstruction(language: string | null, vocabulary: string[]): string {
+  const strict = 'You are a speech-to-text engine, not an assistant. '
+    + `Write down exactly the words spoken in the audio${language ? `, in ${language},` : ''} and nothing else. `
+    + 'Do not answer, continue, complete or summarise anything. '
+    + 'If the audio has no clear speech (silence, noise, breathing, hum), the transcript is empty. '
+    + 'Never write words that are not audible in the audio.'
+  if (!vocabulary.length) return strict
+  return `${strict}\n\nSpelling hints: the speaker is a software developer, and may say some of these project terms. `
+    + `Spell them this way if, and only if, you hear them. They are not part of the audio: ${vocabulary.join(', ')}.`
+}
 
-const CONTEXT_PROMPT = 'The speaker is a software developer talking to their coding agent. '
-  + 'Use the context below only to spell names and identifiers the way this project writes them, '
-  + 'when they are what was said. Never add words that were not spoken.'
+/** The speech detector reads 16 kHz, which is what the voice bar records. */
+const VAD_SAMPLE_RATE = 16000
+/** Less speech than this, by the speech detector, and there was nothing to write down. */
+const MIN_SPEECH_SECONDS = 0.1
 
 export interface SpeechChunk {
   /** PCM16 base64. */
@@ -140,10 +156,12 @@ export function looksHallucinated(text: string, seconds: number): boolean {
 }
 
 /**
- * Hear a turn with the given settings. Context makes a recogniser better on
- * average and occasionally much worse: it comes back empty, or loops. Either
- * is heard again without the context, which costs a second request only
- * when it happens.
+ * Hear a turn with the given settings. Audio in which the speech detector
+ * hears nobody is not transcribed at all (`vad.ts`): every engine writes
+ * something down for noise. Context makes a recogniser better on average
+ * and occasionally much worse: it comes back empty, or loops. Either is
+ * heard again without the context, which costs a second request only when
+ * it happens.
  */
 export async function transcribeWith(
   settings: AgentVoiceSettings,
@@ -151,6 +169,10 @@ export async function transcribeWith(
   sampleRate: number,
   { context = EMPTY_SPEECH_CONTEXT, signal }: TranscribeOptions = {}
 ): Promise<string> {
+  if (sampleRate === VAD_SAMPLE_RATE) {
+    const voiced = await voicedSeconds(samples, MIN_SPEECH_SECONDS)
+    if (voiced !== null && voiced < MIN_SPEECH_SECONDS) return ''
+  }
   const text = await transcribeOnce(settings, samples, sampleRate, context, signal)
   const primed = context.conversation || context.vocabulary.length
   if (!primed || signal?.aborted) return text
@@ -178,20 +200,21 @@ async function transcribeOnce(
     case 'browser':
       throw new Error('the browser transcribes its own speech')
   }
-  const language = languageName(settings.language)
-  const ask = language ? `${TRANSCRIBE_PROMPT} The speech is in ${language}.` : TRANSCRIBE_PROMPT
-  const prompt = instructionPrompt(context)
   const response = await gemini().models.generateContent({
     model: settings.geminiTranscribeModel,
     contents: [{
       role: 'user',
       parts: [
         { inlineData: { mimeType: 'audio/wav', data: wavFromPcm16(samples, sampleRate).toString('base64') } },
-        { text: prompt ? `${ask}\n\n${CONTEXT_PROMPT}\n\n${prompt}` : ask }
+        { text: 'Transcribe this audio.' }
       ]
     }],
-    // A transcript has one right answer; sampling only adds ways to miss it.
-    config: { abortSignal: signal, temperature: 0 }
+    config: {
+      abortSignal: signal,
+      systemInstruction: transcribeInstruction(languageName(settings.language), context.vocabulary),
+      // A transcript has one right answer; sampling only adds ways to miss it.
+      temperature: 0
+    }
   })
   return transcriptFrom(response)
 }

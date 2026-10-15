@@ -25,7 +25,14 @@ them on first use.
   names and the project's docs and file names. Engines take it as a prompt;
   the device takes it as phrases. `gemini-3.5-transcribe` ignores any prompt
   (identical output with or without), so context only helps the other
-  engines.
+  engines. Gemini gets only the vocabulary, as spelling hints under a
+  "you are a transcriber" system instruction: given the conversation as
+  dialogue, it wrote the developer's likely next message for short or noisy
+  clips, which went to the agent as theirs. OpenAI's transcribers get the
+  vocabulary alone as their `prompt` too (unmeasured: no credits).
+- **Nobody speaking means nothing is transcribed** (`agent-voice/vad.ts`,
+  Silero VAD, 2 MB, fetched like the turn model). Every engine writes
+  something down for room noise or hum, with or without context.
 - **A primed transcript that comes back empty or looping is heard again
   cold** (`looksHallucinated`). Whisper copies its prompt's style and loops on
   it. People stutter too, so a single word has to repeat eight times to count.

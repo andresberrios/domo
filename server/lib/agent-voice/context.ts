@@ -288,17 +288,16 @@ export async function speechContext(agentSessionId: string): Promise<SpeechConte
 /* ------------------------------ prompts ------------------------------ */
 
 /**
- * The context as one prompt for a recogniser that reads instructions
- * (Gemini, OpenAI's transcribe models). The vocabulary is a spelling guide,
- * not a hint of what was said.
+ * The vocabulary as the `prompt` of OpenAI's transcribers, which is what
+ * their docs give it for: terms to spell, never the conversation. Gemini,
+ * given the conversation, wrote the developer's likely next message instead
+ * of what was said (`speech.ts`). whisper-1 reads only the last 224 tokens of
+ * a prompt, so it gets the most likely terms.
  */
-export function instructionPrompt(context: SpeechContext): string {
-  const parts: string[] = []
-  if (context.vocabulary.length) {
-    parts.push(`Terms from this software project, spelled as written: ${context.vocabulary.join(', ')}.`)
-  }
-  if (context.conversation) parts.push(`The conversation so far:\n${context.conversation}`)
-  return parts.join('\n\n')
+export function vocabularyPrompt(context: SpeechContext, { whisper = false } = {}): string {
+  if (!context.vocabulary.length) return ''
+  if (whisper) return `Glossary: ${context.vocabulary.slice(0, 40).join(', ')}.`
+  return `Terms from this software project, spelled as written: ${context.vocabulary.join(', ')}.`
 }
 
 /**

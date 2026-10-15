@@ -48,6 +48,10 @@ export type LocalModelRequest =
   | { op: 'turn', samples: Int16Array }
   /** Fetches the turn model, for a warm-up. */
   | { op: 'turn-model' }
+  /** Seconds of speech Silero VAD hears in 16 kHz PCM16, up to `enough`, or `null` when the model cannot be had. */
+  | { op: 'speech', samples: Int16Array, enough: number }
+  /** Fetches the speech detector, for a warm-up. */
+  | { op: 'speech-model' }
 
 export type ToWorker =
   | { kind: 'request', id: string, request: LocalModelRequest }
