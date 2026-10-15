@@ -421,6 +421,36 @@ describe('a streamed turn', () => {
   })
 
   /**
+   * Claude Code announces every call `pending`, right after the last delta of
+   * the text before it. The block stays open for it, but what it holds is
+   * written before the call: written on the next flush instead, the browser
+   * drew the call's row first, and the text above grew into it and pushed it
+   * down.
+   */
+  it('writes the text so far before a tool call that has not started', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    let atCall: AgentEvent[] = []
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'fix the build' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    serve(state.adapters[0]!, async (send) => {
+      await send(textChunk('Looking '))
+      await vi.waitFor(async () => expect(textOf(await listAgentEvents(agent.id))).toEqual(['Looking ']))
+      for (const delta of ['at ', 'the ', 'build.']) await send(textChunk(delta))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Read', kind: 'read', status: 'pending' })
+      // The first moment the call's row exists, before any flush could follow it.
+      await vi.waitFor(async () => {
+        atCall = await listAgentEvents(agent.id)
+        expect(atCall.some(event => event.type === 'tool_call')).toBe(true)
+      }, { interval: 1 })
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
+    })
+    await started
+
+    expect(textOf(atCall)).toEqual(['Looking at the build.'])
+  })
+
+  /**
    * The other half of the same rule, and the reason it is safe: a tool that has
    * actually started *can* have produced something the text after it is about,
    * so the first `tool_call_update` still ends the block. A well-behaved
