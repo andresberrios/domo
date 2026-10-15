@@ -17,14 +17,3 @@ export function isImageAttachment(name: string | null | undefined, mimeType?: st
   return IMAGE.test(name ?? '')
 }
 
-/** The names of every file a session's messages were sent with, for `uploadName` to number past. */
-export function sentAttachmentNames(events: ReadonlyArray<{ type: string, payload: any }>): string[] {
-  const names: string[] = []
-  for (const event of events) {
-    if (event.type !== 'user_message') continue
-    for (const block of event.payload?.content ?? []) {
-      if (block?.type === 'resource_link' && typeof block.name === 'string') names.push(block.name)
-    }
-  }
-  return names
-}

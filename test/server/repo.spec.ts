@@ -8,6 +8,7 @@ import {
   armMessageWatches,
   claimInboxMessages,
   createAgentSession,
+  createAssistantRow,
   createDevEnvironmentRow,
   createMcpServer,
   createPermission,
@@ -22,6 +23,7 @@ import {
   listAgentSessions,
   listAgentSubscribers,
   listAgentSubscriptions,
+  listAttachmentNames,
   listDevEnvironmentPorts,
   listDevEnvironments,
   listInboxMessages,
@@ -638,6 +640,42 @@ describe('the agent inbox', () => {
     await deleteAgentSession(session.id)
 
     await expect(listInboxMessages(session.id, false)).resolves.toEqual([])
+  })
+})
+
+/**
+ * The composer numbers a pasted `image.png` past every name the conversation
+ * has used, and the page may have loaded only its newest part, so the names
+ * come from here: everything sent, everything still queued, across an
+ * assistant's sessions, and nothing from anyone else's.
+ */
+describe('attachment names', () => {
+  const link = (name: string) => ({ type: 'resource_link', uri: `file:///data/uploads/${name}`, name })
+
+  it('lists what the conversation was sent and has queued, and nothing else', async () => {
+    const session = await agent()
+    const other = await agent()
+    await appendAgentEvent(session.id, 'user_message', { content: [link('image-1.png'), { type: 'text', text: 'look' }] })
+    await appendAgentEvent(session.id, 'user_message', { content: [link('notes.pdf')] })
+    // What the agent wrote, and a malformed old row, are not the user's attachments.
+    await appendAgentEvent(session.id, 'agent_message', { content: [link('theirs.png')] })
+    await appendAgentEvent(session.id, 'user_message', { content: 'a plain string' } as any)
+    await enqueueInboxMessage({ agentSessionId: session.id, content: [link('image-2.png')], delivery: 'queue', origin: 'user' })
+    await appendAgentEvent(other.id, 'user_message', { content: [link('image-9.png')] })
+
+    expect((await listAttachmentNames(session.id)).sort()).toEqual(['image-1.png', 'image-2.png', 'notes.pdf'])
+  })
+
+  it('counts every session of an assistant as one conversation', async () => {
+    const assistant = await createAssistantRow({
+      name: 'Ada', avatar: null, persona: '', adapter: 'claude-code', model: null, modeId: null,
+      cwd: '/srv/api', devEnvironmentId: null, handoffThreshold: null
+    })
+    const before = await agent({ adapter: 'claude-code', title: 'one', cwd: '/srv/api', assistantId: assistant.id })
+    const now = await agent({ adapter: 'claude-code', title: 'two', cwd: '/srv/api', assistantId: assistant.id })
+    await appendAgentEvent(before.id, 'user_message', { content: [link('image-1.png')] })
+
+    expect(await listAttachmentNames(now.id)).toEqual(['image-1.png'])
   })
 })
 

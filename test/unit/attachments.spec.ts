@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { attachmentUrl, isImageAttachment, sentAttachmentNames } from '../../app/utils/attachments'
+import { attachmentUrl, isImageAttachment } from '../../app/utils/attachments'
 
 describe('attachmentUrl', () => {
   it('serves an upload of the composer by its own name, from a path or a file URI', () => {
@@ -26,12 +26,3 @@ describe('isImageAttachment', () => {
   })
 })
 
-describe('sentAttachmentNames', () => {
-  it('reads the names off the session\'s sent messages only', () => {
-    expect(sentAttachmentNames([
-      { type: 'user_message', payload: { content: [{ type: 'resource_link', name: 'image-1.png' }, { type: 'text', text: 'hi' }] } },
-      { type: 'agent_message', payload: { content: [{ type: 'resource_link', name: 'theirs.png' }] } },
-      { type: 'user_message', payload: { content: [{ type: 'resource_link', name: 'image-2.png' }] } }
-    ])).toEqual(['image-1.png', 'image-2.png'])
-  })
-})

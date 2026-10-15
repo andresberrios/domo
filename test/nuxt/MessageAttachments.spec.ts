@@ -88,9 +88,12 @@ registerEndpoint('/api/uploads', {
 
 const session = { id: 'ag_att', adapter: 'claude-code', status: 'idle', cwd: '/w', usage: null, steering: null } as unknown as AgentSession
 
+/** What the server says the conversation has already used. */
+let used: string[] = []
+registerEndpoint('/api/agents/ag_att/attachment-names', { method: 'GET', handler: () => ({ names: used }) })
+
 const Composer = defineComponent({
-  props: { sentNames: { type: Array as () => string[], default: () => [] } },
-  setup: props => () => h(UApp, null, { default: () => h(AgentComposer, { session, sentNames: props.sentNames }) })
+  setup: () => () => h(UApp, null, { default: () => h(AgentComposer, { session }) })
 })
 
 function paste(component: any, files: File[]) {
@@ -104,11 +107,14 @@ const screenshot = () => new File([new Uint8Array([1])], 'image.png', { type: 'i
 describe('AgentComposer attachments', () => {
   beforeEach(() => {
     named.mockClear()
+    used = []
     localStorage.clear()
   })
 
-  it('numbers pasted screenshots across the message and past the session\'s earlier ones', async () => {
-    const component = await mountSuspended(Composer, { props: { sentNames: ['image-1.png'] } })
+  it('numbers pasted screenshots across the message and past the names the session has used', async () => {
+    // Whatever the page has loaded: the server is asked, and it knows the whole conversation.
+    used = ['image-1.png']
+    const component = await mountSuspended(Composer)
 
     paste(component, [screenshot(), screenshot()])
     paste(component, [screenshot()])

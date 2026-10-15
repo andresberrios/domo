@@ -1716,6 +1716,38 @@ export async function enqueueInboxMessage(input: {
   return message
 }
 
+/**
+ * Every attachment name this session's conversation has used: what it was
+ * sent, and what is still queued for it. An assistant's sessions are one
+ * conversation, so for one of those it is all of them. The composer numbers a
+ * pasted `image.png` past these (`uploadName`), whatever the page has loaded.
+ */
+export async function listAttachmentNames(agentSessionId: string): Promise<string[]> {
+  const rows = await query<{ name: string }>(
+    `with sessions as (
+       select id from agent_sessions where id = $1
+       union
+       select s.id from agent_sessions s
+         join agent_sessions own on own.id = $1
+        where own.assistant_id is not null and s.assistant_id = own.assistant_id
+     )
+     select block->>'name' as name
+       from agent_events e,
+            jsonb_array_elements(case when jsonb_typeof(e.payload->'content') = 'array' then e.payload->'content' else '[]'::jsonb end) block
+      where e.agent_session_id in (select id from sessions)
+        and e.type = 'user_message'
+        and block->>'type' = 'resource_link' and block->>'name' is not null
+     union
+     select block->>'name'
+       from agent_inbox i,
+            jsonb_array_elements(case when jsonb_typeof(i.content) = 'array' then i.content else '[]'::jsonb end) block
+      where i.agent_session_id in (select id from sessions)
+        and block->>'type' = 'resource_link' and block->>'name' is not null`,
+    [agentSessionId]
+  )
+  return rows.map(row => row.name)
+}
+
 export async function listInboxMessages(
   agentSessionId: string,
   pendingOnly = true

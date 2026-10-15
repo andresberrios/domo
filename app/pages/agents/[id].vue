@@ -110,9 +110,6 @@ watch([events, () => synced.value?.status], () => {
   if (delivered || synced.value.status === 'error' || synced.value.status === 'stopped') firstMessage.value = null
 })
 
-/** What earlier attachments were called; a new one is numbered past them. */
-const sentNames = computed(() => sentAttachmentNames(events.value))
-
 /** The new session's row, once Electric has brought it: the page has nothing to show before. */
 function rowArrives(id: string): Promise<void> {
   const arrived = () => allSessions.value.some(item => item.id === id)
@@ -451,7 +448,7 @@ const menuItems = computed(() => [
           session appears.
         -->
         <div v-if="!closed && (session || draft)" class="shrink-0 pt-2">
-          <AgentComposer v-model:draft="draft" :session="session" :start="startFromDraft" :sent-names="sentNames" />
+          <AgentComposer v-model:draft="draft" :session="session" :start="startFromDraft" />
         </div>
       </div>
         <UModal v-model:open="renaming" title="Rename agent" description="Give this agent session a name.">

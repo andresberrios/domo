@@ -12,8 +12,6 @@ const props = defineProps<{
    * the box to be sent again.
    */
   start?: (content: any[]) => Promise<boolean>
-  /** What the session's earlier messages' attachments are called, so a new one is not named the same. */
-  sentNames?: string[]
 }>()
 /** The draft's settings, for the card beside the attach button; see AgentComposerSettings. */
 const draft = defineModel<AgentDraft | null>('draft', { default: null })
@@ -158,9 +156,6 @@ const placeholder = computed(() => {
   return 'Joins the turn it is running…'
 })
 
-/** Names given to files still uploading, so the next paste does not reuse them. */
-const naming = new Set<string>()
-
 /** Never rejects: a failed upload is a toast, not something a caller handles. */
 async function upload(files: File[], names: string[]) {
   try {
@@ -178,22 +173,32 @@ async function upload(files: File[], names: string[]) {
   }
 }
 
+/**
+ * The names the conversation has already used, asked of the server at each
+ * attach: the page may hold only the newest part of the transcript, and a
+ * message sent from another tab counts too. A draft has none.
+ */
+async function usedNames(): Promise<string[]> {
+  if (!props.session) return []
+  try {
+    return (await $fetch<{ names: string[] }>(`/api/agents/${props.session.id}/attachment-names`)).names
+  } catch {
+    return []
+  }
+}
+
 function attach(files: File[]) {
   if (!files.length) return
-  // Named now, in the order they came, against everything already there.
-  const names: string[] = []
-  for (const file of files) {
-    const name = uploadName(file, [...(props.sentNames ?? []), ...attachments.value.map(attachment => attachment.name), ...naming, ...names])
-    names.push(name)
-  }
-  for (const name of names) naming.add(name)
   uploads.value += 1
+  // Named inside the chain, so each batch sees the attachments the one before it added.
   inflight = inflight
-    .then(() => upload(files, names))
-    .finally(() => {
-      uploads.value -= 1
-      for (const name of names) naming.delete(name)
+    .then(async () => {
+      const taken = [...await usedNames(), ...attachments.value.map(attachment => attachment.name)]
+      const names: string[] = []
+      for (const file of files) names.push(uploadName(file, [...taken, ...names]))
+      await upload(files, names)
     })
+    .finally(() => { uploads.value -= 1 })
 }
 
 function onFiles(event: Event) {
