@@ -88,6 +88,15 @@ async function freshStart() {
   }
 }
 
+/** Its name, which is also its current session's title. */
+async function rename(name: string) {
+  try {
+    await $fetch(`/api/assistants/${assistantId.value}`, { method: 'PATCH', body: { name } })
+  } catch (error: any) {
+    toast.add({ title: 'Could not rename the assistant', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
+  }
+}
+
 async function setArchived(archived: boolean) {
   try {
     await $fetch(`/api/assistants/${assistantId.value}`, { method: 'PATCH', body: { archived } })
@@ -116,7 +125,8 @@ const menuItems = computed(() => [
         <template #title>
           <span class="flex min-w-0 items-center gap-2">
             <UAvatar :src="assistant?.avatar ?? undefined" :alt="assistant?.name ?? '?'" size="xs" />
-            <span class="truncate">{{ assistant?.name ?? 'Assistant' }}</span>
+            <InlineTitle v-if="assistant" :value="assistant.name" label="Assistant name" @save="rename" />
+            <span v-else class="truncate">Assistant</span>
           </span>
         </template>
 
