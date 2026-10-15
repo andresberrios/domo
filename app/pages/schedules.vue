@@ -18,6 +18,14 @@ const saving = ref(false)
 /** The job the form is editing, or null when it makes a new one. */
 const editing = ref<CronJob | null>(null)
 const formSection = ref<HTMLElement | null>(null)
+/** Jobs whose whole prompt is shown instead of its first two lines. */
+const expanded = ref(new Set<string>())
+
+function togglePrompt(id: string) {
+  const next = new Set(expanded.value)
+  if (!next.delete(id)) next.add(id)
+  expanded.value = next
+}
 const deleteOpen = ref(false)
 const deletingJob = ref<CronJob | null>(null)
 const scheduleType = ref<'cron' | 'once'>('cron')
@@ -254,7 +262,25 @@ async function remove() {
                   <UBadge color="neutral" variant="subtle" :label="targetName(job)" />
                   <UBadge v-if="job.lastStatus" :color="job.lastStatus === 'failed' ? 'error' : job.lastStatus === 'delivered' ? 'success' : 'neutral'" variant="subtle" :label="STATUS_LABELS[job.lastStatus] ?? job.lastStatus" />
                 </div>
-                <p class="mt-1 line-clamp-2 text-sm text-muted">{{ job.prompt }}</p>
+                <SchedulePrompt v-if="expanded.has(job.id)" :text="job.prompt" class="mt-2" />
+                <button
+                  v-else
+                  type="button"
+                  class="mt-1 line-clamp-2 w-full text-start text-sm whitespace-pre-line text-muted hover:text-default"
+                  :aria-label="`Show the whole prompt of ${job.name}`"
+                  @click="togglePrompt(job.id)"
+                  v-text="job.prompt"
+                />
+                <UButton
+                  v-if="expanded.has(job.id)"
+                  label="Show less"
+                  icon="i-lucide-chevron-up"
+                  color="neutral"
+                  variant="link"
+                  size="xs"
+                  class="mt-1 px-0"
+                  @click="togglePrompt(job.id)"
+                />
                 <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-dimmed">
                   <span v-if="job.scheduleType === 'cron'">{{ scheduleInWords(job) }} · <span class="font-mono">{{ job.cronExpression }}</span></span>
                   <span>{{ when(job) }}</span>

@@ -204,4 +204,21 @@ describe('schedules page', () => {
     await vi.waitFor(() => expect(useRouter().currentRoute.value.query.edit).toBeUndefined())
     wrapper.unmount()
   })
+
+  it('opens a clamped prompt in full, and folds it again', async () => {
+    jobRows = [job({ prompt: 'Step one\nStep two\nStep three\n\nUse `pnpm test`.' })]
+    const wrapper = await mountPage()
+
+    expect(document.querySelector('.md-body')).toBeNull()
+    ;(document.querySelector('button[aria-label="Show the whole prompt of Review CI"]') as HTMLButtonElement).click()
+
+    await expect.poll(() => document.querySelector('.md-body code')?.textContent).toBe('pnpm test')
+    expect(document.querySelector('.md-body')!.textContent).toContain('Step three')
+    expect(document.querySelector('button[aria-label="Copy prompt"]')).not.toBeNull()
+
+    await wrapper.findAll('button').find(button => button.text().includes('Show less'))!.trigger('click')
+    expect(document.querySelector('.md-body')).toBeNull()
+    wrapper.unmount()
+  })
 })
+

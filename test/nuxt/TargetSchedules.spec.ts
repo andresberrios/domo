@@ -126,4 +126,20 @@ describe('TargetSchedules', () => {
       color: 'success'
     })
   })
+
+  it('keeps prompts folded until a task is opened, then shows the whole prompt as markdown', async () => {
+    rows.value = [job({ prompt: 'First line\nSecond line with **bold**' })]
+    const component = await mount({ agentSessionId: 'ag_1' })
+    await openPopover(component)
+
+    expect(document.body.textContent).not.toContain('First line')
+    const toggle = document.querySelector('button[aria-label="Show the prompt of Morning review"]') as HTMLButtonElement
+    toggle.click()
+
+    await expect.poll(() => document.querySelector('.md-body strong')?.textContent).toBe('bold')
+    expect(document.querySelector('.md-body br')).not.toBeNull()
+    expect(document.querySelector('button[aria-label="Copy prompt"]')).not.toBeNull()
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  })
 })
+

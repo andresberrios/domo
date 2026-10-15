@@ -14,6 +14,14 @@ const props = defineProps<{
 const { jobs: allJobs } = useCronJobs()
 const { running, runNow } = useRunCronJob()
 const open = ref(false)
+/** Tasks whose prompt is shown; collapsed, the list stays one glance tall. */
+const expanded = ref(new Set<string>())
+
+function toggle(id: string) {
+  const next = new Set(expanded.value)
+  if (!next.delete(id)) next.add(id)
+  expanded.value = next
+}
 
 const jobs = computed(() => allJobs.value.filter(job =>
   (!!props.agentSessionId && job.agentSessionId === props.agentSessionId)
@@ -66,7 +74,21 @@ function next(job: CronJob) {
                 :class="job.enabled ? 'text-primary' : 'text-dimmed'"
                 class="size-4 shrink-0"
               />
-              <span class="min-w-0 flex-1 truncate text-sm font-medium" :class="{ 'text-muted': !job.enabled }">{{ job.name }}</span>
+              <button
+                type="button"
+                class="flex min-w-0 flex-1 items-center gap-1 text-start text-sm font-medium"
+                :class="{ 'text-muted': !job.enabled }"
+                :aria-expanded="expanded.has(job.id)"
+                :aria-label="`${expanded.has(job.id) ? 'Hide' : 'Show'} the prompt of ${job.name}`"
+                @click="toggle(job.id)"
+              >
+                <span class="truncate">{{ job.name }}</span>
+                <UIcon
+                  name="i-lucide-chevron-down"
+                  class="size-3.5 shrink-0 text-dimmed transition-transform"
+                  :class="{ 'rotate-180': expanded.has(job.id) }"
+                />
+              </button>
               <UTooltip text="Run now">
                 <UButton
                   icon="i-lucide-play"
@@ -109,6 +131,7 @@ function next(job: CronJob) {
               </template>
             </div>
             <p v-if="job.lastError" class="line-clamp-2 ps-6 text-xs text-error">{{ job.lastError }}</p>
+            <SchedulePrompt v-if="expanded.has(job.id)" :text="job.prompt" class="ms-6 mt-2" />
           </li>
         </ul>
         <div class="flex items-center justify-between border-t border-default p-2">
