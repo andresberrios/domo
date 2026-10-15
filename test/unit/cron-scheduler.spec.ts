@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CronJob } from '../../shared/types'
-import { CronScheduler } from '../../server/lib/cron/scheduler'
+import { CronScheduler, runCronJobNow } from '../../server/lib/cron/scheduler'
 
 const acp = vi.hoisted(() => ({
   deliver: vi.fn(async (id: string) => ({ delivery: 'queue', outcome: 'queued', agentSessionId: id }))
@@ -9,6 +9,7 @@ const repo = vi.hoisted(() => ({
   listDueCronJobs: vi.fn(),
   claimCronJob: vi.fn(),
   finishCronRun: vi.fn(async () => {}),
+  startManualCronRun: vi.fn(async () => ({ id: 'crun_manual' })),
   failCronJobSchedule: vi.fn(async () => true),
   // A job due against a session that cannot start is dropped rather than fired,
   // so every firing begins by reading the session and the environment it names.
@@ -114,5 +115,26 @@ describe('cron scheduler', () => {
       expect.stringContaining('no occurrence')
     )
     expect(acp.deliver).toHaveBeenCalledWith('ag_2', expect.anything())
+  })
+})
+
+describe('running a scheduled task now', () => {
+  it('delivers with the task\'s own "if busy" mode and never claims its next occurrence', async () => {
+    acp.deliver.mockResolvedValueOnce({ delivery: 'interrupt', outcome: 'prompted', agentSessionId: 'ag_1' })
+
+    const result = await runCronJobNow(job({ delivery: 'interrupt' }))
+
+    expect(result).toEqual({ jobId: 'cron_1', agentSessionId: 'ag_1', delivery: 'interrupt', outcome: 'prompted' })
+    expect(acp.deliver).toHaveBeenCalledWith('ag_1', expect.objectContaining({ delivery: 'interrupt', origin: 'cron:cron_1' }))
+    expect(repo.startManualCronRun).toHaveBeenCalledWith('cron_1')
+    expect(repo.claimCronJob).not.toHaveBeenCalled()
+    expect(repo.finishCronRun).toHaveBeenCalledWith('crun_manual', 'delivered', 'prompted')
+  })
+
+  it('records a failed run and still throws, so the caller hears why', async () => {
+    acp.deliver.mockRejectedValueOnce(new Error('adapter unavailable'))
+
+    await expect(runCronJobNow(job())).rejects.toThrow('adapter unavailable')
+    expect(repo.finishCronRun).toHaveBeenCalledWith('crun_manual', 'failed', 'adapter unavailable')
   })
 })

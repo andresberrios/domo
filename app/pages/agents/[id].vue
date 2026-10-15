@@ -371,6 +371,7 @@ const menuItems = computed(() => [
           >
             <template #leading><UIcon name="i-lucide-git-fork" class="size-3" /></template>
           </UBadge>
+          <TargetSchedules v-if="session" :agent-session-id="session.id" :assistant-id="handedOff ? null : assistant?.id" />
         </template>
         <template #right>
           <USwitch v-model="condensed" size="xs" label="Condensed" :ui="{ label: 'text-xs text-muted' }" />
