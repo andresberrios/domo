@@ -572,7 +572,8 @@ function serviceUninstall() {
   if (service.kind === 'systemd') sh('systemctl', ['--user', 'disable', SYSTEMD_UNIT])
   rmSync(service.file, { force: true })
   if (service.kind === 'systemd') sh('systemctl', ['--user', 'daemon-reload'])
-  console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p domo-prod down\` stops them, add \`-v\` to delete the database.`)
+  const project = { ...readDotenv(), ...process.env }.COMPOSE_PROJECT_NAME || 'domo-prod'
+  console.log(`Domo no longer starts at login. Its files are still in ${HOME}; remove that directory to delete them.\nPostgres and Electric are still in Docker: \`docker compose -p ${project} down\` stops them, add \`-v\` to delete the database.`)
 }
 
 function supervisorPid() {
