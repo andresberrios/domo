@@ -18,7 +18,7 @@ import {
 } from '../dev-environments'
 import { forwardEnvironmentPort, refreshEnvironmentPorts, unforwardEnvironmentPort } from '../dev-environment-ports'
 import { createProjectFromPath, retireProjectCascade, retireProjectEnvironment, beginProjectEnvironmentUpgrade } from '../projects'
-import { normalizeCronJobInput } from '../cron/input'
+import { cronJobState, normalizeCronJobInput } from '../cron/input'
 import { upgradeAdapterChange, upgradeNotes } from '../../../shared/dev-environments'
 import { notifyHuman, readAgentFile, writeAgentFile } from '../notifications'
 import { getSettings } from '../settings'
@@ -307,6 +307,7 @@ function describeJob(job: CronJob) {
     prompt: job.prompt,
     schedule: job.scheduleType === 'cron' ? `${job.cronExpression} (${job.timezone})` : `once at ${job.runAt}`,
     enabled: job.enabled,
+    ...job.archived ? { archived: true } : {},
     delivery: job.delivery,
     nextRunAt: job.nextRunAt,
     lastRunAt: job.lastRunAt,
@@ -1079,21 +1080,28 @@ export const MESH_TOOLS = [
   {
     name: 'list_scheduled_tasks',
     description:
-      'List an agent\'s scheduled tasks with their next and last runs. Pass jobId for one task and its recent run '
-      + 'history (when each fired, and whether delivery failed).',
+      'List an agent\'s scheduled tasks with their next and last runs. Archived tasks (stopped ones, and one-time '
+      + 'tasks that have run) are left out unless includeArchived is true. Pass jobId for one task, archived or not, '
+      + 'and its recent run history (when each fired, and whether delivery failed).',
     inputSchema: {
       type: 'object',
       properties: {
         agentId: agentId('Whose tasks. Defaults to your own session, or to your assistant if you are one.'),
         assistantId: { type: 'string', description: 'An assistant\'s tasks (as_…).' },
-        jobId: { type: 'string', description: 'One task, with its run history.' }
+        jobId: { type: 'string', description: 'One task, with its run history.' },
+        includeArchived: { type: 'boolean', description: 'Also list archived tasks. Default false.' }
       },
       additionalProperties: false
     }
   },
   {
     name: 'update_scheduled_task',
-    description: 'Edit, pause or resume a scheduled task of yours or of an agent you spawned. Pass only the fields to change.',
+    description:
+      'Edit, stop, resume, archive or unarchive a scheduled task of yours or of an agent you spawned. Pass only the '
+      + 'fields to change. To stop a task, pass enabled: false: it is paused and archived (it never fires and leaves '
+      + 'the lists, its run history stays readable); add archived: false to pause it but keep it listed. '
+      + 'archived: false alone brings an archived task back, still paused; enabled: true resumes it. '
+      + 'To remove a task for good, use delete_scheduled_task.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1104,7 +1112,8 @@ export const MESH_TOOLS = [
         runAt: { type: 'string', description: 'Switch to or replace a one-time ISO 8601 run.' },
         timezone: { type: 'string' },
         delivery: { type: 'string', enum: DELIVERIES },
-        enabled: { type: 'boolean', description: 'false pauses the task; true resumes it.' }
+        enabled: { type: 'boolean', description: 'false stops the task (and archives it unless archived: false); true resumes it and unarchives it.' },
+        archived: { type: 'boolean', description: 'true archives the task, which also pauses it; false unarchives it and leaves it paused.' }
       },
       required: ['jobId'],
       additionalProperties: false
@@ -1114,7 +1123,8 @@ export const MESH_TOOLS = [
     name: 'run_scheduled_task',
     description:
       'Deliver a scheduled task\'s prompt now, exactly as the schedule would, to test it. The schedule is unchanged and '
-      + 'the run appears in its history. For your own tasks and those of agents you spawned.',
+      + 'the run appears in its history. For your own tasks and those of agents you spawned. An archived task cannot '
+      + 'run: unarchive it first.',
     inputSchema: {
       type: 'object',
       properties: { jobId: { type: 'string', description: 'Task id from list_scheduled_tasks.' } },
@@ -1124,7 +1134,9 @@ export const MESH_TOOLS = [
   },
   {
     name: 'delete_scheduled_task',
-    description: 'Permanently delete a scheduled task of yours or of an agent you spawned.',
+    description:
+      'Permanently delete a scheduled task of yours or of an agent you spawned, with its run history. To stop a task '
+      + 'and keep its history, use update_scheduled_task with enabled: false instead.',
     inputSchema: {
       type: 'object',
       properties: { jobId: { type: 'string', description: 'Task id from list_scheduled_tasks.' } },
@@ -1892,9 +1904,10 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         }
       }
       const assistantId: string | null = args.assistantId ?? (args.agentId ? null : caller.assistantId)
-      if (assistantId) return { assistantId, jobs: (await listCronJobs({ assistantId })).map(describeJob) }
+      const options = { includeArchived: args.includeArchived === true }
+      if (assistantId) return { assistantId, jobs: (await listCronJobs({ assistantId }, options)).map(describeJob) }
       const target = await requireAgent(args.agentId ?? caller.id)
-      return { agentId: target.id, jobs: (await listCronJobs({ agentSessionId: target.id })).map(describeJob) }
+      return { agentId: target.id, jobs: (await listCronJobs({ agentSessionId: target.id }, options)).map(describeJob) }
     }
 
     case 'update_scheduled_task': {
@@ -1913,7 +1926,8 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         runAt: switchesToCron ? null : (args.runAt ?? existing.runAt),
         timezone: args.timezone ?? existing.timezone,
         delivery: args.delivery ?? existing.delivery,
-        enabled: args.enabled ?? existing.enabled,
+        // A schedule an agent stops is put away unless it says otherwise.
+        ...cronJobState(existing, args, { archiveOnPause: true }),
         createdBy: existing.createdBy
       })
       const replaced = await replaceCronJob(existing.id, normalized)

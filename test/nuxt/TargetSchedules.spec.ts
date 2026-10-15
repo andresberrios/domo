@@ -33,6 +33,7 @@ function job(overrides: Partial<CronJob> = {}): CronJob {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     runAt: null,
     enabled: true,
+    archived: false,
     delivery: 'queue',
     nextRunAt: new Date(Date.now() + 3 * 3600_000).toISOString(),
     lastRunAt: null,
@@ -83,7 +84,8 @@ describe('TargetSchedules', () => {
     rows.value = [
       job(),
       job({ id: 'cron_assistant', agentSessionId: null, assistantId: 'as_1', name: 'Assistant sweep', enabled: false, nextRunAt: null }),
-      job({ id: 'cron_other', agentSessionId: 'ag_other', name: 'Not mine' })
+      job({ id: 'cron_other', agentSessionId: 'ag_other', name: 'Not mine' }),
+      job({ id: 'cron_archived', name: 'Put away', enabled: false, archived: true, nextRunAt: null })
     ]
     const component = await mount({ agentSessionId: 'ag_1', assistantId: 'as_1' })
 
@@ -96,6 +98,7 @@ describe('TargetSchedules', () => {
     expect(text).toContain('Assistant sweep')
     expect(text).toContain('Paused')
     expect(text).not.toContain('Not mine')
+    expect(text).not.toContain('Put away')
     expect(document.querySelector('a[href="/schedules?edit=cron_mine"]')).not.toBeNull()
     // A new one from here is for the assistant, so it outlives the session.
     expect(document.querySelector('a[href="/schedules?target=as_1"]')).not.toBeNull()

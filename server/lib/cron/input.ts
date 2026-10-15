@@ -14,7 +14,29 @@ export interface CronJobInput {
   timezone?: string
   delivery?: MessageDelivery
   enabled?: boolean
+  /** Only a paused job can be archived; enabling one unarchives it. */
+  archived?: boolean
   createdBy?: CronJob['createdBy']
+}
+
+/**
+ * Where a change leaves a job's `enabled` and `archived`. Archiving pauses,
+ * and resuming unarchives, so an archived job is never one that fires.
+ * `archiveOnPause` is for agents: a schedule they stop is put away unless
+ * they say to keep it in the list.
+ */
+export function cronJobState(
+  existing: Pick<CronJob, 'enabled' | 'archived'>,
+  patch: { enabled?: boolean, archived?: boolean },
+  { archiveOnPause = false } = {}
+): { enabled: boolean, archived: boolean } {
+  if (patch.enabled === true && patch.archived === true) {
+    throw new Error('An archived task is paused: pass enabled: true or archived: true, not both.')
+  }
+  const enabled = patch.archived === true ? false : (patch.enabled ?? existing.enabled)
+  if (enabled) return { enabled, archived: false }
+  const archived = patch.archived ?? (archiveOnPause && patch.enabled === false ? true : existing.archived)
+  return { enabled, archived }
 }
 export function normalizeCronJobInput(input: CronJobInput, now = new Date()) {
   const name = String(input.name ?? '').trim()
@@ -29,6 +51,7 @@ export function normalizeCronJobInput(input: CronJobInput, now = new Date()) {
   }
   const delivery = DELIVERIES.find(value => value === input.delivery) ?? 'queue'
   const enabled = input.enabled !== false
+  const archived = !enabled && input.archived === true
 
   if (input.cronExpression) {
     const cronExpression = input.cronExpression.trim()
@@ -36,7 +59,7 @@ export function normalizeCronJobInput(input: CronJobInput, now = new Date()) {
     const nextRunAt = enabled ? nextCronOccurrence(cronExpression, timezone, now).toISOString() : null
     return {
       agentSessionId, assistantId, name, prompt, scheduleType: 'cron' as const,
-      cronExpression, timezone, runAt: null, enabled, delivery, nextRunAt,
+      cronExpression, timezone, runAt: null, enabled, archived, delivery, nextRunAt,
       createdBy: input.createdBy ?? 'user'
     }
   }
@@ -46,7 +69,7 @@ export function normalizeCronJobInput(input: CronJobInput, now = new Date()) {
   if (enabled && date.getTime() <= now.getTime()) throw new Error('runAt must be in the future.')
   return {
     agentSessionId, assistantId, name, prompt, scheduleType: 'once' as const,
-    cronExpression: null, timezone: 'UTC', runAt: date.toISOString(), enabled, delivery,
+    cronExpression: null, timezone: 'UTC', runAt: date.toISOString(), enabled, archived, delivery,
     nextRunAt: enabled ? date.toISOString() : null,
     createdBy: input.createdBy ?? 'user'
   }

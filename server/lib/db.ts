@@ -468,6 +468,18 @@ alter table cron_jobs drop constraint if exists cron_jobs_one_target;
 alter table cron_jobs add constraint cron_jobs_one_target
   check ((agent_session_id is null) <> (assistant_id is null));
 
+-- An archived schedule is put away: paused for good and hidden from the
+-- lists until it is unarchived. A one-time task archives itself once it has
+-- fired; the ones that had already run before the column existed do here.
+do $$ begin
+  if not exists (select 1 from information_schema.columns
+                  where table_name = 'cron_jobs' and column_name = 'archived') then
+    alter table cron_jobs add column archived boolean not null default false;
+    update cron_jobs set archived = true
+     where schedule_type = 'once' and not enabled and last_run_at is not null and last_run_at >= run_at;
+  end if;
+end $$;
+
 -- One row per attempted firing makes failures inspectable and gives each
 -- scheduled instant a unique durable claim across overlapping timer ticks.
 create table if not exists cron_runs (

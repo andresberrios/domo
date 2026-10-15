@@ -99,12 +99,44 @@ create table dev_environment_ports (
   unique (dev_environment_id, inner_port, protocol)
 );
 
+create table cron_jobs (
+  id text primary key,
+  agent_session_id text not null references agent_sessions(id) on delete cascade,
+  name text not null,
+  prompt text not null,
+  schedule_type text not null,
+  cron_expression text,
+  timezone text not null default 'UTC',
+  run_at text,
+  enabled boolean not null default true,
+  delivery text not null default 'queue',
+  next_run_at text,
+  last_run_at text,
+  last_status text,
+  last_error text,
+  run_count integer not null default 0,
+  created_by text not null default 'user',
+  created_at text not null,
+  updated_at text not null
+);
+
 insert into voice_sessions (id, title, model, voice, created_at, updated_at)
 values ('vs_untouched', 'New conversation', 'm', 'v', 'now', 'now'),
        ('vs_renamed', 'Payments', 'm', 'v', 'now', 'now');
 
 insert into agent_sessions (id, voice_session_id, title, cwd, created_at, updated_at)
 values ('ag_thinking', 'vs_renamed', 'Voice thinking', '/srv/api', 'now', 'now');
+
+insert into cron_jobs (id, agent_session_id, name, prompt, schedule_type, cron_expression, run_at, enabled,
+                       next_run_at, last_run_at, run_count, created_at, updated_at)
+values ('cron_ran', 'ag_thinking', 'Ran', 'p', 'once', null, '2026-01-01T09:00:00.000Z', false,
+        null, '2026-01-01T09:00:00.000Z', 1, 'now', 'now'),
+       ('cron_run_early', 'ag_thinking', 'Run early, then paused', 'p', 'once', null, '2026-12-01T09:00:00.000Z', false,
+        null, '2026-01-01T09:00:00.000Z', 1, 'now', 'now'),
+       ('cron_pending', 'ag_thinking', 'Pending', 'p', 'once', null, '2099-01-01T09:00:00.000Z', true,
+        '2099-01-01T09:00:00.000Z', null, 0, 'now', 'now'),
+       ('cron_paused', 'ag_thinking', 'Paused', 'p', 'cron', '0 9 * * *', null, false,
+        null, '2026-01-01T09:00:00.000Z', 3, 'now', 'now');
 
 insert into settings (key, value)
 values ('voiceName', '{"v": "Kore"}'), ('systemInstruction', '{"v": "Be terse."}'),
@@ -251,6 +283,15 @@ describe('booting on top of an old database', () => {
     // and environments an install still works in.
     await expect(query('select 1 from projects where retired_at is not null')).resolves.toEqual([])
     await expect(query('select 1 from dev_environments where retired_at is not null')).resolves.toEqual([])
+  })
+
+  it('archives only the one-time schedules that have already fired', async () => {
+    await expect(query('select id, archived from cron_jobs order by id')).resolves.toEqual([
+      { id: 'cron_paused', archived: false },
+      { id: 'cron_pending', archived: false },
+      { id: 'cron_ran', archived: true },
+      { id: 'cron_run_early', archived: false }
+    ])
   })
 
   it('creates the tables that did not exist yet', async () => {

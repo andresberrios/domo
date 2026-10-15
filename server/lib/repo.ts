@@ -376,6 +376,7 @@ function mapCronJob(r: any): CronJob {
     timezone: r.timezone,
     runAt: r.run_at ?? null,
     enabled: !!r.enabled,
+    archived: !!r.archived,
     delivery: r.delivery,
     nextRunAt: r.next_run_at ?? null,
     lastRunAt: r.last_run_at ?? null,
@@ -1540,17 +1541,19 @@ export async function setUsageProviderState(
 
 type StoredCronInput = { assistantId?: string | null } & Pick<CronJob,
   'agentSessionId' | 'name' | 'prompt' | 'scheduleType' | 'cronExpression'
-  | 'timezone' | 'runAt' | 'enabled' | 'delivery' | 'nextRunAt' | 'createdBy'>
+  | 'timezone' | 'runAt' | 'enabled' | 'delivery' | 'nextRunAt' | 'createdBy'> & { archived?: boolean }
 
 export async function listCronJobs(
-  target?: string | { agentSessionId?: string, assistantId?: string }
+  target?: string | { agentSessionId?: string, assistantId?: string },
+  { includeArchived = false } = {}
 ): Promise<CronJob[]> {
   if (typeof target === 'string') target = { agentSessionId: target }
-  const where = target?.assistantId ? 'where assistant_id = $1' : target?.agentSessionId ? 'where agent_session_id = $1' : ''
+  const conditions = target?.assistantId ? ['assistant_id = $1'] : target?.agentSessionId ? ['agent_session_id = $1'] : []
+  if (!includeArchived) conditions.push('archived = false')
   const rows = await query(
-    `select * from cron_jobs ${where}
+    `select * from cron_jobs ${conditions.length ? `where ${conditions.join(' and ')}` : ''}
      order by coalesce(next_run_at, '9999') asc, created_at desc`,
-    where ? [target!.assistantId ?? target!.agentSessionId] : []
+    target?.assistantId || target?.agentSessionId ? [target.assistantId ?? target.agentSessionId] : []
   )
   return rows.map(mapCronJob)
 }
@@ -1571,6 +1574,11 @@ async function assertCronTarget(input: StoredCronInput): Promise<void> {
   assertSessionStartable(target.session, target.environment, null, 'scheduling a task for it')
 }
 
+/** An archived job is always paused, so whatever enables one unarchives it. */
+function archivedFor(input: StoredCronInput): boolean {
+  return !input.enabled && !!input.archived
+}
+
 export async function getCronJob(id: string): Promise<CronJob | null> {
   const row = await queryOne('select * from cron_jobs where id = $1', [id])
   return row ? mapCronJob(row) : null
@@ -1588,12 +1596,12 @@ export async function createCronJob(input: StoredCronInput): Promise<CronJob> {
   const row = await queryOne(
     `insert into cron_jobs
        (id, agent_session_id, assistant_id, name, prompt, schedule_type, cron_expression, timezone,
-        run_at, enabled, delivery, next_run_at, created_by, created_at, updated_at)
-     values ($1, $2, $14, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+        run_at, enabled, delivery, next_run_at, created_by, created_at, updated_at, archived)
+     values ($1, $2, $14, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $15)
      returning *`,
     [newId('cron'), input.agentSessionId, input.name, input.prompt, input.scheduleType,
       input.cronExpression, input.timezone, input.runAt, input.enabled, input.delivery,
-      input.nextRunAt, input.createdBy, now, input.assistantId ?? null]
+      input.nextRunAt, input.createdBy, now, input.assistantId ?? null, archivedFor(input)]
   )
   const job = mapCronJob(row)
   bus.publish({ type: 'cron-job-changed', cronJobId: job.id })
@@ -1606,11 +1614,11 @@ export async function replaceCronJob(id: string, input: StoredCronInput): Promis
     `update cron_jobs set
        agent_session_id = $2, assistant_id = $13, name = $3, prompt = $4, schedule_type = $5,
        cron_expression = $6, timezone = $7, run_at = $8, enabled = $9,
-       delivery = $10, next_run_at = $11, updated_at = $12
+       delivery = $10, next_run_at = $11, updated_at = $12, archived = $14
      where id = $1 returning *`,
     [id, input.agentSessionId, input.name, input.prompt, input.scheduleType,
       input.cronExpression, input.timezone, input.runAt, input.enabled,
-      input.delivery, input.nextRunAt, nowIso(), input.assistantId ?? null]
+      input.delivery, input.nextRunAt, nowIso(), input.assistantId ?? null, archivedFor(input)]
   )
   if (!row) return null
   const job = mapCronJob(row)
@@ -1626,7 +1634,7 @@ export async function deleteCronJob(id: string): Promise<void> {
 export async function listDueCronJobs(now = nowIso(), limit = 25): Promise<CronJob[]> {
   const rows = await query(
     `select * from cron_jobs
-      where enabled = true and next_run_at is not null and next_run_at <= $1
+      where enabled = true and archived = false and next_run_at is not null and next_run_at <= $1
       order by next_run_at asc limit $2`,
     [now, limit]
   )
@@ -1648,9 +1656,10 @@ export async function claimCronJob(
       `update cron_jobs set
          next_run_at = $3,
          enabled = case when schedule_type = 'once' then false else enabled end,
+         archived = schedule_type = 'once',
          last_run_at = $2, last_status = 'running', last_error = null,
          run_count = run_count + 1, updated_at = $4
-       where id = $1 and enabled = true and next_run_at = $2
+       where id = $1 and enabled = true and archived = false and next_run_at = $2
        returning *`,
       [id, scheduledFor, nextRunAt, now]
     )

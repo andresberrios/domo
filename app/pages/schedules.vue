@@ -13,6 +13,9 @@ const { all: allAgents } = useAgentSessions()
 const { assistants, all: allAssistants, isReady: assistantsReady } = useAssistants()
 const { sessions: agents } = useSessionGroups('offered')
 const { jobs } = useCronJobs()
+const showArchived = useShowArchivedSchedules()
+const archivedCount = computed(() => jobs.value.filter(job => job.archived).length)
+const shownJobs = computed(() => showArchived.value ? jobs.value : jobs.value.filter(job => !job.archived))
 const { running, runNow } = useRunCronJob()
 const saving = ref(false)
 /** The job the form is editing, or null when it makes a new one. */
@@ -170,6 +173,17 @@ async function toggle(job: CronJob) {
   }
 }
 
+async function setArchived(job: CronJob, archived: boolean) {
+  try {
+    await $fetch(`/api/cron-jobs/${job.id}`, { method: 'PATCH', body: { archived } })
+    if (archived && !showArchived.value) {
+      toast.add({ title: `“${job.name}” archived`, description: 'Turn on “Show archived” to find it again.', color: 'neutral' })
+    }
+  } catch (error: any) {
+    toast.add({ title: archived ? 'Could not archive task' : 'Could not unarchive task', description: error?.data?.statusMessage ?? error?.message, color: 'error' })
+  }
+}
+
 function askToRemove(job: CronJob) {
   deletingJob.value = job
   deleteOpen.value = true
@@ -187,7 +201,11 @@ async function remove() {
 <template>
   <UDashboardPanel id="schedules">
     <template #header>
-      <UDashboardNavbar title="Schedules" icon="i-lucide-clock-3" />
+      <UDashboardNavbar title="Schedules" icon="i-lucide-clock-3">
+        <template #right>
+          <USwitch v-model="showArchived" label="Show archived" size="sm" />
+        </template>
+      </UDashboardNavbar>
     </template>
 
     <template #body>
@@ -253,19 +271,26 @@ async function remove() {
           </template>
         </section>
 
-        <section v-if="!jobs.length" class="rounded-lg border border-dashed border-default p-8 text-center">
+        <section v-if="!shownJobs.length" class="rounded-lg border border-dashed border-default p-8 text-center">
           <UIcon name="i-lucide-calendar-clock" class="mx-auto size-8 text-dimmed" />
-          <p class="mt-2 text-sm text-muted">No tasks are scheduled yet.</p>
+          <p class="mt-2 text-sm text-muted">
+            {{ archivedCount ? `No tasks are scheduled. ${archivedCount === 1 ? '1 is' : `${archivedCount} are`} archived.` : 'No tasks are scheduled yet.' }}
+          </p>
         </section>
 
         <section v-else class="space-y-2">
-          <article v-for="job in jobs" :key="job.id" class="rounded-lg border p-4" :class="editing?.id === job.id ? 'border-primary' : 'border-default'">
+          <article v-for="job in shownJobs" :key="job.id" class="rounded-lg border p-4" :class="editing?.id === job.id ? 'border-primary' : 'border-default'">
             <div class="flex items-start gap-3">
-              <UIcon :name="job.enabled ? 'i-lucide-clock-3' : 'i-lucide-pause'" class="mt-0.5 size-5 text-primary" />
+              <UIcon
+                :name="job.archived ? 'i-lucide-archive' : job.enabled ? 'i-lucide-clock-3' : 'i-lucide-pause'"
+                class="mt-0.5 size-5"
+                :class="job.archived ? 'text-dimmed' : 'text-primary'"
+              />
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <h2 class="text-sm font-semibold">{{ job.name }}</h2>
                   <UBadge color="neutral" variant="subtle" :label="targetName(job)" />
+                  <UBadge v-if="job.archived" color="neutral" variant="outline" label="Archived" />
                   <UBadge v-if="job.lastStatus" :color="job.lastStatus === 'failed' ? 'error' : job.lastStatus === 'delivered' ? 'success' : 'neutral'" variant="subtle" :label="STATUS_LABELS[job.lastStatus] ?? job.lastStatus" />
                 </div>
                 <SchedulePrompt v-if="expanded.has(job.id)" :text="job.prompt" class="mt-2" />
@@ -296,6 +321,7 @@ async function remove() {
               </div>
               <div class="flex shrink-0 flex-wrap justify-end gap-1">
                 <UButton
+                  v-if="!job.archived"
                   label="Run now"
                   aria-label="Run now"
                   icon="i-lucide-play"
@@ -310,9 +336,18 @@ async function remove() {
                 <UTooltip text="Edit">
                   <UButton icon="i-lucide-pencil" color="neutral" variant="ghost" size="sm" aria-label="Edit" @click="edit(job)" />
                 </UTooltip>
-                <UTooltip :text="job.enabled ? 'Pause' : 'Resume'">
-                  <UButton :icon="job.enabled ? 'i-lucide-pause' : 'i-lucide-calendar-check'" color="neutral" variant="ghost" size="sm" :aria-label="job.enabled ? 'Pause' : 'Resume'" @click="toggle(job)" />
+                <UTooltip v-if="job.archived" text="Unarchive">
+                  <UButton icon="i-lucide-archive-restore" color="neutral" variant="ghost" size="sm" aria-label="Unarchive" @click="setArchived(job, false)" />
                 </UTooltip>
+                <template v-else>
+                  <UTooltip :text="job.enabled ? 'Pause' : 'Resume'">
+                    <UButton :icon="job.enabled ? 'i-lucide-pause' : 'i-lucide-calendar-check'" color="neutral" variant="ghost" size="sm" :aria-label="job.enabled ? 'Pause' : 'Resume'" @click="toggle(job)" />
+                  </UTooltip>
+                  <!-- Only a paused task can be put away: pause it first. -->
+                  <UTooltip v-if="!job.enabled" text="Archive">
+                    <UButton icon="i-lucide-archive" color="neutral" variant="ghost" size="sm" aria-label="Archive" @click="setArchived(job, true)" />
+                  </UTooltip>
+                </template>
                 <UTooltip text="Delete">
                   <UButton icon="i-lucide-trash-2" color="error" variant="ghost" size="sm" aria-label="Delete" @click="askToRemove(job)" />
                 </UTooltip>
