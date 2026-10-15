@@ -68,10 +68,13 @@ const avatar = computed(() => assistant.value ? { src: assistant.value.avatar ??
 
 const handingOff = computed(() => !!assistant.value?.handoff)
 const freshStartPending = ref(false)
+/** A fresh start replaces the conversation in context, so one stray tap must not trigger it. */
+const confirmingFreshStart = ref(false)
 const editing = ref(false)
 const journalOpen = ref(false)
 
 async function freshStart() {
+  confirmingFreshStart.value = false
   freshStartPending.value = true
   try {
     const answer = await $fetch<{ started: boolean, note?: string }>(`/api/assistants/${assistantId.value}/handoff`, { method: 'POST' })
@@ -141,7 +144,7 @@ const menuItems = computed(() => [
               :loading="handingOff || freshStartPending"
               :disabled="!current || !!blocked || assistant?.archived"
               :ui="{ label: 'hidden sm:inline' }"
-              @click="freshStart"
+              @click="confirmingFreshStart = true"
             />
           </UTooltip>
           <UDropdownMenu :items="menuItems">
@@ -233,6 +236,14 @@ const menuItems = computed(() => [
 
       <AssistantModal v-model:open="editing" :assistant="assistant" />
       <AssistantJournal v-if="assistant" v-model:open="journalOpen" :assistant="assistant" :sessions="sessions" />
+      <ConfirmModal
+        v-model:open="confirmingFreshStart"
+        :title="`Start ${assistant?.name ?? 'the assistant'} fresh?`"
+        description="It writes itself a note and carries on in a new session that starts from that note. The current conversation leaves its context."
+        confirm-label="Start fresh"
+        confirm-color="primary"
+        @confirm="freshStart"
+      />
     </template>
   </UDashboardPanel>
 </template>
