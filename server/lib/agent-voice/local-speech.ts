@@ -154,3 +154,16 @@ export async function endOfTurn(samples: Int16Array): Promise<number | null> {
     return null
   }
 }
+
+/**
+ * Seconds of speech in 16 kHz PCM16, from Silero VAD (`vad.ts`), counted up
+ * to `enough`; `null` when the model cannot be had, and nothing is held back.
+ */
+export async function voicedSeconds(samples: Int16Array, enough: number): Promise<number | null> {
+  try {
+    return await requestLocalModel<number | null>({ op: 'speech', samples, enough })
+  } catch (error) {
+    console.warn(`[agent-voice] the speech detector failed, transcribing anyway: ${error instanceof Error ? error.message : error}`)
+    return null
+  }
+}

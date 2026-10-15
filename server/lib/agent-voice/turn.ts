@@ -1,8 +1,5 @@
-import { createWriteStream } from 'node:fs'
-import { access, mkdir, rename } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { pipeline } from 'node:stream/promises'
-import { Readable } from 'node:stream'
+import { join } from 'node:path'
+import { fetchModelFile } from './model-file'
 
 /**
  * Has the developer finished talking?
@@ -190,16 +187,7 @@ export function logMelFeatures(waveform: Float32Array): Float32Array {
 
 /** The model file, fetched if it is not there yet. Exported for the warm-up. */
 export async function ensureModel(modelsDir: string): Promise<string> {
-  const path = process.env.NUXT_SMART_TURN_MODEL || join(modelsDir, MODEL_FILE)
-  if (await access(path).then(() => true, () => false)) return path
-  await mkdir(dirname(path), { recursive: true })
-  console.log(`[agent-voice] fetching the turn model into ${path}`)
-  const response = await fetch(MODEL_URL)
-  if (!response.ok || !response.body) throw new Error(`could not fetch ${MODEL_URL}: ${response.status}`)
-  const partial = `${path}.part`
-  await pipeline(Readable.fromWeb(response.body as any), createWriteStream(partial))
-  await rename(partial, path)
-  return path
+  return fetchModelFile(MODEL_URL, process.env.NUXT_SMART_TURN_MODEL || join(modelsDir, MODEL_FILE), 'the turn model')
 }
 
 let session: Promise<any> | null = null

@@ -22,13 +22,13 @@ beforeEach(() => {
 })
 
 describe('the speech warm-up', () => {
-  it('fetches only the turn model for the default, cloud engines', async () => {
+  it('fetches only the turn model and the speech detector for the default, cloud engines', async () => {
     const lines: string[] = []
     await warmAgentVoice(line => lines.push(line))
 
-    expect(local.mock.calls).toEqual([[{ op: 'turn-model' }]])
+    expect(local.mock.calls).toEqual([[{ op: 'turn-model' }], [{ op: 'speech-model' }]])
     expect(pocket).not.toHaveBeenCalled()
-    expect(lines).toEqual(['[agent-voice] the turn model is ready'])
+    expect(lines).toEqual(['[agent-voice] the turn model is ready', '[agent-voice] the speech detector is ready'])
   })
 
   // The default speaker has no key here, so the free voice speaks: on a Mac,
@@ -37,7 +37,7 @@ describe('the speech warm-up', () => {
     machine.mac = false
     await warmAgentVoice(() => {})
     expect(pocket).toHaveBeenCalledWith('')
-    expect(local.mock.calls).toEqual([[{ op: 'turn-model' }]])
+    expect(local.mock.calls).toEqual([[{ op: 'turn-model' }], [{ op: 'speech-model' }]])
 
     machine.uv = false
     vi.clearAllMocks()
@@ -53,7 +53,7 @@ describe('the speech warm-up', () => {
     expect(local).toHaveBeenCalledWith({ op: 'transcriber', model: 'onnx-community/whisper-base' })
     expect(pocket).toHaveBeenCalledWith('')
 
-    state.agentVoice = { ...DEFAULT_AGENT_VOICE, speaker: 'local', turnDetector: 'silence' }
+    state.agentVoice = { ...DEFAULT_AGENT_VOICE, speaker: 'local', turnDetector: 'silence', transcriber: 'browser' }
     vi.clearAllMocks()
     await warmAgentVoice(() => {})
     expect(local.mock.calls).toEqual([[{ op: 'speaker' }]])
