@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * A message's attachments: images as thumbnails that open full size
- * (`ImageLightbox`), anything else as a named badge. The same component under
+ * (`ImageLightbox`), anything else as a named badge. An image shows no name:
+ * a pasted one only ever has a made-up one, and the picture says more. The same component under
  * a sent message in the transcript and above the composer's box, where
  * `removable` puts a remove button on each.
  */
@@ -15,12 +16,11 @@ const items = computed(() => props.attachments.map((attachment, index) => {
   const url = attachmentUrl(attachment.uri)
   return { ...attachment, index, url, image: !!url && isImageAttachment(attachment.name, attachment.mimeType) }
 }))
-const images = computed(() => items.value.filter(item => item.image).map(item => ({ name: item.name, url: item.url! })))
+const images = computed(() => items.value.filter(item => item.image).map(item => ({ url: item.url! })))
+/** Which image an item is, counted among the images only, for the lightbox and the labels. */
+const imageNumber = (item: { url: string | null }) => images.value.findIndex(image => image.url === item.url)
 
 const shown = ref<number | null>(null)
-function show(item: { name: string, url: string | null }) {
-  shown.value = images.value.findIndex(image => image.url === item.url)
-}
 </script>
 
 <template>
@@ -30,11 +30,10 @@ function show(item: { name: string, url: string | null }) {
         <button
           type="button"
           class="block size-16 overflow-hidden rounded-md border border-default bg-elevated focus-visible:outline-2 focus-visible:outline-primary"
-          :title="item.name"
-          :aria-label="`Open ${item.name}`"
-          @click="show(item)"
+          :aria-label="`Open image ${imageNumber(item) + 1}`"
+          @click="shown = imageNumber(item)"
         >
-          <img :src="item.url!" :alt="item.name" loading="lazy" class="size-full object-cover">
+          <img :src="item.url!" alt="" loading="lazy" class="size-full object-cover">
         </button>
         <UButton
           v-if="removable"
@@ -42,7 +41,7 @@ function show(item: { name: string, url: string | null }) {
           color="neutral"
           variant="solid"
           size="xs"
-          :aria-label="`Remove ${item.name}`"
+          :aria-label="`Remove image ${imageNumber(item) + 1}`"
           class="absolute -end-2 -top-2 rounded-full p-1"
           @click="emit('remove', item.index)"
         />

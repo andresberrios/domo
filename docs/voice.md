@@ -15,6 +15,11 @@ a Kyutai moshi-server, or the device's own dictation and voices. An installed
 Domo fetches the models Settings chose at boot (`warm.ts`); `pnpm dev` fetches
 them on first use.
 
+- **Hearing the agent is separate from talking to it.** The composer's
+  speaker (`useAgentVoiceListen`) opens the socket in text mode too, so
+  replies, permission requests, notes and sounds are heard while typing;
+  voice mode turns it on. The runtime is per session, so two tabs on one
+  session share its "speak" setting.
 - **Each turn is heard with context** (`agent-voice/context.ts`): the last
   few messages, and a vocabulary from the conversation, the tool calls' file
   names and the project's docs and file names. Engines take it as a prompt;

@@ -5,6 +5,7 @@ import type { AgentVoiceServerMessage, SoundVolumes } from '~~/shared/types'
 import { DEFAULT_VOLUMES } from '~~/shared/agent-voice'
 import { useAgentVoice } from '~/composables/useAgentVoice'
 import { useAudioInputs } from '~/composables/useAudioInputs'
+import { useAgentVoiceListen } from '~/composables/useAgentVoiceOpen'
 
 /**
  * The voice bar's browser half against a fake audio stack: what it plays, at
@@ -158,6 +159,8 @@ function frame(value: number) {
 }
 
 beforeEach(() => {
+  // Replies are heard: the composer's speaker is on.
+  useAgentVoiceListen().value = true
   audio.contexts = []
   audio.tones = []
   audio.refuseSource = () => false

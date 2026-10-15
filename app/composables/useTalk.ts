@@ -8,6 +8,7 @@ export function useTalk() {
   const router = useRouter()
   const toast = useToast()
   const voiceOpen = useAgentVoiceOpen()
+  const listen = useAgentVoiceListen()
   const creating = ref(false)
 
   const { all: assistants, isReady } = useAssistants()
@@ -32,11 +33,13 @@ export function useTalk() {
       }
       if (assistant.value) {
         voiceOpen.value = true
+        listen.value = true
         await router.push(`/assistants/${assistant.value.id}`)
         return
       }
       const session = await $fetch<{ id: string }>('/api/agents', { method: 'POST', body: {} })
       voiceOpen.value = true
+      listen.value = true
       await router.push(`/agents/${session.id}`)
     } catch (error: any) {
       toast.add({

@@ -157,12 +157,12 @@ const placeholder = computed(() => {
 })
 
 /** Never rejects: a failed upload is a toast, not something a caller handles. */
-async function upload(files: File[], names: string[]) {
+async function upload(files: File[]) {
   try {
     const form = new FormData()
     // The third argument is the filename the server sees, which is the only
     // way a clipboard file with no name of its own gets one.
-    files.forEach((file, index) => form.append('files', file, names[index]))
+    for (const file of files) form.append('files', file, uploadName(file))
     const result = await $fetch<{ files: typeof attachments.value }>('/api/uploads', {
       method: 'POST',
       body: form
@@ -173,31 +173,11 @@ async function upload(files: File[], names: string[]) {
   }
 }
 
-/**
- * The names the conversation has already used, asked of the server at each
- * attach: the page may hold only the newest part of the transcript, and a
- * message sent from another tab counts too. A draft has none.
- */
-async function usedNames(): Promise<string[]> {
-  if (!props.session) return []
-  try {
-    return (await $fetch<{ names: string[] }>(`/api/agents/${props.session.id}/attachment-names`)).names
-  } catch {
-    return []
-  }
-}
-
 function attach(files: File[]) {
   if (!files.length) return
   uploads.value += 1
-  // Named inside the chain, so each batch sees the attachments the one before it added.
   inflight = inflight
-    .then(async () => {
-      const taken = [...await usedNames(), ...attachments.value.map(attachment => attachment.name)]
-      const names: string[] = []
-      for (const file of files) names.push(uploadName(file, [...taken, ...names]))
-      await upload(files, names)
-    })
+    .then(() => upload(files))
     .finally(() => { uploads.value -= 1 })
 }
 
@@ -254,6 +234,7 @@ function onSubmitCapture(event: Event) {
 }
 
 function onKeydownCapture(event: KeyboardEvent) {
+  onGesture()
   if (event.key !== 'Enter' || event.isComposing) return
   if ((event.target as HTMLElement | null)?.tagName !== 'TEXTAREA') return
   // The same rule `UChatPrompt` applies, since this stands in for it: Enter
@@ -290,6 +271,7 @@ async function submit() {
     })
     text.value = ''
     attachments.value = []
+    voice.value?.expectReply()
     // Written here, not left to the watcher: a page left mid-send has stopped watching.
     writeComposerDraft(key, { text: '', attachments: [] })
   } catch (error: any) {
@@ -363,34 +345,48 @@ function messageContent(body: string, files: typeof attachments.value): any[] {
  *
  * A draft has no session to talk to, so it is always text. And the session a
  * draft becomes stays in text until asked: it was being typed to a moment ago.
+ *
+ * Hearing the agent is a separate switch (`useAgentVoiceListen`), the speaker
+ * in the footer, in both modes: someone typing can want the replies read out
+ * and the chimes on. Voice mode turns it on, since talking to something you
+ * cannot hear is rarely meant; the speaker can still mute it there.
  */
 const voiceOpen = useAgentVoiceOpen()
+const listening = useAgentVoiceListen()
 const typedHere = ref(!props.session)
 const voiceMode = computed(() => !!props.session && voiceOpen.value && !typedHere.value)
 
 function setVoiceMode(on: boolean) {
   typedHere.value = false
   voiceOpen.value = on
+  if (on) listening.value = true
   if (!on) nextTick(() => prompt.value?.textareaRef?.focus())
+}
+
+function setListening(on: boolean) {
+  listening.value = on
+  // The tap that turned it on is the gesture the audio needs to start.
+  if (on) nextTick(() => void voice.value?.unlock())
 }
 
 const { data: appSettings } = useSettings()
 const { request: replayRequest } = useAgentVoiceReplay()
-// "Read it again" from the transcript opens voice mode wherever it was asked.
-watch(replayRequest, (request) => { if (request) typedHere.value = false })
 
 /**
- * The microphone, the socket and the speaker exist only in voice mode, in a
- * scope of their own: leaving the mode stops that scope, which closes them all
- * (`useAgentVoice` cleans up on scope dispose), as unmounting the bar did.
+ * The socket and the speaker exist while the agent is heard or talked to,
+ * and the microphone only once a tap opens it, in a scope of their own: when
+ * neither is wanted the scope stops, which closes them all (`useAgentVoice`
+ * cleans up on scope dispose). Going between the modes keeps the same one, so
+ * nothing reconnects.
  */
+const voiceActive = computed(() => !!props.session && (voiceMode.value || listening.value))
 const voice = shallowRef<AgentVoice | null>(null)
 let voiceScope: EffectScope | null = null
 
 /** What the attachments look like as content blocks; a spoken turn takes them too. */
 const attachmentBlocks = computed(() => messageContent('', attachments.value))
 
-watch(voiceMode, (on) => {
+watch(voiceActive, (on) => {
   voiceScope?.stop()
   voiceScope = null
   voice.value = null
@@ -401,12 +397,13 @@ watch(voiceMode, (on) => {
       busy: () => props.session?.status === 'thinking' || props.session?.status === 'awaiting-permission',
       toolSound: () => appSettings.value?.agentVoice?.toolSound,
       volumes: () => appSettings.value?.agentVoice?.volumes,
-      attachments: attachmentBlocks,
+      // Only voice mode sends a spoken turn; typed ones carry their own.
+      attachments: () => (voiceMode.value ? attachmentBlocks.value : []),
       onAttachmentsSent: (uris) => {
         attachments.value = attachments.value.filter(attachment => !uris.includes(`file://${attachment.path}`))
       }
     })
-    // A message asked to be heard again; voice mode may have just been opened for it.
+    // A message asked to be heard again; listening may have just been turned on for it.
     watch(replayRequest, (request) => {
       if (!request) return
       replayRequest.value = null
@@ -421,6 +418,22 @@ watch(voiceMode, (on) => {
 }, { immediate: true })
 
 onScopeDispose(() => voiceScope?.stop())
+
+/**
+ * A browser starts audio only from a gesture, and a page reloaded with
+ * listening on has had none yet: any key or tap in the composer is one.
+ */
+function onGesture() {
+  if (voice.value) void voice.value.unlock()
+}
+
+/** Typing has nowhere else to say that the voice failed, so it says it here. */
+watch(() => voice.value?.errorMessage.value, (message) => {
+  if (message && !voiceMode.value) toast.add({ title: 'The agent’s voice', description: message, color: 'error' })
+})
+watch(() => voice.value?.notice.value, (message) => {
+  if (message && !voiceMode.value) toast.add({ title: message, color: 'neutral' })
+})
 
 /** A turn to cancel, including one parked on a permission, which is when a person most wants out. */
 const turnRunning = computed(() => busy.value || props.session?.status === 'awaiting-permission')
@@ -446,6 +459,7 @@ async function stop() {
   <div
     class="mx-auto w-full max-w-3xl space-y-2"
     @keydown.capture="onKeydownCapture"
+    @pointerdown.capture="onGesture"
     @submit.capture="onSubmitCapture"
   >
     <MessageAttachments
@@ -476,7 +490,7 @@ async function stop() {
         The voice bar is as tall as the text box at rest (`min-h-10` there,
         `h-10` in the bar), so switching modes does not move the transcript.
       -->
-      <template v-if="voice" #body>
+      <template v-if="voiceMode && voice" #body>
         <AgentVoiceBar :voice="voice" />
       </template>
 
@@ -489,7 +503,7 @@ async function stop() {
             gave it back at the end, moving every row of the view down.
           -->
           <div class="flex min-w-0 flex-1 items-center gap-1.5">
-            <UTooltip :text="voice ? 'Attach files. They go with what you say next.' : 'Attach files — or paste them in'">
+            <UTooltip :text="voiceMode ? 'Attach files. They go with what you say next.' : 'Attach files — or paste them in'">
               <UButton
                 icon="i-lucide-paperclip"
                 color="neutral"
@@ -516,7 +530,7 @@ async function stop() {
             <UsageMeter v-if="session" :usage="session.usage ?? null" :provider="usageProviderOf(session.adapter)" />
           </div>
 
-          <div v-if="voice" class="flex shrink-0 items-center gap-1">
+          <div v-if="voiceMode && voice" class="flex shrink-0 items-center gap-1">
             <!-- One button that flips between the two on a phone, where the pair would crowd out the settings card. -->
             <UTooltip :text="`${voiceModeInfo.label} — tap for ${voiceModeOther.label.toLowerCase()}`">
               <UButton
@@ -544,6 +558,17 @@ async function stop() {
               </UTooltip>
             </UFieldGroup>
             <AgentVoiceQuickSettings />
+            <UTooltip :text="listening ? 'Replies and sounds are on. Tap to mute.' : 'Hear the agent: replies read aloud, and its sounds'">
+              <UButton
+                :icon="listening ? 'i-lucide-volume-2' : 'i-lucide-volume-off'"
+                :color="listening ? 'primary' : 'neutral'"
+                :variant="listening ? 'soft' : 'ghost'"
+                size="sm"
+                :aria-label="listening ? 'Mute the agent' : 'Hear the agent'"
+                :aria-pressed="listening"
+                @click="setListening(!listening)"
+              />
+            </UTooltip>
             <UTooltip text="Type instead">
               <UChip :show="!!text.trim()" size="sm" inset>
                 <UButton
@@ -601,17 +626,34 @@ async function stop() {
                 </UTooltip>
               </UDropdownMenu>
             </UFieldGroup>
-            <!-- The voice bar talks to a session, so a draft has none to open. -->
-            <UTooltip v-if="session" text="Talk instead">
-              <UButton
-                icon="i-lucide-mic"
-                color="neutral"
-                variant="ghost"
-                size="sm"
-                aria-label="Talk instead"
-                @click="setVoiceMode(true)"
-              />
+            <!-- Typing while hearing the agent: the one way to stop a reply short of muting. -->
+            <UTooltip v-if="voice && (voice.speaking.value || voice.synthesizing.value)" text="Stop reading this reply. The agent keeps working.">
+              <UButton icon="i-lucide-volume-x" color="neutral" variant="subtle" size="sm" aria-label="Hush" @click="voice.hush()" />
             </UTooltip>
+            <!-- Hearing and voice mode both need a session, which a draft does not have yet. -->
+            <template v-if="session">
+              <UTooltip :text="listening ? 'Replies and sounds are on. Tap to mute.' : 'Hear the agent: replies read aloud, and its sounds'">
+                <UButton
+                  :icon="listening ? 'i-lucide-volume-2' : 'i-lucide-volume-off'"
+                  :color="listening ? 'primary' : 'neutral'"
+                  :variant="listening ? 'soft' : 'ghost'"
+                  size="sm"
+                  :aria-label="listening ? 'Mute the agent' : 'Hear the agent'"
+                  :aria-pressed="listening"
+                  @click="setListening(!listening)"
+                />
+              </UTooltip>
+              <UTooltip text="Talk instead">
+                <UButton
+                  icon="i-lucide-mic"
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Talk instead"
+                  @click="setVoiceMode(true)"
+                />
+              </UTooltip>
+            </template>
             <UChatPromptSubmit
               :status="status"
               :loading="sending"

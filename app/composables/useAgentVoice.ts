@@ -35,7 +35,6 @@ const DICTATION_GRACE_MS = 2500
 /** Web Speech phrase biasing takes a short list; the most likely terms come first. */
 const DICTATION_PHRASES = 100
 const MODE_KEY = 'domo:agent-voice:mode'
-const SPEAK_KEY = 'domo:agent-voice:speak'
 
 export type AgentVoiceState = 'offline' | 'connecting' | 'live' | 'error'
 
@@ -84,7 +83,8 @@ export function useAgentVoice(
 ) {
   const state = ref<AgentVoiceState>('offline')
   const mode = ref<AgentVoiceMode>(readStored(MODE_KEY) === 'handsfree' ? 'handsfree' : 'click')
-  const speakEnabled = ref(readStored(SPEAK_KEY) !== 'false')
+  /** Whether replies and sounds are heard; shared with the composer's speaker (`useAgentVoiceListen`). */
+  const speakEnabled = useAgentVoiceListen()
   const micEnabled = ref(false)
   /** The browser has the capture graph paused; a tap on the microphone fixes it. */
   const captureSuspended = ref(false)
@@ -937,7 +937,6 @@ export function useAgentVoice(
       case 'status':
         transcribing.value = message.transcribing
         synthesizing.value = message.speaking
-        speakEnabled.value = message.speak
         break
       case 'dictation':
         configureDictation(message.enabled, message.language, message.phrases)
@@ -1122,9 +1121,27 @@ export function useAgentVoice(
 
   function setSpeak(enabled: boolean) {
     speakEnabled.value = enabled
-    writeStored(SPEAK_KEY, String(enabled))
+  }
+  // However it changed — here, or the composer's speaker — the server is told,
+  // and nothing goes on playing once it is off.
+  watch(speakEnabled, (enabled) => {
     if (!enabled) stopPlayback()
     send({ type: 'speak', enabled })
+  })
+
+  /**
+   * Get the audio graphs running from a gesture, when they are not yet: a
+   * browser starts them only in one (iOS only in a tap), and with the voice
+   * only listening there is no microphone tap to do it.
+   */
+  async function unlock() {
+    if (playbackContext?.state === 'running') return
+    await resumeAudio()
+  }
+
+  /** A typed message went: the working blip plays until the reply is heard, as for a spoken one. */
+  function expectReply() {
+    awaitingReply.value = true
   }
 
   /** Stop the voice. The agent keeps working. */
@@ -1189,6 +1206,8 @@ export function useAgentVoice(
     toggleRecording,
     setMode,
     setSpeak,
+    unlock,
+    expectReply,
     hush,
     cancel,
     sendHeld,

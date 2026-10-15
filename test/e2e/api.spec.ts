@@ -596,10 +596,10 @@ describe('notifications', () => {
 describe('uploads', () => {
   it('serves what the composer uploaded, by its own name only, and an image inline', async () => {
     const form = new FormData()
-    form.append('files', new Blob(['png'], { type: 'image/png' }), 'image-1.png')
+    form.append('files', new Blob(['png'], { type: 'image/png' }), 'image.png')
     form.append('files', new Blob(['<svg onload="alert(1)"/>'], { type: 'image/svg+xml' }), 'evil.svg')
     const { files } = await $fetch<{ files: Array<{ name: string, path: string }> }>('/api/uploads', { method: 'POST', body: form })
-    expect(files.map(file => file.name)).toEqual(['image-1.png', 'evil.svg'])
+    expect(files.map(file => file.name)).toEqual(['image.png', 'evil.svg'])
 
     const image = await fetch(`/api/uploads/${files[0]!.path.split('/').pop()}`)
     expect(image.status).toBe(200)
@@ -610,6 +610,13 @@ describe('uploads', () => {
     const svg = await fetch(`/api/uploads/${files[1]!.path.split('/').pop()}`)
     expect(svg.headers.get('content-type')).toBe('application/octet-stream')
     expect(svg.headers.get('content-disposition')).toMatch(/^attachment/)
+
+    // Every browser names a pasted screenshot `image.png`; each is still a file of its own.
+    const again = new FormData()
+    again.append('files', new Blob(['other'], { type: 'image/png' }), 'image.png')
+    const second = await $fetch<{ files: Array<{ path: string }> }>('/api/uploads', { method: 'POST', body: again })
+    expect(second.files[0]!.path).not.toBe(files[0]!.path)
+    await expect((await fetch(`/api/uploads/${files[0]!.path.split('/').pop()}`)).text()).resolves.toBe('png')
 
     // Nothing but an upload's own name reaches the disk.
     expect((await fetch('/api/uploads/..%2Fsettings.json')).status).toBe(404)

@@ -9,9 +9,9 @@ import MessageAttachments from '~/components/MessageAttachments.vue'
 import type { AgentSession } from '~~/shared/types'
 
 /**
- * Attachments are seen, not just named: images as thumbnails that open full
- * size, in the composer and under a sent message alike, each one under a
- * name of its own.
+ * Attachments are seen, not named: images as thumbnails that open full size,
+ * in the composer and under a sent message alike. Only a file that is not an
+ * image shows its name, since there is nothing else to show.
  */
 enableAutoUnmount(afterEach)
 
@@ -32,11 +32,12 @@ describe('MessageAttachments', () => {
     { name: 'elsewhere.png', uri: 'file:///home/someone/elsewhere.png' }
   ]
 
-  it('shows uploaded images as thumbnails and everything else by name', async () => {
+  it('shows uploaded images as thumbnails with no name, and everything else by name', async () => {
     const component = await mountSuspended(Attachments, { props: { attachments: sent } })
 
     const thumbnails = component.findAll('img')
     expect(thumbnails.map(img => img.attributes('src'))).toEqual([`/api/uploads/${UP_1}.png`, `/api/uploads/${UP_2}.png`])
+    expect(component.html()).not.toContain('image-1.png')
     expect(component.text()).toContain('notes.pdf')
     expect(component.text()).toContain('elsewhere.png')
     // A sent message's attachments are a record: nothing to remove.
@@ -46,9 +47,10 @@ describe('MessageAttachments', () => {
   it('opens the one tapped full size, and steps to the next', async () => {
     const component = await mountSuspended(Attachments, { props: { attachments: sent } })
 
-    await component.find('button[aria-label="Open image-2.png"]').trigger('click')
+    await component.find('button[aria-label="Open image 2"]').trigger('click')
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(`/api/uploads/${UP_2}.png`))
     expect(document.querySelector('[role="dialog"]')!.textContent).toContain('2 of 2')
+    expect(document.querySelector('[role="dialog"]')!.textContent).not.toContain('image-2.png')
 
     ;(document.querySelector('[role="dialog"] button[aria-label="Next image"]') as HTMLElement).click()
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(`/api/uploads/${UP_1}.png`))
@@ -88,10 +90,6 @@ registerEndpoint('/api/uploads', {
 
 const session = { id: 'ag_att', adapter: 'claude-code', status: 'idle', cwd: '/w', usage: null, steering: null } as unknown as AgentSession
 
-/** What the server says the conversation has already used. */
-let used: string[] = []
-registerEndpoint('/api/agents/ag_att/attachment-names', { method: 'GET', handler: () => ({ names: used }) })
-
 const Composer = defineComponent({
   setup: () => () => h(UApp, null, { default: () => h(AgentComposer, { session }) })
 })
@@ -107,20 +105,7 @@ const screenshot = () => new File([new Uint8Array([1])], 'image.png', { type: 'i
 describe('AgentComposer attachments', () => {
   beforeEach(() => {
     named.mockClear()
-    used = []
     localStorage.clear()
-  })
-
-  it('numbers pasted screenshots across the message and past the names the session has used', async () => {
-    // Whatever the page has loaded: the server is asked, and it knows the whole conversation.
-    used = ['image-1.png']
-    const component = await mountSuspended(Composer)
-
-    paste(component, [screenshot(), screenshot()])
-    paste(component, [screenshot()])
-
-    await vi.waitFor(() => expect(named).toHaveBeenCalledTimes(3))
-    expect(named.mock.calls.map(call => call[0])).toEqual(['image-2.png', 'image-3.png', 'image-4.png'])
   })
 
   it('shows them as thumbnails, each with a way to take it off', async () => {
@@ -129,8 +114,12 @@ describe('AgentComposer attachments', () => {
     paste(component, [screenshot(), screenshot()])
     await vi.waitFor(() => expect(component.findAll('img')).toHaveLength(2))
 
-    await component.find('button[aria-label="Remove image-1.png"]').trigger('click')
+    // Two pastes of `image.png` are two files, not one written twice.
+    const sources = component.findAll('img').map(img => img.attributes('src'))
+    expect(new Set(sources).size).toBe(2)
+
+    await component.find('button[aria-label="Remove image 1"]').trigger('click')
     await vi.waitFor(() => expect(component.findAll('img')).toHaveLength(1))
-    expect(component.find('button[aria-label="Open image-2.png"]').exists()).toBe(true)
+    expect(component.find('img').attributes('src')).toBe(sources[1])
   })
 })

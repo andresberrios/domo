@@ -4,11 +4,10 @@ import type { AgentVoice } from '~/composables/useAgentVoice'
 /**
  * The composer's voice mode: what stands where the text box is while talking.
  * One row, built for a thumb: the microphone (its ring is the input level),
- * the one line that says what is happening, and the two things done to the
- * agent's voice — hush it, or mute it. The rest of the voice controls (tap
- * or hands-free, the quick settings, cancelling the turn) sit in the
- * composer's footer with everything else, and `AgentComposer` owns the
- * `useAgentVoice` behind all of them.
+ * the one line that says what is happening, and hushing a reply. The rest
+ * of the voice controls (tap or hands-free, the quick settings, the speaker,
+ * cancelling the turn) sit in the composer's footer with everything else,
+ * and `AgentComposer` owns the `useAgentVoice` behind all of them.
  *
  * Its height is fixed: what it says changes all the time, and a box that grew
  * with each notice would move the transcript above it.
@@ -114,17 +113,6 @@ const ring = computed(() => {
     </template>
     <UTooltip v-else-if="voice.speaking.value || voice.synthesizing.value" text="Stop talking. The agent keeps working.">
       <UButton icon="i-lucide-volume-x" color="neutral" variant="subtle" size="sm" aria-label="Hush" class="shrink-0" @click="voice.hush()" />
-    </UTooltip>
-    <UTooltip :text="voice.speakEnabled.value ? 'Replies are read aloud' : 'Replies are silent'">
-      <UButton
-        :icon="voice.speakEnabled.value ? 'i-lucide-volume-2' : 'i-lucide-volume-off'"
-        color="neutral"
-        variant="ghost"
-        size="sm"
-        class="shrink-0"
-        :aria-label="voice.speakEnabled.value ? 'Mute replies' : 'Read replies aloud'"
-        @click="voice.setSpeak(!voice.speakEnabled.value)"
-      />
     </UTooltip>
   </div>
 </template>
