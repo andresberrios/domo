@@ -198,6 +198,7 @@ describe('asking for a title', () => {
 describe('cleaning the answer', () => {
   it('keeps one plain line and cuts it at a word', () => {
     expect(cleanTitle('Title: **Fix login**')).toBe('Fix login')
+    expect(cleanTitle('Session title: Run uname and pwd')).toBe('Run uname and pwd')
     expect(cleanTitle('\n# “Refactor the parser”.\nmore')).toBe('Refactor the parser')
     expect(cleanTitle('   ')).toBe('')
     const long = cleanTitle('Investigate why the nightly integration build times out on the arm64 runners again')
