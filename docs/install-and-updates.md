@@ -23,7 +23,7 @@ Everything under one directory, `~/.domo` by default (`DOMO_HOME`):
   node/         the official Node tarball for this platform (.tool-versions)
   bin/          caddy, uv, pnpm, domo.mjs (the launcher) and `domo`, a shim for it
   data/         uploads, models, voices, install-id, pocket-tts.pid (NUXT_DATA_DIR)
-  .env          server overrides (docs/configuration.md), read by the launcher at every server start
+  .env          absent: Domo is set up in the app. A developer's overrides (docs/configuration.md) if one is made
   state.json    channel, last apply; logs/domo.log, logs/update.log
   supervisor.pid, update.lock (a live pid), restart-requested, update-failed.json
 ```
@@ -56,7 +56,7 @@ Three processes, and no more:
 1. **The supervisor**, `~/.domo/bin/domo run`, a small plain-JavaScript file
    with no dependencies, started at login by launchd (macOS,
    `~/Library/LaunchAgents/com.domo.app.plist`, `KeepAlive`) or a systemd user
-   unit (Linux). It loads `.env`, starts Caddy and the server from `current`,
+   unit (Linux). It loads `.env` if there is one, starts Caddy and the server from `current`,
    restarts either if it dies, and treats a server exit as a restart request
    when the server left a `restart-requested` file (or exited `75`); anything
    else is a crash with backoff. After a restart it waits for the app shell
@@ -71,7 +71,8 @@ Three processes, and no more:
 3. **The Nitro server**, `node current/.output/server/index.mjs` with cwd
    `current`, `PORT`, `HOST=0.0.0.0`, `DOMO_HTTPS_ADDRESS`, `NUXT_DATA_DIR`,
    `NITRO_SHUTDOWN_TIMEOUT=5000` (Electric's long-polls would otherwise make
-   every restart a thirty-second drain) and the `.env` variables, with the
+   every restart a thirty-second drain), the production stack's
+   `DATABASE_URL` and `ELECTRIC_URL`, and any `.env` overrides, with the
    PATH of the user's login shell so agents find git, docker and Homebrew.
    Readiness is `GET /` answering, not `/api/health`: that route waits on
    Postgres, and a database that is down is the UI's banner, not a bad build.
@@ -195,8 +196,8 @@ sixty seconds of starting is swapped back for `previous`.
    Caddy and `uv` at the versions the same file names (`ensureTools`), on
    install and before every build, so a release moves any of them — Node
    included, by swapping the directory — by editing that one file.
-4. Hand over to `domo install`, which writes `.env` from `.env.example` if
-   absent, runs `domo update --force --no-restart` to build and place the
+4. Hand over to `domo install`, which writes no `.env` (the launcher's
+   defaults are all an install needs), runs `domo update --force --no-restart` to build and place the
    first release, installs the launchd or systemd unit, starts it, runs
    `caddy trust` against the running server's admin socket (`~/.domo/caddy.sock`;
    `caddy trust` asks a running server for its root certificate, so it cannot
@@ -242,8 +243,8 @@ on the development stack, whose Postgres is the one `pnpm test` uses.
    Electric is removed, not stopped, so it comes back with no shape cache from
    before the copy. `--no-publications` leaves Electric's publication to the
    Electric that owns the database.
-3. Point `NUXT_DATA_DIR` in `~/.domo/.env` at `~/.domo/data` (the launcher's
-   default), stop `pnpm dev` for good, and `domo start`. The checkout becomes a
+3. Stop `pnpm dev` for good, and `domo start`. An install needs no `.env`;
+   if `~/.domo/.env` sets `NUXT_DATA_DIR`, it must point at `~/.domo/data`. The checkout becomes a
    development checkout only: merge freely, run tests, work in environments.
    Deploy by pushing `release`. For an in-browser check of unmerged work, use
    the scratch recipe below.

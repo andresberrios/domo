@@ -21,20 +21,22 @@ docker version --format '{{.Server.Version}}' >/dev/null && echo "docker ok"
 
 export DOMO_HOME=/root/.domo
 mkdir -p "$DOMO_HOME"
-cat > "$DOMO_HOME/.env" <<EOF
-DATABASE_URL=postgresql://postgres:password@host.docker.internal:54331/domo
-ELECTRIC_URL=http://host.docker.internal:30010
-COMPOSE_PROJECT_NAME=domo-inst
-DOMO_PG_PORT=54331
-DOMO_ELECTRIC_PORT=30010
-DOMO_PORT=3767
-DOMO_HTTPS_ADDRESS=localhost:3766
-EOF
+# A scratch stack, never the machine's own `domo-prod`. Given in the
+# environment: an install writes no `.env`, and needs none.
+export DATABASE_URL=postgresql://postgres:password@host.docker.internal:54331/domo
+export ELECTRIC_URL=http://host.docker.internal:30010
+export COMPOSE_PROJECT_NAME=domo-inst DOMO_PG_PORT=54331 DOMO_ELECTRIC_PORT=30010
+export DOMO_PORT=3767 DOMO_HTTPS_ADDRESS=localhost:3766
 echo "== install"
 if ! DOMO_REPO=file:///repo.git DOMO_CHANNEL="$1" DOMO_INSTALL_ARGS="--no-service" sh /src/scripts/install.sh > /tmp/install.log 2>&1; then
   echo "INSTALL FAILED"; tail -40 /tmp/install.log; exit 1
 fi
 grep -E "==>|\[domo\]|^domo:|Built\." /tmp/install.log
+if [ -e "$DOMO_HOME/.env" ]; then echo "INSTALL WROTE A .env"; exit 1; fi
+echo "== no .env"
+# The mounted repository belongs to the host user, not root; without this
+# git refuses the fetch of `update --check`.
+git config --global --add safe.directory /repo.git
 echo "== git: $(command -v git || echo none)"
 echo "== status"
 "$DOMO_HOME/bin/domo" status
