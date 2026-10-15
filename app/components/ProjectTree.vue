@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { environmentListRows } from '~~/shared/dev-environments'
-import type { Project } from '~~/shared/types'
+import type { AgentSession, Project } from '~~/shared/types'
 
 /**
  * The sidebar's management surface: projects → environments → agents.
@@ -77,19 +77,15 @@ function folderKey(projectId: string, path: string) {
   return `folder:${projectId}:${path}`
 }
 
-function agentsFor(environmentId: string) {
-  return agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId)
+const agentsByEnvironment = computed(() => sessionsByEnvironment(agentSessions.value))
+
+function agentsFor(environmentId: string): AgentSession[] {
+  return agentsByEnvironment.value.get(environmentId) ?? []
 }
 
 // A local-directory agent has no dev environment, but its cwd may still sit
 // inside a project's own checkout — attribute it to that project rather than
 // only ever showing it in the catch-all bucket.
-function isUnderRepo(cwd: string, repoPath: string): boolean {
-  const c = cwd.replace(/\/+$/, '')
-  const r = repoPath.replace(/\/+$/, '')
-  return c === r || c.startsWith(`${r}/`)
-}
-
 function localAgentsFor(project: Project) {
   return agentSessions.value.filter(agent => !agent.devEnvironmentId && isUnderRepo(agent.cwd, project.repoPath))
 }
@@ -251,6 +247,16 @@ function openNewAgent(target: { projectId?: string | null, environmentId?: strin
                   {{ row.count }}
                 </span>
               </div>
+
+              <!-- One session in it: one row, not a list of one under the environment. -->
+              <SidebarEnvironmentAgentRow
+                v-else-if="agentsFor(row.environment.id).length === 1"
+                :environment="row.environment"
+                :agent="agentsFor(row.environment.id)[0]!"
+                :pending="pendingByAgent.get(agentsFor(row.environment.id)[0]!.id)"
+                :label="row.label"
+                @new-agent="openNewAgent({ environmentId: row.environment.id })"
+              />
 
               <template v-else>
                 <SidebarEnvironmentRow

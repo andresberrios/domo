@@ -16,6 +16,9 @@ const toast = useToast()
 const open = ref(false)
 const showSeen = ref(false)
 
+const count = computed(() => (unseen.value.length > 999 ? '999+' : String(unseen.value.length)))
+const label = computed(() => `Notifications (${unseen.value.length} unseen)`)
+
 const shown = computed(() => showSeen.value ? notifications.value.slice(0, 50) : unseen.value)
 
 function attachmentUrl(notification: DomoNotification, index: number): string {
@@ -63,17 +66,41 @@ watch(unseen, (list) => {
 
 <template>
   <USlideover v-model:open="open" title="Notifications" description="What agents asked you to see.">
-    <UChip :show="unseen.length > 0" :text="unseen.length" size="3xl" color="primary" inset :class="props.collapsed ? '' : 'w-full'">
+    <!--
+      Expanded, the count is a badge right after the label; collapsed, there is
+      no label, so it sits on the icon's corner. Both are sized to hold three
+      digits, and a count beyond that reads "999+".
+    -->
+    <UChip
+      v-if="props.collapsed"
+      :show="unseen.length > 0"
+      :text="count"
+      color="primary"
+      size="3xl"
+      inset
+      :ui="{ base: 'h-4 min-w-4 px-1 text-[10px] leading-none' }"
+    >
       <UButton
         icon="i-lucide-bell"
-        :label="props.collapsed ? undefined : 'Notifications'"
         color="neutral"
         variant="ghost"
-        :block="!props.collapsed"
-        class="justify-start"
-        :aria-label="`Notifications (${unseen.length} unseen)`"
+        :aria-label="label"
       />
     </UChip>
+    <UButton
+      v-else
+      icon="i-lucide-bell"
+      label="Notifications"
+      color="neutral"
+      variant="ghost"
+      block
+      class="justify-start"
+      :aria-label="label"
+    >
+      <template v-if="unseen.length" #trailing>
+        <UBadge :label="count" color="primary" size="sm" class="min-w-5 justify-center rounded-full tabular-nums" />
+      </template>
+    </UButton>
 
     <template #body>
       <div class="flex flex-col gap-3">

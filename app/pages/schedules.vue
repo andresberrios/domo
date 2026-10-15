@@ -5,11 +5,11 @@ const toast = useToast()
 // `agents` is who you may schedule *for*; `all` is who a job may point *at*.
 // Retiring an environment disables its sessions' jobs but leaves them in this
 // list, and a row naming a bare id rather than the agent reads as a bug.
-const { sessions: everySession, all: allAgents } = useAgentSessions()
+const { all: allAgents } = useAgentSessions()
 // An assistant is scheduled as itself, so the job survives its handoffs; its
-// sessions are not offered on their own.
-const { assistants, all: allAssistants } = useAssistants()
-const agents = computed(() => everySession.value.filter(agent => !agent.assistantId))
+// sessions are not offered on their own (`AgentPicker` leaves them out).
+const { assistants, all: allAssistants, isReady: assistantsReady } = useAssistants()
+const { sessions: agents } = useSessionGroups('offered')
 const { jobs } = useCronJobs()
 const saving = ref(false)
 const deleteOpen = ref(false)
@@ -36,15 +36,19 @@ const form = reactive({
   delivery: 'queue'
 })
 
-watchEffect(() => {
-  if (!form.agentSessionId) form.agentSessionId = assistants.value[0]?.id ?? agents.value[0]?.id ?? ''
-})
-
 /** Assistants first: they are who recurring work is usually for. Ids say which is which. */
-const agentItems = computed(() => [
-  ...assistants.value.map(assistant => ({ label: assistant.name, value: assistant.id, icon: 'i-lucide-sparkles' })),
-  ...agents.value.map(agent => ({ label: agent.title, value: agent.id, icon: 'i-lucide-bot' }))
-])
+const assistantTargets = computed(() => ({
+  label: 'Assistants',
+  items: assistants.value.filter(assistant => !assistant.archived)
+    .map(assistant => ({ label: assistant.name, value: assistant.id, icon: 'i-lucide-sparkles' }))
+}))
+const hasTargets = computed(() => assistantTargets.value.items.length > 0 || agents.value.length > 0)
+
+// Only once the assistants are in: sessions often arrive first, and the
+// default would otherwise be a session when an assistant should come first.
+watchEffect(() => {
+  if (!form.agentSessionId && assistantsReady.value) form.agentSessionId = assistantTargets.value.items[0]?.value ?? agents.value[0]?.id ?? ''
+})
 
 function targetName(job: CronJob) {
   if (job.assistantId) {
@@ -136,14 +140,13 @@ async function remove() {
             <h2 class="text-sm font-semibold">New scheduled task</h2>
             <p class="text-xs text-muted">Use a standard five-field cron expression or choose one exact time.</p>
           </div>
-          <div v-if="!agentItems.length" class="text-sm text-muted">Create an assistant or a coding agent before scheduling work.</div>
+          <div v-if="!hasTargets" class="text-sm text-muted">Create an assistant or a coding agent before scheduling work.</div>
           <template v-else>
             <div class="grid gap-3 sm:grid-cols-2">
               <UFormField label="Send to">
-                <ChoiceMenu
+                <AgentPicker
                   v-model="form.agentSessionId"
-                  :items="agentItems"
-                  value-key="value"
+                  :leading="assistantTargets"
                   placeholder="Choose an assistant or agent"
                   class="w-full"
                 />

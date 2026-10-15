@@ -85,4 +85,33 @@ describe('NotificationsButton', () => {
     ;(body.querySelector('[aria-label="Mark seen"]') as HTMLElement).click()
     await vi.waitFor(() => expect(seen).toHaveBeenCalledWith({ ids: ['nt_1'] }))
   })
+
+  it('puts the count right after the label, and holds three digits', { timeout: 30_000 }, async () => {
+    rows.value = Array.from({ length: 123 }, (_, index) => notification({ id: `nt_${index}`, createdAt: '2026-01-01T00:00:00.000Z' }))
+    const component = await mountSuspended(Harness)
+
+    const button = component.find('[aria-label="Notifications (123 unseen)"]')
+    // In the button, after its label: not a chip pinned to the row's far corner.
+    expect(button.text().replace(/\s+/g, '')).toBe('Notifications123')
+
+    rows.value = Array.from({ length: 1000 }, (_, index) => notification({ id: `nt_${index}`, createdAt: '2026-01-01T00:00:00.000Z' }))
+    await nextTick()
+    expect(component.find('[aria-label="Notifications (1000 unseen)"]').text()).toContain('999+')
+  })
+
+  it('shows no count when nothing is unseen', async () => {
+    rows.value = [notification({ seenAt: '2026-01-01T00:00:00.000Z' })]
+    const component = await mountSuspended(Harness)
+    expect(component.find('[aria-label="Notifications (0 unseen)"]').text().trim()).toBe('Notifications')
+  })
+
+  it('pins the count on the icon when the sidebar is collapsed', async () => {
+    rows.value = [notification({ createdAt: '2026-01-01T00:00:00.000Z' })]
+    const Collapsed = defineComponent(() => () => h(UApp, null, { default: () => h(NotificationsButton, { collapsed: true }) }))
+    const component = await mountSuspended(Collapsed)
+
+    const button = component.find('[aria-label="Notifications (1 unseen)"]')
+    expect(button.text().trim()).toBe('')
+    expect(component.text()).toContain('1')
+  })
 })

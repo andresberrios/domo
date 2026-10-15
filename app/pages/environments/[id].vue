@@ -41,6 +41,8 @@ const brokenActions = computed(() => (leftovers.value.length
   ? [{ label: 'Try again', color: 'error' as const, variant: 'outline' as const, loading: busy.value, onClick: retryCleanup }]
   : undefined))
 const agents = computed(() => agentSessions.value.filter(agent => agent.devEnvironmentId === environmentId.value))
+/** As the sidebar lists them: an assistant's sessions are its own, though an upgrade interrupts them too. */
+const listedAgents = computed(() => agents.value.filter(agent => !agent.assistantId))
 /** Every session that ran here, archived ones included: this page is their record. */
 const pastAgents = computed(() =>
   allAgents.value.filter(agent => agent.devEnvironmentId === environmentId.value)
@@ -382,8 +384,8 @@ watch(() => environment.value?.status, async (now, was) => {
             <UButton label="New session here" icon="i-lucide-plus" color="neutral" variant="subtle" size="xs" :to="newAgentPath({ environmentId })" />
           </div>
 
-          <ul v-if="agents.length" class="divide-y divide-default overflow-hidden rounded-lg border border-default">
-            <li v-for="agent in agents" :key="agent.id">
+          <ul v-if="listedAgents.length" class="divide-y divide-default overflow-hidden rounded-lg border border-default">
+            <li v-for="agent in listedAgents" :key="agent.id">
               <NuxtLink :to="`/agents/${agent.id}`" class="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-elevated">
                 <AgentStatusIcon :status="agent.status" />
                 <span class="min-w-0 flex-1 truncate">{{ agent.title }}</span>
