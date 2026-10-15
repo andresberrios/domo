@@ -29,7 +29,7 @@ const shown = ref<number | null>(null)
       <div v-if="item.image" class="group/thumb relative">
         <button
           type="button"
-          class="block size-16 overflow-hidden rounded-md border border-default bg-elevated focus-visible:outline-2 focus-visible:outline-primary"
+          class="block size-16 cursor-pointer overflow-hidden rounded-md border border-default bg-elevated focus-visible:outline-2 focus-visible:outline-primary"
           :aria-label="`Open image ${imageNumber(item) + 1}`"
           @click="shown = imageNumber(item)"
         >
