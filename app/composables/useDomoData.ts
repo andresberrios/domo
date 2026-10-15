@@ -2,7 +2,9 @@ import { useLiveQuery } from '@tanstack/vue-db'
 import {
   agentEventsCollection,
   agentInboxCollection,
+  agentMessageWatchesCollection,
   agentSessionsCollection,
+  agentSubscriptionsCollection,
   assistantsCollection,
   cronJobsCollection,
   devEnvironmentsCollection,
@@ -384,6 +386,29 @@ export function usePermissions(agentSessionId?: MaybeRefOrGetter<string | null |
   const pending = computed(() => permissions.value.filter(permission => !permission.resolvedAt))
 
   return { permissions, pending, isReady }
+}
+
+/**
+ * Who follows whom, as subscriber and target pairs: the subscriptions, and the
+ * messages a sender is waiting to hear the answer to (a watch becomes a
+ * subscription when the turn that handles the message begins, so until then it
+ * is the only record that the sender is following). One pair per follow.
+ */
+export function useAgentFollows() {
+  const { data: subscriptions } = useLiveQuery(q => q.from({ subscription: agentSubscriptionsCollection() }))
+  const { data: watches } = useLiveQuery(q => q.from({ watch: agentMessageWatchesCollection() }))
+  const follows = computed<Array<{ subscriberId: string, targetId: string }>>(() => {
+    const seen = new Set<string>()
+    const pairs: Array<{ subscriberId: string, targetId: string }> = []
+    for (const row of [...(subscriptions.value ?? []), ...(watches.value ?? [])] as any[]) {
+      const key = `${row.subscriber_id}:${row.target_id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      pairs.push({ subscriberId: row.subscriber_id, targetId: row.target_id })
+    }
+    return pairs
+  })
+  return { follows }
 }
 
 export function useMcpServers() {

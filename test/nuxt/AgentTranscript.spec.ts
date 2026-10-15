@@ -1,4 +1,5 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
+import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import AgentTranscript from '~/components/AgentTranscript.vue'
@@ -268,12 +269,15 @@ describe('AgentTranscript', () => {
         expect(component.find('[data-testid="row-time"]').text()).toMatch(/\d:\d\d:\d\d/)
       })
 
-      it('shows them on hover only, until the clock button keeps them all showing, everywhere', async () => {
+      it('shows them on hover only, until the switch keeps them all showing, everywhere', async () => {
         const component = await render(rows)
         const times = () => component.findAll('[data-testid="row-time"]')
         expect(times().some(shown)).toBe(false)
+        // The switch is the page menu's and Settings', not a button on every row.
+        expect(component.find('[data-testid="times-toggle"]').exists()).toBe(false)
 
-        await component.find('[data-testid="times-toggle"]').trigger('click')
+        useAlwaysShowTimes().value = true
+        await nextTick()
 
         expect(times().every(shown)).toBe(true)
         expect(window.localStorage.getItem('domo:transcript:times')).toBe('true')
@@ -281,7 +285,8 @@ describe('AgentTranscript', () => {
         const other = await render(rows)
         expect(other.findAll('[data-testid="row-time"]').every(shown)).toBe(true)
 
-        await component.find('[data-testid="times-toggle"]').trigger('click')
+        useAlwaysShowTimes().value = false
+        await nextTick()
         expect(times().some(shown)).toBe(false)
         expect(window.localStorage.getItem('domo:transcript:times')).toBe('false')
       })

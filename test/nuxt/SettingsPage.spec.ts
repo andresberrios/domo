@@ -1,8 +1,11 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { readBody } from 'h3'
+import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AdapterSettingsPage from '~/pages/settings/adapters/[adapter].vue'
+import GeneralSettingsPage from '~/pages/settings/index.vue'
+import { useAlwaysShowTimes } from '~/composables/useRecordVisibility'
 import SettingsShell from '~/components/SettingsShell.vue'
 
 let stored: any
@@ -174,5 +177,23 @@ describe('adapter settings page', () => {
     expect(document.body.textContent).toContain('Bills per token through the OpenAI API')
     expect(button('Remove')).toBeUndefined()
     wrapper.unmount()
+  })
+})
+
+describe('general settings page', () => {
+  it('keeps every transcript\'s times showing from one switch, the same one the agent page\'s menu flips', async () => {
+    setupStatus = null
+    useAlwaysShowTimes().value = false
+    const page = await mountSuspended(GeneralSettingsPage)
+
+    const toggle = page.find('[role="switch"]')
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    await toggle.trigger('click')
+    expect(useAlwaysShowTimes().value).toBe(true)
+
+    useAlwaysShowTimes().value = false
+    await nextTick()
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    page.unmount()
   })
 })

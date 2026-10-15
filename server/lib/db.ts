@@ -627,6 +627,8 @@ alter table assistants replica identity full;
 alter table agent_events replica identity full;
 alter table agent_permissions replica identity full;
 alter table agent_inbox replica identity full;
+alter table agent_subscriptions replica identity full;
+alter table agent_message_watches replica identity full;
 alter table cron_jobs replica identity full;
 alter table mcp_servers replica identity full;
 alter table settings replica identity full;

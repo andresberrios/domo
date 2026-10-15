@@ -10,6 +10,11 @@ const ALLOWED_TABLES = new Set([
   'agent_events',
   'agent_permissions',
   'agent_inbox',
+  // Who follows whom: two session ids, a time and a turn count.
+  'agent_subscriptions',
+  // The same, for a message whose answering turn has not begun; the message
+  // itself is in the inbox, not here.
+  'agent_message_watches',
   'cron_jobs',
   'mcp_servers',
   'projects',

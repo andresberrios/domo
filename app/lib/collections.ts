@@ -111,6 +111,16 @@ export const projectsCollection = () => collection('projects', { table: 'project
 export const devEnvironmentsCollection = () => collection('dev_environments', { table: 'dev_environments' })
 export const notificationsCollection = () => collection('notifications', { table: 'notifications' })
 
+/** Who follows whom, keyed on the pair: a row is one subscriber and one target. */
+export const agentSubscriptionsCollection = () => collection('agent_subscriptions', {
+  table: 'agent_subscriptions',
+  key: row => `${row.subscriber_id}:${row.target_id}`
+})
+export const agentMessageWatchesCollection = () => collection('agent_message_watches', {
+  table: 'agent_message_watches',
+  key: row => row.message_id as string
+})
+
 /** Account-wide plan limits, so every page can show them without a fetch. */
 export const usageLimitsCollection = () => collection('usage_limits', {
   table: 'usage_limits',
