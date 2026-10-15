@@ -80,6 +80,25 @@ export function adapterEntry(adapter: AgentAdapter): string {
   )
 }
 
+let glibcRuntime: boolean | null = null
+
+/**
+ * Whether this Linux runs on glibc, from Node's diagnostic report, asked once
+ * and without its network section. A full report does a reverse DNS lookup
+ * for both ends of every open socket, synchronously: on a Mac, the first boot
+ * of an install blocked the server for thirty seconds on it. The answer only
+ * matters on Linux.
+ */
+function glibc(): boolean {
+  if (glibcRuntime === null) {
+    // `excludeNetwork` is Node 20's; the types here predate it.
+    const report = process.report as (NodeJS.ProcessReport & { excludeNetwork?: boolean }) | undefined
+    if (report) report.excludeNetwork = true
+    glibcRuntime = !!(report?.getReport() as any)?.header?.glibcVersionRuntime
+  }
+  return glibcRuntime
+}
+
 /**
  * Copilot's native executable, out of the platform package `@github/copilot`
  * depends on. Its own `copilot` bin is a Node loader that runs the executable
@@ -88,8 +107,7 @@ export function adapterEntry(adapter: AgentAdapter): string {
  */
 function copilotBinary(pkgPath: string): string {
   const require = createRequire(pkgPath)
-  const glibc = !!(process.report?.getReport() as any)?.header?.glibcVersionRuntime
-  const platforms = process.platform === 'linux' ? (glibc ? ['linux'] : ['linuxmusl', 'linux']) : [process.platform]
+  const platforms = process.platform === 'linux' ? (glibc() ? ['linux'] : ['linuxmusl', 'linux']) : [process.platform]
   for (const platform of platforms) {
     try {
       // The platform package exports the executable itself, and not its package.json.
