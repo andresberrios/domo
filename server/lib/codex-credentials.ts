@@ -44,3 +44,34 @@ export async function hasCodexSubscriptionLogin(inContainer: boolean, env: NodeJ
     return false
   }
 }
+
+/**
+ * The ChatGPT login's access token and account, read from `auth.json`, for a
+ * call to the backend Codex itself calls. Null when there is no ChatGPT login,
+ * or when the token expires within a minute.
+ *
+ * Read and never refreshed: the refresh token is single-use, and refreshing is
+ * Codex's job, which re-reads the file first. An expired token is what a Codex
+ * run renews, so the caller goes through Codex instead.
+ */
+export async function codexAccessToken(
+  env: NodeJS.ProcessEnv = process.env,
+  now = Date.now()
+): Promise<{ accessToken: string, accountId: string } | null> {
+  const dir = codexHomeDir(false, env)
+  if (!dir) return null
+  try {
+    const auth = JSON.parse(await readFile(join(dir, 'auth.json'), 'utf8')) as {
+      auth_mode?: string
+      tokens?: { access_token?: string, account_id?: string } | null
+    }
+    const accessToken = auth.tokens?.access_token
+    const accountId = auth.tokens?.account_id
+    if (auth.auth_mode === 'apikey' || !accessToken || !accountId) return null
+    const claims = JSON.parse(Buffer.from(accessToken.split('.')[1] ?? '', 'base64url').toString('utf8'))
+    if (typeof claims.exp !== 'number' || claims.exp * 1000 < now + 60_000) return null
+    return { accessToken, accountId }
+  } catch {
+    return null
+  }
+}

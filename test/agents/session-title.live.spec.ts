@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { askForTitle, cleanTitle } from '../../server/lib/acp/session-title'
+import { askForTitle, cleanTitle, writeTitle } from '../../server/lib/acp/session-title'
 import { TITLE_MODELS } from '~~/shared/agent-adapters'
 import type { AgentAdapter } from '~~/shared/types'
 
@@ -26,5 +26,25 @@ describe.each(Object.keys(TITLE_MODELS) as AgentAdapter[])('a title from %s', (a
     expect(title.split(' ').length).toBeLessThanOrEqual(10)
     expect(title).toMatch(about)
     expect(title).toMatch(/^[\x20-\x7E]+$/)
+  })
+})
+
+describe('asked directly', () => {
+  // Codex's backend on the ChatGPT login, and OpenCode Go on the console key,
+  // against the same harness through ACP: what the direct call saves.
+  it.each([['codex', 'gpt-5.6-luna'], ['opencode', 'opencode-go/glm-5.3-flash']] as const)('%s answers without a session, and sooner', async (adapter, model) => {
+    const text = MESSAGES[0]!.text
+    const timings: Record<string, number[]> = { direct: [], acp: [] }
+    for (let run = 0; run < 3; run++) {
+      let began = Date.now()
+      const direct = await writeTitle(text, { adapter, model }, `ag_live_${adapter}`)
+      timings.direct!.push(Date.now() - began)
+      expect(direct.via).toBe('direct')
+      expect(cleanTitle(direct.answer)).toMatch(MESSAGES[0]!.about)
+      began = Date.now()
+      await askForTitle(text, { adapter, model }, 120_000)
+      timings.acp!.push(Date.now() - began)
+    }
+    console.log(`[${adapter}] direct ${timings.direct!.join('/')} ms, acp ${timings.acp!.join('/')} ms`)
   })
 })
