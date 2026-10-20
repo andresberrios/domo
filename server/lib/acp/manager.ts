@@ -24,6 +24,7 @@ import { copilotMcpConfig, copilotModels, withCopilotModels } from './copilot'
 import { assertSessionStartable } from './startable'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
+import { slimToolPayload } from './tool-payload'
 import { assistantSystemPrompt, currentSessionFor, primeFirstPrompt } from '../assistants/context'
 import {
   adapterConfigOptions,
@@ -1499,7 +1500,7 @@ class AgentRuntime {
     await this.serial(async () => {
       await this.closeStream(block)
       if (continued) await this.writeStream(continued).catch(error => console.error(`[acp:${this.agentSessionId}] could not flush streamed text`, error))
-      await appendAgentEvent(this.agentSessionId, kind, update)
+      await appendAgentEvent(this.agentSessionId, kind, kind === 'tool_call' || kind === 'tool_call_update' ? slimToolPayload(update) : update)
       if (kind === 'tool_call') await this.setStatus('thinking')
       // The agent may switch its own mode mid-turn, and the row is what gets
       // re-applied on the next attach — so it has to follow, not just the log.
@@ -1531,7 +1532,7 @@ class AgentRuntime {
     if (kind !== 'tool_call' && kind !== 'tool_call_update') return
     if (update.toolCallId === parent) return
     await this.serial(async () => {
-      await appendAgentEvent(this.agentSessionId, kind, update)
+      await appendAgentEvent(this.agentSessionId, kind, slimToolPayload(update))
       if (this.turn) await this.touchIfStale()
     })
   }
