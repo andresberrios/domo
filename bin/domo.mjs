@@ -271,9 +271,22 @@ function installedVersion(file, args, pattern) {
   return result.status === 0 ? (result.stdout.match(pattern)?.[1] ?? null) : null
 }
 
+/**
+ * `fetch`, failing with what went wrong: undici's own error says only "fetch
+ * failed" and keeps the reason (no network, DNS, a reset) in `cause`.
+ */
+async function request(url, init) {
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    const cause = error?.name === 'TimeoutError' ? 'timed out' : (error?.cause?.code ?? error?.cause?.message ?? error?.message)
+    throw new Error(`could not reach ${new URL(url).host} (${cause})`, { cause: error })
+  }
+}
+
 /** Stream `url` into `file`; with `sha256`, fail unless the bytes match it. */
 async function download(url, file, sha256 = null) {
-  const response = await fetch(url)
+  const response = await request(url)
   if (!response.ok || !response.body) throw new Error(`${url}: ${response.status}`)
   const hash = createHash('sha256')
   const tap = new Transform({
@@ -645,7 +658,7 @@ function platformKey() {
 /** The newest release: its version, a build per platform, and the releases before it with their commits. */
 async function fetchManifest() {
   const url = `${feed()}/latest/download/manifest.json`
-  const response = await fetch(url, { signal: AbortSignal.timeout(60_000) })
+  const response = await request(url, { signal: AbortSignal.timeout(60_000) })
   if (!response.ok) throw new Error(`${url}: ${response.status}`)
   const manifest = await response.json()
   if (manifest?.schema !== 1 || typeof manifest.version !== 'string') throw new Error(`${url} is not a Domo release manifest`)

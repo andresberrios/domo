@@ -211,7 +211,9 @@ export class Updater {
         targetCommit: check.target,
         behind: check.behind,
         commits: check.commits,
-        checkedAt: new Date().toISOString()
+        checkedAt: new Date().toISOString(),
+        // A check that worked answers the one that did not; a failed update's note stays.
+        lastError: row.lastError?.startsWith(CHECK_FAILED) ? null : row.lastError
       })
       if (ready) this.waitForQuiet()
       else if (shouldAutoApply({ settings, check, state: this.row!.state, lastAppliedAt: this.row!.lastAppliedAt, failedTarget: this.failedTarget })) {
@@ -219,7 +221,7 @@ export class Updater {
       }
       return check
     } catch (error) {
-      await this.save({ state: row.state === 'checking' ? 'idle' : row.state, lastError: `Could not check for updates: ${message(error)}` })
+      await this.save({ state: row.state === 'checking' ? 'idle' : row.state, lastError: `${CHECK_FAILED} ${message(error)}` })
       return null
     }
   }
@@ -374,6 +376,8 @@ export class Updater {
     this.failedTarget = null
   }
 }
+
+const CHECK_FAILED = 'Could not check for updates:'
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
