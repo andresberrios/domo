@@ -1,0 +1,18 @@
+{
+  "status": "allowed",
+  "resetsAt": 1792590000,
+  "rateLimitType": "five_hour",
+  "overageStatus": "rejected",
+  "overageDisabledReason": "out_of_credits",
+  "isUsingOverage": false,
+  "unifiedWindows": {
+    "five_hour": {
+      "utilization": 0.3,
+      "resetsAt": 1792590000
+    },
+    "seven_day": {
+      "utilization": 0.21,
+      "resetsAt": 1793134800
+    }
+  }
+}

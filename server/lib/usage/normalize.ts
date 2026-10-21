@@ -75,7 +75,7 @@ export function toIso(value: unknown): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
-function toStatus(value: unknown): UsageLimitStatus | null {
+function toStatus(value: unknown): Exclude<UsageLimitStatus, 'off'> | null {
   return value === 'allowed' || value === 'allowed_warning' || value === 'rejected' ? value : null
 }
 
@@ -89,6 +89,16 @@ function toFinite(value: unknown): number | null {
 /* ------------------------------------------------------------------ */
 
 /**
+ * The model behind Claude's `seven_day_overage_included` window, for the
+ * sources that report that window without naming it (the rate-limit headers
+ * and session events). It is the weekly bucket of the models whose use beyond
+ * the plan needs extra usage. Claude Code itself labels it "Fable limit" (its
+ * rate-limit label map, 2.1.296). The usage endpoint names the same bucket in
+ * `limits[]`, and that name wins wherever it is available (`model:<name>`).
+ */
+const OVERAGE_INCLUDED_MODEL = 'Fable'
+
+/**
  * What each Claude window is called, matching the wording Claude Code's own
  * `/usage` uses so the two can be read side by side.
  */
@@ -98,9 +108,9 @@ const CLAUDE_LABELS: Record<string, string> = {
   seven_day_opus: 'Weekly · Opus',
   seven_day_sonnet: 'Weekly · Sonnet',
   seven_day_oauth_apps: 'Weekly · OAuth apps',
-  seven_day_overage_included: 'Weekly · extra usage included',
-  extra_usage: 'Usage credits',
-  overage: 'Usage credits'
+  seven_day_overage_included: `Weekly · ${OVERAGE_INCLUDED_MODEL}`,
+  extra_usage: 'Extra usage',
+  overage: 'Extra usage'
 }
 
 export function claudeLabel(limitId: string): string {
@@ -110,6 +120,64 @@ export function claudeLabel(limitId: string): string {
   const scoped = /^model:(.+)$/.exec(limitId)
   if (scoped) return `Weekly · ${scoped[1]}`
   return limitId
+}
+
+/* ------------------------------------------------------------------ */
+/* Claude: extra usage                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The reasons extra usage cannot cover a request because a monthly cap that was
+ * set has been reached: it is on, and spent.
+ */
+const EXTRA_USAGE_CAP_REACHED = new Set(['org_level_disabled_until', 'org_spend_cap_reached'])
+
+/**
+ * The extra-usage row's status from what a source says about it: `off` unless
+ * the account has it turned on, and `rejected` only when it is on and spent.
+ *
+ * Every request reports extra usage, whether or not the account has any. A
+ * Max account that never turned it on answers, on every response measured
+ * (headers and session events alike, 2026-10-21): `overage-status: rejected`,
+ * `overage-disabled-reason: out_of_credits`, and no number. So
+ * `out_of_credits` alone means "no credits to spend", which reads as off; it
+ * is "spent" only when the source also says extra usage is on. Claude Code's
+ * own offer logic treats it as on, but it only ever shows that inside a
+ * prompt to buy credits. Any other reason (`overage_not_provisioned`,
+ * `org_level_disabled`, `member_level_disabled`, …) is off.
+ *
+ * `enabled` is the endpoint's `is_enabled` or a session event's
+ * `overageEnabled`, when the source has one.
+ */
+export function extraUsageStatus(input: {
+  enabled?: unknown
+  status?: unknown
+  disabledReason?: unknown
+}): UsageLimitStatus | null {
+  const reason = typeof input.disabledReason === 'string' && input.disabledReason ? input.disabledReason : null
+  if (reason && EXTRA_USAGE_CAP_REACHED.has(reason)) return 'rejected'
+  if (reason === 'out_of_credits') return input.enabled === true ? 'rejected' : 'off'
+  if (reason || input.enabled === false) return 'off'
+  return toStatus(input.status) ?? (input.enabled === true ? 'allowed' : null)
+}
+
+/**
+ * Money in the major unit of `currency`, from the endpoint's minor units.
+ *
+ * The usage endpoint counts extra usage in cents for USD (the Agent SDK's own
+ * schema for the same body says "minor units of `currency`"); Domo's rows hold
+ * dollars, which is what `formatAmount` prints.
+ */
+function fromMinorUnits(value: unknown, currency: string): number | null {
+  const amount = toFinite(value)
+  if (amount === null) return null
+  let digits = 2
+  try {
+    digits = new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2
+  } catch {
+    // An unknown code: assume cents, as for nearly every currency.
+  }
+  return amount / 10 ** digits
 }
 
 /**
@@ -193,17 +261,22 @@ export function claudeEndpointLimits(body: any): UsageLimitValue[] {
     }))
   }
 
+  // A row either way, so the panel can say extra usage is off rather than
+  // leave the reader to wonder. Off carries no numbers: "$0.00 of $0.00" on a
+  // plan that never opted in is noise, not data.
   const extra = body.extra_usage
-  // Only worth a row once the account actually has extra usage turned on;
-  // otherwise "$0.00 of $0.00" is noise on every plan that never opted in.
-  if (extra && typeof extra === 'object' && extra.is_enabled === true) {
+  if (extra && typeof extra === 'object') {
+    const status = extraUsageStatus({ enabled: extra.is_enabled, disabledReason: extra.disabled_reason })
+    const currency = typeof extra.currency === 'string' && extra.currency ? extra.currency.toUpperCase() : 'USD'
+    const on = status !== 'off'
     out.push(limit({
       limitId: 'extra_usage',
       label: claudeLabel('extra_usage'),
-      usedPercent: toPercent(extra.utilization, 'percent'),
-      amountUsed: toFinite(extra.used_credits),
-      amountLimit: toFinite(extra.monthly_limit),
-      currency: typeof extra.currency === 'string' ? extra.currency : 'USD',
+      usedPercent: on ? toPercent(extra.utilization, 'percent') : null,
+      status,
+      amountUsed: on ? fromMinorUnits(extra.used_credits, currency) : null,
+      amountLimit: on ? fromMinorUnits(extra.monthly_limit, currency) : null,
+      currency: on ? currency : null,
       source: 'endpoint'
     }))
   }
@@ -232,7 +305,8 @@ export function claudeEndpointLimits(body: any): UsageLimitValue[] {
  *   the overall one. The per-window value is the honest one for a row; the
  *   overall header describes the request that happened to carry it.
  *
- * Only the two subscription windows and the overage are taken. The rest of the
+ * Only the subscription windows (`5h`, `7d`, and `7d_oi`, the weekly bucket of
+ * the models that need extra usage beyond the plan) and the overage are taken. The rest of the
  * family (`-representative-claim`, `-fallback-percentage`, `-slow-*`,
  * `-grace-*`) describes which window is currently limiting and how this one
  * request was degraded, which is not a property of the plan.
@@ -247,7 +321,8 @@ export function claudeHeaderLimits(headers: Record<string, string | null | undef
 
   for (const [prefix, id, minutes] of [
     ['5h', 'five_hour', 300],
-    ['7d', 'seven_day', 10080]
+    ['7d', 'seven_day', 10080],
+    ['7d_oi', 'seven_day_overage_included', 10080]
   ] as const) {
     const usedPercent = toPercent(get(`anthropic-ratelimit-unified-${prefix}-utilization`), 'fraction')
     if (usedPercent === null) continue
@@ -262,19 +337,20 @@ export function claudeHeaderLimits(headers: Record<string, string | null | undef
     }))
   }
 
-  // Only when there is a number. A response from an account with no extra usage
-  // carries `overage-status: rejected` and `overage-disabled-reason:
-  // out_of_credits` with no utilization at all — which means "you have not
-  // bought any", not "you have hit a limit", and must not render as either.
-  const overagePercent = toPercent(get('anthropic-ratelimit-unified-overage-utilization'), 'fraction')
-  if (overagePercent !== null) {
+  // The overage headers say whether extra usage is on even when they carry no
+  // number; `extraUsageStatus` reads them.
+  const overageStatus = extraUsageStatus({
+    status: get('anthropic-ratelimit-unified-overage-status'),
+    disabledReason: get('anthropic-ratelimit-unified-overage-disabled-reason')
+  })
+  if (overageStatus) {
+    const on = overageStatus !== 'off'
     out.push(limit({
       limitId: 'extra_usage',
       label: claudeLabel('extra_usage'),
-      usedPercent: overagePercent,
-      resetsAt: toIso(get('anthropic-ratelimit-unified-overage-reset')),
-      status: toStatus(get('anthropic-ratelimit-unified-overage-status')),
-      currency: 'USD',
+      usedPercent: on ? toPercent(get('anthropic-ratelimit-unified-overage-utilization'), 'fraction') : null,
+      resetsAt: on ? toIso(get('anthropic-ratelimit-unified-overage-reset')) : null,
+      status: overageStatus,
       source: 'headers'
     }))
   }
@@ -332,7 +408,10 @@ export function claudeSessionLimits(info: any): UsageLimitValue[] {
   // The window that is limiting right now, when it is one `unifiedWindows` did
   // not carry. `rateLimitType` is optional, so a reading without one names no
   // window at all and is not a row.
-  const type = typeof info.rateLimitType === 'string' ? info.rateLimitType : null
+  // `overage` is extra usage, which has its own row below.
+  const type = info.rateLimitType === 'overage'
+    ? 'extra_usage'
+    : typeof info.rateLimitType === 'string' ? info.rateLimitType : null
   const topPercent = toPercent(info.utilization, 'fraction')
   if (type && topPercent !== null && !out.has(type)) {
     out.set(type, limit({
@@ -340,20 +419,27 @@ export function claudeSessionLimits(info: any): UsageLimitValue[] {
       label: claudeLabel(type),
       usedPercent: topPercent,
       resetsAt: toIso(info.resetsAt),
-      windowMinutes: type === 'five_hour' ? 300 : type === 'overage' ? null : 10080,
+      windowMinutes: type === 'five_hour' ? 300 : type === 'extra_usage' ? null : 10080,
       status,
       source: 'session-event'
     }))
   }
 
-  const overageStatus = toStatus(info.overageStatus)
-  if (overageStatus && !out.has('extra_usage')) {
+  // Reported on every request whether or not the account has extra usage;
+  // `extraUsageStatus` tells "off" from "spent".
+  const overageStatus = extraUsageStatus({
+    enabled: info.overageEnabled,
+    status: info.overageStatus,
+    disabledReason: info.overageDisabledReason
+  })
+  if (overageStatus) {
+    const on = overageStatus !== 'off'
     out.set('extra_usage', limit({
       limitId: 'extra_usage',
       label: claudeLabel('extra_usage'),
-      resetsAt: toIso(info.overageResetsAt),
+      usedPercent: on ? out.get('extra_usage')?.usedPercent ?? null : null,
+      resetsAt: on ? toIso(info.overageResetsAt) : null,
       status: overageStatus,
-      currency: 'USD',
       source: 'session-event'
     }))
   }

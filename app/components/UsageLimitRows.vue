@@ -33,8 +33,9 @@ onBeforeUnmount(() => {
   if (ticker) clearInterval(ticker)
 })
 
-const rows = computed(() => props.limits.map(limit => ({
+const rows = computed(() => visibleLimits(props.limits).map(limit => ({
   ...limit,
+  state: limitState(limit),
   label: limit.label || limitLabel(limit.limitId),
   reset: formatReset(limit.resetsAt, now.value),
   tone: usageTone(limit.usedPercent, limit.status),
@@ -84,6 +85,7 @@ const staleness = computed(() => {
         <span class="min-w-0 flex-1 truncate" :class="compact ? 'text-xs font-medium' : 'text-sm font-medium'">
           {{ row.label }}
         </span>
+        <span v-if="row.state" class="shrink-0 text-xs text-muted">{{ row.state }}</span>
         <span v-if="row.amount" class="shrink-0 text-xs tabular-nums text-muted">{{ row.amount }}</span>
         <span
           v-if="row.usedPercent !== null"

@@ -74,7 +74,7 @@ describe('UsageLimitRows', () => {
       props: {
         limits: [limit({
           limitId: 'extra_usage',
-          label: 'Usage credits',
+          label: 'Extra usage',
           usedPercent: 16,
           resetsAt: null,
           amountUsed: 15.95,
@@ -84,8 +84,52 @@ describe('UsageLimitRows', () => {
       }
     })
 
-    expect(component.text()).toContain('Usage credits')
+    expect(component.text()).toContain('Extra usage')
     expect(component.text()).toMatch(/\$15\.95.*of.*\$100/)
+  })
+
+  it('says quietly that extra usage is off, never that a limit is reached', async () => {
+    const component = await mountSuspended(Harness, {
+      props: {
+        limits: [limit({
+          limitId: 'extra_usage',
+          label: 'Extra usage',
+          usedPercent: null,
+          resetsAt: null,
+          windowMinutes: null,
+          status: 'off'
+        })]
+      }
+    })
+
+    expect(component.text()).toContain('Extra usage')
+    expect(component.text()).toContain('Off')
+    expect(component.text()).not.toContain('Limit reached')
+    expect(component.find('.text-error').exists()).toBe(false)
+  })
+
+  it('says extra usage is on when the only thing known is that it is', async () => {
+    const component = await mountSuspended(Harness, {
+      props: {
+        limits: [limit({ limitId: 'extra_usage', label: 'Extra usage', usedPercent: null, resetsAt: null, status: 'allowed' })]
+      }
+    })
+
+    expect(component.text()).toContain('On')
+  })
+
+  it('shows one Fable row when the endpoint has named the bucket the headers did not', async () => {
+    const component = await mountSuspended(Harness, {
+      props: {
+        limits: [
+          limit({ limitId: 'seven_day_overage_included', label: 'Weekly · Fable', usedPercent: 3, source: 'headers' }),
+          limit({ limitId: 'model:Fable', label: 'Weekly · Fable', usedPercent: 4 })
+        ]
+      }
+    })
+
+    expect(component.text().match(/Weekly · Fable/g)).toHaveLength(1)
+    expect(component.text()).toContain('4%')
   })
 
   it('says a window is spent, whatever the percentage claims', async () => {

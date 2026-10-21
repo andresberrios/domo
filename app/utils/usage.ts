@@ -102,6 +102,7 @@ export type UsageTone = 'neutral' | 'primary' | 'warning' | 'error'
  */
 export function usageTone(percent: number | null | undefined, status?: UsageLimit['status']): UsageTone {
   if (status === 'rejected') return 'error'
+  if (status === 'off') return 'neutral'
   if (typeof percent !== 'number' || !Number.isFinite(percent)) return 'neutral'
   if (percent >= 90) return 'error'
   if (percent >= 70) return 'warning'
@@ -121,9 +122,32 @@ export function limitLabel(limitId: string): string {
     seven_day: 'Weekly · all models',
     seven_day_opus: 'Weekly · Opus',
     seven_day_sonnet: 'Weekly · Sonnet',
-    extra_usage: 'Usage credits'
+    extra_usage: 'Extra usage'
   }
   return known[limitId] ?? limitId
+}
+
+/**
+ * The rows worth showing. Claude's endpoint names its per-model weekly buckets
+ * (`model:Fable`); the headers and session events report the same bucket as
+ * `seven_day_overage_included` with no name. With a named one present, the
+ * unnamed one is a duplicate.
+ */
+export function visibleLimits(limits: UsageLimit[]): UsageLimit[] {
+  const named = limits.some(l => l.provider === 'claude' && l.limitId.startsWith('model:'))
+  return named
+    ? limits.filter(l => !(l.provider === 'claude' && l.limitId === 'seven_day_overage_included'))
+    : limits
+}
+
+/**
+ * "Off" or "On" for a row that has no number to show: an optional allowance
+ * such as Claude's extra usage, reported only as turned on or not.
+ */
+export function limitState(limit: Pick<UsageLimit, 'status' | 'usedPercent' | 'amountUsed' | 'amountLimit'>): string | null {
+  if (limit.status === 'off') return 'Off'
+  if (limit.usedPercent !== null || limit.amountUsed !== null || limit.amountLimit !== null) return null
+  return limit.status === 'allowed' || limit.status === 'allowed_warning' ? 'On' : null
 }
 
 /** The worst window of a set, which is the one a compact summary should show. */
