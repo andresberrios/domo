@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { AgentSession } from '~~/shared/types'
-import { agentAdapterInfo } from '~~/shared/agent-adapters'
 
 /**
  * One assistant: one continuous conversation, however many sessions it has
@@ -15,7 +14,6 @@ const toast = useToast()
 const assistantId = computed(() => route.params.id as string)
 const { assistant } = useAssistant(assistantId)
 const { all: allSessions } = useAgentSessions()
-const { all: allEnvironments } = useDevEnvironments()
 const { permissions: allPermissions } = usePermissions()
 
 /** Its sessions, oldest first. */
@@ -44,11 +42,8 @@ const pending = computed(() => permissions.value.filter(permission =>
   !permission.resolvedAt && permission.agentSessionId === current.value?.id))
 const { queued } = useAgentInbox(() => current.value?.id)
 
-const environment = computed(() =>
-  allEnvironments.value.find(item => item.id === current.value?.devEnvironmentId) ?? null)
 const startability = useSessionStartability(current)
 const blocked = computed(() => startability.value.startable ? null : startability.value.reason)
-const adapter = computed(() => current.value ? agentAdapterInfo(current.value.adapter) : null)
 const avatar = computed(() => assistant.value ? { src: assistant.value.avatar ?? undefined, alt: assistant.value.name } : undefined)
 
 /** The assistant's status board, which outlives its sessions. */
@@ -147,29 +142,18 @@ const menuItems = computed(() => [
           </template>
         </UDashboardNavbar>
 
-        <UDashboardToolbar>
+        <UDashboardToolbar :ui="{ left: 'min-w-0 flex-1', right: 'shrink-0' }">
           <template #left>
-            <UBadge
-              color="neutral"
-              variant="subtle"
-              size="sm"
-              :label="[adapter?.label, current?.model].filter(Boolean).join(' · ') || 'Coding agent'"
-            />
-            <UBadge v-if="environment" color="primary" variant="subtle" size="sm" :label="environment.name">
-              <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
-            </UBadge>
-            <UBadge v-else-if="current" color="neutral" variant="subtle" size="sm" class="font-mono" :label="shortPath(current.cwd, 3)">
-              <template #leading><UIcon name="i-lucide-folder" class="size-3" /></template>
-            </UBadge>
+            <AgentSessionChips v-if="current" :session="current" :draft="null" :closed="!!blocked || !!assistant?.archived" in-assistant />
             <UButton
               :label="`${sessions.length} session${sessions.length === 1 ? '' : 's'}`"
               icon="i-lucide-book-open"
               color="neutral"
               variant="ghost"
               size="xs"
+              class="shrink-0"
               @click="journalOpen = true"
             />
-            <TargetSchedules :assistant-id="assistantId" />
           </template>
         </UDashboardToolbar>
       </template>

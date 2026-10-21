@@ -15,6 +15,8 @@ const props = defineProps<{
   draft: AgentDraft | null
   /** The session cannot take messages: nothing on it can be changed. */
   closed: boolean
+  /** On the assistant's own page, which needs no way to itself. */
+  inAssistant?: boolean
 }>()
 
 const { all: sessions } = useAgentSessions()
@@ -96,7 +98,7 @@ const following = computed(() => props.session ? followedSessions(props.session.
     />
 
     <UButton
-      v-if="assistant"
+      v-if="assistant && !inAssistant"
       :to="`/assistants/${assistant.id}`"
       color="primary"
       variant="soft"
