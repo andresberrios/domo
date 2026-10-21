@@ -448,6 +448,7 @@ let lastScrollTop = 0
 function onScroll() {
   const el = scroller.value
   if (!el) return
+  scrollTop.value = el.scrollTop
   // Our own announcement (`scrollTo`): the browser's event for the same write
   // is still to come, and is matched against `ownTop` then.
   if (announcing) return
@@ -460,6 +461,9 @@ function onScroll() {
     readerScrolledAt = performance.now()
     clearTimeout(measureWhenSettled)
     measureWhenSettled = setTimeout(measureAhead, SCROLL_SETTLE_MS)
+    // Not following, a glide is the way up to the reader's message: their own
+    // scroll takes over from it.
+    if (!pinned.value) stopGlide()
     const below = overflow(el)
     if (!pinned.value && !readerGoingUp && el.scrollTop > lastScrollTop && below <= BOTTOM_THRESHOLD) pinned.value = true
     else if (pinned.value && el.scrollTop < lastScrollTop && below > 1) leaveFollow()
@@ -800,6 +804,39 @@ useResizeObserver(list, ([entry]) => {
   measureAhead()
 })
 
+/* -------------------------------------------------------------------------
+ * Back to what they asked
+ *
+ * Reading a long reply, the reader's own message has scrolled away above it.
+ * A button at the top of the box takes them back to its start, the way the
+ * one at the bottom takes them to the end. Only the latest message they sent
+ * counts: what waits in the inbox is not in the transcript yet, and a
+ * message from another agent is not theirs.
+ * ------------------------------------------------------------------------- */
+
+/** Where the view is, for the button: written on every scroll. */
+const scrollTop = ref(0)
+
+const lastAskedIndex = computed(() => rows.value.findLastIndex(row => row.kind === 'user'))
+
+/** The latest message they sent has gone off the top of the screen: all of it, not just its start. */
+const askedAbove = computed(() => {
+  const index = lastAskedIndex.value
+  if (!landed.value || index < 0) return false
+  const row = rowAt(index)
+  // The row's end, less the gap under it (`pb-4`).
+  return !!row && row.end - 16 <= scrollTop.value
+})
+
+/** As far above the message as a message just sent sits (see above). */
+function backToAsked() {
+  const row = rowAt(lastAskedIndex.value)
+  if (!row) return
+  readerGoingUp = true
+  leaveFollow()
+  moveTo(row.start - 16)
+}
+
 function jumpToLatest() {
   pinned.value = true
   const el = scroller.value
@@ -943,6 +980,20 @@ onMounted(() => nextTick(() => {
         </div>
       </div>
     </div>
+
+    <UTooltip v-if="askedAbove" text="Back to your last message">
+      <UButton
+        icon="i-lucide-arrow-up"
+        label="Your message"
+        color="neutral"
+        variant="outline"
+        size="sm"
+        aria-label="Back to your last message"
+        class="absolute top-3 left-1/2 -translate-x-1/2 rounded-full bg-default shadow-lg"
+        data-testid="back-to-asked"
+        @click="backToAsked"
+      />
+    </UTooltip>
 
     <UButton
       v-if="!pinned"

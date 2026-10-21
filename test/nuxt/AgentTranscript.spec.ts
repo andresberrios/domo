@@ -1,6 +1,7 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { nextTick } from 'vue'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { UApp } from '#components'
+import { defineComponent, h, nextTick } from 'vue'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AgentTranscript from '~/components/AgentTranscript.vue'
 import { useAlwaysShowTimes } from '~/composables/useRecordVisibility'
@@ -410,6 +411,77 @@ describe('AgentTranscript', () => {
       await box.trigger('wheel', { deltaY: -3 })
       await component.find(jump).trigger('click')
       expect(component.find(jump).exists()).toBe(false)
+    })
+  })
+
+  /**
+   * Reading a long reply, the reader's message has gone off the top: a button
+   * takes them back to its start, and leaves the follow so the reply does not
+   * pull them down again.
+   */
+  describe('back to the last message', () => {
+    // There is no layout here: every row is given a height, or all of them
+    // would sit at the top at nothing.
+    const ROW = 100
+    beforeEach(() => {
+      const real = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')!.get!
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.index === undefined ? real.call(this) : ROW
+      })
+    })
+    afterEach(() => vi.restoreAllMocks())
+
+    const back = '[data-testid="back-to-asked"]'
+    const jump = '[aria-label="Jump to the latest message"]'
+    const events = [
+      userMessage('first question'),
+      textChunk('first answer'),
+      userMessage('second question'),
+      agentEvent('tool_call', { toolCallId: 'c1', title: 'Bash', name: 'Bash', kind: 'execute', status: 'completed' }),
+      agentEvent('agent_message', { text: 'a long answer', streaming: false })
+    ]
+
+    // `UTooltip` reads the provider context `UApp` installs, so mount inside one.
+    const Harness = defineComponent({
+      setup: () => () => h(UApp, null, { default: () => h(AgentTranscript, { session, events, permissions: [] }) })
+    })
+
+    async function scrolledTo(top: number) {
+      const component = await mountSuspended(Harness)
+      const box = component.find('[data-testid="transcript-scroller"]')
+      ;(box.element as HTMLElement).scrollTop = top
+      await box.trigger('scroll')
+      return { component, box }
+    }
+
+    /** Where the latest message the reader sent ends, as laid out. */
+    async function askedEnd() {
+      const { component } = await scrolledTo(0)
+      const rows = component.findAll('[data-index]')
+      const asked = rows.findLast(row => row.find('[data-role="user"]').exists())!
+      // Laid out by transform: the row's start, less the band above the list.
+      const start = Number(/translateY\((-?[\d.]+)px\)/.exec(asked.attributes('style')!)![1]) + 40
+      return start + ROW
+    }
+
+    it('shows only once the latest message has gone off the top, the earlier one does not count', async () => {
+      const end = await askedEnd()
+
+      expect((await scrolledTo(end - 40)).component.find(back).exists()).toBe(false)
+      expect((await scrolledTo(end)).component.find(back).exists()).toBe(true)
+    })
+
+    it('goes up to the message, leaves the follow, and goes once the message is back on screen', async () => {
+      const end = await askedEnd()
+      const { component, box } = await scrolledTo(end + 100)
+      expect(component.find(jump).exists()).toBe(false)
+
+      await component.find(back).trigger('click')
+      expect(component.find(jump).exists()).toBe(true)
+
+      ;(box.element as HTMLElement).scrollTop = end - 100
+      await box.trigger('scroll')
+      expect(component.find(back).exists()).toBe(false)
     })
   })
 
