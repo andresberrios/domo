@@ -175,7 +175,7 @@ beforeEach(() => {
  * suite's parallel load that overran Vitest's 5 s default and failed as a
  * timeout rather than an assertion.
  */
-describe('ProjectTree', { timeout: 30_000 }, () => {
+describe('ProjectTree', () => {
   it('links a row to its page and leaves the chevron to toggle', async () => {
     const wrapper = await mountTree()
 
@@ -418,7 +418,7 @@ describe('ProjectTree', { timeout: 30_000 }, () => {
   })
 })
 
-describe('ProjectTree: an environment with one session', { timeout: 30_000 }, () => {
+describe('ProjectTree: an environment with one session', () => {
   const solo: DevEnvironment = { ...environment, id: 'env_solo', name: 'solo-env' }
   const soloAgent: AgentSession = { ...agent, id: 'ag_solo', title: 'Fix badges', devEnvironmentId: 'env_solo' }
 

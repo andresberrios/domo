@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { access } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { ensureTestDatabase, unavailableError } from '../helpers/database'
+import { claimTestRun, ensureTestDatabase, unavailableError } from '../helpers/database'
 
 /**
  * What the `agents-live` layer needs, checked once, before a single test
@@ -32,7 +32,7 @@ async function hasCodexLogin(): Promise<boolean> {
   return access(join(dir, 'auth.json')).then(() => true, () => false)
 }
 
-export async function setup(): Promise<void> {
+export async function setup(): Promise<() => Promise<void>> {
   const missing: string[] = []
 
   if (!await ensureTestDatabase()) missing.push(unavailableError().message)
@@ -83,4 +83,5 @@ export async function setup(): Promise<void> {
       `The agents-live layer did not run — it needs all of the following:\n - ${missing.join('\n - ')}`
     )
   }
+  return claimTestRun()
 }

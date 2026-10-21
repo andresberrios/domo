@@ -2,7 +2,8 @@ import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-uti
 import { UApp, USlideover } from '#components'
 import { readBody } from 'h3'
 import { computed, defineComponent, h, nextTick, ref } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import NotificationsButton from '~/components/NotificationsButton.vue'
 import type { DomoNotification } from '~~/shared/types'
@@ -47,6 +48,10 @@ function notification(overrides: Partial<DomoNotification> = {}): DomoNotificati
 
 const Harness = defineComponent(() => () => h(UApp, null, { default: () => h(NotificationsButton) }))
 
+// Every test shares `rows`, so a button left mounted (with its slideover open)
+// re-renders each list a later test sets: 1,000 cards for the three digits.
+enableAutoUnmount(afterEach)
+
 beforeEach(() => {
   rows.value = []
   toasts.mockClear()
@@ -86,7 +91,7 @@ describe('NotificationsButton', () => {
     await vi.waitFor(() => expect(seen).toHaveBeenCalledWith({ ids: ['nt_1'] }))
   })
 
-  it('puts the count right after the label, and holds three digits', { timeout: 30_000 }, async () => {
+  it('puts the count right after the label, and holds three digits', async () => {
     rows.value = Array.from({ length: 123 }, (_, index) => notification({ id: `nt_${index}`, createdAt: '2026-01-01T00:00:00.000Z' }))
     const component = await mountSuspended(Harness)
 

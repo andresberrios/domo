@@ -6,8 +6,11 @@ import { fileURLToPath } from 'node:url'
 import { createTestContext, loadFixture, startServer, stopServer } from '@nuxt/test-utils/e2e'
 
 import { APP_BUILD_DIR, ensureAppBuild } from '../helpers/app-build'
+import { claimTestDatabase } from '../helpers/run-lock'
 
 import {
+  POSTGRES_SERVER_URL,
+  TEST_DATABASE,
   TEST_DATABASE_URL,
   TEST_ELECTRIC_URL,
   TEST_SERVER_PORT,
@@ -28,12 +31,13 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const dataDir = join(tmpdir(), 'domo-test', 'electric-layer')
 
 export default async function setup() {
-  await prepare()
+  const release = await prepare()
   await startServer()
 
   return async () => {
     await stopServer()
     await rm(dataDir, { recursive: true, force: true })
+    await release()
   }
 }
 
@@ -43,7 +47,7 @@ export default async function setup() {
  * branch: a layer that skipped itself would report green for the one loop
  * nothing else covers.
  */
-async function prepare(): Promise<void> {
+async function prepare(): Promise<() => Promise<void>> {
   try {
     await ensureTestDatabase()
   } catch (error) {
@@ -53,6 +57,8 @@ async function prepare(): Promise<void> {
   if (!await electricIsUp()) {
     throw unavailableError(`ElectricSQL is not reachable at ${TEST_ELECTRIC_URL}.`)
   }
+
+  const release = await claimTestDatabase(POSTGRES_SERVER_URL, TEST_DATABASE)
 
   // A clean slate for the first file; every file resets again on entry.
   await resetTestDatabase()
@@ -91,6 +97,7 @@ async function prepare(): Promise<void> {
   })
   await loadFixture()
   await ensureAppBuild()
+  return release
 }
 
 /**

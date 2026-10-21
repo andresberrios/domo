@@ -2015,14 +2015,13 @@ describe('subscriptions between agents', () => {
         }
       }
     })()
-    const outcome = await Promise.race([
-      agentSide.client.request(acp.methods.client.session.requestPermission, {
-        sessionId: 'acp_fake',
-        toolCall: { toolCallId: 'c1', title: 'Run `make`' },
-        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
-      } as any),
-      sleep(5_000).then(() => 'the adapter was never answered')
-    ])
+    // An answer that reached nobody leaves this waiting until the test times
+    // out. No shorter deadline: under load, one ran out on a working answer.
+    const outcome = await agentSide.client.request(acp.methods.client.session.requestPermission, {
+      sessionId: 'acp_fake',
+      toolCall: { toolCallId: 'c1', title: 'Run `make`' },
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    } as any)
     answered = true
     await answering
     held.release()
@@ -2851,21 +2850,54 @@ describe('a session waiting for the environment it is spawned into', () => {
  * says why.
  */
 describe('a turn the agent starts for itself', () => {
-  /** Long enough to be a real deadline, short enough to wait out. */
-  const IDLE = 120
+  /**
+   * The watchdog's window, which this block holds instead of a clock. It used
+   * to be a real 120 ms: under load that ran out between two updates sent back
+   * to back and ended the turn in the middle of a scenario, and an assertion
+   * that the turn had *not* ended proved nothing. Odd, so no other timer in
+   * the process asks for it.
+   */
+  const IDLE = 987_654
 
   /** Whatever the app ships, so a change to the constant costs nothing here. */
-  let windows: { idle: number }
+  let defaults: { idle: number }
+
+  /**
+   * Every watchdog timer armed and not yet cleared. `expire()` runs them, the
+   * way the window running out would. Other timers keep real time.
+   */
+  let windows: { readonly armed: boolean, expire: () => void }
 
   beforeEach(async () => {
     const { adapterTurnWindows } = await import('../../server/lib/acp/manager')
-    windows = { ...adapterTurnWindows }
+    defaults = { ...adapterTurnWindows }
     adapterTurnWindows.idle = IDLE
+
+    const due = new Map<object, () => void>()
+    const setTimer = globalThis.setTimeout
+    const clearTimer = globalThis.clearTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, ms?: number, ...args: any[]) => {
+      if (ms !== IDLE) return setTimer(callback, ms, ...args)
+      const handle = { unref: () => handle, ref: () => handle, hasRef: () => false }
+      due.set(handle, callback)
+      return handle
+    }) as typeof setTimeout)
+    vi.spyOn(globalThis, 'clearTimeout').mockImplementation((handle?: any) => {
+      if (!due.delete(handle)) clearTimer(handle)
+    })
+    windows = {
+      get armed() { return due.size > 0 },
+      expire() {
+        const callbacks = [...due.values()]
+        due.clear()
+        for (const callback of callbacks) callback()
+      }
+    }
   })
 
   afterEach(async () => {
     const { adapterTurnWindows } = await import('../../server/lib/acp/manager')
-    Object.assign(adapterTurnWindows, windows)
+    Object.assign(adapterTurnWindows, defaults)
   })
 
   /**
@@ -2893,16 +2925,27 @@ describe('a turn the agent starts for itself', () => {
 
   const statusOf = async (agentId: string) => (await getAgentSession(agentId))!.status
 
+  /**
+   * Wait for the turn to be over in the row. `turn_end` is written just before
+   * the status, so a test that waited for the event alone read `thinking`.
+   */
+  const ended = (agentId: string) => vi.waitFor(async () => {
+    expect(await typesOf(agentId)).toContain('turn_end')
+    expect(await statusOf(agentId)).toBe('idle')
+  })
+
   it('opens a turn for it, and that turn ends', async () => {
-    const { agent, connection } = await attached()
+    const { acpManager, agent, connection } = await attached()
 
     await wake(connection, textChunk('The build finished. It is green.'))
     await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_start'))
 
     // Before the deadline it is a working session, exactly like a prompted one.
     expect(await statusOf(agent.id)).toBe('thinking')
+    expect(acpManager.isBusy(agent.id)).toBe(true)
 
-    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+    windows.expire()
+    await ended(agent.id)
 
     const events = await listAgentEvents(agent.id)
     // No `user_message` anywhere: that is the whole signature of the bug.
@@ -2911,10 +2954,8 @@ describe('a turn the agent starts for itself', () => {
     expect(events[2]!.payload.origin).toBe('adapter')
     expect(textOf(events)).toEqual(['The build finished. It is green.'])
 
-    const row = (await getAgentSession(agent.id))!
-    expect(row.status).toBe('idle')
     // What the turn said, and only what *this* turn said.
-    expect(row.summary).toBe('The build finished. It is green.')
+    expect((await getAgentSession(agent.id))!.summary).toBe('The build finished. It is green.')
   })
 
   it('opens no turn for an update that is about the session, not work in it', async () => {
@@ -2959,13 +3000,14 @@ describe('a turn the agent starts for itself', () => {
     expect(delivered.outcome).toBe('queued')
     expect(await listInboxMessages(agent.id)).toHaveLength(1)
 
+    windows.expire()
     await vi.waitFor(() => expect(prompts).toEqual(['and then deploy it']))
     expect(await listInboxMessages(agent.id)).toHaveLength(0)
     await vi.waitFor(async () => expect(await statusOf(agent.id)).toBe('idle'))
   })
 
   it('waits for a tool call it opened rather than calling the turn over', async () => {
-    const { agent, connection } = await attached()
+    const { acpManager, agent, connection } = await attached()
 
     await wake(connection, textChunk('Checking the test suite.'))
     await wake(connection, {
@@ -2973,34 +3015,36 @@ describe('a turn the agent starts for itself', () => {
     })
     await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('tool_call'))
 
-    // Several times the ordinary window: a suite running in silence is the
+    // No deadline at all while it runs: a suite running in silence is the
     // normal shape of a coding agent's turn, not the end of one.
-    await sleep(IDLE * 5)
-    expect(await typesOf(agent.id)).not.toContain('turn_end')
+    expect(windows.armed).toBe(false)
+    expect(acpManager.isBusy(agent.id)).toBe(true)
     expect(await statusOf(agent.id)).toBe('thinking')
 
     await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
-    const completedAt = Date.now()
-
-    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
     // The quiet window starts again from the tool's last word, not before it.
-    expect(Date.now() - completedAt).toBeGreaterThanOrEqual(IDLE)
-    expect(await statusOf(agent.id)).toBe('idle')
+    await vi.waitFor(() => expect(windows.armed).toBe(true))
+    expect(acpManager.isBusy(agent.id)).toBe(true)
+
+    windows.expire()
+    await ended(agent.id)
   })
 
   it('holds for a tool call that is the first thing the turn says', async () => {
-    const { agent, connection } = await attached()
+    const { acpManager, agent, connection } = await attached()
 
     await wake(connection, {
       sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Bash', kind: 'execute', status: 'in_progress'
     })
     await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('tool_call'))
 
-    await sleep(IDLE * 5)
-    expect(await typesOf(agent.id)).not.toContain('turn_end')
+    expect(windows.armed).toBe(false)
+    expect(acpManager.isBusy(agent.id)).toBe(true)
 
     await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'failed' })
-    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+    await vi.waitFor(() => expect(windows.armed).toBe(true))
+    windows.expire()
+    await ended(agent.id)
   })
 
   /**
@@ -3016,9 +3060,12 @@ describe('a turn the agent starts for itself', () => {
     await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed' })
     await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [] })
     await wake(connection, { sessionUpdate: 'tool_call_update', toolCallId: 'elsewhere', status: 'in_progress' })
+    // Each one is logged, so all four have been read once four are there.
+    await vi.waitFor(async () => expect((await typesOf(agent.id)).filter(type => type.startsWith('tool_call'))).toHaveLength(4))
 
-    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
-    expect(await statusOf(agent.id)).toBe('idle')
+    expect(windows.armed).toBe(true)
+    windows.expire()
+    await ended(agent.id)
   })
 
   describe('that Codex reports on', () => {
@@ -3028,8 +3075,6 @@ describe('a turn the agent starts for itself', () => {
     })
 
     it('ends when the thread goes idle, without waiting out the quiet', async () => {
-      const { adapterTurnWindows } = await import('../../server/lib/acp/manager')
-      adapterTurnWindows.idle = 60_000
       const { agent, connection } = await attached()
 
       await wake(connection, thread('active'))
@@ -3038,31 +3083,35 @@ describe('a turn the agent starts for itself', () => {
       await wake(connection, { sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'npm run dev', kind: 'execute', status: 'in_progress' })
       await wake(connection, thread('idle'))
 
-      await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
-      expect(await statusOf(agent.id)).toBe('idle')
+      // The window never runs out here, so only the thread's status can end it.
+      await ended(agent.id)
     })
 
     it('holds while the thread says it is active, however quiet', async () => {
-      const { agent, connection } = await attached()
+      const { acpManager, agent, connection } = await attached()
 
       await wake(connection, thread('active'))
       await wake(connection, textChunk('Thinking about this for a while.'))
       await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_start'))
 
-      await sleep(IDLE * 5)
-      expect(await typesOf(agent.id)).not.toContain('turn_end')
+      expect(windows.armed).toBe(false)
+      expect(acpManager.isBusy(agent.id)).toBe(true)
       expect(await statusOf(agent.id)).toBe('thinking')
 
       await wake(connection, thread('idle'))
-      await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+      await ended(agent.id)
     })
 
     it('opens no turn on a status alone', async () => {
-      const { agent, connection } = await attached()
+      const { acpManager, agent, connection } = await attached()
 
       await wake(connection, thread('active'))
       await wake(connection, thread('idle'))
-      await sleep(IDLE * 3)
+      // Logged, and read after the two above: notifications are handled in order.
+      await wake(connection, { sessionUpdate: 'current_mode_update', currentModeId: 'default' })
+      await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('current_mode_update'))
+
+      expect(acpManager.isBusy(agent.id)).toBe(false)
       expect(await typesOf(agent.id)).not.toContain('turn_start')
       expect(await statusOf(agent.id)).toBe('idle')
     })
@@ -3131,15 +3180,19 @@ describe('a turn the agent starts for itself', () => {
       await vi.waitFor(() => expect(state.adapters.length).toBeGreaterThan(index))
       const connection = serve(state.adapters[index]!, async () => {}, { replay: REPLAY })
       await loaded
+      // The old process's exit is logged on its own schedule.
+      await vi.waitFor(async () => expect(await typesOf(agentId)).toContain('adapter-exit'))
       return connection
     }
 
     it('a replayed transcript starts no turn, however much it looks like one', async () => {
-      const { agent } = await attached('Reattached')
+      const { acpManager, agent } = await attached('Reattached')
       await reattach(agent.id)
 
-      // Long past the window a real one would have ended in.
-      await sleep(IDLE * 5)
+      // The replay is read before `session/load` answers, so it is all in by
+      // now; read as news, it would have left a turn and its window behind.
+      expect(acpManager.isBusy(agent.id)).toBe(false)
+      expect(windows.armed).toBe(false)
       const types = await typesOf(agent.id)
       expect(types).not.toContain('turn_start')
       expect(types).not.toContain('turn_end')
@@ -3155,12 +3208,12 @@ describe('a turn the agent starts for itself', () => {
 
       await wake(connection, textChunk('Picking up where I left off.'))
       await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_start'))
-      await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
+      windows.expire()
+      await ended(agent.id)
 
       // The replay above shares this connection, and none of it is in the log.
       expect(await typesOf(agent.id)).toEqual(['adapter-exit', 'turn_start', 'agent_message', 'turn_end'])
       expect(textOf(await listAgentEvents(agent.id))).toEqual(['Picking up where I left off.'])
-      expect(await statusOf(agent.id)).toBe('idle')
     })
   })
 
@@ -3196,12 +3249,17 @@ describe('a turn the agent starts for itself', () => {
       toolCall: { toolCallId: 'c1', title: 'Push to main', kind: 'execute' },
       options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
     })
-    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('permission_request'))
+    // The status is written after the event.
+    await vi.waitFor(async () => expect(await statusOf(agent.id)).toBe('awaiting-permission'))
 
-    // Past enough re-arms of the window to show the gate is not merely a longer
-    // deadline: a person may take all afternoon, and the session has to keep
+    // Run out the window again and again: the gate is not merely a longer
+    // deadline. A person may take all afternoon, and the session has to keep
     // saying what it is blocked on the whole time.
-    await sleep(IDLE * 8)
+    for (let window = 0; window < 3; window++) {
+      expect(windows.armed).toBe(true)
+      windows.expire()
+      expect(acpManager.isBusy(agent.id)).toBe(true)
+    }
     expect(await typesOf(agent.id)).not.toContain('turn_end')
     expect(await statusOf(agent.id)).toBe('awaiting-permission')
 
@@ -3210,8 +3268,8 @@ describe('a turn the agent starts for itself', () => {
     await acpManager.answerPermission(agent.id, permissionId, 'allow', 'user')
     await asked
 
-    await vi.waitFor(async () => expect(await typesOf(agent.id)).toContain('turn_end'))
-    expect(await statusOf(agent.id)).toBe('idle')
+    windows.expire()
+    await ended(agent.id)
   })
 })
 

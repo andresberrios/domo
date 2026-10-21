@@ -153,23 +153,42 @@ export function grpcFrame(message: Buffer): Buffer {
  * Splits a gRPC byte stream into messages. `push` returns every message
  * completed so far; a compressed one (flag 1) is returned as it is, flagged,
  * since nothing here can read it.
+ *
+ * Chunks are only joined once a whole message has arrived. Joining on every
+ * read copies everything pending each time, which is quadratic in a message
+ * that arrives in many small reads.
  */
 export class GrpcMessageReader {
-  private buffer: Buffer = Buffer.alloc(0)
+  private chunks: Buffer[] = []
+  private length = 0
 
   push(chunk: Buffer): Array<{ compressed: boolean, message: Buffer }> {
-    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk
+    if (chunk.length) {
+      this.chunks.push(chunk)
+      this.length += chunk.length
+    }
     const out: Array<{ compressed: boolean, message: Buffer }> = []
-    while (this.buffer.length >= 5) {
-      const length = this.buffer.readUInt32BE(1)
-      if (this.buffer.length < 5 + length) break
-      out.push({ compressed: this.buffer[0] === 1, message: this.buffer.subarray(5, 5 + length) })
-      this.buffer = this.buffer.subarray(5 + length)
+    while (this.length >= 5) {
+      let head = this.chunks[0]!
+      if (head.length < 5) head = this.join()
+      const size = 5 + head.readUInt32BE(1)
+      if (this.length < size) break
+      if (head.length < size) head = this.join()
+      out.push({ compressed: head[0] === 1, message: head.subarray(5, size) })
+      if (head.length > size) this.chunks[0] = head.subarray(size)
+      else this.chunks.shift()
+      this.length -= size
     }
     return out
   }
 
+  private join(): Buffer {
+    const joined = Buffer.concat(this.chunks, this.length)
+    this.chunks = [joined]
+    return joined
+  }
+
   get pending(): number {
-    return this.buffer.length
+    return this.length
   }
 }
