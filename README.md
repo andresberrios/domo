@@ -149,12 +149,13 @@ the `gh` token it already gets for git. Neither rotates. The token also lets
 Domo show your Copilot quotas and models. On Copilot Free the only model is
 Auto.
 
-**Grok.** Sessions on this computer use your `grok login` (Grok Build, with a
-SuperGrok or X Premium account). That login rotates its refresh token, so it is
-never copied into an environment: an environment signs in with an xAI API key
-from the [xAI console](https://console.x.ai), pasted on the Grok settings page.
-The key **bills the xAI API per token**, so on this computer Domo passes it
-only when there is no Grok login.
+**Grok.** Sessions use your `grok login` (Grok Build). That login rotates its
+refresh token, so it is never copied into an environment: an environment's Grok
+asks Domo for a short-lived access token, which Domo reads from the Grok on
+this computer. Without a login, an xAI API key from the
+[xAI console](https://console.x.ai), pasted on the Grok settings page, works
+everywhere and **bills the xAI API per token**; Domo passes it only when there
+is no Grok login.
 
 **Voice.** The Gemini key goes on the Voice settings page. The OpenAI speech
 engine uses the same OpenAI key as Codex, and bills per token.

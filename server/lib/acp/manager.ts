@@ -19,7 +19,7 @@ import { internalBaseUrl } from '../internal-url'
 import { mintMeshToken } from '../mesh/token'
 import { defaultWorkDir, insideOwnInstall, normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
-import { adapterEnv, adapterLaunch } from './adapter-process'
+import { adapterEnv, adapterLaunch, GROK_SESSION_ARGS } from './adapter-process'
 import { copilotMcpConfig } from './copilot'
 import { adaptConnection } from './shims'
 import { agentAdapterInfo } from '../../../shared/agent-adapters'
@@ -924,15 +924,18 @@ class AgentRuntime {
       env.USER = environment.remoteUser ?? 'root'
       env.HOME = env.USER === 'root' ? '/root' : `/home/${env.USER}`
       env.LOGNAME = env.USER
-      const extra = await this.copilotLaunchArgs(session, environment)
+      // What its Grok proves it is when it asks Domo for a token (`grok-token.ts`).
+      if (env.GROK_AUTH_PROVIDER_COMMAND) env.DOMO_GROK_TOKEN = mintMeshToken(this.agentSessionId)
+      // The wrapper puts these ahead of its own arguments for Grok (`callerArgsFirst`).
+      const extra = session.adapter === 'grok' ? GROK_SESSION_ARGS : await this.copilotLaunchArgs(session, environment)
       proc = spawn('docker', [
         ...containerExecArgs(environment, env),
         // The adapters live in the shared runtime volume at /opt/domo, not on the image's PATH.
-        'sh', '-c', 'echo $ > "$1"; command="$2"; shift 2; exec "$command" "$@"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter),
+        'sh', '-c', 'echo $$ > "$1"; command="$2"; shift 2; exec "$command" "$@"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter),
         ...extra
       ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
     } else {
-      const launch = adapterLaunch(session.adapter)
+      const launch = adapterLaunch(session.adapter, { session: true })
       const extra = await this.copilotLaunchArgs(session, null)
       proc = spawn(launch.command, [...launch.args, ...extra], {
         cwd: session.cwd,

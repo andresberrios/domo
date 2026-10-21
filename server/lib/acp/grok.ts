@@ -53,7 +53,8 @@ function blocksText(content: any[]): string {
 
 export function withGrok<T extends { agent: { request: (...args: any[]) => Promise<any>, notify: (...args: any[]) => Promise<void> } }>(
   connection: T,
-  options: { apiKey: boolean }
+  /** `apiKey`: signs in with the xAI key. `provider`: with this computer's login, relayed (`grok-token.ts`). */
+  options: { apiKey: boolean, provider?: boolean }
 ): T {
   const request = connection.agent.request.bind(connection.agent)
   const original = (...args: any[]) => request(...args).catch((error: unknown) => {
@@ -84,6 +85,8 @@ export function withGrok<T extends { agent: { request: (...args: any[]) => Promi
     const response = await original(method, params, ...rest)
     if (method === acp.methods.agent.initialize) {
       if (options.apiKey) await original(acp.methods.agent.authenticate, { methodId: 'xai.api_key' }, ...rest)
+      // A provider command is run by the `grok.com` method, and only once it is chosen.
+      else if (options.provider) await original(acp.methods.agent.authenticate, { methodId: 'grok.com', _meta: { headless: true } }, ...rest)
       return { ...response, _meta: { ...response?._meta, steering: { supported: true } } }
     }
     if (method === acp.methods.agent.session.new) return withModes(response?.sessionId, response)

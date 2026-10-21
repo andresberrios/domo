@@ -14,6 +14,6 @@ export function adaptConnection<T extends { agent: { request: (...args: any[]) =
   env: NodeJS.ProcessEnv
 ): T {
   if (adapter === 'copilot') return withCopilotModels(connection, () => copilotModels())
-  if (adapter === 'grok') return withGrok(connection, { apiKey: !!env.XAI_API_KEY })
+  if (adapter === 'grok') return withGrok(connection, { apiKey: !!env.XAI_API_KEY, provider: !!env.GROK_AUTH_PROVIDER_COMMAND })
   return connection
 }

@@ -136,7 +136,9 @@ describe('ensureRuntimeVolume', () => {
     expect(script).toContain('@xai-official/grok@1.0.62')
     expect(script.indexOf('brotliDecompressSync')).toBeGreaterThan(script.indexOf('npm install'))
     expect(script.indexOf('brotliDecompressSync')).toBeLessThan(script.indexOf('/opt/domo/bin/grok-acp'))
-    expect(script).toContain('exec /opt/domo/adapters/node_modules/@xai-official/grok/../grok-linux-*/bin/grok agent --no-leader stdio')
+    // Its wrapper's own arguments go first: Grok takes `--trust` only ahead of `agent`.
+    expect(script).toContain(`'exec /opt/domo/adapters/node_modules/@xai-official/grok/../grok-linux-*/bin/grok "$@" agent --no-leader stdio'`)
+    expect(script).toContain(`'exec /opt/domo/adapters/node_modules/@opencode/cli/bin/opencode.exe acp "$@"'`)
     // The marker last, and flushed on both sides of it: a crash must not leave
     // a marker in front of files still in the page cache.
     expect(script.trim().split('\n').slice(-3)).toEqual(['sync', 'touch /opt/domo/.ready', 'sync'])

@@ -25,6 +25,8 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
   native?: boolean
   /** Shell run after the install, before the wrappers are written. */
   prepare?: string
+  /** The wrapper's own arguments go before `args`, for flags the CLI takes only there. */
+  callerArgsFirst?: boolean
 }> = {
   'claude-code': {
     command: 'claude-agent-acp',
@@ -63,6 +65,8 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
     entry: '../grok-linux-*/bin/grok',
     args: GROK_ARGS,
     native: true,
+    // `--trust` (`GROK_SESSION_ARGS`) is taken only ahead of `agent`.
+    callerArgsFirst: true,
     prepare: [
       `for f in ${RUNTIME_ROOT}/adapters/node_modules/@xai-official/grok-linux-*/bin/grok.br; do`,
       `${RUNTIME_ROOT}/node/bin/node -e 'const fs = require("fs"), out = process.argv[1].slice(0, -3); fs.writeFileSync(out, require("zlib").brotliDecompressSync(fs.readFileSync(process.argv[1]))); fs.chmodSync(out, 0o755)' "$f"`,
@@ -114,15 +118,16 @@ export function runtimeVolumeName(arch: string): string {
  */
 function populateScript(): string {
   const prepares = Object.values(ADAPTER_PACKAGES).flatMap(({ prepare }) => (prepare ? [prepare] : []))
-  const wrappers = Object.values(ADAPTER_PACKAGES).map(({ command, spec, entry, args = [], native }) => {
+  const wrappers = Object.values(ADAPTER_PACKAGES).map(({ command, spec, entry, args = [], native, callerArgsFirst }) => {
     const packageName = spec.slice(0, spec.lastIndexOf('@'))
     const executable = `${RUNTIME_ROOT}/adapters/node_modules/${packageName}/${entry}`
+    const passed = callerArgsFirst ? ['"$@"', ...args] : [...args, '"$@"']
     const invocation = native
-      ? [executable, ...args].join(' ')
-      : [`${RUNTIME_ROOT}/node/bin/node`, executable, ...args].join(' ')
+      ? [executable, ...passed].join(' ')
+      : [`${RUNTIME_ROOT}/node/bin/node`, executable, ...passed].join(' ')
     return [
       `printf '%s\\n' '#!/bin/sh' `
-      + `'exec ${invocation} "$@"' `
+      + `'exec ${invocation}' `
       + `> ${RUNTIME_ROOT}/bin/${command}`,
       `chmod 0755 ${RUNTIME_ROOT}/bin/${command}`
     ].join('\n')

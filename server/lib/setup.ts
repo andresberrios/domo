@@ -112,17 +112,16 @@ export function classifyCopilot(input: { token: boolean, hostLogin: boolean, ghT
 }
 
 /**
- * Grok: this computer's `grok login` (a grok.com plan), else the xAI API key
- * saved in Domo, which is all an environment can use.
+ * Grok: this computer's `grok login` (a grok.com plan), which environments
+ * borrow access tokens from (`grok-token.ts`), else the xAI API key saved in
+ * Domo.
  */
 export function classifyGrok(input: { hostLogin: boolean, apiKey: boolean }): LoginAnswer {
   if (input.hostLogin) {
     return {
       login: 'subscription',
-      loginDetail: input.apiKey
-        ? 'Your Grok plan, through the Grok login on this computer. Development environments use the xAI API key, billed per token.'
-        : 'Your Grok plan, through the Grok login on this computer. Development environments need an xAI API key.',
-      environments: input.apiKey
+      loginDetail: 'Your Grok plan, through the Grok login on this computer. Development environments use it too, through Domo.',
+      environments: true
     }
   }
   if (input.apiKey) return { login: 'api-key', loginDetail: 'An xAI API key, billed per token.', environments: true }

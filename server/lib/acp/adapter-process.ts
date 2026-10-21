@@ -12,6 +12,8 @@ import { hasCodexSubscriptionLogin } from '../codex-credentials'
 import { copilotGithubToken } from '../copilot-credentials'
 import { xaiApiKey } from '../grok-credentials'
 import { grokHostLogin } from './host-login'
+import { grokTokenCommand } from './grok-token'
+import { internalBaseUrl } from '../internal-url'
 import { storedSecret } from '../secret-settings'
 import {
   loadOpenCodeSettings,
@@ -57,6 +59,17 @@ export const COPILOT_ARGS = ['--acp', '--no-auto-update']
  * leader process, which outlives Domo's stop and serves other clients.
  */
 export const GROK_ARGS = ['agent', '--no-leader', 'stdio']
+
+/**
+ * What a Grok *session* is started with ahead of `GROK_ARGS` (only there:
+ * Grok takes it before `agent` and nowhere else). `--trust` trusts the
+ * working directory's workspace (its repository), which the person chose in
+ * Domo, before the session opens: without it Grok skips the project's
+ * AGENTS.md, `.mcp.json`, hooks and skills. It is Grok's own grant, recorded
+ * in its `trusted_folders.toml`, and Grok refuses it for `$HOME` and `/`.
+ * Never for the probes, which run in throwaway directories.
+ */
+export const GROK_SESSION_ARGS = ['--trust']
 
 /**
  * Resolve an ACP adapter entry point.
@@ -173,7 +186,11 @@ export function grokBinary(pkgPath: string): string {
  * executable whose `acp` subcommand is the adapter. Keeping that distinction
  * here prevents every caller from growing its own special case.
  */
-export function adapterLaunch(adapter: AgentAdapter): { command: string, args: string[] } {
+export function adapterLaunch(
+  adapter: AgentAdapter,
+  /** A real session in its working directory, not a probe in a throwaway one. */
+  options: { session?: boolean } = {}
+): { command: string, args: string[] } {
   const entry = adapterEntry(adapter)
   if (adapter === 'copilot') {
     return /\.[cm]?js$/.test(entry)
@@ -181,9 +198,10 @@ export function adapterLaunch(adapter: AgentAdapter): { command: string, args: s
       : { command: entry, args: COPILOT_ARGS }
   }
   if (adapter === 'grok') {
+    const args = options.session ? [...GROK_SESSION_ARGS, ...GROK_ARGS] : GROK_ARGS
     return /\.[cm]?js$/.test(entry)
-      ? { command: process.execPath, args: [entry, ...GROK_ARGS] }
-      : { command: entry, args: GROK_ARGS }
+      ? { command: process.execPath, args: [entry, ...args] }
+      : { command: entry, args }
   }
   if (adapter === 'opencode' && /\.[cm]?js$/.test(entry)) {
     return { command: process.execPath, args: [entry, 'acp'] }
@@ -392,11 +410,19 @@ export async function adapterEnv(
     if (token) env.COPILOT_GITHUB_TOKEN = token
     env.COPILOT_AUTO_UPDATE = 'false'
   } else if (adapter === 'grok') {
-    // The key bills the xAI API: on this computer only when there is no
-    // `grok login`, for the reason in `grok-credentials.ts`. A container has
-    // the key or nothing, since the login is never copied into one.
+    // This computer's `grok login` first, everywhere: a container borrows its
+    // short-lived access tokens through Domo and never holds the login itself
+    // (`grok-token.ts`; the session's own token, `DOMO_GROK_TOKEN`, is added
+    // where the session is started). The key bills the xAI API, so it is only
+    // for when there is no login, for the reason in `grok-credentials.ts`.
     const key = xaiApiKey()
-    if (key && (inContainer || !await grokLogin())) env.XAI_API_KEY = key
+    if (inContainer && await grokLogin()) {
+      env.GROK_AUTH_PROVIDER_COMMAND = grokTokenCommand()
+      env.DOMO_GROK_TOKEN_URL = `${internalBaseUrl(true)}/api/internal/grok-token`
+    } else if (key && (inContainer || !await grokLogin())) {
+      // Asked only with a key at hand: a host session with none needs no answer.
+      env.XAI_API_KEY = key
+    }
     if (!inContainer && process.env.GROK_HOME) env.GROK_HOME = process.env.GROK_HOME
     env.GROK_DISABLE_AUTOUPDATER = '1'
   } else {

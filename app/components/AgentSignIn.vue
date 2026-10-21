@@ -22,8 +22,8 @@ const ANTHROPIC_WARNING = 'Bills per token through the Anthropic API, not your C
 const OPENAI_WARNING = 'Bills per token through the OpenAI API, not your ChatGPT plan. Codex would save it as its login and stay on '
   + 'API billing, so Domo gives it to Codex only when Codex has no ChatGPT login. OpenCode uses it for its openai/… models, '
   + 'and so does the OpenAI voice engine.'
-const XAI_WARNING = 'Bills per token through the xAI API, not your Grok plan. Domo gives it to Grok on this computer only '
-  + 'when there is no Grok login here.'
+const XAI_WARNING = 'Bills per token through the xAI API, not your Grok plan. Domo gives it to Grok only when there is '
+  + 'no Grok login on this computer.'
 
 const tone = computed(() => {
   const status = props.status
@@ -133,9 +133,10 @@ const needsSteps = computed(() => !!props.status && props.status.installed
         <UButton label="Check again" icon="i-lucide-refresh-cw" color="neutral" variant="subtle" size="sm" @click="emit('changed')" />
         <p class="text-xs text-muted">
           No browser on that computer? Add <code>--device-auth</code> and enter the code it shows on any device.
-          That login stays on this computer. Development environments sign in with an
+          The login stays on this computer, and development environments use it through Domo.
+          Without one, an
           <ULink to="https://console.x.ai" target="_blank" class="text-primary">xAI API key</ULink>
-          instead, saved below.
+          saved below works everywhere.
         </p>
       </div>
     </template>
@@ -211,7 +212,7 @@ const needsSteps = computed(() => !!props.status && props.status.installed
         credential="xaiApiKey"
         label="xAI API key"
         :help="settings?.hasGrokAuth
-          ? 'Sessions on this computer already use your Grok login. A key is what a development environment signs in with, because that login is never copied into one.'
+          ? 'Sessions use your Grok login, development environments included, so a key is not used while it is there.'
           : 'From the xAI console. Grok signs in with it everywhere, development environments included.'"
         placeholder="xai-…"
         :warning="XAI_WARNING"

@@ -495,6 +495,18 @@ describe('scheduled tasks', () => {
   })
 })
 
+describe('the Grok token an environment borrows', () => {
+  // A full-scope token for the person's Grok plan: only a Grok session in an
+  // environment, proving itself with its own mesh token, gets one.
+  it('is refused without a session\'s own token, and for a forged one', async () => {
+    const bare = await fetch('/api/internal/grok-token')
+    expect(bare.status).toBe(403)
+    const forged = await fetch('/api/internal/grok-token', { headers: { authorization: 'Bearer ag_x.0000' } })
+    expect(forged.status).toBe(403)
+    expect(await forged.text()).not.toMatch(/access_token/)
+  })
+})
+
 describe('setup guide', () => {
   it('reports every coding agent and voice, and opens by itself on a new install', async () => {
     const status = await $fetch<SetupStatus>('/api/setup')
