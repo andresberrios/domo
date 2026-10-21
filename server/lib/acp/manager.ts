@@ -232,6 +232,15 @@ interface StreamBlock {
   /** The insert that claimed the row's `seq`; every write waits on it. */
   row: Promise<AgentEvent>
   timer: ReturnType<typeof setTimeout> | null
+  /** Tool calls announced, still pending, while the block was open: their cards sit below its start. */
+  announced: Set<string>
+  /** The adapter's id for the message, when its chunks carry one. */
+  messageId?: string
+}
+
+/** Whether a delta goes on with the open block rather than starting one; see `appendStream`. */
+function continuesBlock(open: StreamBlock | null, type: AgentStreamType, messageId: string | undefined): open is StreamBlock {
+  return open?.type === type && !(open.messageId && messageId && open.messageId !== messageId)
 }
 
 const FLUSH_MS = 150
@@ -732,17 +741,25 @@ class AgentRuntime {
     }
   }
 
-  /** Fold a delta into the open block, opening one when the run starts. */
-  private appendStream(type: AgentStreamType, text: string): void {
+  /**
+   * Fold a delta into the open block, opening one when the run starts.
+   *
+   * A delta with another message's id starts a new block even with nothing
+   * between the two. A block outlives the updates of the tool calls above it,
+   * so without this Codex's answer after a command it had left running was
+   * welded onto the note it wrote while waiting: "…dense and compact.Last
+   * tick: 60". Only when both carry an id: OpenCode's need not.
+   */
+  private appendStream(type: AgentStreamType, text: string, messageId?: string): void {
     const open = this.stream
-    if (open && open.type === type) {
+    if (continuesBlock(open, type, messageId)) {
       open.text += text
       this.scheduleFlush(open)
       return
     }
 
     const previous = this.takeStream()
-    const block: StreamBlock = { type, text, written: text, row: null!, timer: null }
+    const block: StreamBlock = { type, text, written: text, row: null!, timer: null, announced: new Set(), messageId }
     this.stream = block
     // One serial step: the previous block is finished before the next one takes
     // its `seq`, so two runs can never end up in the wrong order.
@@ -1477,13 +1494,14 @@ class AgentRuntime {
     if (streamType) {
       const text = update.content?.type === 'text' ? String(update.content.text ?? '') : ''
       if (!text) return
+      const messageId = typeof update.messageId === 'string' && update.messageId ? update.messageId : undefined
       if (streamType === 'agent_message') {
         // A new block is a new message: without a break, the summary of a turn
         // with a tool call in it read "…once their branch lands.Nothing clashes".
-        if (this.stream?.type !== streamType && this.textBuffer) this.textBuffer += '\n\n'
+        if (!continuesBlock(this.stream, streamType, messageId) && this.textBuffer) this.textBuffer += '\n\n'
         this.textBuffer += text
       }
-      this.appendStream(streamType, text)
+      this.appendStream(streamType, text, messageId)
       await this.setStatus('thinking')
       return
     }
@@ -1492,34 +1510,43 @@ class AgentRuntime {
     // lower `seq` than this event, or the transcript would show the text that
     // preceded a tool call after it.
     //
-    // A tool call that has not started is the one thing that does not end the
-    // text around it. OpenCode announces a part the instant it exists —
-    // `pending`, empty `rawInput`, no locations, filled in by a later
-    // `tool_call_update` — and that lands *between* two deltas of a sentence
-    // still being written, so closing here split one sentence into two bubbles
-    // with a tool card wedged between them. A tool that has not run yet cannot
-    // have produced anything for the agent to be commenting on, so text that
-    // arrives while the newest call is still pending is a continuation of the
-    // text before it. Everything else closes the block as before, the first
-    // `tool_call_update` included: that one means the tool really started. An
-    // adapter that fills a call in immediately sends it before the next delta,
-    // so nothing about Claude Code or codex-acp changes.
+    // Only an update that puts something in the transcript *below* the text
+    // ends it; anything else lands between two deltas of one message and,
+    // closing it, split a sentence into two bubbles with nothing between them.
+    // So the block stays open across:
     //
-    // Seq is untouched by this. The block claimed its `seq` at its *first*
-    // delta, which is already below this event's, so continuing to write into
-    // it renders the whole sentence above the tool card, which is where it
-    // belongs.
+    // - State about the session (`available_commands_update`,
+    //   `session_info_update`, `current_mode_update`), which renders nothing.
+    // - A `tool_call_update` for a call whose card is already above the block.
+    //   Codex streams a command's output as such updates, and a test run it
+    //   started before writing goes on streaming while it writes: each one
+    //   ended the message there ("…and is still" / "loading the body model;
+    //   both test" / "takes remain queued.").
+    // - A tool call that has not started. OpenCode announces a part the instant
+    //   it exists — `pending`, empty `rawInput` — *between* two deltas of a
+    //   sentence still being written, and a tool that has not run cannot have
+    //   produced anything the text is about. The block already holds the lower
+    //   `seq`, so the whole sentence renders above the card. Its text so far is
+    //   written before the card goes in: Claude Code announces every call
+    //   `pending` right after the last delta before it, and left to the next
+    //   flush, the line above grew into the card and pushed it down.
     //
-    // Left open, the block still has its text so far written before the card
-    // goes in. Claude Code announces every call `pending`, right after the
-    // last delta of the text before it, and that delta waited for the next
-    // flush: the browser drew the card, then the line above it grew and
-    // pushed the card down.
-    const continued = kind === 'tool_call' && update.status === 'pending' ? this.stream : null
-    const block = continued ? null : this.takeStream()
+    // The first `tool_call_update` of a call announced inside the block does
+    // end it: that call has really started, below the text, and what follows
+    // can be about it. An adapter that fills a call in immediately sends it
+    // before the next delta.
+    const open = this.stream
+    const announcing = kind === 'tool_call' && update.status === 'pending'
+    const keepsOpen = !!open && (
+      announcing
+      || SESSION_STATE_UPDATES.has(kind)
+      || (kind === 'tool_call_update' && !open.announced.has(update.toolCallId))
+    )
+    if (announcing && open) open.announced.add(update.toolCallId)
+    const block = keepsOpen ? null : this.takeStream()
     await this.serial(async () => {
       await this.closeStream(block)
-      if (continued) await this.writeStream(continued).catch(error => console.error(`[acp:${this.agentSessionId}] could not flush streamed text`, error))
+      if (announcing && open) await this.writeStream(open).catch(error => console.error(`[acp:${this.agentSessionId}] could not flush streamed text`, error))
       await appendAgentEvent(this.agentSessionId, kind, kind === 'tool_call' || kind === 'tool_call_update' ? slimToolPayload(update) : update)
       if (kind === 'tool_call') await this.setStatus('thinking')
       // The agent may switch its own mode mid-turn, and the row is what gets
