@@ -1,4 +1,4 @@
-import { ensureTestDatabase, unavailableError } from '../helpers/database'
+import { claimTestRun, ensureTestDatabase, unavailableError } from '../helpers/database'
 
 /**
  * The once-per-run half of the test-database lifecycle
@@ -16,6 +16,7 @@ import { ensureTestDatabase, unavailableError } from '../helpers/database'
  * It creates `domo_test` on the way, so the per-file setup only ever has to
  * empty it.
  */
-export async function setup(): Promise<void> {
+export async function setup(): Promise<() => Promise<void>> {
   if (!await ensureTestDatabase()) throw unavailableError()
+  return claimTestRun()
 }

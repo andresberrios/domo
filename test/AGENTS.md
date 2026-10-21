@@ -45,9 +45,9 @@ dependency.
     mount the real `~/.ssh` or `~/.gitconfig`.
 - **One test database, `domo_test`. It is emptied before each file with
   `drop schema public cascade`.** `fileParallelism` is off for `integration`
-  only. This database is shared by every checkout on the machine, and two runs
-  at once corrupt each other with foreign-key errors that look like real bugs.
-  Before a long run, check `pgrep -f vitest`.
+  only. Every host checkout shares it (a dev environment has its own
+  Postgres), so a run holds it, and `domo_e2e`, for its whole length
+  (`test/helpers/run-lock.ts`). A second run prints that it is waiting.
 - **`environments-live` runs on `domo_e2e` with the real Electric.** The stub in
   `test/helpers/electric-stub.ts` returns one hardcoded row, which is enough
   for `test/e2e` but leaves a browser with an empty app.

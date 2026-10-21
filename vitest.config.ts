@@ -63,8 +63,9 @@ export default defineConfig(async () => ({
           env: OFFLINE_ENV,
           include: ['test/nuxt/**/*.spec.ts'],
           environmentOptions: { nuxt: { domEnvironment: 'happy-dom' } },
-          // Booting Nuxt for a file takes 7-11 s here, and the default 10 s
-          // hook limit failed whichever file happened to boot first.
+          // Booting Nuxt for a file takes seconds, and the first files to boot
+          // used to wait out the whole app's transform inside their hook.
+          globalSetup: [resolve(rootDir, 'test/setup/warm-nuxt.ts')],
           hookTimeout: 30_000
         }
       }),

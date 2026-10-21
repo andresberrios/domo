@@ -151,7 +151,7 @@ beforeEach(() => {
   project.value = { ...project.value, name: 'Domo' }
 })
 
-describe('project details page', { timeout: 30_000 }, () => {
+describe('project details page', () => {
   it('states the project’s name, repository and config source', async () => {
     const wrapper = await mountPage()
 

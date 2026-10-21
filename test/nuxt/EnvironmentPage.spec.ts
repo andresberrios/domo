@@ -148,7 +148,7 @@ beforeEach(() => {
   environment.value = { ...environment.value, status: 'running' }
 })
 
-describe('environment details page', { timeout: 30_000 }, () => {
+describe('environment details page', () => {
   it('states the environment’s facts', async () => {
     const wrapper = await mountPage()
 

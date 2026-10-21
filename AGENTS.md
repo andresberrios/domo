@@ -75,10 +75,8 @@ not in the UI.
   `opencode/…`). The same bare name can bill two different accounts.
 - **The default `pnpm test` must stay fast, offline and unattended.** It must
   never write to the developer's `domo` database or start a real agent. Tests
-  with real agents go in the live layer (`pnpm test:agents`). All checkouts on
-  this machine share one `domo_test` database. Before a long run, check that no
-  other run is active (`pgrep -f vitest`), or the two runs destroy each other's
-  data. See `test/AGENTS.md`.
+  with real agents go in the live layer (`pnpm test:agents`). See
+  `test/AGENTS.md`.
 
 ## Working norms
 

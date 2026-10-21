@@ -11,7 +11,10 @@ import { chromium } from 'playwright-core'
 import { APP_BUILD_DIR, ensureAppBuild } from '../helpers/app-build'
 import { chromiumPath } from '../helpers/browser'
 import { removeCachedImages } from '../helpers/cached-images'
+import { claimTestDatabase } from '../helpers/run-lock'
 import {
+  POSTGRES_SERVER_URL,
+  TEST_DATABASE,
   TEST_DATABASE_URL,
   TEST_ELECTRIC_URL,
   electricIsUp,
@@ -44,7 +47,7 @@ const dead = join(rootDir, 'test', 'helpers', 'dead-adapter.mjs')
 const run = promisify(execFile)
 
 export default async function setup() {
-  await prepare()
+  const release = await prepare()
   await startServer()
 
   return async () => {
@@ -53,10 +56,11 @@ export default async function setup() {
     await stopServer()
     await removeResources()
     await rm(SCRATCH, { recursive: true, force: true })
+    await release()
   }
 }
 
-async function prepare(): Promise<void> {
+async function prepare(): Promise<() => Promise<void>> {
   const missing: string[] = []
   try {
     await ensureTestDatabase()
@@ -72,6 +76,7 @@ async function prepare(): Promise<void> {
     throw new Error(['The environments-live layer did not run:', ...missing.map(line => `  - ${line}`), ''].join('\n'))
   }
 
+  const release = await claimTestDatabase(POSTGRES_SERVER_URL, TEST_DATABASE)
   await rm(SCRATCH, { recursive: true, force: true })
   // A stand-in home: never the developer's ~/.ssh or ~/.gitconfig.
   const home = join(SCRATCH, 'home')
@@ -117,6 +122,7 @@ async function prepare(): Promise<void> {
   })
   await loadFixture()
   await ensureAppBuild()
+  return release
 }
 
 async function chromiumProblem(): Promise<string | null> {

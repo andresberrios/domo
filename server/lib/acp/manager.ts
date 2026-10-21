@@ -415,6 +415,12 @@ class AgentRuntime {
   private booting: Promise<void> | null = null
   private waiters = new Map<string, PendingPermissionWaiter>()
   /**
+   * Permission requests between their arrival and their waiter. The waiter
+   * needs the row's id, so it exists only once the row is written, and a
+   * watchdog that ran out in that gap ended the turn under a question.
+   */
+  private asking = 0
+  /**
    * The turn in flight, claimed synchronously by `prompt`.
    *
    * `deliver` reads it to decide whether a message steers, queues or
@@ -1617,6 +1623,15 @@ class AgentRuntime {
       if (allow) return { outcome: { outcome: 'selected', optionId: allow.optionId } }
     }
 
+    this.asking++
+    try {
+      return await this.askPermission(params, title, options)
+    } finally {
+      this.asking--
+    }
+  }
+
+  private async askPermission(params: any, title: string, options: any[]): Promise<any> {
     const block = this.takeStream()
     let answer!: Promise<string | null>
     const permission = await this.serial(async () => {
@@ -1806,7 +1821,7 @@ class AgentRuntime {
     // session would stop saying what it is blocked on. It terminates by other
     // means every time: the answer, `cancel`, or the adapter
     // exiting — all of which resolve every waiter.
-    if (this.waiters.size) {
+    if (this.waiters.size || this.asking) {
       this.armAdapterTurn()
       return
     }
@@ -1943,7 +1958,7 @@ class AgentRuntime {
       // started for that is over.
       if (response === null) {
         request.then(() => {
-          if (this.turn?.origin === 'adapter' && !this.waiters.size) return this.endAdapterTurn(this.turn)
+          if (this.turn?.origin === 'adapter' && !this.waiters.size && !this.asking) return this.endAdapterTurn(this.turn)
         }).catch(error =>
           console.error(`[acp:${this.agentSessionId}] a released turn failed`, error))
       }

@@ -1,5 +1,7 @@
 import pg from 'pg'
 
+import { claimTestDatabase } from './run-lock'
+
 /**
  * Tests run against a real Postgres — the schema, the `bigserial` sequences and
  * the `REPLICA IDENTITY FULL` settings are the things most worth testing, and
@@ -83,6 +85,11 @@ export async function ensureTestDatabase(): Promise<string | null> {
   }
   unavailableReason = ''
   return testDatabaseUrl()
+}
+
+/** Hold `domo_test` for this run; see `claimTestDatabase`. */
+export function claimTestRun(): Promise<() => Promise<void>> {
+  return claimTestDatabase(SERVER_URL, TEST_DATABASE)
 }
 
 /**
