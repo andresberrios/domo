@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto'
 
 import type { AgentAdapter } from '../../../shared/types'
-import { COPILOT_ARGS } from '../acp/adapter-process'
+import { COPILOT_ARGS, GROK_ARGS } from '../acp/adapter-process'
 import { dockerServerArch, resourcePrefix, run } from './docker'
+
+/** Where the volume is mounted in every environment, read-only. */
+export const RUNTIME_ROOT = '/opt/domo'
 
 /**
  * Everything pinned into the runtime volume, in one place. Change any of it and the
@@ -20,6 +23,10 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
   entry: string
   args?: string[]
   native?: boolean
+  /** Shell run after the install, before the wrappers are written. */
+  prepare?: string
+  /** The wrapper's own arguments go before `args`, for flags the CLI takes only there. */
+  callerArgsFirst?: boolean
 }> = {
   'claude-code': {
     command: 'claude-agent-acp',
@@ -47,6 +54,25 @@ export const ADAPTER_PACKAGES: Record<AgentAdapter, {
     entry: '../copilot-linux-*/copilot',
     args: COPILOT_ARGS,
     native: true
+  },
+  grok: {
+    command: 'grok-acp',
+    spec: '@xai-official/grok@1.0.62',
+    // The platform package ships the executable brotli-compressed, and the
+    // package's own bin is a Node loader that forwards no stop
+    // (`grokBinary` in adapter-process.ts). Unpacked here once; the copy its
+    // postinstall made beside the loader, and the compressed one, are dropped.
+    entry: '../grok-linux-*/bin/grok',
+    args: GROK_ARGS,
+    native: true,
+    // `--trust` (`GROK_SESSION_ARGS`) is taken only ahead of `agent`.
+    callerArgsFirst: true,
+    prepare: [
+      `for f in ${RUNTIME_ROOT}/adapters/node_modules/@xai-official/grok-linux-*/bin/grok.br; do`,
+      `${RUNTIME_ROOT}/node/bin/node -e 'const fs = require("fs"), out = process.argv[1].slice(0, -3); fs.writeFileSync(out, require("zlib").brotliDecompressSync(fs.readFileSync(process.argv[1]))); fs.chmodSync(out, 0o755)' "$f"`,
+      'rm -f "$f"; done',
+      `rm -f ${RUNTIME_ROOT}/adapters/node_modules/@xai-official/grok/bin/grok-native`
+    ].join('\n')
   }
 }
 
@@ -65,9 +91,6 @@ export function pinnedAdapterVersions(): Record<AgentAdapter, string> {
     ([adapter, entry]) => [adapter, entry.spec.slice(entry.spec.lastIndexOf('@') + 1)]
   )) as Record<AgentAdapter, string>
 }
-
-/** Where the volume is mounted in every environment, read-only. */
-export const RUNTIME_ROOT = '/opt/domo'
 
 export function adapterCommandPath(adapter: AgentAdapter): string {
   return `${RUNTIME_ROOT}/bin/${ADAPTER_PACKAGES[adapter].command}`
@@ -94,15 +117,17 @@ export function runtimeVolumeName(arch: string): string {
  * chmodded by name, and `.ready` is written last so an interrupted build is redone.
  */
 function populateScript(): string {
-  const wrappers = Object.values(ADAPTER_PACKAGES).map(({ command, spec, entry, args = [], native }) => {
+  const prepares = Object.values(ADAPTER_PACKAGES).flatMap(({ prepare }) => (prepare ? [prepare] : []))
+  const wrappers = Object.values(ADAPTER_PACKAGES).map(({ command, spec, entry, args = [], native, callerArgsFirst }) => {
     const packageName = spec.slice(0, spec.lastIndexOf('@'))
     const executable = `${RUNTIME_ROOT}/adapters/node_modules/${packageName}/${entry}`
+    const passed = callerArgsFirst ? ['"$@"', ...args] : [...args, '"$@"']
     const invocation = native
-      ? [executable, ...args].join(' ')
-      : [`${RUNTIME_ROOT}/node/bin/node`, executable, ...args].join(' ')
+      ? [executable, ...passed].join(' ')
+      : [`${RUNTIME_ROOT}/node/bin/node`, executable, ...passed].join(' ')
     return [
       `printf '%s\\n' '#!/bin/sh' `
-      + `'exec ${invocation} "$@"' `
+      + `'exec ${invocation}' `
       + `> ${RUNTIME_ROOT}/bin/${command}`,
       `chmod 0755 ${RUNTIME_ROOT}/bin/${command}`
     ].join('\n')
@@ -115,6 +140,7 @@ function populateScript(): string {
     `printf '%s' '${JSON.stringify({ private: true, overrides: ADAPTER_OVERRIDES })}' > ${RUNTIME_ROOT}/adapters/package.json`,
     `npm install --prefix ${RUNTIME_ROOT}/adapters --no-fund --no-audit --loglevel=error `
     + Object.values(ADAPTER_PACKAGES).map(entry => entry.spec).join(' '),
+    ...prepares,
     ...wrappers,
     `chmod -R a+rX ${RUNTIME_ROOT}`,
     // On disk before the marker, and the marker on disk after it: a crash (a

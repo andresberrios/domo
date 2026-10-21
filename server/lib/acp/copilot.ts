@@ -1,11 +1,7 @@
-import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
 
-import { adapterEnv, adapterLaunch, hostGhToken } from './adapter-process'
+import { hostGhToken } from './adapter-process'
+import { hostLogin } from './host-login'
 import {
   COPILOT_AUTO_MODEL,
   copilotGithubToken,
@@ -111,77 +107,12 @@ export function withCopilotModels<T extends { agent: { request: (...args: any[])
   return connection
 }
 
-const LOGIN_TTL_MS = 5 * 60_000
-const LOGIN_TIMEOUT_MS = 20_000
-let loginCache: { at: number, value: boolean } | null = null
-let loginAsking: Promise<boolean> | null = null
-
 /**
  * Whether Copilot on this computer is signed in by itself, through
- * `copilot login`: asked, because the login is in the system credential store
- * and Domo reads no one else's secrets. A `session/new` with no token in the
- * environment answers "Authentication required" when there is none. It costs
- * no request against the plan, and the empty session is closed again.
+ * `copilot login`, which is in the system credential store.
  */
-export async function copilotHostLogin(): Promise<boolean> {
-  // Asking starts Copilot, which takes seconds on a Mac, and the settings and
-  // the setup guide wait on this: an answer that is old is given at once and
-  // asked again behind it. Only the first ever waits, and the server asks
-  // that at boot (`boot.ts`).
-  if (loginCache) {
-    if (Date.now() - loginCache.at >= LOGIN_TTL_MS) void askHostLoginOnce()
-    return loginCache.value
-  }
-  return askHostLoginOnce()
-}
-
-/** One ask at a time, however many readers want the answer. */
-function askHostLoginOnce(): Promise<boolean> {
-  loginAsking ??= askHostLogin().catch(() => false).then((value) => {
-    loginCache = { at: Date.now(), value }
-    return value
-  }).finally(() => {
-    loginAsking = null
-  })
-  return loginAsking
-}
-
-async function askHostLogin(): Promise<boolean> {
-  const cwd = await mkdtemp(join(tmpdir(), 'domo-copilot-'))
-  const { COPILOT_GITHUB_TOKEN: _token, ...env } = await adapterEnv('copilot', false)
-  const launch = adapterLaunch('copilot')
-  const proc = spawn(launch.command, launch.args, { cwd, env, stdio: ['pipe', 'pipe', 'ignore'] })
-  let timer: ReturnType<typeof setTimeout> | null = null
-  try {
-    const connection = acp.client({ name: 'domo' }).connect(acp.ndJsonStream(
-      Writable.toWeb(proc.stdin) as WritableStream<Uint8Array>,
-      Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>
-    ))
-    const asking = (async () => {
-      await connection.agent.request(acp.methods.agent.initialize, {
-        protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
-        clientInfo: { name: 'domo', title: 'Domo', version: '1.0.0' }
-      } as any)
-      try {
-        const created = await connection.agent.request(acp.methods.agent.session.new, { cwd, mcpServers: [] } as any) as any
-        await connection.agent.request('session/close', { sessionId: created.sessionId } as any).catch(() => {})
-        return true
-      } catch (error: any) {
-        if (/auth/i.test(String(error?.message ?? error))) return false
-        throw error
-      }
-    })()
-    const gone = new Promise<never>((_, reject) => {
-      proc.once('exit', code => reject(new Error(`copilot exited (code ${code})`)))
-      timer = setTimeout(() => reject(new Error('copilot did not answer')), LOGIN_TIMEOUT_MS)
-    })
-    return await Promise.race([asking, gone])
-  } finally {
-    if (timer) clearTimeout(timer)
-    proc.kill('SIGTERM')
-    await rm(cwd, { recursive: true, force: true }).catch(() => {})
-  }
+export function copilotHostLogin(): Promise<boolean> {
+  return hostLogin('copilot', ['COPILOT_GITHUB_TOKEN'])
 }
 
 /**

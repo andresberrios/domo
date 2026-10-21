@@ -11,9 +11,15 @@ const rootDir = dirname(fileURLToPath(import.meta.url))
 /**
  * Copilot's models and limits are read from GitHub with whatever token is at
  * hand, the host's `gh` login included. The default layers read them from
- * nowhere.
+ * nowhere. Grok signs in with the host's own `grok login`, so the default
+ * layers start a dead stub in its place, and never with a key.
  */
-const OFFLINE_ENV = { NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1' }
+const OFFLINE_ENV = {
+  NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1',
+  NUXT_GROK_ACP_ENTRY: resolve(rootDir, 'test/helpers/dead-adapter.mjs'),
+  NUXT_XAI_API_KEY: '',
+  XAI_API_KEY: ''
+}
 
 /**
  * The app's own aliases, so a test imports a module exactly the way the app

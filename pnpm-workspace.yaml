@@ -7,6 +7,9 @@ allowBuilds:
   sharp: false
   unrs-resolver: true
   vue-demi: true
+  # Its postinstall writes the binary and a config into the user's ~/.grok.
+  # Domo unpacks the binary itself (`grokBinary` in adapter-process.ts).
+  '@xai-official/grok': false
 # codex-acp asks for `^0.160.1`, which would install a second Codex beside the
 # top-level one. One Codex, the same as `ADAPTER_OVERRIDES` in
 # server/lib/dev-env/runtime-volume.ts gives container sessions.

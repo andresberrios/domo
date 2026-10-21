@@ -7,6 +7,8 @@ import { anthropicApiKey, claudeOauthToken, hasClaudeSubscriptionLogin } from '.
 import { codexLogin } from './codex-credentials'
 import { copilotGithubToken } from './copilot-credentials'
 import { copilotHostLogin } from './acp/copilot'
+import { grokHostLogin } from './acp/host-login'
+import { xaiApiKey } from './grok-credentials'
 import { openCodeCredentialState } from './opencode-credentials'
 import { listUsageProviders } from './repo'
 import { openAiApiKey } from './openai'
@@ -109,6 +111,23 @@ export function classifyCopilot(input: { token: boolean, hostLogin: boolean, ghT
   return { login: 'none', loginDetail: 'No Copilot login on this computer, and no GitHub token.', environments: false }
 }
 
+/**
+ * Grok: this computer's `grok login` (a grok.com plan), which environments
+ * borrow access tokens from (`grok-token.ts`), else the xAI API key saved in
+ * Domo.
+ */
+export function classifyGrok(input: { hostLogin: boolean, apiKey: boolean }): LoginAnswer {
+  if (input.hostLogin) {
+    return {
+      login: 'subscription',
+      loginDetail: 'Your Grok plan, through the Grok login on this computer. Development environments use it too, through Domo.',
+      environments: true
+    }
+  }
+  if (input.apiKey) return { login: 'api-key', loginDetail: 'An xAI API key, billed per token.', environments: true }
+  return { login: 'none', loginDetail: 'No Grok login on this computer, and no xAI API key.', environments: false }
+}
+
 /** Whether the adapter's program is where Domo will start it from. */
 async function installed(adapter: AgentAdapter): Promise<string | null> {
   try {
@@ -143,10 +162,12 @@ async function login(adapter: AgentAdapter): Promise<LoginAnswer> {
       ghToken: process.env.NUXT_GH_TOKEN || process.env.GH_TOKEN || await hostGhToken()
     })
   }
+  if (adapter === 'grok') return classifyGrok({ hostLogin: await grokHostLogin(), apiKey: !!xaiApiKey() })
   return classifyOpenCode(await openCodeCredentialState())
 }
 
-const USAGE_PROVIDER: Record<AgentAdapter, UsageProviderId> = { 'claude-code': 'claude', codex: 'codex', opencode: 'opencode', copilot: 'copilot' }
+/** Grok has none: no limit of its plan or its key can be read. */
+const USAGE_PROVIDER: Record<AgentAdapter, UsageProviderId | null> = { 'claude-code': 'claude', codex: 'codex', opencode: 'opencode', copilot: 'copilot', grok: null }
 
 /** Why an engine cannot hear or speak as set up, in the words the guide shows. */
 export function voiceProblem(voice: Pick<AgentVoiceSettings, 'transcriber' | 'speaker'>, base: AgentVoiceSettings): string | null {
@@ -164,7 +185,7 @@ export async function setupStatus(): Promise<SetupStatus> {
   const usage = await listUsageProviders().catch(() => [])
   const agents = await Promise.all(AGENT_ADAPTERS.map(async ({ id }): Promise<SetupAgentStatus> => {
     const [problem, answer] = await Promise.all([installed(id), login(id)])
-    const poll = usage.find(row => row.provider === USAGE_PROVIDER[id])
+    const poll = USAGE_PROVIDER[id] ? usage.find(row => row.provider === USAGE_PROVIDER[id]) : undefined
     return {
       id,
       installed: !problem,
@@ -215,6 +236,8 @@ const CHECK_TIMEOUT_MS = 90_000
 export function checkModel(adapter: AgentAdapter, offered: string[]): string | null {
   const cheap = TITLE_MODELS[adapter]
   if (offered.includes(cheap)) return cheap
+  // An account's list can move on past the older model; any of Grok's will do, at its lowest effort.
+  if (adapter === 'grok') return offered[0] ?? null
   if (adapter !== 'opencode') return null
   return offered.find(id => /free/i.test(id)) ?? null
 }
@@ -235,7 +258,8 @@ const SIGN_IN_AGAIN: Record<AgentAdapter, string> = {
   'claude-code': 'Run claude setup-token again and paste the new token.',
   codex: 'Run codex login again on the computer Domo runs on.',
   opencode: 'Check the console key, or create a new one in the OpenCode console.',
-  copilot: 'Run copilot login on the computer Domo runs on, or save a new GitHub token.'
+  copilot: 'Run copilot login on the computer Domo runs on, or save a new GitHub token.',
+  grok: 'Run grok login on the computer Domo runs on, or save a new xAI API key.'
 }
 
 function firstLine(message: string): string {

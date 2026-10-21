@@ -24,6 +24,7 @@ import { updater } from '../lib/updates'
 import { getSettings } from '../lib/settings'
 import { warmAgentVoice } from '../lib/agent-voice/warm'
 import { copilotHostLogin } from '../lib/acp/copilot'
+import { grokHostLogin } from '../lib/acp/host-login'
 import { migrateDeviceSpeaker } from '../lib/agent-voice/device-speaker'
 
 export default defineNitroPlugin(async (nitro) => {
@@ -113,7 +114,10 @@ export default defineNitroPlugin(async (nitro) => {
   // Whether Copilot is signed in on this computer is asked by starting it,
   // seconds on a Mac; asked now, the settings and the setup guide do not wait
   // on it after a restart.
-  if (process.env.DOMO_HOME) void copilotHostLogin()
+  if (process.env.DOMO_HOME) {
+    void copilotHostLogin()
+    void grokHostLogin()
+  }
 
   nitro.hooks.hook('close', async () => {
     usagePoller.stop()

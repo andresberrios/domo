@@ -7,7 +7,7 @@ import * as acp from '@agentclientprotocol/sdk'
 
 import { adapterLaunch } from './adapter-process'
 import { adapterConfigOptions } from './config-options'
-import { copilotModels, withCopilotModels } from './copilot'
+import { adaptConnection } from './shims'
 import { availableModelIds, currentModel, modelConfigOption } from './model'
 import { availableModes, modeConfigOption } from './mode'
 import type { AgentAdapter } from '../../../shared/types'
@@ -78,7 +78,7 @@ export async function askOnce(ask: AskOnce): Promise<{ answer: string, model: st
         Writable.toWeb(proc.stdin) as WritableStream<Uint8Array>,
         Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>
       ))
-    const connection = adapter === 'copilot' ? withCopilotModels(connected, () => copilotModels()) : connected
+    const connection = adaptConnection(adapter, connected, ask.env)
 
     const exited = new Promise<never>((_, reject) => {
       proc!.once('exit', code => reject(new Error(

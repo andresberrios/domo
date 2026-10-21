@@ -15,7 +15,7 @@ before it acts. `vitest.config.ts` and `test/setup/` answer the rest.
 | `electric` | `test/electric` | Postgres and the `electric-e2e` service. |
 | `docker-live` | `test/docker/*.live.spec.ts` | a Docker daemon. Opt in: `pnpm test:docker`. The `dood-*.live.spec.ts` files drive the Docker proxy with the real CLI, compose and buildx. |
 | `environments-live` | `test/environments/*.live.spec.ts` | Postgres, the `electric-e2e` service, Docker and a Chromium. Opt in: `pnpm test:environments`. Creates and retires environments in the real app, in a real browser. Keeps its runtime volume (`domo-envlive-runtime-*`) between runs. |
-| `agents-live` | `test/agents/*.live.spec.ts` | Postgres, Docker, a Claude token, a Codex login, `NUXT_OPENCODE_API_KEY` and `NUXT_COPILOT_GITHUB_TOKEN`. Opt in: `pnpm test:agents`. |
+| `agents-live` | `test/agents/*.live.spec.ts` | Postgres, Docker, a Claude token, a Codex login, `NUXT_OPENCODE_API_KEY`, `NUXT_COPILOT_GITHUB_TOKEN` and `NUXT_XAI_API_KEY`. Opt in: `pnpm test:agents`. |
 
 `pnpm test` runs the first four projects and needs `docker compose up -d`.
 Add a new project only when tests need a different runtime, setup file or

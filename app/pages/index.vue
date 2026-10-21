@@ -35,7 +35,7 @@ const working = computed(() => everySession.value.filter(agent => agent.status =
             Your voice control room for coding agents
           </h1>
           <p class="mx-auto mt-2 max-w-xl text-sm text-muted">
-            Talk to Claude Code, Codex, OpenCode or Copilot out loud. Each one can start and watch others,
+            Talk to Claude Code, Codex, OpenCode, Copilot or Grok out loud. Each one can start and watch others,
             and whichever you are talking to reads out their permission prompts and notes, so you
             can keep your hands free.
           </p>

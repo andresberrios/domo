@@ -7,7 +7,8 @@
     "@agentclientprotocol/codex-acp": "2.2.2",
     "@github/copilot": "1.0.98",
     "@openai/codex": "0.162.1",
-    "@opencode/cli": "2.0.29"
+    "@opencode/cli": "2.0.29",
+    "@xai-official/grok": "1.0.62"
   },
   "overrides": {
     "@openai/codex": "0.162.1"

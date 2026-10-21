@@ -86,6 +86,9 @@ async function prepare(): Promise<void> {
       NUXT_COPILOT_GITHUB_TOKEN: '',
       NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1',
       NUXT_COPILOT_ACP_ENTRY: join(rootDir, 'test', 'helpers', 'dead-adapter.mjs'),
+      NUXT_GROK_ACP_ENTRY: join(rootDir, 'test', 'helpers', 'dead-adapter.mjs'),
+      NUXT_XAI_API_KEY: '',
+      XAI_API_KEY: '',
       NUXT_CODEX_ENTRY: join(rootDir, 'test', 'helpers', 'dead-adapter.mjs')
     }
   })

@@ -7,7 +7,8 @@ import * as acp from '@agentclientprotocol/sdk'
 
 import { adapterEnv, adapterLaunch } from './adapter-process'
 import { adapterConfigOptions } from './config-options'
-import { clearCopilotModelCache, copilotModels, withCopilotModels } from './copilot'
+import { clearCopilotModelCache } from './copilot'
+import { adaptConnection } from './shims'
 import { availableModelOptions, currentModel, modelConfigOption } from './model'
 import { availableModes, currentModeId } from './mode'
 import type { AgentAdapter, SessionConfigOptionInfo, SessionModeInfo } from '../../../shared/types'
@@ -95,7 +96,8 @@ const ADAPTER_NAMES: Record<AgentAdapter, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
   opencode: 'OpenCode',
-  copilot: 'Copilot'
+  copilot: 'Copilot',
+  grok: 'Grok'
 }
 
 export interface AdapterCatalogEntry {
@@ -125,7 +127,7 @@ export interface AdapterCatalogEntry {
  * answer to most of the question.
  */
 export async function listAdapterCatalog(only?: AgentAdapter): Promise<{ adapters: AdapterCatalogEntry[] }> {
-  const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex', 'opencode', 'copilot']
+  const wanted: AgentAdapter[] = only ? [only] : ['claude-code', 'codex', 'opencode', 'copilot', 'grok']
   const adapters = await Promise.all(wanted.map(async (id): Promise<AdapterCatalogEntry> => {
     try {
       const { models, current, modes, currentMode, configOptions } = await listAdapterModels(id)
@@ -172,7 +174,7 @@ async function probe(adapter: AgentAdapter, model: string | null): Promise<Adapt
         Writable.toWeb(proc.stdin) as WritableStream<Uint8Array>,
         Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>
       ))
-    const connection = adapter === 'copilot' ? withCopilotModels(connected, () => copilotModels()) : connected
+    const connection = adaptConnection(adapter, connected, env)
 
     const exited = new Promise<never>((_, reject) => {
       proc!.once('exit', code => reject(new Error(

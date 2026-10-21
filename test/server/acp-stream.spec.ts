@@ -34,13 +34,14 @@ import type { AgentEvent } from '~~/shared/types'
  * here come out of the same Postgres the app uses.
  */
 
-const state = vi.hoisted(() => ({ adapters: [] as FakeAdapter[] }))
+const state = vi.hoisted(() => ({ adapters: [] as FakeAdapter[], spawns: [] as Array<{ command: string, args: string[] }> }))
 
 vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:child_process')>()
   return {
     ...original,
-    spawn: () => {
+    spawn: (command: string, args: string[] = []) => {
+      state.spawns.push({ command, args })
       const adapter = new FakeAdapter()
       state.adapters.push(adapter)
       return adapter
@@ -330,6 +331,7 @@ beforeEach(async () => {
   // Account-wide, so it hangs off no session and no cascade reaches it.
   await query('truncate usage_limits')
   state.adapters.length = 0
+  state.spawns.length = 0
   seen = captureBus()
 })
 
@@ -802,7 +804,7 @@ describe('the model a session runs on', () => {
     // used to read were a second, invisible way of saying the same thing.
     const { patchSettings } = await import('../../server/lib/settings')
     try {
-      await patchSettings({ defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '', copilot: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '', copilot: '', grok: '' } })
       const fromSetting = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku', 'opus'] })
       expect(fromSetting.asked).toEqual([{ sessionId: 'acp_fake', configId: 'model', value: 'haiku' }])
 
@@ -811,7 +813,7 @@ describe('the model a session runs on', () => {
     } finally {
       // The settings table survives the per-test truncate, so this one has to
       // put it back or every later test in the file boots on `haiku`.
-      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '', grok: '' } })
     }
   })
 
@@ -828,7 +830,7 @@ describe('the model a session runs on', () => {
     // the user can see it and change it. The notice names the source.
     const { patchSettings } = await import('../../server/lib/settings')
     try {
-      await patchSettings({ defaultAgentModels: { 'claude-code': 'gemini-3-pro', codex: '', opencode: '', copilot: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': 'gemini-3-pro', codex: '', opencode: '', copilot: '', grok: '' } })
       const { agent } = await boot(null, { current: 'sonnet', ids: ['sonnet', 'haiku'] })
 
       const row = await getAgentSession(agent.id)
@@ -837,7 +839,7 @@ describe('the model a session runs on', () => {
       const notice = (await listAgentEvents(agent.id)).find(event => event.type === 'error')
       expect(notice?.payload.message).toMatch(/default model for claude-code.*"gemini-3-pro".*sonnet, haiku/s)
     } finally {
-      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '' } })
+      await patchSettings({ defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '', grok: '' } })
     }
   })
 
@@ -3334,5 +3336,76 @@ describe('a subagent launched in the background', () => {
     // That one is a turn it started, ended when the adapter let go of the prompt, not after a minute of quiet.
     expect(events.filter(event => event.type === 'turn_start')).toHaveLength(1)
     expect(events.at(-1)).toMatchObject({ type: 'turn_end', payload: { origin: 'adapter' } })
+  })
+})
+
+describe('how an adapter process is started', () => {
+  async function environment(name: string) {
+    const project = await createProject({ name: `${name}-project`, repoPath: workspace })
+    return createDevEnvironmentRow({ projectId: project.id, name, containerName: `domo-${name}`, workspacePath: `/workspaces/${name}` })
+  }
+
+  /**
+   * Every process answers, the session's and any probe's (a Grok session in
+   * an environment first asks whether this computer has a Grok login).
+   */
+  async function started(input: { adapter: 'claude-code' | 'grok', devEnvironmentId?: string }) {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const served = new Set<FakeAdapter>()
+    const timer = setInterval(() => {
+      for (const adapter of state.adapters) {
+        if (served.has(adapter)) continue
+        served.add(adapter)
+        serve(adapter, async () => {})
+      }
+    }, 5)
+    try {
+      return await acpManager.create({ ...input, cwd: input.devEnvironmentId ? undefined : workspace })
+    } finally {
+      clearInterval(timer)
+    }
+  }
+
+  /** The spawn that runs the session, as against a probe's. */
+  function sessionSpawn(): { command: string, args: string[] } {
+    return state.spawns.find(spawned => spawned.command === 'docker' || spawned.args.includes('--trust')) ?? state.spawns[0]!
+  }
+
+  // The pid is what stopping it kills: `docker exec` going away leaves the
+  // process running in the container. It was `echo $`, and nothing was killed.
+  it('in an environment, records the pid of the process that becomes the adapter, which a stop kills', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const env = await environment('pids')
+    const agent = await started({ adapter: 'claude-code', devEnvironmentId: env.id })
+
+    const args = sessionSpawn().args
+    const script = args[args.indexOf('-c') + 1]!
+    const pidFile = join(tmpdir(), `domo-test-pid-${process.pid}`)
+    const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process')
+    const { readFileSync, rmSync } = await import('node:fs')
+    // `exec` replaces the shell, so the pid written is the command's own.
+    const ran = execFileSync('sh', ['-c', script, 'sh', pidFile, 'sh', '-c', 'echo $$'], { encoding: 'utf8' }).trim()
+    expect(readFileSync(pidFile, 'utf8').trim()).toBe(ran)
+    rmSync(pidFile, { force: true })
+
+    acpManager.stop(agent.id)
+    const kill = state.spawns.at(-1)!.args
+    expect(kill.slice(0, 2)).toEqual(['exec', 'domo-pids'])
+    expect(kill).toContain('test ! -f "$1" || kill "$(cat "$1")"; rm -f "$1"')
+    expect(kill.at(-1)).toBe(`/tmp/domo-agent-${agent.id}.pid`)
+  })
+
+  it('trusts a Grok session\'s working directory, ahead of `agent`, on the host and in an environment', async () => {
+    await started({ adapter: 'grok' })
+    expect(sessionSpawn().args.slice(-4)).toEqual(['--trust', 'agent', '--no-leader', 'stdio'])
+  })
+
+  it('hands `--trust` to the environment\'s Grok wrapper, which puts it ahead of `agent`', async () => {
+    const env = await environment('grok-trust')
+    await started({ adapter: 'grok', devEnvironmentId: env.id })
+    const docker = state.spawns.find(spawned => spawned.command === 'docker')!
+    expect(docker.args.slice(-2)).toEqual(['/opt/domo/bin/grok-acp', '--trust'])
+    // The fake answers no login here, so nothing borrows one.
+    expect(docker.args.join(' ')).not.toContain('GROK_AUTH_PROVIDER_COMMAND')
   })
 })

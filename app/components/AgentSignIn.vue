@@ -22,6 +22,8 @@ const ANTHROPIC_WARNING = 'Bills per token through the Anthropic API, not your C
 const OPENAI_WARNING = 'Bills per token through the OpenAI API, not your ChatGPT plan. Codex would save it as its login and stay on '
   + 'API billing, so Domo gives it to Codex only when Codex has no ChatGPT login. OpenCode uses it for its openai/… models, '
   + 'and so does the OpenAI voice engine.'
+const XAI_WARNING = 'Bills per token through the xAI API, not your Grok plan. Domo gives it to Grok only when there is '
+  + 'no Grok login on this computer.'
 
 const tone = computed(() => {
   const status = props.status
@@ -121,6 +123,24 @@ const needsSteps = computed(() => !!props.status && props.status.installed
       </div>
     </template>
 
+    <template v-if="needsSteps && adapter === 'grok'">
+      <div class="space-y-2 text-sm">
+        <p class="font-medium">Sign in with your Grok plan</p>
+        <ol class="list-decimal space-y-2 ps-5 text-muted">
+          <li>On the computer Domo runs on, open a terminal and run:<CopyCommand command="npx @xai-official/grok login" class="mt-1" /></li>
+          <li>Sign in with your Grok account in the browser window it opens, then check again here.</li>
+        </ol>
+        <UButton label="Check again" icon="i-lucide-refresh-cw" color="neutral" variant="subtle" size="sm" @click="emit('changed')" />
+        <p class="text-xs text-muted">
+          No browser on that computer? Add <code>--device-auth</code> and enter the code it shows on any device.
+          The login stays on this computer, and development environments use it through Domo.
+          Without one, an
+          <ULink to="https://console.x.ai" target="_blank" class="text-primary">xAI API key</ULink>
+          saved below works everywhere.
+        </p>
+      </div>
+    </template>
+
     <template v-if="adapter === 'claude-code'">
       <CredentialField
         :settings="settings"
@@ -182,6 +202,20 @@ const needsSteps = computed(() => !!props.status && props.status.installed
           ? 'Sessions on this computer already use your Copilot login. A token is what a development environment signs in with, because that login is never copied into one.'
           : 'A fine-grained token with the Copilot Requests permission, billed to your Copilot plan. Copilot signs in with it everywhere, development environments included.'"
         placeholder="github_pat_…"
+        @saved="emit('changed')"
+      />
+    </template>
+
+    <template v-if="adapter === 'grok'">
+      <CredentialField
+        :settings="settings"
+        credential="xaiApiKey"
+        label="xAI API key"
+        :help="settings?.hasGrokAuth
+          ? 'Sessions use your Grok login, development environments included, so a key is not used while it is there.'
+          : 'From the xAI console. Grok signs in with it everywhere, development environments included.'"
+        placeholder="xai-…"
+        :warning="XAI_WARNING"
         @saved="emit('changed')"
       />
     </template>

@@ -18,6 +18,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
+import { brotliDecompressSync } from 'node:zlib'
 
 const HOME = resolve(process.env.DOMO_HOME || join(homedir(), '.domo'))
 /**
@@ -787,6 +788,14 @@ async function ensureAgents(dir) {
         // It copied its platform's binary into `bin`; the platform package is a second copy.
         for (const name of readdirSync(dirname(opencode)).filter(n => n.startsWith('cli-'))) rmSync(join(dirname(opencode), name), { recursive: true, force: true })
       }
+      // Grok's platform package ships its executable compressed, and its
+      // postinstall (which unpacks it into ~/.grok) does not run here.
+      // Unpacked where the server looks for it (`grokBinary()`).
+      const grok = join(tmp, 'node_modules', '@xai-official', `grok-${platform()}-${arch()}`, 'bin', 'grok')
+      if (existsSync(`${grok}.br`)) {
+        writeFileSync(grok, brotliDecompressSync(readFileSync(`${grok}.br`)), { mode: 0o755 })
+        rmSync(`${grok}.br`)
+      }
       // npm installs the musl builds beside the glibc ones (it does not read
       // `libc`); a release runs on glibc only.
       for (const scope of ['@anthropic-ai', '@github', '@openai']) {
@@ -828,7 +837,8 @@ async function checkAgents(dir) {
     'Claude Code': [P.node, join(modules, '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js')],
     'Codex': [P.node, join(modules, '@agentclientprotocol', 'codex-acp', 'dist', 'index.js')],
     'OpenCode': [join(modules, '@opencode', 'cli', 'bin', 'opencode.exe'), 'acp'],
-    'Copilot': [join(modules, '@github', `copilot-${os}-${cpu}`, 'copilot'), '--acp', '--no-auto-update']
+    'Copilot': [join(modules, '@github', `copilot-${os}-${cpu}`, 'copilot'), '--acp', '--no-auto-update'],
+    'Grok': [join(modules, '@xai-official', `grok-${os}-${cpu}`, 'bin', 'grok'), 'agent', '--no-leader', 'stdio']
   }
   await Promise.all(Object.entries(adapters).map(async ([name, [command, ...args]]) => {
     const started = Date.now()

@@ -31,7 +31,7 @@ registerEndpoint('/api/setup/check', {
 })
 registerEndpoint('/api/settings', () => ({
   agentVoice: { transcriber: 'gemini', speaker: 'gemini' },
-  credentialSources: { geminiApiKey: null, openAiApiKey: null, anthropicApiKey: null, claudeCodeOauthToken: null, openCodeApiKey: null, copilotGithubToken: null, kyutaiApiKey: null },
+  credentialSources: { geminiApiKey: null, openAiApiKey: null, anthropicApiKey: null, claudeCodeOauthToken: null, openCodeApiKey: null, copilotGithubToken: null, xaiApiKey: null, kyutaiApiKey: null },
   hasOpenCodeAuth: false
 }))
 
@@ -48,7 +48,7 @@ beforeEach(() => {
   checks.length = 0
   document.body.innerHTML = ''
   status = {
-    agents: [agent('claude-code', 'none'), agent('codex', 'api-key'), agent('opencode', 'free'), agent('copilot', 'subscription')],
+    agents: [agent('claude-code', 'none'), agent('codex', 'api-key'), agent('opencode', 'free'), agent('copilot', 'subscription'), agent('grok', 'subscription')],
     voice: { transcriber: 'gemini', speaker: 'gemini', problem: 'No Gemini API key. Add one in Settings → Voice.' },
     progress: { finishedAt: null, skipped: [], checks: {} }
   }

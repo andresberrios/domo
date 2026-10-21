@@ -74,3 +74,27 @@ or when an adapter acts in an unexpected way. Everything else is in
   They go in at launch through `--additional-mcp-config`.
 - **Copilot cannot be steered.** A second `session/prompt` cancels the running
   turn, so `steer` falls back to `interrupt` as for OpenCode.
+- **Grok is xAI's Grok Build CLI (`@xai-official/grok`), `grok agent stdio`.**
+  Its platform package ships the binary brotli-compressed and its postinstall
+  writes into the user's `~/.grok`, so pnpm does not run it and Domo unpacks
+  the binary beside the compressed one (`grokBinary`, the launcher, the
+  runtime volume). `1.0.62` is the `latest` tag; newer numbers are `alpha`.
+- **Grok's `grok login` refresh token is single-use** (reuse revokes the
+  family), so it never leaves this computer. A container's Grok gets access
+  tokens only, through `GROK_AUTH_PROVIDER_COMMAND` → Domo → the host Grok's
+  `_x.ai/auth/getBearerToken` (`grok-token.ts`). A key needs `authenticate` with `xai.api_key`, which
+  `initialize` does not always advertise. Never send `_x.ai/setApiKey`: it
+  writes the key into `~/.grok/auth.json`. A login shows as
+  `defaultAuthMethodId: "cached_token"` in `initialize`; `session/new`
+  succeeding proves nothing, since a model in the user's `config.toml` can
+  carry its own key.
+- **Grok publishes no modes and its own permission switch is separate**
+  (`_x.ai/yolo_mode_changed`). Domo offers both as one list, and steers
+  through `_x.ai/interject` (`server/lib/acp/grok.ts`). It sends no
+  `usage_update`, and its plan's credits are readable only over
+  `_x.ai/billing` with a grok.com login.
+- **Grok skips a project's AGENTS.md, `.mcp.json`, hooks and skills in a
+  folder it does not trust**, and its ACP trust answer applies only from the
+  next session. A session is started as `grok --trust agent …` (the flag is
+  taken only ahead of `agent`), which records the working directory's
+  repository in `~/.grok/trusted_folders.toml`. Probes never pass it.

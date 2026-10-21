@@ -37,6 +37,7 @@ export const DEFAULTS: AppSettings = {
   // the row by the first save (`secret-settings.ts`).
   openCodeApiKey: '',
   copilotGithubToken: '',
+  xaiApiKey: '',
   geminiApiKey: '',
   openAiApiKey: '',
   anthropicApiKey: '',

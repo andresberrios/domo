@@ -45,7 +45,9 @@ const MODELS: Record<AgentAdapter, string> = {
   // provider is the flat subscription; `flash` is the cheap end of it.
   opencode: 'opencode-go/glm-5.3-flash',
   // The router, which every plan offers; Copilot Free offers nothing else.
-  copilot: 'auto'
+  copilot: 'auto',
+  // Grok lists two models, both large; the older one, at its lowest effort.
+  grok: 'grok-4.5'
 }
 
 /** A second cheap model per adapter, for the switch. */
@@ -54,7 +56,8 @@ const OTHER_MODELS: Record<AgentAdapter, string> = {
   codex: 'gpt-6-luna',
   opencode: 'opencode-go/gpt-5.6-luna',
   // Free on paid plans' request billing. Copilot Free refuses it; see the switch test.
-  copilot: 'gpt-5-mini'
+  copilot: 'gpt-5-mini',
+  grok: 'grok-4.6'
 }
 
 let mesh: MeshHarness
@@ -157,6 +160,12 @@ const ASKS: Record<AgentAdapter, { modeId: string, prompt: string }> = {
     modeId: 'https://agentclientprotocol.com/protocol/session-modes#agent',
     prompt: 'Run this exact shell command with your shell tool, and nothing else: '
       + 'echo ok > permission-probe.txt'
+  },
+  // Grok's default mode runs reads without asking and asks before a command that writes.
+  grok: {
+    modeId: 'default',
+    prompt: 'Run this exact shell command with your shell tool, and nothing else: '
+      + 'echo ok > permission-probe.txt'
   }
 }
 
@@ -174,7 +183,8 @@ const NAMES_TOOL_CALLS: Record<AgentAdapter, boolean> = {
   'claude-code': true,
   codex: true,
   opencode: false,
-  copilot: true
+  copilot: true,
+  grok: true
 }
 
 /** Start a session in the shared environment, on the cheap model. */
@@ -195,7 +205,7 @@ async function start(adapter: AgentAdapter, options: { modeId?: string, host?: b
   return session
 }
 
-describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode', 'copilot'])('%s in a dev environment', (adapter) => {
+describe.each<AgentAdapter>(['codex', 'claude-code', 'opencode', 'copilot', 'grok'])('%s in a dev environment', (adapter) => {
   it('starts a session inside the container, on the model it was given', async () => {
     const { getAgentSession } = await import('../../server/lib/repo')
     const session = await start(adapter)
@@ -616,7 +626,7 @@ describe('an upgrade under live sessions', () => {
     const { beginProjectEnvironmentUpgrade } = await import('../../server/lib/projects')
     const { getDevEnvironment, listAgentEvents } = await import('../../server/lib/repo')
     const { pinnedAdapterVersions } = await import('../../server/lib/dev-env/runtime-volume')
-    const adapters: AgentAdapter[] = ['claude-code', 'codex', 'opencode', 'copilot']
+    const adapters: AgentAdapter[] = ['claude-code', 'codex', 'opencode', 'copilot', 'grok']
     const planted = new Map<string, string>()
     for (const adapter of adapters) {
       const session = await start(adapter)

@@ -78,6 +78,15 @@ export async function setup(): Promise<void> {
     )
   }
 
+  // A host `grok login` rotates its refresh token, so it is never copied into
+  // an environment: inside one an xAI API key is the only way Grok signs in.
+  if (!process.env.NUXT_XAI_API_KEY && !process.env.XAI_API_KEY) {
+    missing.push(
+      'NUXT_XAI_API_KEY is not set. Create an API key in the xAI console (https://console.x.ai) and put it '
+      + 'in .env — a host `grok login` is deliberately never copied into an environment.'
+    )
+  }
+
   if (missing.length > 0) {
     throw new Error(
       `The agents-live layer did not run — it needs all of the following:\n - ${missing.join('\n - ')}`

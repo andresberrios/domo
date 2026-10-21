@@ -21,6 +21,7 @@ const stored = {
   claudeCodeOauthToken: 'sk-ant-oat-stored',
   openCodeApiKey: '',
   copilotGithubToken: '',
+  xaiApiKey: '',
   kyutaiApiKey: ''
 }
 

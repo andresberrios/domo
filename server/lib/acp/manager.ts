@@ -19,8 +19,10 @@ import { internalBaseUrl } from '../internal-url'
 import { mintMeshToken } from '../mesh/token'
 import { defaultWorkDir, insideOwnInstall, normalizeCwd } from '../paths'
 import { getSettings } from '../settings'
-import { adapterEnv, adapterLaunch } from './adapter-process'
-import { copilotMcpConfig, copilotModels, withCopilotModels } from './copilot'
+import { adapterEnv, adapterLaunch, GROK_SESSION_ARGS } from './adapter-process'
+import { copilotMcpConfig } from './copilot'
+import { adaptConnection } from './shims'
+import { agentAdapterInfo } from '../../../shared/agent-adapters'
 import { assertSessionStartable } from './startable'
 import { claudeSessionLimits, normalizeAgentUsage, sameAgentUsage, type UsageLimitValue } from '../usage/normalize'
 import { combineInboxContent } from './inbox'
@@ -908,20 +910,32 @@ class AgentRuntime {
     let proc: ChildProcessWithoutNullStreams
     if (session.devEnvironmentId) {
       environment = await ensureEnvironmentRunning(session.devEnvironmentId)
+      // Its runtime volume holds the adapters of the day it was made (as
+      // recorded then); one added since (Grok) is not in there until it is upgraded.
+      const versions = environment.adapterVersions
+      if (versions && !versions[session.adapter]) {
+        throw new Error(
+          `${agentAdapterInfo(session.adapter).label} is not installed in the environment "${environment.name}": `
+          + 'it was made before this version of Domo. Upgrade the environment, then start the session again.'
+        )
+      }
       this.containerName = environment.containerName
       this.containerPidFile = `/tmp/domo-agent-${this.agentSessionId}.pid`
       env.USER = environment.remoteUser ?? 'root'
       env.HOME = env.USER === 'root' ? '/root' : `/home/${env.USER}`
       env.LOGNAME = env.USER
-      const extra = await this.copilotLaunchArgs(session, environment)
+      // What its Grok proves it is when it asks Domo for a token (`grok-token.ts`).
+      if (env.GROK_AUTH_PROVIDER_COMMAND) env.DOMO_GROK_TOKEN = mintMeshToken(this.agentSessionId)
+      // The wrapper puts these ahead of its own arguments for Grok (`callerArgsFirst`).
+      const extra = session.adapter === 'grok' ? GROK_SESSION_ARGS : await this.copilotLaunchArgs(session, environment)
       proc = spawn('docker', [
         ...containerExecArgs(environment, env),
         // The adapters live in the shared runtime volume at /opt/domo, not on the image's PATH.
-        'sh', '-c', 'echo $ > "$1"; command="$2"; shift 2; exec "$command" "$@"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter),
+        'sh', '-c', 'echo $$ > "$1"; command="$2"; shift 2; exec "$command" "$@"', 'sh', this.containerPidFile, adapterCommandPath(session.adapter),
         ...extra
       ], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams
     } else {
-      const launch = adapterLaunch(session.adapter)
+      const launch = adapterLaunch(session.adapter, { session: true })
       const extra = await this.copilotLaunchArgs(session, null)
       proc = spawn(launch.command, [...launch.args, ...extra], {
         cwd: session.cwd,
@@ -998,8 +1012,8 @@ class AgentRuntime {
         return {}
       })
       .connect(stream)
-    // Copilot publishes no model option over ACP; this gives it one.
-    if (session.adapter === 'copilot') withCopilotModels(connection, () => copilotModels())
+    // What Copilot's and Grok's ACP lack (`shims.ts`).
+    adaptConnection(session.adapter, connection, env)
     this.connection = connection
 
     const initialized = (await connection.agent.request(acp.methods.agent.initialize, {

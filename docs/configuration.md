@@ -17,6 +17,7 @@ Never name a variable or `.env` in UI copy, help text or errors.
 | `NUXT_CODEX_API_KEY` | Optional. Codex uses it only when there is no ChatGPT login, and it bills the API |
 | `NUXT_OPENCODE_API_KEY` | OpenCode console service-account key |
 | `NUXT_COPILOT_GITHUB_TOKEN` | Fine-grained GitHub token with the Copilot Requests permission |
+| `NUXT_XAI_API_KEY` | xAI API key: how Grok signs in in environments, and on the host when it has no `grok login`. Bills the API |
 | `NUXT_OPENCODE_CONFIG_CONTENT` | Optional inline OpenCode configuration |
 | `NUXT_GH_TOKEN` | GitHub token for environment sessions |
 | `DATABASE_URL`, `ELECTRIC_URL` | Default to the compose services |
