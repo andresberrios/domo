@@ -7,7 +7,6 @@ import {
   formatReset,
   formatStaleness,
   formatTokens,
-  limitLabel,
   percentOf,
   usageTone,
   weeklyLimit,
@@ -146,14 +145,6 @@ describe('usageTone', () => {
 
   it('is neutral for a window with no reading, so nothing is implied', () => {
     expect(usageTone(null)).toBe('neutral')
-  })
-})
-
-describe('limitLabel', () => {
-  it('names the windows a row from an older database would not have named', () => {
-    expect(limitLabel('five_hour')).toBe('5-hour limit')
-    expect(limitLabel('seven_day')).toBe('Weekly · all models')
-    expect(limitLabel('something_new')).toBe('something_new')
   })
 })
 

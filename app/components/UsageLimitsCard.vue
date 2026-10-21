@@ -16,19 +16,7 @@ const PROVIDERS: Array<{ id: UsageProviderId, name: string, icon: string }> = [
 ]
 
 const { forProvider, providerState } = useUsageLimits()
-const toast = useToast()
-const refreshing = ref(false)
-
-async function refresh() {
-  refreshing.value = true
-  try {
-    await $fetch('/api/usage/refresh', { method: 'POST' })
-  } catch (error: any) {
-    toast.add({ title: 'Could not refresh usage', description: error?.data?.message ?? error?.data?.statusMessage ?? error?.message, color: 'error' })
-  } finally {
-    refreshing.value = false
-  }
-}
+const { refreshing, canRefresh, refresh } = useUsageRefresh()
 </script>
 
 <template>
@@ -45,6 +33,8 @@ async function refresh() {
           variant="ghost"
           size="xs"
           aria-label="Refresh usage limits"
+          :title="canRefresh ? undefined : 'Checked moments ago — try again shortly'"
+          :disabled="!canRefresh"
           :loading="refreshing"
           @click="refresh"
         />

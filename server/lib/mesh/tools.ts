@@ -76,6 +76,7 @@ import type {
   MessageDelivery
 } from '../../../shared/types'
 import { isAgentAdapter } from '../../../shared/agent-adapters'
+import { currentUsageLimit } from '../../../shared/usage-limits'
 
 const DELIVERIES: MessageDelivery[] = ['steer', 'queue', 'interrupt']
 const STATUSES: AgentSessionStatus[] = ['idle', 'starting', 'thinking', 'awaiting-permission', 'error', 'stopped']
@@ -2056,11 +2057,12 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
         providers: providers
           .filter(provider => !wanted || provider.provider === wanted)
           .map(provider => ({ provider: provider.provider, state: provider.state, ...provider.message ? { note: provider.message } : {} })),
-        limits: limits.map(limit => ({
+        limits: limits.map(row => currentUsageLimit(row)).map(limit => ({
           provider: limit.provider,
           limit: limit.label,
           usedPercent: limit.usedPercent,
           resetsAt: limit.resetsAt,
+          ...limit.resetPassed ? { note: 'The window has reset since this was read; not re-read yet.' } : {},
           ...limit.status ? { status: limit.status } : {},
           ...(limit.amountLimit === null && limit.amountUsed === null
             ? {}

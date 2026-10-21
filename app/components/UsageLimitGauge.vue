@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { useNow } from '@vueuse/core'
 import type { UsageLimit } from '~~/shared/types'
+import { currentUsageLimit } from '~~/shared/usage-limits'
 
 /**
  * One window's usage as a tiny icon, bar and percentage — small enough to sit
@@ -23,7 +25,11 @@ const props = defineProps<{
   limit: UsageLimit
 }>()
 
-const tone = computed(() => usageTone(props.limit.usedPercent, props.limit.status))
+// A window whose reset has passed reads as reset, as it does in the panel.
+const now = useNow({ interval: 30_000 })
+const reading = computed(() => currentUsageLimit(props.limit, now.value.getTime()))
+
+const tone = computed(() => usageTone(reading.value.usedPercent, reading.value.status))
 const textClass = computed(() => (
   tone.value === 'error' ? 'text-error' : tone.value === 'warning' ? 'text-warning' : 'text-muted'
 ))
@@ -31,16 +37,16 @@ const barClass = computed(() => (
   tone.value === 'error' ? 'bg-error' : tone.value === 'warning' ? 'bg-warning' : 'bg-primary'
 ))
 const barWidth = computed(() => (
-  props.limit.usedPercent === null ? 0 : Math.min(100, Math.max(0, props.limit.usedPercent))
+  reading.value.usedPercent === null ? 0 : Math.min(100, Math.max(0, reading.value.usedPercent))
 ))
 </script>
 
 <template>
-  <span class="flex w-full min-w-0 items-center gap-1" :title="`${label}: ${formatPercent(limit.usedPercent)}`">
+  <span class="flex w-full min-w-0 items-center gap-1" :title="`${label}: ${formatPercent(reading.usedPercent)}`">
     <UIcon :name="icon" class="size-3 shrink-0 text-dimmed" />
     <span class="h-1 min-w-3 flex-1 overflow-hidden rounded-full bg-elevated">
       <span class="block h-full rounded-full" :class="barClass" :style="{ width: `${barWidth}%` }" />
     </span>
-    <span class="w-[4ch] shrink-0 text-end text-[11px] tabular-nums" :class="textClass">{{ formatPercent(limit.usedPercent) }}</span>
+    <span class="w-[4ch] shrink-0 text-end text-[11px] tabular-nums" :class="textClass">{{ formatPercent(reading.usedPercent) }}</span>
   </span>
 </template>

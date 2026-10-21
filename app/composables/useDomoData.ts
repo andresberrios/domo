@@ -33,6 +33,7 @@ import type {
 } from '~~/shared/types'
 import { sessionStartability, type Startability } from '~~/shared/retention'
 import { isAgentAdapter } from '~~/shared/agent-adapters'
+import { usageLimitLabel } from '~~/shared/usage-limits'
 
 /* Electric hands rows back exactly as Postgres stores them (snake_case), so
  * each hook maps once, here, and the rest of the app sees domain objects. */
@@ -454,7 +455,8 @@ export function useUsageLimits() {
       .map((row: any) => ({
         provider: row.provider,
         limitId: row.limit_id,
-        label: row.label,
+        // Today's label, not the one an older Domo stored with the row.
+        label: usageLimitLabel({ provider: row.provider, limitId: row.limit_id, label: row.label }),
         usedPercent: row.used_percent === null || row.used_percent === undefined ? null : Number(row.used_percent),
         resetsAt: row.resets_at ?? null,
         windowMinutes: row.window_minutes === null || row.window_minutes === undefined ? null : Number(row.window_minutes),

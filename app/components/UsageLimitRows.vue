@@ -1,5 +1,7 @@
 <script setup lang="ts">
+import { useNow } from '@vueuse/core'
 import type { UsageLimit, UsageProvider } from '~~/shared/types'
+import { currentUsageLimit } from '~~/shared/usage-limits'
 
 /**
  * One provider's plan limits, as a list of labelled bars.
@@ -15,46 +17,56 @@ const props = defineProps<{
   provider?: UsageProvider | null
   /** Rendered smaller inside a popover than on the home page. */
   compact?: boolean
-  /**
-   * Suppress the built-in "as of" line for a caller that shows its own,
-   * scoped to fewer rows than the oldest-of-everything reading below assumes.
-   */
-  hideStaleness?: boolean
 }>()
+
+// Every usage view is one of these, so this is where opening one asks for a
+// fresher reading. The server looks only if its last look is a few minutes
+// old or a window has reset since, so opening a popover twice asks nothing.
+const { refreshIfStale } = useUsageRefresh()
+const providerId = computed(() => props.limits[0]?.provider ?? props.provider?.provider ?? null)
+onMounted(() => {
+  if (providerId.value) void refreshIfStale(providerId.value)
+})
 
 // Recomputed on a timer so "Resets in 3 hr 41 min" and "as of 12 min ago" stay
 // true on a page left open — both are relative to now and neither row changes.
-const now = ref(Date.now())
-let ticker: ReturnType<typeof setInterval> | null = null
-onMounted(() => {
-  ticker = setInterval(() => { now.value = Date.now() }, 30_000)
-})
-onBeforeUnmount(() => {
-  if (ticker) clearInterval(ticker)
-})
+// The same timer turns a window whose reset has passed into a reset one.
+const now = useNow({ interval: 30_000 })
 
-const rows = computed(() => visibleLimits(props.limits).map(limit => ({
-  ...limit,
-  state: limitState(limit),
-  label: limit.label || limitLabel(limit.limitId),
-  reset: formatReset(limit.resetsAt, now.value),
-  tone: usageTone(limit.usedPercent, limit.status),
-  // A credits row is money, not a proportion of a window, so it says
-  // "$15.95 of $100.00" where the others say "52%".
-  amount: limit.amountLimit !== null || limit.amountUsed !== null
-    ? `${formatAmount(limit.amountUsed, limit.currency)}${
-      limit.amountLimit !== null ? ` of ${formatAmount(limit.amountLimit, limit.currency)}` : ''}`
-    : null
-})))
+const current = computed(() => visibleLimits(props.limits).map(limit => currentUsageLimit(limit, now.value.getTime())))
 
-/** The oldest reading in the set: the whole panel is only as fresh as that. */
-const staleness = computed(() => {
-  const oldest = props.limits.reduce<string | null>(
-    (worst, limit) => (!worst || limit.updatedAt < worst ? limit.updatedAt : worst),
-    null
-  )
-  return formatStaleness(oldest, now.value)
+/**
+ * How fresh the panel is: the freshest of the 5-hour and weekly windows,
+ * which every poll reads. A row that only some source reports (a per-model
+ * week, a credits balance) can be much older, and says so on its own line
+ * instead of dragging the whole panel's caption down.
+ */
+const freshest = computed(() => {
+  const polled = [fiveHourLimit(current.value), weeklyLimit(current.value)].filter(limit => limit !== null)
+  return (polled.length ? polled : current.value)
+    .reduce<string | null>((best, limit) => (!best || limit.updatedAt > best ? limit.updatedAt : best), null)
 })
+const caption = computed(() => formatStaleness(freshest.value, now.value.getTime()))
+
+/** Older than the panel's caption by this much, a row gives its own age. */
+const ROW_LAG_MS = 10 * 60_000
+
+const rows = computed(() => current.value.map((limit) => {
+  const lagging = freshest.value !== null && Date.parse(freshest.value) - Date.parse(limit.updatedAt) > ROW_LAG_MS
+  return {
+    ...limit,
+    state: limitState(limit),
+    reset: limit.resetPassed ? 'Reset, not re-read yet' : formatReset(limit.resetsAt, now.value.getTime()),
+    staleness: lagging ? formatStaleness(limit.updatedAt, now.value.getTime()) : '',
+    tone: usageTone(limit.usedPercent, limit.status),
+    // A credits row is money, not a proportion of a window, so it says
+    // "$15.95 of $100.00" where the others say "52%".
+    amount: limit.amountLimit !== null || limit.amountUsed !== null
+      ? `${formatAmount(limit.amountUsed, limit.currency)}${
+        limit.amountLimit !== null ? ` of ${formatAmount(limit.amountLimit, limit.currency)}` : ''}`
+      : null
+  }
+}))
 </script>
 
 <template>
@@ -99,15 +111,15 @@ const staleness = computed(() => {
         :color="row.tone"
         size="sm"
       />
-      <p v-if="row.reset || row.status === 'rejected'" class="text-[11px] text-dimmed">
+      <p v-if="row.reset || row.staleness || row.status === 'rejected'" class="text-[11px] text-dimmed">
         <span v-if="row.status === 'rejected'" class="text-error">Limit reached</span>
-        <span v-if="row.status === 'rejected' && row.reset"> · </span>
-        <span v-if="row.reset">{{ row.reset }}</span>
+        <span v-if="row.status === 'rejected' && (row.reset || row.staleness)"> · </span>
+        {{ [row.reset, row.staleness].filter(Boolean).join(' · ') }}
       </p>
     </div>
 
-    <p v-if="rows.length && staleness && !hideStaleness" class="text-[11px] text-dimmed">
-      {{ staleness }}
+    <p v-if="rows.length && caption" class="text-[11px] text-dimmed">
+      {{ caption }}
     </p>
     <p
       v-if="rows.length && provider?.state === 'error' && provider.message"

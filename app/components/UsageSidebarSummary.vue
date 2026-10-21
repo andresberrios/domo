@@ -11,7 +11,9 @@ import type { UsageProviderId } from '~~/shared/types'
  * a weekly window at 11% are two different facts and hiding either behind a
  * popover means missing the one that isn't currently the worse of the two.
  * Each is a `UsageLimitGauge` — an icon, a bar and a percentage — rather than
- * plain text, so the two windows read as shapes at a glance.
+ * plain text, so the two windows read as shapes at a glance. Opening the panel
+ * mounts its `UsageLimitRows`, which ask for a fresher reading when the one on
+ * screen is old.
  */
 const PROVIDERS: Array<{ id: UsageProviderId, name: string }> = [
   { id: 'claude', name: 'Claude' },
@@ -36,22 +38,10 @@ const entries = computed(() =>
     }
   }).filter(entry => entry.fiveHour || entry.weekly)
 )
-
-const { refresh } = useUsageRefresh()
-const open = ref(false)
-
-// Opening the panel is when a stale reading is most likely to be noticed, so
-// it asks for a fresh one rather than waiting for the next scheduled poll.
-// `refresh()` shares its cooldown with the panel's own manual button, so the
-// two never race each other into the server's one-a-minute floor — see
-// `useUsageRefresh` for why that sharing exists.
-watch(open, (value) => {
-  if (value) void refresh()
-})
 </script>
 
 <template>
-  <UPopover v-if="entries.length" v-model:open="open" :content="{ side: 'top', align: 'start' }">
+  <UPopover v-if="entries.length" :content="{ side: 'top', align: 'start' }">
     <UButton color="neutral" variant="ghost" size="xs" block class="justify-start">
       <!--
         A grid, so each column is as wide as its widest cell across every

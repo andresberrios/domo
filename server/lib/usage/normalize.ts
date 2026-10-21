@@ -4,6 +4,7 @@ import type {
   UsageLimitSource,
   UsageLimitStatus
 } from '../../../shared/types'
+import { claudeLabel } from '../../../shared/usage-limits'
 
 /**
  * Turning what each source actually says into the one shape the table stores.
@@ -82,44 +83,6 @@ function toStatus(value: unknown): Exclude<UsageLimitStatus, 'off'> | null {
 function toFinite(value: unknown): number | null {
   const raw = typeof value === 'string' ? Number(value.trim()) : value
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
-}
-
-/* ------------------------------------------------------------------ */
-/* labels                                                              */
-/* ------------------------------------------------------------------ */
-
-/**
- * The model behind Claude's `seven_day_overage_included` window, for the
- * sources that report that window without naming it (the rate-limit headers
- * and session events). It is the weekly bucket of the models whose use beyond
- * the plan needs extra usage. Claude Code itself labels it "Fable limit" (its
- * rate-limit label map, 2.1.296). The usage endpoint names the same bucket in
- * `limits[]`, and that name wins wherever it is available (`model:<name>`).
- */
-const OVERAGE_INCLUDED_MODEL = 'Fable'
-
-/**
- * What each Claude window is called, matching the wording Claude Code's own
- * `/usage` uses so the two can be read side by side.
- */
-const CLAUDE_LABELS: Record<string, string> = {
-  five_hour: '5-hour limit',
-  seven_day: 'Weekly · all models',
-  seven_day_opus: 'Weekly · Opus',
-  seven_day_sonnet: 'Weekly · Sonnet',
-  seven_day_oauth_apps: 'Weekly · OAuth apps',
-  seven_day_overage_included: `Weekly · ${OVERAGE_INCLUDED_MODEL}`,
-  extra_usage: 'Extra usage',
-  overage: 'Extra usage'
-}
-
-export function claudeLabel(limitId: string): string {
-  const known = CLAUDE_LABELS[limitId]
-  if (known) return known
-  // `model:Fable`, from the endpoint's per-model weekly buckets.
-  const scoped = /^model:(.+)$/.exec(limitId)
-  if (scoped) return `Weekly · ${scoped[1]}`
-  return limitId
 }
 
 /* ------------------------------------------------------------------ */

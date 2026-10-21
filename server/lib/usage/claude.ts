@@ -232,6 +232,14 @@ export async function probeClaudeHeaders(
   await response.body?.cancel().catch(() => {})
 
   const limits = claudeHeaderLimits(headers)
+  if (response.status === 429 && !limits.length) {
+    return {
+      outcome: 'rate-limited',
+      limits,
+      message: 'Anthropic is rate-limiting requests; showing the last reading.',
+      retryAfterMs: retryAfterMs(response.headers.get('retry-after'))
+    }
+  }
   if (response.status === 401 || response.status === 403) {
     return {
       outcome: 'auth',

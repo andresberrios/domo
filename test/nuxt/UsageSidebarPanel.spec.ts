@@ -1,6 +1,7 @@
 import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { UApp } from '#components'
 import { defineComponent, h } from 'vue'
+import { readBody } from 'h3'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetUsageRefreshForTests } from '~/composables/useUsageRefresh'
@@ -33,11 +34,14 @@ const limits: UsageLimit[] = [fiveHour]
 
 const entries = [{ id: 'claude' as const, name: 'Claude', limits, provider: null, fiveHour, weekly: null }]
 
+// The refresh button's requests; opening the panel also asks `ifStale`,
+// which is `UsageLimitRows`' business and counted apart.
 const refreshed = vi.fn()
 registerEndpoint('/api/usage/refresh', {
   method: 'POST',
-  handler: () => {
-    refreshed()
+  handler: async (event) => {
+    const body = await readBody(event)
+    if (!body?.ifStale) refreshed()
     return { requested: ['claude', 'codex'] }
   }
 })
@@ -71,7 +75,7 @@ describe('UsageSidebarPanel', () => {
     await vi.waitFor(() => expect(refreshed).toHaveBeenCalledTimes(1))
   })
 
-  it('reports how fresh the two windows it shows are, not the oldest row the provider has ever reported', async () => {
+  it('dates the panel by the two windows a poll reads, and an older row on its own line', async () => {
     // Regression: the caption used to be `UsageLimitRows`'s own "oldest row in
     // the set" line, computed over every row the provider has — including a
     // per-model weekly bucket that only the full endpoint call touches, never
@@ -110,8 +114,14 @@ describe('UsageSidebarPanel', () => {
         setup: () => () => h(UApp, null, { default: () => h(UsageSidebarPanel, { entries: staleEntries }) })
       }))
 
-      expect(component.text()).toContain('as of 2 min ago')
-      expect(component.text()).not.toContain('as of 3 hr ago')
+      // The panel's caption is the polled windows' age…
+      const lines = component.findAll('p').map(line => line.text())
+      expect(lines).toContain('as of 2 min ago')
+      // …and the row only a session event or the endpoint updates says its own.
+      const opus = component.findAll('div.space-y-1').find(row => row.text().includes('Weekly · Opus'))!
+      expect(opus.text()).toContain('as of 3 hr ago')
+      const fiveHourRow = component.findAll('div.space-y-1').find(row => row.text().includes('5-hour limit'))!
+      expect(fiveHourRow.text()).not.toContain('as of')
     } finally {
       vi.useRealTimers()
     }
