@@ -1,6 +1,6 @@
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { nextTick } from 'vue'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import AgentTranscript from '~/components/AgentTranscript.vue'
 import { useAlwaysShowTimes } from '~/composables/useRecordVisibility'
@@ -339,6 +339,77 @@ describe('AgentTranscript', () => {
       const loading = await mountSuspended(AgentTranscript, { props: { session, events, permissions: [], complete: false, loadingEarlier: true } })
       await loading.find('[data-testid="transcript-scroller"]').trigger('scroll')
       expect(loading.emitted('loadEarlier')).toBeFalsy()
+    })
+  })
+
+  /**
+   * Following is left the moment the reader reaches to go up, however little
+   * the view has moved: a follow gliding down under a trackpad's few pixels
+   * hid them, and pulled the reader back for as long as the agent wrote.
+   */
+  describe('leaving the follow', () => {
+    const jump = '[aria-label="Jump to the latest message"]'
+    let mounted: { unmount: () => void } | undefined
+    afterEach(() => mounted?.unmount())
+
+    async function scrolledInto() {
+      // Attached, so a key pressed in it reaches the window.
+      const component = await mountSuspended(AgentTranscript, {
+        props: { session, events: [userMessage('fix the build'), textChunk('on it')], permissions: [] },
+        attachTo: document.body
+      })
+      mounted = component
+      const box = component.find('[data-testid="transcript-scroller"]')
+      ;(box.element as HTMLElement).scrollTop = 200
+      return { component, box }
+    }
+
+    it('on a wheel or trackpad going up by a few pixels', async () => {
+      const { component, box } = await scrolledInto()
+      expect(component.find(jump).exists()).toBe(false)
+
+      await box.trigger('wheel', { deltaY: 3 })
+      expect(component.find(jump).exists()).toBe(false)
+
+      await box.trigger('wheel', { deltaY: -3 })
+      expect(component.find(jump).exists()).toBe(true)
+    })
+
+    it('on a finger moving down the screen', async () => {
+      const { component, box } = await scrolledInto()
+
+      await box.trigger('touchstart', { touches: [{ clientY: 300 }] })
+      await box.trigger('touchmove', { touches: [{ clientY: 296 }] })
+      expect(component.find(jump).exists()).toBe(false)
+
+      await box.trigger('touchmove', { touches: [{ clientY: 300 }] })
+      expect(component.find(jump).exists()).toBe(true)
+    })
+
+    it('on a key that scrolls up, but not one pressed outside it, as in the composer', async () => {
+      const { component, box } = await scrolledInto()
+      const field = document.createElement('textarea')
+      document.body.appendChild(field)
+
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+      await nextTick()
+      expect(component.find(jump).exists()).toBe(false)
+
+      await box.trigger('keydown', { key: 'PageUp' })
+      expect(component.find(jump).exists()).toBe(true)
+      field.remove()
+    })
+
+    it('not when the box is already at its top, and the button follows again', async () => {
+      const { component, box } = await scrolledInto()
+      ;(box.element as HTMLElement).scrollTop = 0
+      await box.trigger('wheel', { deltaY: -3 })
+      expect(component.find(jump).exists()).toBe(false)
+
+      ;(box.element as HTMLElement).scrollTop = 200
+      await box.trigger('wheel', { deltaY: -3 })
+      await component.find(jump).trigger('click')
+      expect(component.find(jump).exists()).toBe(false)
     })
   })
 

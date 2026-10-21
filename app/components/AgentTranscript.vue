@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { measureElement, observeElementRect, useVirtualizer } from '@tanstack/vue-virtual'
-import { useNow, useResizeObserver } from '@vueuse/core'
+import { elementScroll, measureElement, observeElementRect, useVirtualizer } from '@tanstack/vue-virtual'
+import { useEventListener, useNow, useResizeObserver } from '@vueuse/core'
 import type { AgentEvent, AgentSession, PendingPermission } from '~~/shared/types'
 import type { CondensedItem, DayRow, TranscriptItem, TranscriptRowModel } from '~/utils/agentTranscript'
 
@@ -192,6 +192,17 @@ function keepsPlace(item: { key: unknown, start: number, end: number }, _delta: 
 let viewport = UNMEASURED_VIEWPORT
 
 /**
+ * Scrolls this component makes are not the reader's. Each one notes where it
+ * left the box, and a scroll event that finds the box anywhere else was the
+ * reader. Not a time window: while text streams the view follows every few
+ * frames, so a window was nearly always open, and a reader scrolling back was
+ * taken for the follow and pulled down again. The virtualiser's own writes —
+ * keeping the reader's place as rows above them change height — are noted
+ * too (`scrollToFn` below).
+ */
+let ownTop: number | null = null
+
+/**
  * The row at the top of the screen, noted before earlier rows go in above it
  * (see below). Declared before the virtualiser, and it has to be: both watch
  * the rows in the same flush, in the order they were made, and the
@@ -225,6 +236,10 @@ const virtualizer = useVirtualizer(computed(() => ({
   // Landing on the last row leaves the room under it that following keeps.
   scrollPaddingEnd: FOLLOW_ROOM,
   initialRect: { width: 0, height: UNMEASURED_VIEWPORT },
+  scrollToFn: (offset: number, options: { adjustments?: number, behavior?: ScrollBehavior }, instance: any) => {
+    elementScroll(offset, options, instance)
+    ownTop = scroller.value?.scrollTop ?? null
+  },
   // A transcript opens at its end. Starting the window at the top drew the
   // first rows of the log, only to throw them away a frame later.
   initialOffset: () => Math.max(0, HISTORY_BAND + rows.value.length * ESTIMATED_ROW - UNMEASURED_VIEWPORT),
@@ -308,29 +323,28 @@ function restingEnd() {
  *
  * Following is the default and the state we return to, because a transcript
  * is read from the bottom. It means the end of the last row is on screen,
- * with `FOLLOW_ROOM` under it: anywhere in the space below counts, so the
- * reader can sit there and watch text arrive. It is given up when the reader
- * scrolls back far enough that that room goes off the bottom of the box, and
- * taken back when they come down to it again — reading back through what an
- * agent did must not be yanked away by the next thing it says.
+ * with `FOLLOW_ROOM` under it. It is given up the moment the reader reaches
+ * to go up — a wheel or trackpad, a finger, a key, the scrollbar — however
+ * far they get, and taken back when they come down to the end again, or ask
+ * to with the button: reading back through what an agent did must not be
+ * yanked away by the next thing it says.
+ *
+ * From their hands, not from where the view went: while the follow glides,
+ * each frame's scroll is its step and the reader's together, and a trackpad's
+ * few pixels up came out as the view still going down — taken for the reader
+ * coming back, and followed again, until one stroke happened to outrun a step.
  */
 const pinned = ref(true)
 /** How close to the end a reader scrolling down has to come to be following again. */
 const BOTTOM_THRESHOLD = 64
+/** Which way the reader last reached to scroll: coming back to the end only counts going down. */
+let readerGoingUp = false
 
 /** How far the resting end is below the bottom of the box; negative when it is above. */
 function overflow(el: HTMLElement) {
   return restingEnd() - (el.scrollTop + el.clientHeight)
 }
 
-/**
- * Scrolls this component makes are not the reader's. Each one notes where it
- * left the box, and a scroll event that finds the box anywhere else was the
- * reader. Not a time window: while text streams the view follows every few
- * frames, so a window was nearly always open, and a reader scrolling back was
- * taken for the follow and pulled down again.
- */
-let ownTop: number | null = null
 /** Telling the virtualiser of a scroll this component just made (below). */
 let announcing = false
 
@@ -344,7 +358,6 @@ let announcing = false
 function scrollTo(top: number) {
   const el = scroller.value
   virtualizer.value.scrollToOffset(Math.max(0, top))
-  ownTop = el?.scrollTop ?? null
   if (!el) return
   announcing = true
   el.dispatchEvent(new Event('scroll'))
@@ -427,9 +440,10 @@ const EARLIER_SCREENS = 3
 let lastScrollTop = 0
 
 /**
- * The end in view is following, whatever got it there. Otherwise only the
- * reader decides: going up leaves, and coming down to within a short way of
- * the end comes back — the follow then brings the end the rest of the way.
+ * Only the reader's scrolls decide anything here. Coming down to within a
+ * short way of the end follows again — the follow then brings the end the
+ * rest of the way. Going up has usually left already (below); this catches
+ * the ways up that send no input of their own, such as find in page.
  */
 function onScroll() {
   const el = scroller.value
@@ -437,7 +451,6 @@ function onScroll() {
   // Our own announcement (`scrollTo`): the browser's event for the same write
   // is still to come, and is matched against `ownTop` then.
   if (announcing) return
-  const below = overflow(el)
   // While landing, every scroll is the virtualiser finding the end, and one
   // that went up for a row measured shorter used to read as the reader
   // leaving, and stopped the landing short.
@@ -447,17 +460,96 @@ function onScroll() {
     readerScrolledAt = performance.now()
     clearTimeout(measureWhenSettled)
     measureWhenSettled = setTimeout(measureAhead, SCROLL_SETTLE_MS)
+    const below = overflow(el)
+    if (!pinned.value && !readerGoingUp && el.scrollTop > lastScrollTop && below <= BOTTOM_THRESHOLD) pinned.value = true
+    else if (pinned.value && el.scrollTop < lastScrollTop && below > 1) leaveFollow()
   }
-  if (below <= 1) pinned.value = true
-  else if (!own) {
-    if (el.scrollTop < lastScrollTop) pinned.value = false
-    else if (below <= BOTTOM_THRESHOLD) pinned.value = true
-  }
-  // The reader took over: a glide toward the end must not pull against them.
-  if (!own && glideTarget !== null && !pinned.value) stopGlide()
   lastScrollTop = el.scrollTop
   askForEarlier()
 }
+
+/** The reader has taken over: a glide toward the end must not pull against them. */
+function leaveFollow() {
+  pinned.value = false
+  stopGlide()
+}
+
+/**
+ * The reader reaches to scroll up. Not while the transcript is still landing
+ * and hidden, and not when the box is already at its top or something inside
+ * it that scrolls on its own takes the scroll instead.
+ */
+function readerReachesUp(target: EventTarget | null) {
+  const el = scroller.value
+  readerGoingUp = true
+  if (!el || !landed.value || el.scrollTop <= 0 || scrollsInside(target)) return
+  leaveFollow()
+}
+
+function scrollsInside(target: EventTarget | null) {
+  for (let node = target as HTMLElement | null; node && node !== scroller.value; node = node.parentElement) {
+    if (node.scrollTop > 0 && /auto|scroll/.test(getComputedStyle(node).overflowY)) return true
+  }
+  return false
+}
+
+function onWheel(event: WheelEvent) {
+  if (event.ctrlKey || !event.deltaY) return
+  if (event.deltaY < 0) readerReachesUp(event.target)
+  else readerGoingUp = false
+}
+
+let touchY = 0
+function onTouchStart(event: TouchEvent) {
+  touchY = event.touches[0]?.clientY ?? 0
+}
+
+/** A finger moving down the screen scrolls the transcript up. */
+function onTouchMove(event: TouchEvent) {
+  const y = event.touches[0]?.clientY ?? touchY
+  if (y > touchY) readerReachesUp(event.target)
+  else if (y < touchY) readerGoingUp = false
+  touchY = y
+}
+
+/**
+ * Grabbing the scrollbar: the box itself is pressed, beside its content. Which
+ * way they drag it is for the scroll events to tell, so dragging it back down
+ * to the end follows again.
+ */
+function onPointerDown(event: PointerEvent) {
+  const el = scroller.value
+  if (!el || event.target !== el || event.button !== 0 || !landed.value) return
+  // A scrollbar that takes room is past the content; one drawn over it, as on
+  // a Mac, is a strip along the right edge.
+  const bar = el.offsetWidth - el.clientWidth || 12
+  if (event.offsetX < el.offsetWidth - bar) return
+  readerGoingUp = false
+  leaveFollow()
+}
+
+/**
+ * The keys that scroll the transcript: its own when focus is in it, and the
+ * page's when focus is nowhere, which the browser hands to the box under the
+ * reader's last click. Not in the composer, where they move the caret.
+ */
+const KEYS_UP = new Set(['ArrowUp', 'PageUp', 'Home'])
+const KEYS_DOWN = new Set(['ArrowDown', 'PageDown', 'End'])
+
+function onKeyDown(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || !target) return
+  if (target !== document.body && !scroller.value?.contains(target)) return
+  const space = event.key === ' ' && (target === document.body || target === scroller.value)
+  if (KEYS_UP.has(event.key) || (space && event.shiftKey)) readerReachesUp(target)
+  else if (KEYS_DOWN.has(event.key) || space) readerGoingUp = false
+}
+
+useEventListener(scroller, 'wheel', onWheel, { passive: true })
+useEventListener(scroller, 'touchstart', onTouchStart, { passive: true })
+useEventListener(scroller, 'touchmove', onTouchMove, { passive: true })
+useEventListener(scroller, 'pointerdown', onPointerDown, { passive: true })
+useEventListener(typeof window === 'undefined' ? null : window, 'keydown', onKeyDown)
 
 function askForEarlier() {
   const el = scroller.value
