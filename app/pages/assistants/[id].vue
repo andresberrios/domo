@@ -29,26 +29,11 @@ const current = computed(() =>
 )
 
 /**
- * How many of the newest sessions are on screen. Two by default — the one it
- * is in and the one before, so the last handoff reads in context — and one
- * more each time the reader asks. Each is a shape of its own, synced only
- * while it is shown.
+ * Only the session it is in now is on screen. Earlier ones are read from the
+ * journal, each on its own page, which says it handed off and links back here.
  */
-const shown = ref(2)
-watch(assistantId, () => { shown.value = 2 })
-const shownSessions = computed(() => sessions.value.slice(-shown.value))
-const earlier = computed(() => Math.max(0, sessions.value.length - shown.value))
-const { events: merged, complete, loadingEarlier, loadEarlier } = useSessionsEvents(() => shownSessions.value.map(session => session.id))
-
-/**
- * What an earlier session said about its own ending — that it handed off,
- * that its adapter then exited — is the divider below it, said once.
- */
-const events = computed(() => {
-  const currentId = current.value?.id
-  return merged.value.filter(event =>
-    event.agentSessionId === currentId || (event.type !== 'handed_off' && event.type !== 'adapter-exit'))
-})
+const shownSessions = computed(() => current.value ? [current.value] : [])
+const { events, complete, loadingEarlier, loadEarlier } = useSessionsEvents(() => shownSessions.value.map(session => session.id))
 
 /** Whether anything has been said yet: a fresh assistant's log holds only notices. */
 const conversed = computed(() => events.value.some(event => event.type === 'user_message' || event.type === 'agent_message'))
@@ -185,17 +170,6 @@ const menuItems = computed(() => [
         <ServiceBanner />
         <AgentUnstartableBanner v-if="current && blocked" :session="current" :reason="blocked" />
         <AgentErrorBanner v-else-if="current" :session="current" />
-
-        <div v-if="earlier" class="flex shrink-0 justify-center pb-1">
-          <UButton
-            :label="`Show the session before (${earlier} earlier)`"
-            icon="i-lucide-chevrons-up"
-            color="neutral"
-            variant="ghost"
-            size="xs"
-            @click="shown += 1"
-          />
-        </div>
 
         <div v-if="!conversed && current?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
           <div class="max-w-sm text-center">
