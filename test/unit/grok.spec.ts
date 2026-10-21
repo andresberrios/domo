@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { brotliCompressSync } from 'node:zlib'
@@ -115,7 +115,8 @@ describe('how Grok is started and what it signs in with', () => {
 describe('the Grok executable', () => {
   let root = ''
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'domo-grok-'))
+    // Resolved: on macOS the temp dir is a symlink, and module resolution answers with the real path.
+    root = await realpath(await mkdtemp(join(tmpdir(), 'domo-grok-')))
   })
   afterEach(async () => {
     await rm(root, { recursive: true, force: true })
