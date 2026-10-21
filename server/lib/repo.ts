@@ -38,6 +38,7 @@ import type { Board, BoardDraft, BoardElement } from '../../shared/types/board'
 import { isAgentAdapter } from '../../shared/agent-adapters'
 import { diffBoard } from './board/ops'
 import { isAssistantContext } from '../../shared/assistants'
+import { usageLimitLabel } from '../../shared/usage-limits'
 
 /* ------------------------------------------------------------------ */
 /* row mappers                                                         */
@@ -92,11 +93,12 @@ function mapAssistant(r: any): Assistant {
   }
 }
 
+/** The label is today's, not the one stored with the row (`usageLimitLabel`). */
 function mapUsageLimit(r: any): UsageLimit {
   return {
     provider: r.provider,
     limitId: r.limit_id,
-    label: r.label,
+    label: usageLimitLabel({ provider: r.provider, limitId: r.limit_id, label: r.label }),
     usedPercent: r.used_percent === null ? null : Number(r.used_percent),
     resetsAt: r.resets_at ?? null,
     windowMinutes: r.window_minutes === null ? null : Number(r.window_minutes),

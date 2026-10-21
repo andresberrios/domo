@@ -208,3 +208,34 @@ describe('UsageLimitRows', () => {
     expect(component.text()).not.toContain('0%')
   })
 })
+
+describe('UsageLimitRows, read with today\'s code', () => {
+  it('shows a window whose reset has passed as reset, not at its old number', async () => {
+    const component = await mountSuspended(Harness, {
+      props: {
+        limits: [limit({
+          usedPercent: 99,
+          status: 'allowed_warning',
+          resetsAt: '2026-09-21T11:50:00.000Z',
+          updatedAt: '2026-09-21T07:00:00.000Z'
+        })]
+      }
+    })
+
+    expect(component.text()).toContain('0%')
+    expect(component.text()).toContain('Reset, not re-read yet')
+    expect(component.text()).not.toContain('99%')
+    expect(component.text()).not.toContain('Resetting now')
+  })
+
+  it('labels an old row with today\'s names', async () => {
+    const component = await mountSuspended(Harness, {
+      props: {
+        limits: [limit({ limitId: 'seven_day_overage_included', label: 'Weekly · extra usage included', windowMinutes: 10080 })]
+      }
+    })
+
+    expect(component.text()).toContain('Weekly · Fable')
+    expect(component.text()).not.toContain('extra usage included')
+  })
+})

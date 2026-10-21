@@ -110,24 +110,6 @@ export function usageTone(percent: number | null | undefined, status?: UsageLimi
 }
 
 /**
- * A label for a limit whose row carries none.
- *
- * The server names every row it writes, so this is only reached by a row from
- * an older or hand-edited database — worth a readable fallback rather than an
- * empty cell.
- */
-export function limitLabel(limitId: string): string {
-  const known: Record<string, string> = {
-    five_hour: '5-hour limit',
-    seven_day: 'Weekly · all models',
-    seven_day_opus: 'Weekly · Opus',
-    seven_day_sonnet: 'Weekly · Sonnet',
-    extra_usage: 'Extra usage'
-  }
-  return known[limitId] ?? limitId
-}
-
-/**
  * The rows worth showing. Claude's endpoint names its per-model weekly buckets
  * (`model:Fable`); the headers and session events report the same bucket as
  * `seven_day_overage_included` with no name. With a named one present, the

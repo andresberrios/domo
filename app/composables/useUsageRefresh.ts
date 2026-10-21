@@ -1,3 +1,5 @@
+import type { UsageProviderId } from '~~/shared/types'
+
 /**
  * One shared, debounced way to ask the usage poller to look again.
  *
@@ -15,6 +17,30 @@
  * lands inside the floor.
  */
 const REFRESH_FLOOR_MS = 60_000
+
+/**
+ * Opening a usage view asks the server to look *if* its reading is old
+ * (`ifStale`), and the server decides, so the client only has to keep a burst
+ * of views from asking more than once: one request in flight per provider, and
+ * none again within the floor.
+ */
+interface StaleAsk { at: number, running: Promise<void> | null }
+let staleAsks = new Map<UsageProviderId, StaleAsk>()
+
+/** Ask for a fresher reading of one provider's limits, if the last one is old. */
+export function refreshIfStale(provider: UsageProviderId): Promise<void> {
+  const last = staleAsks.get(provider)
+  if (last?.running) return last.running
+  if (last && Date.now() - last.at < REFRESH_FLOOR_MS) return Promise.resolve()
+  const ask: StaleAsk = { at: Date.now(), running: null }
+  ask.running = $fetch('/api/usage/refresh', { method: 'POST', body: { provider, ifStale: true } })
+    // A background ask: the numbers arrive through Electric or they do not,
+    // and the view already says how old they are.
+    .then(() => {}, () => {})
+    .finally(() => { ask.running = null })
+  staleAsks.set(provider, ask)
+  return ask.running
+}
 
 // `canRefresh` has to be a ref a timer flips, not a computed comparing
 // against `Date.now()`: a computed only re-runs when a *reactive* dependency
@@ -50,7 +76,7 @@ export function useUsageRefresh() {
     }
   }
 
-  return { refreshing: state.refreshing, canRefresh: state.canRefresh, refresh }
+  return { refreshing: state.refreshing, canRefresh: state.canRefresh, refresh, refreshIfStale }
 }
 
 /** Drops the shared cooldown. For tests; the app never calls it. */
@@ -58,4 +84,5 @@ export function resetUsageRefreshForTests(): void {
   if (cooldownTimer) clearTimeout(cooldownTimer)
   cooldownTimer = null
   state = createState()
+  staleAsks = new Map()
 }

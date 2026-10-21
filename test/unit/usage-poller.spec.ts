@@ -6,7 +6,7 @@ import type { ClaudeUsageResult } from '../../server/lib/usage/claude'
 import type { CodexUsageResult } from '../../server/lib/usage/codex'
 import type { OpenCodeUsageResult } from '../../server/lib/usage/opencode'
 import type { UsageLimitValue } from '../../server/lib/usage/normalize'
-import type { UsageProviderId, UsageProviderState } from '~~/shared/types'
+import type { UsageLimit, UsageProviderId, UsageProviderState } from '~~/shared/types'
 
 /**
  * The poller's scheduling, with every client injected.
@@ -40,14 +40,14 @@ interface Harness {
   clients: { [K in keyof UsageClients]: ReturnType<typeof vi.fn> }
   writes: Array<{ provider: UsageProviderId, limits: UsageLimitValue[], replace: boolean }>
   states: Array<{ provider: UsageProviderId, state: UsageProviderState, message: string | null }>
-  /** What `countLimits` answers; the fallback probe hangs off it. */
-  known: Map<UsageProviderId, number>
+  /** The rows each provider has, as the table would hold them. */
+  rows: Map<UsageProviderId, UsageLimit[]>
 }
 
 function harness(overrides: Partial<UsageClients> = {}): Harness {
   const writes: Harness['writes'] = []
   const states: Harness['states'] = []
-  const known = new Map<UsageProviderId, number>([['claude', 0], ['codex', 0], ['opencode', 0]])
+  const rows = new Map<UsageProviderId, UsageLimit[]>()
 
   const clients = {
     claudeEndpoint: vi.fn(async (): Promise<ClaudeUsageResult> => ({ outcome: 'ok', limits: [limit()], message: null })),
@@ -62,14 +62,16 @@ function harness(overrides: Partial<UsageClients> = {}): Harness {
   const sink: UsageSink = {
     writeLimits: async (provider, limits, options) => {
       writes.push({ provider, limits, replace: options.replace })
-      known.set(provider, limits.length)
+      const updatedAt = new Date().toISOString()
+      const kept = options.replace ? [] : (rows.get(provider) ?? []).filter(row => !limits.some(l => l.limitId === row.limitId))
+      rows.set(provider, [...kept, ...limits.map(l => ({ ...l, provider, updatedAt }))])
     },
     setState: async (provider, state, message) => { states.push({ provider, state, message }) },
-    countLimits: async provider => known.get(provider) ?? 0
+    listLimits: async provider => rows.get(provider) ?? []
   }
 
   const poller = new UsagePoller({ clients, sink })
-  return { poller, clients: clients as Harness['clients'], writes, states, known }
+  return { poller, clients: clients as Harness['clients'], writes, states, rows }
 }
 
 /** Let the in-flight promise chain settle without advancing the clock. */
@@ -149,24 +151,35 @@ describe('the one-a-minute floor', () => {
     h.poller.stop()
   })
 
-  it('lets a turn ending prompt a look, debounced across several at once', async () => {
-    const h = harness()
+  it('lets a turn ending prompt a look once the last one is a few minutes old, debounced', async () => {
+    const h = harness({
+      claudeEndpoint: async () => ({ outcome: 'auth', limits: [], message: 'HTTP 403' }),
+      claudeHeaders: async () => ({ outcome: 'ok', limits: [limit({ source: 'headers' })], message: null })
+    })
     h.poller.start()
     await settle()
-    await vi.advanceTimersByTimeAsync(61_000)
-    const before = h.clients.codex.mock.calls.length
-
-    // Three agents finishing together is one look, not three.
-    for (let i = 0; i < 3; i++) {
-      bus.publish({
-        type: 'agent-event',
-        agentSessionId: 'ag_1',
-        event: { id: 'ev', agentSessionId: 'ag_1', seq: 1, type: 'turn_end', payload: {}, createdAt: '' }
-      })
+    const turnEnds = () => {
+      // Three agents finishing together is one look, not three.
+      for (let i = 0; i < 3; i++) {
+        bus.publish({
+          type: 'agent-event',
+          agentSessionId: 'ag_1',
+          event: { id: 'ev', agentSessionId: 'ag_1', seq: 1, type: 'turn_end', payload: {}, createdAt: '' }
+        })
+      }
     }
-    await vi.advanceTimersByTimeAsync(6_000)
 
-    expect(h.clients.codex).toHaveBeenCalledTimes(before + 1)
+    // Two minutes after a look: nothing to learn yet.
+    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    turnEnds()
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+
+    // Six minutes after it, well before the fifteen-minute probe is due.
+    await vi.advanceTimersByTimeAsync(4 * 60_000)
+    turnEnds()
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(2)
     h.poller.stop()
   })
 
@@ -223,42 +236,51 @@ describe('when the Claude endpoint will not answer', () => {
     })
     await vi.advanceTimersByTimeAsync(61 * 60_000)
 
-    // No second write at all: the last good reading stands, with its own
-    // timestamp, and the UI says how old it is.
+    // The endpoint refused and the probe failed: no second write at all. The
+    // last good reading stands, with its own timestamp, and the UI says how old.
     expect(h.writes.filter(write => write.provider === 'claude')).toHaveLength(written)
     // Still `ok`, not `error`: the numbers on screen are true, only stale.
     expect(h.states.filter(state => state.provider === 'claude').at(-1))
-      .toMatchObject({ state: 'ok', message: 'rate limited' })
+      .toMatchObject({ state: 'ok', message: 'no probe' })
     h.poller.stop()
   })
 
-  it('falls back to the header probe only when there is nothing to show at all', async () => {
+  it('reads the windows off the probe when the endpoint is rate-limited, without waiting out its Retry-After', async () => {
+    // Regression: a 429 from the usage endpoint used to hold back the probe
+    // too, for the full hour Anthropic asked for, so the 5-hour window sat at
+    // its last number past its own reset.
     const h = harness({
-      claudeEndpoint: async () => ({ outcome: 'rate-limited', limits: [], message: 'rate limited' }),
+      claudeEndpoint: async () => ({ outcome: 'rate-limited', limits: [], message: 'rate limited', retryAfterMs: 3_591_000 }),
       claudeHeaders: async () => ({ outcome: 'ok', limits: [limit({ source: 'headers' })], message: null })
     })
     h.poller.start()
     await settle()
-
     expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
     // `replace: false`: the headers carry two windows and must not delete a
     // per-model row the endpoint knew about.
     expect(h.writes).toContainEqual(expect.objectContaining({ provider: 'claude', replace: false }))
+
+    await vi.advanceTimersByTimeAsync(16 * 60_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(2)
+    expect(h.clients.claudeEndpoint).toHaveBeenCalledTimes(1)
     h.poller.stop()
   })
 
-  it('does not spend quota on the probe while the endpoint is answering', async () => {
-    // An install whose token *does* carry `user:profile` never pays for a probe.
+  it('asks the endpoint at most hourly, and probes only between its answers', async () => {
     const h = harness({
       claudeHeaders: async () => ({ outcome: 'ok', limits: [limit({ source: 'headers' })], message: null })
     })
     h.poller.start()
     await settle()
-
-    h.clients.claudeEndpoint.mockResolvedValue({ outcome: 'error', limits: [], message: 'boom' })
-    await vi.advanceTimersByTimeAsync(61 * 60_000)
-
+    // The endpoint answered: no probe in the same look.
     expect(h.clients.claudeHeaders).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(16 * 60_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+    expect(h.clients.claudeEndpoint).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(45 * 60_000)
+    expect(h.clients.claudeEndpoint).toHaveBeenCalledTimes(2)
     h.poller.stop()
   })
 
@@ -388,6 +410,134 @@ describe('secrets', () => {
     // Still scheduled, so a transient failure is not permanent.
     await vi.advanceTimersByTimeAsync(31 * 60_000)
     expect(h.clients.codex.mock.calls.length).toBeGreaterThan(1)
+    h.poller.stop()
+  })
+})
+
+describe('staying current with nobody asking', () => {
+  const probing = () => harness({
+    claudeEndpoint: async () => ({ outcome: 'auth', limits: [], message: 'HTTP 403' }),
+    claudeHeaders: async () => ({ outcome: 'ok', limits: [limit({ source: 'headers' })], message: null })
+  })
+
+  it('re-reads a window soon after its reset passes, once', async () => {
+    const h = probing()
+    h.poller.start()
+    await settle()
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+
+    // A session event wrote a window that resets in three minutes.
+    const resetsAt = new Date(Date.now() + 3 * 60_000).toISOString()
+    h.rows.set('claude', [{ ...limit({ resetsAt, source: 'session-event' }), provider: 'claude', updatedAt: new Date().toISOString() }])
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(2)
+
+    // The probe answered without that window's new reset: not asked again
+    // every minute for the same reset.
+    h.rows.set('claude', [{ ...limit({ resetsAt, source: 'session-event' }), provider: 'claude', updatedAt: new Date(Date.parse(resetsAt) - 60_000).toISOString() }])
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(2)
+    h.poller.stop()
+  })
+
+  it('catches up within a minute when the clock jumps, as it does after a Mac sleeps', async () => {
+    // Node's timers stop while macOS sleeps, so a timer set for the full
+    // interval fires that long after waking. The due time is wall-clock.
+    const h = probing()
+    h.poller.start()
+    await settle()
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(Date.now() + 3 * 60 * 60_000)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(2)
+    h.poller.stop()
+  })
+
+  it('looks for a view only when the last look is old', async () => {
+    const h = probing()
+    h.poller.start()
+    await settle()
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    await h.poller.request('claude', { ifOlderThanMs: 5 * 60_000 })
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(4 * 60_000)
+    await h.poller.request('claude', { ifOlderThanMs: 5 * 60_000 })
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(2)
+    h.poller.stop()
+  })
+
+  it('joins a look already in flight rather than starting a second', async () => {
+    let answer!: (result: ClaudeUsageResult) => void
+    const h = harness({
+      claudeEndpoint: async () => ({ outcome: 'auth', limits: [], message: 'HTTP 403' }),
+      claudeHeaders: () => new Promise<ClaudeUsageResult>((resolve) => { answer = resolve })
+    })
+    const first = h.poller.request('claude', { force: true })
+    const second = h.poller.request('claude', { force: true })
+    const third = h.poller.request('claude', { ifOlderThanMs: 0 })
+    await settle()
+    answer({ outcome: 'ok', limits: [limit({ source: 'headers' })], message: null })
+    await Promise.all([first, second, third])
+
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+    expect(h.clients.claudeEndpoint).toHaveBeenCalledTimes(1)
+  })
+
+  it('honours a Retry-After on the probe', async () => {
+    const h = harness({
+      claudeEndpoint: async () => ({ outcome: 'auth', limits: [], message: 'HTTP 403' }),
+      claudeHeaders: async () => ({ outcome: 'rate-limited', limits: [], message: 'slow down', retryAfterMs: 20 * 60_000 })
+    })
+    h.poller.start()
+    await settle()
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await h.poller.request('claude', { force: true })
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+    h.poller.stop()
+  })
+})
+
+describe('spending nothing it should not', () => {
+  it('holds the probe while a window refuses and extra usage would pay for it, until the reset', async () => {
+    const h = harness({
+      claudeEndpoint: async () => ({ outcome: 'auth', limits: [], message: 'HTTP 403' }),
+      claudeHeaders: async () => ({ outcome: 'ok', limits: [limit({ source: 'headers' })], message: null })
+    })
+    const resetsAt = new Date(Date.now() + 40 * 60_000).toISOString()
+    const updatedAt = new Date().toISOString()
+    h.rows.set('claude', [
+      { ...limit({ usedPercent: 100, status: 'rejected', resetsAt, source: 'session-event' }), provider: 'claude', updatedAt },
+      { ...limit({ limitId: 'extra_usage', usedPercent: 12, status: 'allowed', windowMinutes: null }), provider: 'claude', updatedAt }
+    ])
+    h.poller.start()
+    await settle()
+    await vi.advanceTimersByTimeAsync(35 * 60_000)
+    expect(h.clients.claudeHeaders).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(6 * 60_000)
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
+    h.poller.stop()
+  })
+
+  it('probes a refusing window when extra usage is off, since nothing is billed', async () => {
+    const h = harness({
+      claudeEndpoint: async () => ({ outcome: 'auth', limits: [], message: 'HTTP 403' }),
+      claudeHeaders: async () => ({ outcome: 'ok', limits: [limit({ source: 'headers' })], message: null })
+    })
+    const updatedAt = new Date().toISOString()
+    h.rows.set('claude', [
+      { ...limit({ usedPercent: 100, status: 'rejected', resetsAt: new Date(Date.now() + 40 * 60_000).toISOString() }), provider: 'claude', updatedAt },
+      { ...limit({ limitId: 'extra_usage', usedPercent: null, status: 'off', windowMinutes: null }), provider: 'claude', updatedAt }
+    ])
+    h.poller.start()
+    await settle()
+    expect(h.clients.claudeHeaders).toHaveBeenCalledTimes(1)
     h.poller.stop()
   })
 })

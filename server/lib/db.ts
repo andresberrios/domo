@@ -570,6 +570,14 @@ create table if not exists usage_limits (
   primary key (provider, limit_id)
 );
 
+-- Domo before 2026.10.21 called Claude's extra usage "Usage credits" and
+-- stored an account that never turned it on as \`rejected\`, so the old label
+-- marks a row whose "rejected" meant off. Labels are derived when read
+-- (\`usageLimitLabel\`); a status cannot be, so it is fixed here.
+update usage_limits set status = 'off', label = 'Extra usage'
+  where provider = 'claude' and limit_id = 'extra_usage' and label = 'Usage credits'
+    and status = 'rejected' and used_percent is null and amount_used is null and amount_limit is null;
+
 -- Whether each provider's poll works, kept apart from the readings themselves
 -- so a failed poll leaves the last good numbers in place instead of rewriting
 -- every row. It is also what lets the UI tell "no data yet" from "not

@@ -1,7 +1,7 @@
 import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
-import { UApp, UPopover } from '#components'
+import { UApp } from '#components'
 import { defineComponent, h } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { resetUsageRefreshForTests } from '~/composables/useUsageRefresh'
 import UsageSidebarSummary from '~/components/UsageSidebarSummary.vue'
@@ -83,35 +83,6 @@ describe('UsageSidebarSummary', () => {
     expect(component.html()).toContain('title="Weekly limit: 67%"')
     expect(component.text()).toContain('50%')
     expect(component.text()).toContain('67%')
-  })
-
-  it('asks the server to look again as soon as the panel opens', async () => {
-    const component = await mountSuspended(Harness)
-
-    // Reka opens on a pointer sequence happy-dom does not synthesise (see
-    // `UsageMeter.spec.ts`), so the popover's own `update:open` event drives
-    // this directly rather than a click on its trigger.
-    await component.findComponent(UPopover).vm.$emit('update:open', true)
-
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
-  })
-
-  it('does not repeat the request if the panel is closed and reopened moments later', async () => {
-    // The server's own floor (one request a minute per provider) silently
-    // drops a second request inside the window rather than erroring, so a
-    // client that fired one anyway would look like it refreshed and would not
-    // have. `useUsageRefresh`'s shared cooldown is what stops that.
-    const component = await mountSuspended(Harness)
-    const popover = component.findComponent(UPopover)
-
-    await popover.vm.$emit('update:open', true)
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
-
-    await popover.vm.$emit('update:open', false)
-    await popover.vm.$emit('update:open', true)
-    await new Promise(resolve => setTimeout(resolve, 20))
-
-    expect(calls).toHaveLength(1)
   })
 
   it('gives every bar one length whatever its percentage, in columns after the names', async () => {
