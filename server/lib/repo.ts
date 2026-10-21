@@ -34,7 +34,9 @@ import type {
   AppUpdate,
   DockerDisk
 } from '../../shared/types'
+import type { Board, BoardDraft, BoardElement } from '../../shared/types/board'
 import { isAgentAdapter } from '../../shared/agent-adapters'
+import { diffBoard } from './board/ops'
 import { isAssistantContext } from '../../shared/assistants'
 
 /* ------------------------------------------------------------------ */
@@ -998,6 +1000,7 @@ export async function isSpawnedBy(agentId: string, ancestorId: string | string[]
 
 export async function deleteAgentSession(id: string): Promise<void> {
   await query('delete from agent_sessions where id = $1', [id])
+  await deleteBoard(id)
   bus.publish({ type: 'agent-list-changed' })
 }
 
@@ -2197,4 +2200,168 @@ export async function markNotificationsSeen(ids?: string[]): Promise<number> {
     ? await query('update notifications set seen_at = $1 where id = any($2::text[]) and seen_at is null returning id', [nowIso(), ids])
     : await query('update notifications set seen_at = $1 where seen_at is null returning id', [nowIso()])
   return rows.length
+}
+
+/* ------------------------------------------------------------------ */
+/* status boards                                                       */
+/* ------------------------------------------------------------------ */
+
+function mapBoardElement(r: any): BoardElement {
+  return {
+    id: r.id,
+    group: r.group_title ?? null,
+    position: Number(r.position),
+    content: r.content,
+    response: r.response ?? {},
+    thread: r.thread ?? [],
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }
+}
+
+function emptyBoard(ownerId: string): Board {
+  return { ownerId, headline: null, groups: [], folds: {}, elements: [], agentChangedAt: null, seenAt: null }
+}
+
+async function readBoard(run: (sql: string, params: any[]) => Promise<any[]>, ownerId: string, lock = false): Promise<Board> {
+  const [row] = await run(`select * from boards where owner_id = $1${lock ? ' for update' : ''}`, [ownerId])
+  const elements = await run('select * from board_elements where owner_id = $1 order by position asc', [ownerId])
+  if (!row) return { ...emptyBoard(ownerId), elements: elements.map(mapBoardElement) }
+  return {
+    ownerId,
+    headline: row.headline ?? null,
+    groups: row.groups ?? [],
+    folds: row.folds ?? {},
+    elements: elements.map(mapBoardElement),
+    agentChangedAt: row.agent_changed_at ?? null,
+    seenAt: row.seen_at ?? null
+  }
+}
+
+/** A board, empty when its owner has never written one. */
+export async function getBoard(ownerId: string): Promise<Board> {
+  return readBoard((sql, params) => query(sql, params), ownerId)
+}
+
+export async function listBoardDrafts(ownerId: string): Promise<Map<string, BoardDraft>> {
+  const rows = await query('select element_id, draft from board_drafts where owner_id = $1', [ownerId])
+  return new Map(rows.map(row => [row.element_id as string, row.draft as BoardDraft]))
+}
+
+/** One element's draft; null or an empty draft removes it. */
+export async function setBoardDraft(ownerId: string, elementId: string, draft: BoardDraft | null): Promise<void> {
+  if (!draft || !Object.keys(draft).length) {
+    await query('delete from board_drafts where owner_id = $1 and element_id = $2', [ownerId, elementId])
+    return
+  }
+  await query(
+    `insert into board_drafts (owner_id, element_id, draft, updated_at) values ($1, $2, $3::jsonb, $4)
+     on conflict (owner_id, element_id) do update set draft = excluded.draft, updated_at = excluded.updated_at`,
+    [ownerId, elementId, JSON.stringify(draft), nowIso()]
+  )
+}
+
+export async function clearBoardDrafts(ownerId: string): Promise<number> {
+  const rows = await query('delete from board_drafts where owner_id = $1 returning element_id', [ownerId])
+  return rows.length
+}
+
+/** The human folds or unfolds a group; null goes back to the default (folded when done). */
+export async function setBoardFold(ownerId: string, group: string, folded: boolean | null): Promise<void> {
+  await query(
+    `update boards set folds = case when $3::boolean is null then folds - $2 else folds || jsonb_build_object($2::text, $3::boolean) end
+     where owner_id = $1`,
+    [ownerId, group, folded]
+  )
+}
+
+/** The human has looked at the board; only ever moves forward. */
+export async function markBoardSeen(ownerId: string, at = nowIso()): Promise<void> {
+  await query(
+    `update boards set seen_at = $2 where owner_id = $1 and (seen_at is null or seen_at < $2)`,
+    [ownerId, at]
+  )
+}
+
+export interface BoardChange<T> {
+  board: Board
+  /** The agent wrote this: the human has something new to look at. */
+  byAgent: boolean
+  result: T
+  /** Drafts to drop alongside: submitted ones. Drafts on removed elements always go. */
+  clearDrafts?: string[]
+}
+
+/**
+ * Change one board in a transaction that holds its row, so an agent's edit and
+ * the human's submit never interleave. `change` sees the board and its drafts
+ * and returns the board it wants, or null to leave it as it was; only the rows
+ * that differ are written.
+ */
+export async function changeBoard<T>(
+  ownerId: string,
+  change: (board: Board, drafts: Map<string, BoardDraft>) => BoardChange<T> | null
+): Promise<T | null> {
+  const db = await getDb()
+  const client = await db.connect()
+  const run = async (sql: string, params: any[]) => (await client.query(sql, params)).rows
+  try {
+    await client.query('begin')
+    const now = nowIso()
+    await client.query(
+      `insert into boards (owner_id, created_at, updated_at) values ($1, $2, $2) on conflict (owner_id) do nothing`,
+      [ownerId, now]
+    )
+    const before = await readBoard(run, ownerId, true)
+    const draftRows = await run('select element_id, draft from board_drafts where owner_id = $1', [ownerId])
+    const drafts = new Map(draftRows.map(row => [row.element_id as string, row.draft as BoardDraft]))
+    const outcome = change(before, drafts)
+    if (!outcome) {
+      await client.query('rollback')
+      return null
+    }
+    const { upserts, deletes, boardChanged } = diffBoard(before, outcome.board)
+    for (const element of upserts) {
+      await client.query(
+        `insert into board_elements (owner_id, id, group_title, position, content, response, thread, created_at, updated_at)
+         values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9)
+         on conflict (owner_id, id) do update set
+           group_title = excluded.group_title, position = excluded.position, content = excluded.content,
+           response = excluded.response, thread = excluded.thread, updated_at = excluded.updated_at`,
+        [ownerId, element.id, element.group, element.position, JSON.stringify(element.content),
+          JSON.stringify(element.response), JSON.stringify(element.thread), element.createdAt, element.updatedAt]
+      )
+    }
+    if (deletes.length) {
+      await client.query('delete from board_elements where owner_id = $1 and id = any($2)', [ownerId, deletes])
+    }
+    const dropDrafts = [...deletes, ...outcome.clearDrafts ?? []].filter(id => drafts.has(id))
+    if (dropDrafts.length) {
+      await client.query('delete from board_drafts where owner_id = $1 and element_id = any($2)', [ownerId, dropDrafts])
+    }
+    const touched = boardChanged || upserts.length > 0 || deletes.length > 0
+    if (touched) {
+      await client.query(
+        `update boards set headline = $2, groups = $3::jsonb, folds = $4::jsonb, updated_at = $5,
+           agent_changed_at = case when $6 then $5 else agent_changed_at end
+         where owner_id = $1`,
+        [ownerId, outcome.board.headline, JSON.stringify(outcome.board.groups), JSON.stringify(outcome.board.folds),
+          now, outcome.byAgent]
+      )
+    }
+    await client.query('commit')
+    return outcome.result
+  } catch (error) {
+    await client.query('rollback').catch(() => {})
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
+/** A board and everything on it, when its owner is deleted for good. */
+export async function deleteBoard(ownerId: string): Promise<void> {
+  await query('delete from board_drafts where owner_id = $1', [ownerId])
+  await query('delete from board_elements where owner_id = $1', [ownerId])
+  await query('delete from boards where owner_id = $1', [ownerId])
 }

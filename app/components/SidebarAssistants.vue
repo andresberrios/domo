@@ -56,6 +56,7 @@ function pendingFor(sessionId: string | null) {
           >
             <UAvatar :src="assistant.avatar ?? undefined" :alt="assistant.name" size="2xs" />
             <span class="min-w-0 flex-1 truncate">{{ assistant.name }}</span>
+            <BoardUnseenDot :owner-id="assistant.id" />
             <UIcon v-if="assistant.handoff" name="i-lucide-notebook-pen" class="size-3.5 shrink-0 text-dimmed" />
             <AgentStatusIcon v-else :status="statusOf(assistant.currentSessionId)" />
           </NuxtLink>

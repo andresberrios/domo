@@ -47,7 +47,9 @@ function identity(assistant: Assistant): string {
     + 'helps. Write the note for yourself, then end your turn. Domo may also ask you to hand off when your context '
     + 'is nearly full.',
     '- Scheduled tasks you create with schedule_task (no agentId) belong to you, not to this session, and keep '
-    + 'firing after a handoff.'
+    + 'firing after a handoff.',
+    '- So does your status board (read_board, update_board): it is yours, not this session\'s. Read it before you '
+    + 'change it in a new session.'
   ].join('\n')
 }
 

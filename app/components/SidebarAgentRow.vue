@@ -23,6 +23,7 @@ const items = computed(() => [actions()])
     >
       <AgentStatusIcon :status="agent.status" />
       <span class="min-w-0 flex-1 truncate">{{ agent.title }}</span>
+      <BoardUnseenDot :owner-id="agent.assistantId ?? agent.id" />
     </NuxtLink>
 
     <UChip

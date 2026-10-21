@@ -28,7 +28,11 @@ const ALLOWED_TABLES = new Set([
   // Commit ids and subjects; nothing from the machine.
   'app_update',
   // Sizes in bytes and the names of Domo's own caches.
-  'docker_disk'
+  'docker_disk',
+  // The status boards: what agents tell the human and the human's answers.
+  'boards',
+  'board_elements',
+  'board_drafts'
 ])
 
 /**
