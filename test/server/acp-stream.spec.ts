@@ -490,6 +490,85 @@ describe('a streamed turn', () => {
     expect(second!.seq).toBeGreaterThan(call.seq)
   })
 
+  /**
+   * The order a Codex session (gpt-6.1-sol, codex-acp 2.2.2) actually wrote:
+   * a test run started before the message goes on streaming its output as
+   * `tool_call_update`s while the agent writes, and each one ended the
+   * message there. One sentence came out as three bubbles.
+   */
+  it('keeps one message in one row while a call above it streams output', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'finish it up' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    const output = (id: string, data: string) => ({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: id,
+      _meta: { terminal_output_delta: { data, terminal_id: id } }
+    })
+    const chunk = (text: string) => ({ ...textChunk(text), messageId: 'msg_1', _meta: { codex: { phase: 'commentary' } } })
+    serve(state.adapters[0]!, async (send) => {
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'exec-662d', kind: 'execute', title: 'pnpm --dir web test:studio', status: 'in_progress' })
+      await send(output('exec-662d', '$ playwright test -c playwright.studio.config.ts\n'))
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'exec-95ec', kind: 'execute', title: 'tail -n 8 build/studio/workers/gemx.log', status: 'in_progress' })
+      await send(output('exec-95ec', '17:48:50\n'))
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'exec-95ec', status: 'completed' })
+      await send(output('exec-662d', '[WebServer] (!) Some chunks are larger than 500 kB after minification.\n'))
+      await send(chunk('The corrected GEM-X load has passed ViTPose and is still'))
+      await send(output('exec-662d', '\nRunning 9 tests using 1 worker\n\n'))
+      await send(chunk(' loading the body model; both test'))
+      await send(output('exec-662d', '(node:56810) Warning: The \'NO_COLOR\' env is ignored\n'))
+      await send({ sessionUpdate: 'available_commands_update', availableCommands: [] })
+      await send({ sessionUpdate: 'session_info_update', _meta: { codex: { threadStatus: { type: 'active', activeFlags: [] } } } })
+      await send(chunk(' takes remain queued.'))
+      await send(output('exec-662d', '  ✓  1 [chromium] › tests/studio/studio.spec.ts:24:1 › home\n'))
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'exec-662d', status: 'completed' })
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+
+    expect(textOf(events)).toEqual(['The corrected GEM-X load has passed ViTPose and is still loading the body model; both test takes remain queued.'])
+    const message = events.find(event => event.type === 'agent_message')!
+    expect(message.payload.streaming).toBe(false)
+    // Below the cards it follows; the output that arrived while it was written goes on after it.
+    const calls = events.filter(event => event.type === 'tool_call')
+    expect(calls.every(call => call.seq < message.seq)).toBe(true)
+    expect(events.filter(event => event.type === 'tool_call_update' && event.seq > message.seq)).toHaveLength(4)
+    expect((await getAgentSession(agent.id))!.summary).toBe('The corrected GEM-X load has passed ViTPose and is still loading the body model; both test takes remain queued.')
+  })
+
+  /**
+   * The same block outliving the call's updates must still end where Codex
+   * starts its next message. From a live gpt-5.6-luna turn: a note written
+   * while a command ran, then the answer once it finished, each its own
+   * Codex item with its own id and nothing between them but the call's
+   * last update.
+   */
+  it('starts a new row for a message with another id, though only updates sit between', async () => {
+    const { acpManager } = await import('../../server/lib/acp/manager')
+    const agent = await session()
+    const started = acpManager.prompt(agent.id, [{ type: 'text', text: 'run it and tell me the last tick' }])
+    await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
+    const tick = (n: number) => ({ sessionUpdate: 'tool_call_update', toolCallId: 'exec-3477', _meta: { terminal_output_delta: { data: `tick ${n}\r\n`, terminal_id: 'exec-3477' } } })
+    serve(state.adapters[0]!, async (send) => {
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'exec-3477', kind: 'execute', title: 'for i in $(seq 1 60)…', status: 'in_progress' })
+      await send(tick(5))
+      await send({ ...textChunk('Progress note: sourdough rises because'), messageId: 'msg_note' })
+      await send(tick(6))
+      await send({ ...textChunk(' its yeast makes gas.'), messageId: 'msg_note' })
+      await send(tick(60))
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'exec-3477', status: 'completed' })
+      await send({ ...textChunk('Last tick: 60'), messageId: 'msg_answer' })
+    })
+    await started
+
+    const events = await listAgentEvents(agent.id)
+
+    expect(textOf(events)).toEqual(['Progress note: sourdough rises because its yeast makes gas.', 'Last tick: 60'])
+    expect((await getAgentSession(agent.id))!.summary).toBe('Progress note: sourdough rises because its yeast makes gas.\n\nLast tick: 60')
+  })
+
   it('shows a reader who arrives mid-turn the text so far', async () => {
     const { acpManager } = await import('../../server/lib/acp/manager')
     const agent = await session()
