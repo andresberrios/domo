@@ -61,9 +61,9 @@ describe('getSettings', () => {
    * it was: `defaultAgentMode` was a Claude Code id, silently ignored by Codex.
    */
   it('defaults each adapter to its own starting mode', async () => {
-    expect(DEFAULTS.defaultAgentModes).toEqual({ 'claude-code': 'default', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent' })
+    expect(DEFAULTS.defaultAgentModes).toEqual({ 'claude-code': 'default', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent', grok: 'default' })
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'default', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent' }
+      defaultAgentModes: { 'claude-code': 'default', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent', grok: 'default' }
     })
   })
 
@@ -71,7 +71,7 @@ describe('getSettings', () => {
     stored({ defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only' } })
 
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent' }
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'read-only', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent', grok: 'default' }
     })
   })
 
@@ -80,7 +80,7 @@ describe('getSettings', () => {
     stored({ defaultAgentMode: 'acceptEdits' })
 
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'acceptEdits', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent' }
+      defaultAgentModes: { 'claude-code': 'acceptEdits', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent', grok: 'default' }
     })
   })
 
@@ -99,7 +99,7 @@ describe('getSettings', () => {
     stored({ defaultAgentModes: { 'claude-code': 'plan' } })
 
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent' }
+      defaultAgentModes: { 'claude-code': 'plan', codex: 'agent', opencode: 'build', copilot: 'https://agentclientprotocol.com/protocol/session-modes#agent', grok: 'default' }
     })
   })
 
@@ -110,9 +110,9 @@ describe('getSettings', () => {
    * on", and the environment pin still answers underneath it.
    */
   it('leaves every adapter\'s default model empty until one is chosen', async () => {
-    expect(DEFAULTS.defaultAgentModels).toEqual({ 'claude-code': '', codex: '', opencode: '', copilot: '' })
+    expect(DEFAULTS.defaultAgentModels).toEqual({ 'claude-code': '', codex: '', opencode: '', copilot: '', grok: '' })
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '' }
+      defaultAgentModels: { 'claude-code': '', codex: '', opencode: '', copilot: '', grok: '' }
     })
   })
 
@@ -120,7 +120,7 @@ describe('getSettings', () => {
     stored({ defaultAgentModels: { 'claude-code': 'haiku', codex: 7 } })
 
     await expect(getSettings()).resolves.toMatchObject({
-      defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '', copilot: '' }
+      defaultAgentModels: { 'claude-code': 'haiku', codex: '', opencode: '', copilot: '', grok: '' }
     })
   })
 

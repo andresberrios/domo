@@ -47,6 +47,15 @@ export const AGENT_ADAPTERS: Array<{
     defaultMode: 'https://agentclientprotocol.com/protocol/session-modes#agent',
     modeLabel: 'Mode',
     modeDescription: 'Whether Copilot works with you, plans first, or runs on autopilot.'
+  },
+  {
+    id: 'grok',
+    label: 'Grok',
+    icon: 'i-lucide-zap',
+    // Grok publishes no modes over ACP; Domo's four are in server/lib/acp/grok.ts.
+    defaultMode: 'default',
+    modeLabel: 'Mode',
+    modeDescription: 'Whether Grok asks before acting, runs without asking, plans first, or only answers.'
   }
 ]
 
@@ -67,5 +76,8 @@ export const TITLE_MODELS: Record<AgentAdapter, string> = {
   opencode: 'opencode-go/glm-5.3-flash',
   // The one model every Copilot plan offers: Free has nothing else. Its router
   // picks a small model for a short request.
-  copilot: 'auto'
+  copilot: 'auto',
+  // The older of the two models every Grok account lists. Neither is a small
+  // model, so Grok is not a default titler (`session-title.ts`).
+  grok: 'grok-4.5'
 }

@@ -10,7 +10,7 @@ export type AgentSessionStatus =
   | 'error'
   | 'stopped'
 
-export type AgentAdapter = 'claude-code' | 'codex' | 'opencode' | 'copilot'
+export type AgentAdapter = 'claude-code' | 'codex' | 'opencode' | 'copilot' | 'grok'
 
 /**
  * What OpenCode does when a tool reaches outside the session's working
@@ -692,6 +692,12 @@ export interface AppSettings {
    * are read. Such a token does not rotate, so it is safe in a container.
    */
   copilotGithubToken: string
+  /**
+   * An xAI API key: how Grok signs in in an environment, and on this computer
+   * when it has no `grok login`. Bills the xAI API per token. A key does not
+   * rotate, so it is safe in a container; the login does, so it never goes in.
+   */
+  xaiApiKey: string
   /** Gemini, for the voice bar's Gemini speech engines. */
   geminiApiKey: string
   /** OpenAI: Codex's fallback when it has no ChatGPT login, OpenCode's OpenAI models, and the OpenAI speech engine. Bills per token. */
@@ -1003,7 +1009,7 @@ export interface AgentVoiceSettings {
 
 /** The credentials in `AppSettings`: stored, never answered, each reported as a boolean in `AppSettingsView`. */
 export const SECRET_SETTING_KEYS = [
-  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey', 'copilotGithubToken', 'kyutaiApiKey'
+  'geminiApiKey', 'openAiApiKey', 'anthropicApiKey', 'claudeCodeOauthToken', 'openCodeApiKey', 'copilotGithubToken', 'xaiApiKey', 'kyutaiApiKey'
 ] as const
 export type SecretSettingKey = typeof SECRET_SETTING_KEYS[number]
 
@@ -1027,6 +1033,8 @@ export interface AppSettingsView extends Omit<AppSettings, SecretSettingKey> {
   hasOpenCodeAuth: boolean
   /** A Copilot login on this computer (`copilot login`), which is all a host session needs. */
   hasCopilotAuth: boolean
+  /** A Grok login on this computer (`grok login`), which is all a host session needs. */
+  hasGrokAuth: boolean
   /**
    * Where each credential comes from: `saved` in Settings, `server` when the
    * server's own configuration sets it (and so wins, and cannot be changed

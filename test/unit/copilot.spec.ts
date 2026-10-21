@@ -14,7 +14,7 @@ import { fetchCopilotUsage } from '../../server/lib/usage/copilot'
 import { classifyCopilot } from '../../server/lib/setup'
 import { forgetSecretSettings, rememberSecretSettings } from '../../server/lib/secret-settings'
 
-const NO_SECRETS = { geminiApiKey: '', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', openCodeApiKey: '', copilotGithubToken: '', kyutaiApiKey: '' }
+const NO_SECRETS = { geminiApiKey: '', openAiApiKey: '', anthropicApiKey: '', claudeCodeOauthToken: '', openCodeApiKey: '', copilotGithubToken: '', xaiApiKey: '', kyutaiApiKey: '' }
 const noGh = async () => null
 
 /** Trimmed from a real `GET /copilot_internal/user` on a Copilot Free account. */

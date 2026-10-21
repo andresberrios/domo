@@ -6,6 +6,7 @@ import { secretSource } from '../lib/secret-settings'
 import { openCodeCredentialState } from '../lib/opencode-credentials'
 import { defaultTitler } from '../lib/acp/session-title'
 import { copilotHostLogin } from '../lib/acp/copilot'
+import { grokHostLogin } from '../lib/acp/host-login'
 import { hasAnyAgentSession } from '../lib/repo'
 import { SECRET_SETTING_KEYS, type AppSettings, type AppSettingsView, type SecretSettingKey } from '../../shared/types'
 
@@ -18,7 +19,7 @@ export default defineEventHandler(async (): Promise<AppSettingsView> => {
   const settings = Object.fromEntries(
     Object.entries(all).filter(([key]) => !secret.has(key))
   ) as Omit<AppSettings, SecretSettingKey>
-  const [openCode, copilotAuth] = await Promise.all([openCodeCredentialState(), copilotHostLogin()])
+  const [openCode, copilotAuth, grokAuth] = await Promise.all([openCodeCredentialState(), copilotHostLogin(), grokHostLogin()])
   return {
     ...settings,
     hasGeminiKey: !!geminiApiKey(),
@@ -30,6 +31,7 @@ export default defineEventHandler(async (): Promise<AppSettingsView> => {
     /** A login on this machine, which is all a host session needs and all Domo can see. */
     hasOpenCodeAuth: openCode.hostLogin,
     hasCopilotAuth: copilotAuth,
+    hasGrokAuth: grokAuth,
     credentialSources: Object.fromEntries(SECRET_SETTING_KEYS.map(key => [key, secretSource(key)])) as AppSettingsView['credentialSources'],
     // A new install only: one that has run an agent was set up some other way.
     setupDue: !all.setup.finishedAt && !await hasAnyAgentSession(),

@@ -65,6 +65,9 @@ importers:
       '@vueuse/core':
         specifier: ^14.4.0
         version: 14.4.0(vue@3.5.42(typescript@5.9.3))
+      '@xai-official/grok':
+        specifier: 1.0.62
+        version: 1.0.62
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -942,6 +945,9 @@ packages:
   '@humanwhocodes/retry@0.4.3':
     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
     engines: {node: '>=18.18'}
+
+  '@iarna/toml@3.0.0':
+    resolution: {integrity: sha512-td6ZUkz2oS3VeleBcN+m//Q6HlCFCPrnI0FZhrt/h4XqLEdOyYp2u21nd8MdsR+WJy5r9PTDaHTDDfhf4H4l6Q==}
 
   '@iconify-json/lucide@1.2.132':
     resolution: {integrity: sha512-YgblweuQSz0AVG+zPvfECiYrJeTEFSKEthFSfwVB3OMJrL3dJ6QS0gX2akImqg3IEMRK1wVooAEAPbd7Kzj4FA==}
@@ -2807,6 +2813,43 @@ packages:
 
   '@workflow/serde@4.1.0':
     resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
+
+  '@xai-official/grok-darwin-arm64@1.0.62':
+    resolution: {integrity: sha512-RSfT2HoNR9lN7ji6lR2HC9Sz0DJLKTCPRXGtQFL4XDmZU+SFLZ8DzKKbqIfS+odHVQ2FnSLaBGud8Os8ghYpdA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@xai-official/grok-darwin-x64@1.0.62':
+    resolution: {integrity: sha512-RrzCeHkEFkC7DhU2hTuMe3jKMaLqfFLaGAhUyVPvFOrdEJAehk20VF5M9VLISKVUQrQTO82gwqd/ib83Da+wtg==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@xai-official/grok-linux-arm64@1.0.62':
+    resolution: {integrity: sha512-IyxJjZzL8joNPLw/qx9TN4zoSA0vgXIZbOLptadLrP3lOrUV5TzpYT/EwhM9GhHxQGmovrm9oJFbuB+WYeTujQ==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@xai-official/grok-linux-x64@1.0.62':
+    resolution: {integrity: sha512-MsqDUf0rryWKchpO7TBFY/npVTKiBF/4zarOXzBOqd0YVpnSs9P0tZmZdXQ0o95s9e4FTvpy/CgUbuOsiqkyVA==}
+    cpu: [x64]
+    os: [linux]
+
+  '@xai-official/grok-win32-arm64@1.0.62':
+    resolution: {integrity: sha512-X9lRub7ybnGGvtWd5FKO8z8YCQ4SrNRpFrjY2IwcVgbIguVr1VVeLskWwpvASC5cTe7NfMHAMlq8JIQ/NbuZig==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@xai-official/grok-win32-x64@1.0.62':
+    resolution: {integrity: sha512-y03RgVwg13rjXPTPVroDmAKP9H+gJK+2MC8xJgNKRw9aV3wS4eEMqWH3kUyxyBw93zlAPvDWCgSNmDg1j1d2Yw==}
+    cpu: [x64]
+    os: [win32]
+
+  '@xai-official/grok@1.0.62':
+    resolution: {integrity: sha512-MYDKmYYv4CiYdvgWe575fIko5s1KnvShvHXbobkEusR7rVG0B61t6fOgTFZ8BoIloqkfrC0EBQDB9F0r3P7L6w==}
+    engines: {node: '>=20'}
+    cpu: [arm64, x64]
+    os: [darwin, linux, win32]
+    hasBin: true
 
   abbrev@3.0.1:
     resolution: {integrity: sha512-AO2ac6pjRB3SJmGJo+v5/aK6Omggp6fsLrs6wN9bd35ulu4cCwaAU9+7ZhXjeqHVkaHThLuzH0nZr0YpCDhygg==}
@@ -7278,6 +7321,8 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
+  '@iarna/toml@3.0.0': {}
+
   '@iconify-json/lucide@1.2.132':
     dependencies:
       '@iconify/types': 2.0.0
@@ -9461,6 +9506,35 @@ snapshots:
       vue: 3.5.42(typescript@5.9.3)
 
   '@workflow/serde@4.1.0': {}
+
+  '@xai-official/grok-darwin-arm64@1.0.62':
+    optional: true
+
+  '@xai-official/grok-darwin-x64@1.0.62':
+    optional: true
+
+  '@xai-official/grok-linux-arm64@1.0.62':
+    optional: true
+
+  '@xai-official/grok-linux-x64@1.0.62':
+    optional: true
+
+  '@xai-official/grok-win32-arm64@1.0.62':
+    optional: true
+
+  '@xai-official/grok-win32-x64@1.0.62':
+    optional: true
+
+  '@xai-official/grok@1.0.62':
+    dependencies:
+      '@iarna/toml': 3.0.0
+    optionalDependencies:
+      '@xai-official/grok-darwin-arm64': 1.0.62
+      '@xai-official/grok-darwin-x64': 1.0.62
+      '@xai-official/grok-linux-arm64': 1.0.62
+      '@xai-official/grok-linux-x64': 1.0.62
+      '@xai-official/grok-win32-arm64': 1.0.62
+      '@xai-official/grok-win32-x64': 1.0.62
 
   abbrev@3.0.1: {}
 

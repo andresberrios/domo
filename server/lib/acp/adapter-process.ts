@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { brotliDecompressSync } from 'node:zlib'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
@@ -9,6 +10,8 @@ import { promisify } from 'node:util'
 import { anthropicApiKey, claudeOauthToken, hasClaudeSubscriptionLogin } from '../claude-credentials'
 import { hasCodexSubscriptionLogin } from '../codex-credentials'
 import { copilotGithubToken } from '../copilot-credentials'
+import { xaiApiKey } from '../grok-credentials'
+import { grokHostLogin } from './host-login'
 import { storedSecret } from '../secret-settings'
 import {
   loadOpenCodeSettings,
@@ -34,6 +37,10 @@ export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride
   copilot: {
     packageName: '@github/copilot',
     entryOverride: 'NUXT_COPILOT_ACP_ENTRY'
+  },
+  grok: {
+    packageName: '@xai-official/grok',
+    entryOverride: 'NUXT_GROK_ACP_ENTRY'
   }
 }
 
@@ -43,6 +50,13 @@ export const ADAPTERS: Record<AgentAdapter, { packageName: string, entryOverride
  * pinned version is what Domo was tested against.
  */
 export const COPILOT_ARGS = ['--acp', '--no-auto-update']
+
+/**
+ * Grok Build's ACP server. `--no-leader`: with `[cli] use_leader` in the
+ * user's `~/.grok/config.toml` the agent would otherwise attach to a shared
+ * leader process, which outlives Domo's stop and serves other clients.
+ */
+export const GROK_ARGS = ['agent', '--no-leader', 'stdio']
 
 /**
  * Resolve an ACP adapter entry point.
@@ -66,6 +80,7 @@ export function adapterEntry(adapter: AgentAdapter): string {
     try {
       const pkgPath = resolvePkg()
       if (adapter === 'copilot') return copilotBinary(pkgPath)
+      if (adapter === 'grok') return grokBinary(pkgPath)
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { bin?: Record<string, string> | string }
       const bin = typeof pkg.bin === 'string' ? pkg.bin : Object.values(pkg.bin ?? {})[0]
       return join(dirname(pkgPath), bin ?? 'dist/index.js')
@@ -120,6 +135,38 @@ function copilotBinary(pkgPath: string): string {
 }
 
 /**
+ * Grok's native executable, unpacked once beside the compressed one in the
+ * platform package `@xai-official/grok` depends on. The package's own `grok`
+ * bin is a Node loader that runs whatever `~/.grok/bin/grok` is (the user's
+ * own install, at any version) and forwards no stop; its postinstall, which
+ * an installed Domo never runs (`npm ci --ignore-scripts`), writes into the
+ * user's `~/.grok`. Neither is wanted: Domo runs the version it pins.
+ */
+export function grokBinary(pkgPath: string): string {
+  const require = createRequire(pkgPath)
+  const platformPkg = `@xai-official/grok-${process.platform}-${process.arch}`
+  let dir: string
+  try {
+    dir = dirname(require.resolve(`${platformPkg}/package.json`))
+  } catch {
+    throw new Error(`@xai-official/grok has no executable for ${process.platform}-${process.arch} in this Domo install.`)
+  }
+  const exe = process.platform === 'win32' ? 'grok.exe' : 'grok'
+  const binary = join(dir, 'bin', exe)
+  if (existsSync(binary)) return binary
+  // Beside, then renamed: a session starting meanwhile never runs half a file.
+  const partial = `${binary}.${process.pid}.partial`
+  try {
+    writeFileSync(partial, brotliDecompressSync(readFileSync(`${binary}.br`)))
+    chmodSync(partial, 0o755)
+    renameSync(partial, binary)
+  } finally {
+    rmSync(partial, { force: true })
+  }
+  return binary
+}
+
+/**
  * The actual process invocation for an adapter.
  *
  * Claude and Codex ship JavaScript ACP adapters, while OpenCode is a native
@@ -132,6 +179,11 @@ export function adapterLaunch(adapter: AgentAdapter): { command: string, args: s
     return /\.[cm]?js$/.test(entry)
       ? { command: process.execPath, args: [entry, ...COPILOT_ARGS] }
       : { command: entry, args: COPILOT_ARGS }
+  }
+  if (adapter === 'grok') {
+    return /\.[cm]?js$/.test(entry)
+      ? { command: process.execPath, args: [entry, ...GROK_ARGS] }
+      : { command: entry, args: GROK_ARGS }
   }
   if (adapter === 'opencode' && /\.[cm]?js$/.test(entry)) {
     return { command: process.execPath, args: [entry, 'acp'] }
@@ -297,7 +349,9 @@ export async function adapterEnv(
   /** Injected by the unit layer: `gh` must never be spawned from a test. */
   ghToken: GhTokenLookup = hostGhToken,
   /** Injected for the same reason: the unit layer has no database to read Settings from. */
-  openCode: OpenCodeSettingsLookup = loadOpenCodeSettings
+  openCode: OpenCodeSettingsLookup = loadOpenCodeSettings,
+  /** Whether this computer has a `grok login`; the login probe itself says yes, so no key goes in. */
+  grokLogin: () => Promise<boolean> = grokHostLogin
 ): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {}
   for (const key of PASSTHROUGH_ENV) {
@@ -337,6 +391,14 @@ export async function adapterEnv(
     const token = copilotGithubToken()
     if (token) env.COPILOT_GITHUB_TOKEN = token
     env.COPILOT_AUTO_UPDATE = 'false'
+  } else if (adapter === 'grok') {
+    // The key bills the xAI API: on this computer only when there is no
+    // `grok login`, for the reason in `grok-credentials.ts`. A container has
+    // the key or nothing, since the login is never copied into one.
+    const key = xaiApiKey()
+    if (key && (inContainer || !await grokLogin())) env.XAI_API_KEY = key
+    if (!inContainer && process.env.GROK_HOME) env.GROK_HOME = process.env.GROK_HOME
+    env.GROK_DISABLE_AUTOUPDATER = '1'
   } else {
     // OpenCode can use dozens of providers from its own `opencode auth login`
     // store. These explicit values cover headless installs without turning the

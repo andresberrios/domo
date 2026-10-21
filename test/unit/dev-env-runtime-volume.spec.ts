@@ -102,6 +102,7 @@ describe('adapterCommandPath', () => {
     expect(adapterCommandPath('claude-code')).toBe('/opt/domo/bin/claude-agent-acp')
     expect(adapterCommandPath('codex')).toBe('/opt/domo/bin/codex-acp')
     expect(adapterCommandPath('opencode')).toBe('/opt/domo/bin/opencode-acp')
+    expect(adapterCommandPath('grok')).toBe('/opt/domo/bin/grok-acp')
   })
 })
 
@@ -131,6 +132,11 @@ describe('ensureRuntimeVolume', () => {
     // image is not required to have a node at all.
     expect(script).toContain('exec /opt/domo/node/bin/node /opt/domo/adapters/node_modules/')
     expect(script).toContain('exec /opt/domo/adapters/node_modules/@opencode/cli/bin/opencode.exe acp')
+    // Grok ships its executable compressed: unpacked before the wrapper that runs it is written.
+    expect(script).toContain('@xai-official/grok@1.0.62')
+    expect(script.indexOf('brotliDecompressSync')).toBeGreaterThan(script.indexOf('npm install'))
+    expect(script.indexOf('brotliDecompressSync')).toBeLessThan(script.indexOf('/opt/domo/bin/grok-acp'))
+    expect(script).toContain('exec /opt/domo/adapters/node_modules/@xai-official/grok/../grok-linux-*/bin/grok agent --no-leader stdio')
     // The marker last, and flushed on both sides of it: a crash must not leave
     // a marker in front of files still in the page cache.
     expect(script.trim().split('\n').slice(-3)).toEqual(['sync', 'touch /opt/domo/.ready', 'sync'])
@@ -150,7 +156,9 @@ describe('ensureRuntimeVolume', () => {
       'test -s /opt/domo/adapters/node_modules/@opencode/cli/bin/opencode.exe',
       'test -x /opt/domo/bin/claude-agent-acp',
       'test -x /opt/domo/bin/codex-acp',
-      'test -x /opt/domo/bin/opencode-acp'
+      'test -x /opt/domo/bin/opencode-acp',
+      'test -s /opt/domo/adapters/node_modules/@xai-official/grok/../grok-linux-*/bin/grok',
+      'test -x /opt/domo/bin/grok-acp'
     ]) expect(check).toContain(path)
   })
 

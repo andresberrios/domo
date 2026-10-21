@@ -2,7 +2,7 @@
 
 **A voice-first control room for coding agents.**
 
-You talk out loud to Claude Code, Codex, OpenCode and GitHub Copilot sessions running over
+You talk out loud to Claude Code, Codex, OpenCode, GitHub Copilot and Grok sessions running over
 [ACP](https://agentclientprotocol.com). The agent you talk to can start other
 agents, watch them work and report back; whichever one you are talking to reads
 out the others' permission prompts and notes, and takes your answers. You can
@@ -35,7 +35,7 @@ With Domo you can:
 ## Requirements
 
 - Docker and git
-- At least one coding agent account: a Claude, ChatGPT, OpenCode or Copilot plan.
+- At least one coding agent account: a Claude, ChatGPT, OpenCode, Copilot or Grok plan.
   See [Signing in](#signing-in).
 - For the default speech engines, a Gemini API key
   ([AI Studio](https://aistudio.google.com/apikey)). The open models, Pocket TTS
@@ -148,6 +148,13 @@ Copilot Requests permission, pasted on the Copilot settings page, or else with
 the `gh` token it already gets for git. Neither rotates. The token also lets
 Domo show your Copilot quotas and models. On Copilot Free the only model is
 Auto.
+
+**Grok.** Sessions on this computer use your `grok login` (Grok Build, with a
+SuperGrok or X Premium account). That login rotates its refresh token, so it is
+never copied into an environment: an environment signs in with an xAI API key
+from the [xAI console](https://console.x.ai), pasted on the Grok settings page.
+The key **bills the xAI API per token**, so on this computer Domo passes it
+only when there is no Grok login.
 
 **Voice.** The Gemini key goes on the Voice settings page. The OpenAI speech
 engine uses the same OpenAI key as Codex, and bills per token.

@@ -73,7 +73,7 @@ export async function resolveTitler(settings: AppSettings['sessionTitles']): Pro
  * started and wrong for a title nobody asked to pay for.
  */
 async function titlerEnv(adapter: AgentAdapter): Promise<NodeJS.ProcessEnv> {
-  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, CODEX_API_KEY, DEFAULT_AUTH_REQUEST, ...env } = await adapterEnv(adapter, false)
+  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, CODEX_API_KEY, DEFAULT_AUTH_REQUEST, XAI_API_KEY, ...env } = await adapterEnv(adapter, false)
   return env
 }
 

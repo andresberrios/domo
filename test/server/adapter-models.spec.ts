@@ -30,7 +30,9 @@ vi.mock('node:child_process', async (importOriginal) => {
         ? 'opencode'
         : invocation.includes('/codex-acp/')
           ? 'codex'
-          : invocation.includes('/@github/copilot-') ? 'copilot' : 'claude-code'
+          : invocation.includes('/@github/copilot-')
+            ? 'copilot'
+            : invocation.includes(' agent --no-leader stdio') ? 'grok' : 'claude-code'
       const adapter = new FakeAdapter(which)
       state.adapters.push(adapter)
       return adapter
@@ -338,7 +340,8 @@ describe('listAdapterCatalog', () => {
       codex: { current: 'gpt-5.6-terra', ids: ['gpt-5.6-terra', 'gpt-5.6-luna'] },
       opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] },
       // Copilot publishes no model option; Domo's own is Auto when GitHub cannot be asked.
-      copilot: null
+      copilot: null,
+      grok: { current: 'grok-4.6', ids: ['grok-4.6', 'grok-4.5'] }
     })
     const catalog = listAdapterCatalog().finally(stop)
 
@@ -379,6 +382,21 @@ describe('listAdapterCatalog', () => {
           modes: [],
           defaultMode: null,
           configOptions: []
+        },
+        {
+          id: 'grok',
+          name: 'Grok',
+          models: [{ id: 'grok-4.6', name: 'GROK-4.6' }, { id: 'grok-4.5', name: 'GROK-4.5' }],
+          default: 'grok-4.6',
+          // Grok publishes none; Domo's own (`grok.ts`).
+          modes: [
+            { id: 'default', name: 'Default', description: expect.any(String) },
+            { id: 'always-approve', name: 'Always approve', description: expect.any(String) },
+            { id: 'plan', name: 'Plan', description: expect.any(String) },
+            { id: 'ask', name: 'Ask', description: expect.any(String) }
+          ],
+          defaultMode: 'default',
+          configOptions: []
         }
       ]
     })
@@ -391,7 +409,8 @@ describe('listAdapterCatalog', () => {
         'claude-code': { current: 'sonnet', ids: ['sonnet'] },
         codex: { current: 'gpt-5.5', ids: ['gpt-5.5'] },
         opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] },
-        copilot: null
+        copilot: null,
+        grok: { current: 'grok-4.6', ids: ['grok-4.6'] }
       },
       {
         'claude-code': { current: 'default', ids: ['default', 'acceptEdits'] },
@@ -419,6 +438,8 @@ describe('listAdapterCatalog', () => {
       modes: [{ id: 'build', name: 'BUILD' }, { id: 'plan', name: 'PLAN' }]
     })
     expect(adapters[3]).toMatchObject({ id: 'copilot', defaultMode: 'agent', default: 'auto' })
+    expect(adapters[4]).toMatchObject({ id: 'grok', defaultMode: 'default' })
+    expect(adapters[4]!.modes.map(mode => mode.id)).toEqual(['default', 'always-approve', 'plan', 'ask'])
   })
 
   it('asks only the harness it was filtered to', async () => {
@@ -437,7 +458,8 @@ describe('listAdapterCatalog', () => {
       'claude-code': { current: 'sonnet', ids: ['sonnet'] },
       codex: 'fail',
       opencode: { current: 'opencode-go/kimi-k3', ids: ['opencode-go/kimi-k3'] },
-      copilot: 'fail'
+      copilot: 'fail',
+      grok: 'fail'
     })
 
     const { adapters } = await listAdapterCatalog().finally(stop)

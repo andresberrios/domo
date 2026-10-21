@@ -98,6 +98,9 @@ await setup({
     NUXT_COPILOT_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
     NUXT_COPILOT_GITHUB_TOKEN: '',
     NUXT_COPILOT_API_BASE: 'http://127.0.0.1:1',
+    NUXT_GROK_ACP_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs'),
+    NUXT_XAI_API_KEY: '',
+    XAI_API_KEY: '',
     NUXT_CODEX_ENTRY: join(import.meta.dirname, '..', 'helpers', 'dead-adapter.mjs')
   }
 })
@@ -496,7 +499,7 @@ describe('setup guide', () => {
   it('reports every coding agent and voice, and opens by itself on a new install', async () => {
     const status = await $fetch<SetupStatus>('/api/setup')
 
-    expect(status.agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'opencode', 'copilot'])
+    expect(status.agents.map(agent => agent.id)).toEqual(['claude-code', 'codex', 'opencode', 'copilot', 'grok'])
     for (const agent of status.agents) {
       expect(agent.installed).toBe(true)
       expect(['subscription', 'api-key', 'free', 'none']).toContain(agent.login)
