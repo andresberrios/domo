@@ -51,6 +51,9 @@ const blocked = computed(() => startability.value.startable ? null : startabilit
 const adapter = computed(() => current.value ? agentAdapterInfo(current.value.adapter) : null)
 const avatar = computed(() => assistant.value ? { src: assistant.value.avatar ?? undefined, alt: assistant.value.name } : undefined)
 
+/** The assistant's status board, which outlives its sessions. */
+const board = useBoard(assistantId)
+
 const handingOff = computed(() => !!assistant.value?.handoff)
 const freshStartPending = ref(false)
 /** A fresh start replaces the conversation in context, so one stray tap must not trigger it. */
@@ -102,122 +105,129 @@ const menuItems = computed(() => [
 </script>
 
 <template>
-  <UDashboardPanel id="assistant">
-    <template #header>
-      <UDashboardNavbar>
-        <template #title>
-          <span class="flex min-w-0 items-center gap-2">
-            <UAvatar :src="assistant?.avatar ?? undefined" :alt="assistant?.name ?? '?'" size="xs" />
-            <InlineTitle v-if="assistant" :value="assistant.name" label="Assistant name" @save="rename" />
-            <span v-else class="truncate">Assistant</span>
-          </span>
-        </template>
+  <div class="flex min-w-0 flex-1">
+    <!-- The board, when open, is a panel of its own left of the transcript. -->
+    <BoardSidePanel :state="board" :readonly="!!blocked || !!assistant?.archived" :busy="current?.status === 'thinking'" />
+    <UDashboardPanel id="assistant">
+      <template #header>
+        <UDashboardNavbar>
+          <template #leading>
+            <BoardToggle :state="board" />
+          </template>
+          <template #title>
+            <span class="flex min-w-0 items-center gap-2">
+              <UAvatar :src="assistant?.avatar ?? undefined" :alt="assistant?.name ?? '?'" size="xs" />
+              <InlineTitle v-if="assistant" :value="assistant.name" label="Assistant name" @save="rename" />
+              <span v-else class="truncate">Assistant</span>
+            </span>
+          </template>
 
-        <template #trailing>
-          <UBadge v-if="assistant?.archived" color="neutral" variant="subtle" size="sm" label="Archived" />
-          <StatusDot v-if="current" :status="current.status" />
-        </template>
+          <template #trailing>
+            <UBadge v-if="assistant?.archived" color="neutral" variant="subtle" size="sm" label="Archived" />
+            <StatusDot v-if="current" :status="current.status" />
+          </template>
 
-        <template #right>
-          <UTooltip :text="handingOff ? 'Writing a note for a fresh session…' : 'Have it write itself a note and carry on in a fresh session'">
+          <template #right>
+            <UTooltip :text="handingOff ? 'Writing a note for a fresh session…' : 'Have it write itself a note and carry on in a fresh session'">
+              <UButton
+                :label="handingOff ? 'Handing off' : 'Fresh start'"
+                icon="i-lucide-notebook-pen"
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                :loading="handingOff || freshStartPending"
+                :disabled="!current || !!blocked || assistant?.archived"
+                :ui="{ label: 'hidden sm:inline' }"
+                @click="confirmingFreshStart = true"
+              />
+            </UTooltip>
+            <UDropdownMenu :items="menuItems">
+              <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Assistant actions" />
+            </UDropdownMenu>
+          </template>
+        </UDashboardNavbar>
+
+        <UDashboardToolbar>
+          <template #left>
+            <UBadge
+              color="neutral"
+              variant="subtle"
+              size="sm"
+              :label="[adapter?.label, current?.model].filter(Boolean).join(' · ') || 'Coding agent'"
+            />
+            <UBadge v-if="environment" color="primary" variant="subtle" size="sm" :label="environment.name">
+              <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
+            </UBadge>
+            <UBadge v-else-if="current" color="neutral" variant="subtle" size="sm" class="font-mono" :label="shortPath(current.cwd, 3)">
+              <template #leading><UIcon name="i-lucide-folder" class="size-3" /></template>
+            </UBadge>
             <UButton
-              :label="handingOff ? 'Handing off' : 'Fresh start'"
-              icon="i-lucide-notebook-pen"
+              :label="`${sessions.length} session${sessions.length === 1 ? '' : 's'}`"
+              icon="i-lucide-book-open"
               color="neutral"
               variant="ghost"
-              size="sm"
-              :loading="handingOff || freshStartPending"
-              :disabled="!current || !!blocked || assistant?.archived"
-              :ui="{ label: 'hidden sm:inline' }"
-              @click="confirmingFreshStart = true"
+              size="xs"
+              @click="journalOpen = true"
             />
-          </UTooltip>
-          <UDropdownMenu :items="menuItems">
-            <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Assistant actions" />
-          </UDropdownMenu>
-        </template>
-      </UDashboardNavbar>
+            <TargetSchedules :assistant-id="assistantId" />
+          </template>
+        </UDashboardToolbar>
+      </template>
 
-      <UDashboardToolbar>
-        <template #left>
-          <UBadge
-            color="neutral"
-            variant="subtle"
-            size="sm"
-            :label="[adapter?.label, current?.model].filter(Boolean).join(' · ') || 'Coding agent'"
+      <template #body>
+        <div class="flex h-full min-h-0 flex-col">
+          <ServiceBanner />
+          <AgentUnstartableBanner v-if="current && blocked" :session="current" :reason="blocked" />
+          <AgentErrorBanner v-else-if="current" :session="current" />
+
+          <div v-if="!conversed && current?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
+            <div class="max-w-sm text-center">
+              <UAvatar :src="assistant?.avatar ?? undefined" :alt="assistant?.name ?? '?'" size="3xl" class="mx-auto" />
+              <p class="mt-3 text-sm font-medium">
+                {{ assistant?.name }}
+              </p>
+              <p class="mt-1 line-clamp-3 text-sm text-muted">
+                {{ assistant?.persona || 'Say hello below, or out loud.' }}
+              </p>
+            </div>
+          </div>
+
+          <AgentTranscript
+            v-else-if="current"
+            class="min-h-0 flex-1"
+            :session="current"
+            :events="events"
+            :permissions="permissions"
+            :avatar="avatar"
+            :complete="complete"
+            :loading-earlier="loadingEarlier"
+            @load-earlier="loadEarlier"
           />
-          <UBadge v-if="environment" color="primary" variant="subtle" size="sm" :label="environment.name">
-            <template #leading><UIcon name="i-lucide-monitor" class="size-3" /></template>
-          </UBadge>
-          <UBadge v-else-if="current" color="neutral" variant="subtle" size="sm" class="font-mono" :label="shortPath(current.cwd, 3)">
-            <template #leading><UIcon name="i-lucide-folder" class="size-3" /></template>
-          </UBadge>
-          <UButton
-            :label="`${sessions.length} session${sessions.length === 1 ? '' : 's'}`"
-            icon="i-lucide-book-open"
-            color="neutral"
-            variant="ghost"
-            size="xs"
-            @click="journalOpen = true"
-          />
-          <TargetSchedules :assistant-id="assistantId" />
-        </template>
-      </UDashboardToolbar>
-    </template>
 
-    <template #body>
-      <div class="flex h-full min-h-0 flex-col">
-        <ServiceBanner />
-        <AgentUnstartableBanner v-if="current && blocked" :session="current" :reason="blocked" />
-        <AgentErrorBanner v-else-if="current" :session="current" />
+          <MotionList v-if="pending.length && !blocked" tag="div" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
+            <PermissionCard v-for="permission in pending" :key="permission.id" :permission="permission" />
+          </MotionList>
 
-        <div v-if="!conversed && current?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
-          <div class="max-w-sm text-center">
-            <UAvatar :src="assistant?.avatar ?? undefined" :alt="assistant?.name ?? '?'" size="3xl" class="mx-auto" />
-            <p class="mt-3 text-sm font-medium">
-              {{ assistant?.name }}
-            </p>
-            <p class="mt-1 line-clamp-3 text-sm text-muted">
-              {{ assistant?.persona || 'Say hello below, or out loud.' }}
-            </p>
+          <div v-if="queued.length && current" class="motion-fade shrink-0 pt-2">
+            <AgentInbox :agent-session-id="current.id" :messages="queued" :readonly="!!blocked" :session="current" />
+          </div>
+
+          <div v-if="!blocked && current && !assistant?.archived" class="shrink-0 pt-2">
+            <AgentComposer :session="current" />
           </div>
         </div>
 
-        <AgentTranscript
-          v-else-if="current"
-          class="min-h-0 flex-1"
-          :session="current"
-          :events="events"
-          :permissions="permissions"
-          :avatar="avatar"
-          :complete="complete"
-          :loading-earlier="loadingEarlier"
-          @load-earlier="loadEarlier"
+        <AssistantModal v-model:open="editing" :assistant="assistant" />
+        <AssistantJournal v-if="assistant" v-model:open="journalOpen" :assistant="assistant" :sessions="sessions" />
+        <ConfirmModal
+          v-model:open="confirmingFreshStart"
+          :title="`Start ${assistant?.name ?? 'the assistant'} fresh?`"
+          description="It writes itself a note and carries on in a new session that starts from that note. The current conversation leaves its context."
+          confirm-label="Start fresh"
+          confirm-color="primary"
+          @confirm="freshStart"
         />
-
-        <MotionList v-if="pending.length && !blocked" tag="div" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
-          <PermissionCard v-for="permission in pending" :key="permission.id" :permission="permission" />
-        </MotionList>
-
-        <div v-if="queued.length && current" class="motion-fade shrink-0 pt-2">
-          <AgentInbox :agent-session-id="current.id" :messages="queued" :readonly="!!blocked" :session="current" />
-        </div>
-
-        <div v-if="!blocked && current && !assistant?.archived" class="shrink-0 pt-2">
-          <AgentComposer :session="current" />
-        </div>
-      </div>
-
-      <AssistantModal v-model:open="editing" :assistant="assistant" />
-      <AssistantJournal v-if="assistant" v-model:open="journalOpen" :assistant="assistant" :sessions="sessions" />
-      <ConfirmModal
-        v-model:open="confirmingFreshStart"
-        :title="`Start ${assistant?.name ?? 'the assistant'} fresh?`"
-        description="It writes itself a note and carries on in a new session that starts from that note. The current conversation leaves its context."
-        confirm-label="Start fresh"
-        confirm-color="primary"
-        @confirm="freshStart"
-      />
-    </template>
-  </UDashboardPanel>
+      </template>
+    </UDashboardPanel>
+  </div>
 </template>

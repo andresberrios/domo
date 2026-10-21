@@ -31,6 +31,7 @@ import { createAssistant, ensureCurrentSession, generateAssistantPicture, record
 import { generateImage, hasChatGptLogin, ImageGenerationError } from '../images/generate'
 import { avatarFromSource } from '../assistants/avatar'
 import { runCronJobNow } from '../cron/scheduler'
+import { boardOwnerFor, editBoard, readBoardForAgent } from '../board'
 import { newId } from '../db'
 import {
   addAgentSubscription,
@@ -93,7 +94,9 @@ export const MESH_INSTRUCTIONS = [
   'You cannot wait for another agent: its turn ends long after yours. spawn_agent and message_agent follow the agent you hand work to by default, and subscribe_to_agent follows any other; Domo messages you when it finishes.',
   'When you finish work another agent handed you, report to it with message_agent and turnReport: true as the last thing you do in the turn: Domo then does not also send it the note that your turn ended.',
   'To reach the human, use notify_supervisor: it stays in the UI until they have seen it.',
-  'An assistant (as_…) is a named agent the human keeps talking to: it lives across many sessions chained by handoffs, so message it by its assistant id, not a session id.'
+  'An assistant (as_…) is a named agent the human keeps talking to: it lives across many sessions chained by handoffs, so message it by its assistant id, not a session id.',
+  'You have a status board, shown beside your transcript: the human\'s up-to-date view of the work, so they need not read your chatter. Keep it current, short and decision-oriented, not a log: questions you need answered, what is ongoing, done or blocked, decisions made, links to results. Update it with update_board when something they should know or decide changes, at least before you end a turn that leaves them something to read or answer; not for trivial exchanges. Questions on the board are how you ask the human something that is not urgent. Their answers, acknowledgements and replies arrive together as one message citing element ids; act on them and tidy the board. An assistant\'s board carries across its handoffs.',
+  'If you coordinate other agents, your board is the human\'s one view of all of it: keep one group per workstream (summary, status, links to the agents, environments and branches doing it), put on it what of your workers\' reports the human needs, and relay their answers to the workers they concern.'
 ].join(' ')
 
 /** One line of text, clipped. */
@@ -842,6 +845,63 @@ export const MESH_TOOLS = [
         }
       },
       required: ['note'],
+      additionalProperties: false
+    }
+  },
+
+  // ---------------------------------------------------------------- status board
+  {
+    name: 'read_board',
+    description:
+      'Read a status board: yours by default, or another agent\'s or assistant\'s. Groups, then elements in order '
+      + 'with what the human has done on them (answer, acknowledged, dismissed, acknowledgedItems, thread).',
+    inputSchema: {
+      type: 'object',
+      properties: { agentId: agentId('Agent session id or assistant id (as_…). Defaults to your own board.') },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'update_board',
+    description:
+      'Edit your status board, the human\'s view of your work beside your transcript. Only you write it. Edit '
+      + 'surgically by element id; a batch applies whole or not at all. Elements sit in groups, one per workstream. Element kinds (every one has title and '
+      + 'an optional markdown body):\n'
+      + '- question: options [{id,label,description?}] (≤8), multiple (default false), allowCustom (free-text answer, default true)\n'
+      + '- checklist: items [{id,text,status: todo|ongoing|done|blocked,note?}]. The human acknowledges done items.\n'
+      + '- decision: what was decided as title, why as body; alternatives? [strings]. The human acknowledges it.\n'
+      + '- note: tone info|success|warning|error (warning/error for risks and blockers)\n'
+      + '- links: items [{id,label,target,kind: url|file|branch|pr|commit|other}]\n'
+      + '- metrics: items [{id,label,value,max?,unit?}] (a bar when max is set)\n'
+      + 'Ops:\n'
+      + '- {op:"put",id,kind?,title?,body?,group?,before?,after?,...kind fields,reopen?}: create (kind and title '
+      + 'required), or change only the given fields. group is a group title, created when first used; null is the '
+      + 'top. An edit brings an acknowledged or dismissed element back to the human; reopen:true clears an answer.\n'
+      + '- {op:"items",id,set:[{id,...fields}],remove?:[ids]}: add or change items of a checklist, links or metrics, '
+      + 'e.g. {op:"items",id:"plan",set:[{id:"tests",status:"done"}]}\n'
+      + '- {op:"remove",id} · {op:"move",id,group?,before?,after?} · {op:"reply",id,text}: answer the human on an element\n'
+      + '- {op:"group",title,summary?,status?,links?,renameTo?,before?,after?}: describe a workstream. summary: one '
+      + 'line on where it stands; status: active|waiting (on the human)|blocked|done (done groups fold away); links: '
+      + '[{kind: agent|environment|branch|url,target,label?}], target an ag_/env_ id, branch name or URL. null clears a field.\n'
+      + '- {op:"remove_group",title}: removes its elements too · {op:"headline",text}: one line on the whole board, or null\n'
+      + 'replaceAll:true empties the board first. Ids are short slugs you choose; keep them stable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ops: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['put', 'items', 'remove', 'move', 'group', 'remove_group', 'reply', 'headline'] }
+            },
+            required: ['op']
+          },
+          description: 'Edits, applied in order.'
+        },
+        replaceAll: { type: 'boolean', description: 'Start the board from empty. An id put again keeps the human\'s answers and replies on it.' }
+      },
+      required: ['ops'],
       additionalProperties: false
     }
   },
@@ -1629,6 +1689,15 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           + (args.nextPrompt ? ' and begins on nextPrompt.' : ' and waits for the human.')
       }
     }
+
+    case 'read_board': {
+      const owner = await boardOwnerFor(String(args.agentId ?? caller.id))
+      if (!owner) throw new Error(`No agent or assistant ${args.agentId}. Use list_agents to find ids.`)
+      return readBoardForAgent(owner)
+    }
+
+    case 'update_board':
+      return editBoard(caller, { ops: args.ops, replaceAll: args.replaceAll === true })
 
     case 'subscribe_to_agent': {
       const followed = await getAgentSessionWithEnvironment(args.agentId)

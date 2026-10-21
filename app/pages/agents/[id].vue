@@ -235,6 +235,10 @@ async function purge() {
 
 const alwaysShowTimes = useAlwaysShowTimes()
 
+/** The status board: an assistant's sessions share the assistant's. */
+const boardOwner = computed(() => session.value ? session.value.assistantId ?? session.value.id : null)
+const board = useBoard(boardOwner)
+
 const menuItems = computed(() => [[
   { label: 'Rename', icon: 'i-lucide-pencil', onSelect: () => { titleDraft.value = session.value?.title ?? ''; renaming.value = true } },
   session.value?.archived
@@ -258,168 +262,175 @@ const menuItems = computed(() => [[
 </script>
 
 <template>
-  <UDashboardPanel id="agent">
-    <template #header>
-      <UDashboardNavbar icon="i-lucide-bot">
-        <template #title>
-          <InlineTitle v-if="session" :value="session.title" label="Session title" @save="renameTo" />
-          <span v-else class="truncate">{{ isDraft ? 'New session' : 'Agent' }}</span>
-        </template>
+  <div class="flex min-w-0 flex-1">
+    <!-- The board, when open, is a panel of its own left of the transcript. -->
+    <BoardSidePanel v-if="boardOwner" :state="board" :readonly="closed" :busy="session?.status === 'thinking'" />
+    <UDashboardPanel id="agent">
+      <template #header>
+        <UDashboardNavbar icon="i-lucide-bot">
+          <template v-if="boardOwner" #leading>
+            <BoardToggle :state="board" />
+          </template>
+          <template #title>
+            <InlineTitle v-if="session" :value="session.title" label="Session title" @save="renameTo" />
+            <span v-else class="truncate">{{ isDraft ? 'New session' : 'Agent' }}</span>
+          </template>
 
-        <template #trailing>
-          <UBadge v-if="session?.archived" color="neutral" variant="subtle" size="sm" label="Archived" />
-          <StatusDot v-if="session" :status="session.status" />
-        </template>
+          <template #trailing>
+            <UBadge v-if="session?.archived" color="neutral" variant="subtle" size="sm" label="Archived" />
+            <StatusDot v-if="session" :status="session.status" />
+          </template>
 
-        <template #right>
-          <UButton
-            v-if="session && !closed && (session.status === 'stopped' || session.status === 'error')"
-            :label="'Start'"
-            icon="i-lucide-play"
-            size="sm"
-            :loading="starting"
-            :ui="{ label: 'hidden sm:inline' }"
-            @click="start"
-          />
-          <UDropdownMenu v-if="session" :items="menuItems">
-            <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
-          </UDropdownMenu>
-        </template>
-      </UDashboardNavbar>
+          <template #right>
+            <UButton
+              v-if="session && !closed && (session.status === 'stopped' || session.status === 'error')"
+              :label="'Start'"
+              icon="i-lucide-play"
+              size="sm"
+              :loading="starting"
+              :ui="{ label: 'hidden sm:inline' }"
+              @click="start"
+            />
+            <UDropdownMenu v-if="session" :items="menuItems">
+              <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
+            </UDropdownMenu>
+          </template>
+        </UDashboardNavbar>
 
-      <UDashboardToolbar :ui="{ left: 'min-w-0 flex-1', right: 'shrink-0' }">
-        <template #left>
-          <AgentSessionChips :session="session" :draft="draft" :closed="closed" />
-        </template>
-        <template #right>
-          <span class="text-xs text-dimmed">{{ relativeTime(session?.lastActivityAt) }}</span>
-        </template>
-      </UDashboardToolbar>
-    </template>
+        <UDashboardToolbar :ui="{ left: 'min-w-0 flex-1', right: 'shrink-0' }">
+          <template #left>
+            <AgentSessionChips :session="session" :draft="draft" :closed="closed" />
+          </template>
+          <template #right>
+            <span class="text-xs text-dimmed">{{ relativeTime(session?.lastActivityAt) }}</span>
+          </template>
+        </UDashboardToolbar>
+      </template>
 
-    <template #body>
-      <div class="flex h-full min-h-0 flex-col">
-        <ServiceBanner />
-        <AgentUnstartableBanner v-if="session && blocked" :session="session" :reason="blocked" />
-        <UAlert
-          v-else-if="assistant && handedOff"
-          icon="i-lucide-notebook-pen"
-          color="neutral"
-          variant="subtle"
-          :title="`This session handed off. ${assistant.name} carries on in a newer one.`"
-          description="It is kept as a record. Anything sent to it goes to the current session."
-          :actions="[{ label: `Open ${assistant.name}`, to: `/assistants/${assistant.id}`, trailingIcon: 'i-lucide-arrow-right' }]"
-          class="mb-2"
-        />
-        <AgentErrorBanner v-else-if="session" :session="session" />
-
-        <div v-if="isDraft && !firstMessage" class="flex flex-1 items-center justify-center">
-          <div class="max-w-sm text-center">
-            <UIcon name="i-lucide-bot" class="mx-auto size-8 text-dimmed" />
-            <p class="mt-3 text-sm font-medium">
-              A new session
-            </p>
-            <p class="mt-1 text-sm text-muted">
-              Choose where it works and which agent and model below, then send it its first task.
-              Sending is what starts it.
-            </p>
-          </div>
-        </div>
-
-        <div v-else-if="!shownEvents.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
-          <div class="max-w-sm text-center">
-            <UIcon name="i-lucide-bot" class="mx-auto size-8 text-dimmed" />
-            <p class="mt-3 text-sm font-medium">
-              Nothing here yet
-            </p>
-            <p class="mt-1 text-sm text-muted">
-              {{ blocked
-                ? 'It never did anything, and it can no longer be started.'
-                : 'Send this agent a task below, or tap the microphone and say it.' }}
-            </p>
-          </div>
-        </div>
-
-        <!--
-          The transcript owns its scroll box, because the virtualiser inside it
-          measures rows against that element. `min-h-0` is what keeps it inside
-          this flex column: without it the box grows to its content, the
-          dashboard body scrolls instead, and the pinned permission cards and
-          the composer paint on top of the messages.
-        -->
-        <AgentTranscript
-          v-else-if="session || firstMessage"
-          class="min-h-0 flex-1"
-          :session="session"
-          :events="shownEvents"
-          :permissions="permissions"
-          :complete="complete"
-          :loading-earlier="loadingEarlier"
-          @load-earlier="loadEarlier"
-        />
-
-        <MotionList v-if="pending.length && !blocked" tag="div" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
-          <PermissionCard
-            v-for="permission in pending"
-            :key="permission.id"
-            :permission="permission"
-          />
-        </MotionList>
-
-        <!--
-          Still rendered when the session cannot run: what was waiting when its
-          environment went away is part of the record. `readonly` drops the
-          take-back button, which would be the one thing left on this page that
-          still wrote to a session nothing can reach.
-        -->
-        <!-- The first message is in the transcript already while it waits there. -->
-        <div v-if="queued.length && !firstMessage" class="motion-fade shrink-0 pt-2">
-          <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" :session="session" />
-        </div>
-
-        <div v-if="isDraft && draft" class="shrink-0 space-y-2 pt-2">
+      <template #body>
+        <div class="flex h-full min-h-0 flex-col">
+          <ServiceBanner />
+          <AgentUnstartableBanner v-if="session && blocked" :session="session" :reason="blocked" />
           <UAlert
-            v-if="createError"
-            color="error"
+            v-else-if="assistant && handedOff"
+            icon="i-lucide-notebook-pen"
+            color="neutral"
             variant="subtle"
-            icon="i-lucide-circle-alert"
-            title="Could not start the session"
-            :description="createError"
-            class="mx-auto max-w-3xl"
-            :close="{ color: 'neutral', variant: 'link' }"
-            @update:open="createError = null"
+            :title="`This session handed off. ${assistant.name} carries on in a newer one.`"
+            description="It is kept as a record. Anything sent to it goes to the current session."
+            :actions="[{ label: `Open ${assistant.name}`, to: `/assistants/${assistant.id}`, trailingIcon: 'i-lucide-arrow-right' }]"
+            class="mb-2"
           />
-          <AgentDraftPanel v-model="draft" :disabled="creating" />
-        </div>
+          <AgentErrorBanner v-else-if="session" :session="session" />
 
-        <!--
-          One composer for the draft and the session it becomes: it is the
-          same component either way, so it is not rebuilt at the moment the
-          session appears.
-        -->
-        <div v-if="!closed && (session || draft)" class="shrink-0 pt-2">
-          <AgentComposer v-model:draft="draft" :session="session" :start="startFromDraft" />
-        </div>
-      </div>
-        <UModal v-model:open="renaming" title="Rename agent" description="Give this agent session a name.">
-          <template #body>
-            <UInput v-model="titleDraft" class="w-full" autofocus @keydown.enter="saveTitle" />
-          </template>
-          <template #footer>
-            <div class="flex w-full justify-end gap-2">
-              <UButton label="Cancel" color="neutral" variant="ghost" @click="renaming = false" />
-              <UButton label="Save" @click="saveTitle" />
+          <div v-if="isDraft && !firstMessage" class="flex flex-1 items-center justify-center">
+            <div class="max-w-sm text-center">
+              <UIcon name="i-lucide-bot" class="mx-auto size-8 text-dimmed" />
+              <p class="mt-3 text-sm font-medium">
+                A new session
+              </p>
+              <p class="mt-1 text-sm text-muted">
+                Choose where it works and which agent and model below, then send it its first task.
+                Sending is what starts it.
+              </p>
             </div>
-          </template>
-        </UModal>
+          </div>
 
-        <ConfirmModal
-          v-model:open="confirmingPurge"
-          :title="`Delete ${session?.title} permanently?`"
-          description="Deletes this agent and its whole transcript. This cannot be undone."
-          confirm-label="Delete permanently"
-          @confirm="purge"
-        />
-    </template>
-  </UDashboardPanel>
+          <div v-else-if="!shownEvents.length && session?.status !== 'thinking'" class="flex flex-1 items-center justify-center">
+            <div class="max-w-sm text-center">
+              <UIcon name="i-lucide-bot" class="mx-auto size-8 text-dimmed" />
+              <p class="mt-3 text-sm font-medium">
+                Nothing here yet
+              </p>
+              <p class="mt-1 text-sm text-muted">
+                {{ blocked
+                  ? 'It never did anything, and it can no longer be started.'
+                  : 'Send this agent a task below, or tap the microphone and say it.' }}
+              </p>
+            </div>
+          </div>
+
+          <!--
+            The transcript owns its scroll box, because the virtualiser inside it
+            measures rows against that element. `min-h-0` is what keeps it inside
+            this flex column: without it the box grows to its content, the
+            dashboard body scrolls instead, and the pinned permission cards and
+            the composer paint on top of the messages.
+          -->
+          <AgentTranscript
+            v-else-if="session || firstMessage"
+            class="min-h-0 flex-1"
+            :session="session"
+            :events="shownEvents"
+            :permissions="permissions"
+            :complete="complete"
+            :loading-earlier="loadingEarlier"
+            @load-earlier="loadEarlier"
+          />
+
+          <MotionList v-if="pending.length && !blocked" tag="div" class="mx-auto max-h-[40vh] w-full max-w-3xl shrink-0 space-y-2 overflow-y-auto border-t border-default py-2">
+            <PermissionCard
+              v-for="permission in pending"
+              :key="permission.id"
+              :permission="permission"
+            />
+          </MotionList>
+
+          <!--
+            Still rendered when the session cannot run: what was waiting when its
+            environment went away is part of the record. `readonly` drops the
+            take-back button, which would be the one thing left on this page that
+            still wrote to a session nothing can reach.
+          -->
+          <!-- The first message is in the transcript already while it waits there. -->
+          <div v-if="queued.length && !firstMessage" class="motion-fade shrink-0 pt-2">
+            <AgentInbox :agent-session-id="agentId" :messages="queued" :readonly="!!blocked" :session="session" />
+          </div>
+
+          <div v-if="isDraft && draft" class="shrink-0 space-y-2 pt-2">
+            <UAlert
+              v-if="createError"
+              color="error"
+              variant="subtle"
+              icon="i-lucide-circle-alert"
+              title="Could not start the session"
+              :description="createError"
+              class="mx-auto max-w-3xl"
+              :close="{ color: 'neutral', variant: 'link' }"
+              @update:open="createError = null"
+            />
+            <AgentDraftPanel v-model="draft" :disabled="creating" />
+          </div>
+
+          <!--
+            One composer for the draft and the session it becomes: it is the
+            same component either way, so it is not rebuilt at the moment the
+            session appears.
+          -->
+          <div v-if="!closed && (session || draft)" class="shrink-0 pt-2">
+            <AgentComposer v-model:draft="draft" :session="session" :start="startFromDraft" />
+          </div>
+        </div>
+          <UModal v-model:open="renaming" title="Rename agent" description="Give this agent session a name.">
+            <template #body>
+              <UInput v-model="titleDraft" class="w-full" autofocus @keydown.enter="saveTitle" />
+            </template>
+            <template #footer>
+              <div class="flex w-full justify-end gap-2">
+                <UButton label="Cancel" color="neutral" variant="ghost" @click="renaming = false" />
+                <UButton label="Save" @click="saveTitle" />
+              </div>
+            </template>
+          </UModal>
+
+          <ConfirmModal
+            v-model:open="confirmingPurge"
+            :title="`Delete ${session?.title} permanently?`"
+            description="Deletes this agent and its whole transcript. This cannot be undone."
+            confirm-label="Delete permanently"
+            @confirm="purge"
+          />
+      </template>
+    </UDashboardPanel>
+  </div>
 </template>

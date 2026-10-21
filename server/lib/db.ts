@@ -620,6 +620,50 @@ create table if not exists docker_disk (
   updated_at text not null
 );
 
+-- The status board each agent keeps for the human: see shared/types/board.ts.
+-- Owned by an assistant (as_...) or, for any other session, by the session
+-- (ag_...), so it outlives a handoff. One row per element rather than the
+-- board in a column, because these tables are FULL replica identity: an edit
+-- to one element resends that element and nothing else. Nothing secret.
+create table if not exists boards (
+  owner_id text primary key,
+  headline text,
+  -- The groups, in order: one per workstream, each a title, a summary, a
+  -- status and links to the agents doing it.
+  groups jsonb not null default '[]'::jsonb,
+  -- Groups the human folded or unfolded, by title.
+  folds jsonb not null default '{}'::jsonb,
+  -- When the agent last changed the board, and when the human last looked:
+  -- the toggle shows a dot while the first is later.
+  agent_changed_at text,
+  seen_at text,
+  created_at text not null,
+  updated_at text not null
+);
+create table if not exists board_elements (
+  owner_id text not null,
+  id text not null,
+  group_title text,
+  position double precision not null,
+  -- The agent's: kind, title, body and the kind's fields.
+  content jsonb not null,
+  -- The human's, once submitted: answer, acknowledgements, dismissal.
+  response jsonb not null default '{}'::jsonb,
+  thread jsonb not null default '[]'::jsonb,
+  created_at text not null,
+  updated_at text not null,
+  primary key (owner_id, id)
+);
+-- What the human has changed and not submitted yet, one row per element, so
+-- it survives a reload and shows on a second device.
+create table if not exists board_drafts (
+  owner_id text not null,
+  element_id text not null,
+  draft jsonb not null,
+  updated_at text not null,
+  primary key (owner_id, element_id)
+);
+
 -- Electric replays updates from the WAL: FULL replica identity makes sure a
 -- changed row arrives complete, not just its key + changed columns.
 alter table agent_sessions replica identity full;
@@ -640,6 +684,9 @@ alter table usage_providers replica identity full;
 alter table notifications replica identity full;
 alter table app_update replica identity full;
 alter table docker_disk replica identity full;
+alter table boards replica identity full;
+alter table board_elements replica identity full;
+alter table board_drafts replica identity full;
 `
 
 let pool: pg.Pool | null = null

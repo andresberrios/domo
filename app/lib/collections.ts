@@ -168,3 +168,27 @@ export const handoffEventsCollection = () =>
     where: 'type = $1',
     params: ['handoff']
   })
+
+/**
+ * Every board's own row, small and written only when a board changes: the
+ * sidebar shows which have something new. A board's elements and the human's
+ * drafts on it are synced only while its page is open, like a session's rows.
+ */
+export const boardsCollection = () => collection('boards', { table: 'boards', key: row => row.owner_id as string })
+
+export const boardElementsCollection = (ownerId: string) =>
+  collection(`board_elements:${ownerId}`, {
+    table: 'board_elements',
+    where: 'owner_id = $1',
+    params: [ownerId],
+    gcTime: SESSION_SHAPE_GC_MS
+  })
+
+export const boardDraftsCollection = (ownerId: string) =>
+  collection(`board_drafts:${ownerId}`, {
+    table: 'board_drafts',
+    where: 'owner_id = $1',
+    params: [ownerId],
+    key: row => row.element_id as string,
+    gcTime: SESSION_SHAPE_GC_MS
+  })
