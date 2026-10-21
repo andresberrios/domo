@@ -1992,6 +1992,7 @@ export async function callMeshTool(callerSessionId: string, tool: string, input:
           limit: limit.label,
           usedPercent: limit.usedPercent,
           resetsAt: limit.resetsAt,
+          ...limit.status ? { status: limit.status } : {},
           ...(limit.amountLimit === null && limit.amountUsed === null
             ? {}
             : { used: limit.amountUsed, of: limit.amountLimit, currency: limit.currency }),

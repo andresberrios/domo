@@ -196,8 +196,12 @@ export type UsageProviderId = 'claude' | 'codex' | 'opencode' | 'copilot'
  */
 export type UsageLimitSource = 'endpoint' | 'headers' | 'session-event' | 'app-server'
 
-/** Whether the window still lets a request through. */
-export type UsageLimitStatus = 'allowed' | 'allowed_warning' | 'rejected'
+/**
+ * Whether the window still lets a request through. `off` is for an optional
+ * allowance the account has not turned on, such as Claude's extra usage: it
+ * lets nothing through, but nothing has run out either.
+ */
+export type UsageLimitStatus = 'allowed' | 'allowed_warning' | 'rejected' | 'off'
 
 /**
  * One rate-limit window of one provider's plan.

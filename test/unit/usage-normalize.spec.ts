@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -5,6 +6,7 @@ import {
   claudeHeaderLimits,
   claudeSessionLimits,
   codexLimits,
+  extraUsageStatus,
   codexWindowLabel,
   normalizeAgentUsage,
   sameAgentUsage,
@@ -25,6 +27,11 @@ import {
  * The units are the whole point of this layer: three sources, three scales, and
  * every one of them would render plausibly wrong if taken at face value.
  */
+
+/** A recorded Claude payload from `fixtures/claude-usage`; `*.live.json` were captured off a real account. */
+function fixture(name: string): any {
+  return JSON.parse(readFileSync(new URL(`./fixtures/claude-usage/${name}`, import.meta.url), 'utf8'))
+}
 
 describe('toPercent', () => {
   it('passes a percentage through and multiplies a fraction', () => {
@@ -81,8 +88,8 @@ describe('the Claude usage endpoint', () => {
     seven_day_sonnet: null,
     extra_usage: {
       is_enabled: true,
-      monthly_limit: 100,
-      used_credits: 15.95,
+      monthly_limit: 10000,
+      used_credits: 1595,
       utilization: 15.95,
       currency: 'USD'
     }
@@ -103,22 +110,62 @@ describe('the Claude usage endpoint', () => {
     })
   })
 
-  it('renders credits as money, which is what that row means', () => {
+  it('renders credits as money in dollars, from the cents the endpoint counts in', () => {
     const credits = claudeEndpointLimits(body).find(limit => limit.limitId === 'extra_usage')
 
     expect(credits).toMatchObject({
-      label: 'Usage credits',
+      label: 'Extra usage',
       amountUsed: 15.95,
       amountLimit: 100,
       currency: 'USD'
     })
   })
 
-  it('leaves out extra usage the account never turned on', () => {
+  it('says extra usage is off, with no numbers, when the account never turned it on', () => {
     // "$0.00 of $0.00" on every plan that did not opt in is noise, not data.
     const limits = claudeEndpointLimits({ ...body, extra_usage: { is_enabled: false } })
 
-    expect(limits.map(limit => limit.limitId)).not.toContain('extra_usage')
+    expect(limits.find(limit => limit.limitId === 'extra_usage')).toMatchObject({
+      status: 'off',
+      usedPercent: null,
+      amountUsed: null,
+      amountLimit: null
+    })
+  })
+
+  // Built from the endpoint's schema in Claude Code 2.1.296 (`extra_usage`
+  // with `disabled_reason`, `limits[]` with `scope.model.display_name`): the
+  // endpoint refuses Domo's setup token, so neither body could be captured.
+  it('reads a recorded body with extra usage on', () => {
+    const limits = claudeEndpointLimits(fixture('endpoint-extra-usage-on.json'))
+
+    expect(limits.map(limit => [limit.limitId, limit.label, limit.usedPercent])).toEqual([
+      ['five_hour', '5-hour limit', 28],
+      ['seven_day', 'Weekly · all models', 21],
+      ['seven_day_sonnet', 'Weekly · Sonnet', 2],
+      ['model:Fable', 'Weekly · Fable', 4],
+      ['extra_usage', 'Extra usage', 31.9]
+    ])
+    expect(limits.at(-1)).toMatchObject({ status: 'allowed', amountUsed: 15.95, amountLimit: 50, currency: 'USD' })
+  })
+
+  it('reads a recorded body with extra usage off', () => {
+    const limits = claudeEndpointLimits(fixture('endpoint-extra-usage-off.json'))
+
+    expect(limits.at(-1)).toMatchObject({
+      limitId: 'extra_usage',
+      status: 'off',
+      usedPercent: null,
+      amountUsed: null,
+      currency: null
+    })
+  })
+
+  it('takes the per-model name from the body, so a renamed model is renamed here too', () => {
+    const body = fixture('endpoint-extra-usage-on.json')
+    body.limits[1].scope.model.display_name = 'Fable 6'
+
+    expect(claudeEndpointLimits(body).map(limit => limit.label)).toContain('Weekly · Fable 6')
   })
 
   it('drops a window that is present but has no reading, rather than calling it 0%', () => {
@@ -173,7 +220,7 @@ describe('the unified rate-limit headers', () => {
   it('reads utilization as a fraction, which is what it really is', () => {
     // Read as a percentage, a 41%-spent window renders as "0%" — the most
     // reassuring possible way for this feature to be wrong.
-    const limits = claudeHeaderLimits(headers)
+    const limits = claudeHeaderLimits(headers).filter(limit => limit.limitId !== 'extra_usage')
 
     expect(limits).toEqual([
       expect.objectContaining({
@@ -209,18 +256,46 @@ describe('the unified rate-limit headers', () => {
     expect(limits.find(l => l.limitId === 'five_hour')!.status).toBe('allowed_warning')
   })
 
-  it('does not invent a credits row for an account that has no credits', () => {
+  it('says extra usage is off for an account that has no credits, not that a limit is hit', () => {
     // The real response carries `overage-status: rejected` with
     // `overage-disabled-reason: out_of_credits` and no utilization at all. That
-    // means "you never bought any", not "you have hit a limit", and rendering
-    // it as a spent bar would be a straightforward lie.
-    expect(claudeHeaderLimits(headers).map(limit => limit.limitId))
-      .not.toContain('extra_usage')
+    // means "you never bought any", not "you have hit a limit".
+    expect(claudeHeaderLimits(headers).find(limit => limit.limitId === 'extra_usage')).toMatchObject({
+      status: 'off',
+      usedPercent: null,
+      resetsAt: null
+    })
+  })
+
+  it('reads a recorded response with extra usage off', () => {
+    const limits = claudeHeaderLimits(fixture('headers-extra-usage-off.live.json'))
+
+    expect(limits.map(limit => [limit.limitId, limit.usedPercent, limit.status])).toEqual([
+      ['five_hour', 28, 'allowed'],
+      ['seven_day', 21, 'allowed'],
+      ['extra_usage', null, 'off']
+    ])
+  })
+
+  it('reads the Fable weekly window when the response carries it', () => {
+    const limits = claudeHeaderLimits({
+      ...headers,
+      'anthropic-ratelimit-unified-7d_oi-utilization': '0.04',
+      'anthropic-ratelimit-unified-7d_oi-reset': '1793134800'
+    })
+
+    expect(limits).toContainEqual(expect.objectContaining({
+      limitId: 'seven_day_overage_included',
+      label: 'Weekly · Fable',
+      usedPercent: 4,
+      windowMinutes: 10080
+    }))
   })
 
   it('reads the overage window as the credits row when there is a number', () => {
+    const { 'anthropic-ratelimit-unified-overage-disabled-reason': _reason, ...rest } = headers
     const limits = claudeHeaderLimits({
-      ...headers,
+      ...rest,
       'anthropic-ratelimit-unified-overage-utilization': '0.4',
       'anthropic-ratelimit-unified-overage-status': 'allowed',
       'anthropic-ratelimit-unified-overage-reset': '1790700000'
@@ -292,6 +367,33 @@ describe('_claude/rateLimit, as it rides in on a working agent', () => {
     expect(limits[0]!.usedPercent).toBe(52)
   })
 
+  it('reads a recorded event from a Fable turn: the Fable week, and extra usage off', () => {
+    // Captured live. A Haiku turn on the same account carries no
+    // `seven_day_overage_included` at all, which is how it is known to be
+    // the Fable bucket and not anything to do with extra usage.
+    const limits = claudeSessionLimits(fixture('session-event-fable.live.json'))
+
+    expect(limits.map(limit => [limit.limitId, limit.label, limit.usedPercent, limit.status])).toEqual([
+      ['five_hour', '5-hour limit', 29, 'allowed'],
+      ['seven_day', 'Weekly · all models', 21, 'allowed'],
+      ['seven_day_overage_included', 'Weekly · Fable', 4, 'allowed'],
+      ['extra_usage', 'Extra usage', null, 'off']
+    ])
+    expect(claudeSessionLimits(fixture('session-event-haiku.live.json')).map(limit => limit.limitId))
+      .not.toContain('seven_day_overage_included')
+  })
+
+  it('says extra usage is spent only when it is on', () => {
+    const event = fixture('session-event-fable.live.json')
+    const spent = (patch: object) => claudeSessionLimits({ ...event, ...patch })
+      .find(limit => limit.limitId === 'extra_usage')!.status
+
+    expect(spent({ overageEnabled: true })).toBe('rejected')
+    expect(spent({ overageDisabledReason: 'org_level_disabled_until' })).toBe('rejected')
+    expect(spent({ overageStatus: 'allowed', overageDisabledReason: undefined, isUsingOverage: true })).toBe('allowed')
+    expect(spent({ overageDisabledReason: 'overage_not_provisioned' })).toBe('off')
+  })
+
   it('names no window when the event names none', () => {
     // `rateLimitType` is optional; a reading without one cannot be attributed.
     expect(claudeSessionLimits({ status: 'allowed', utilization: 0.4 })).toEqual([])
@@ -300,6 +402,18 @@ describe('_claude/rateLimit, as it rides in on a working agent', () => {
   it('is empty rather than throwing for a shape it does not recognise', () => {
     expect(claudeSessionLimits(null)).toEqual([])
     expect(claudeSessionLimits('rejected')).toEqual([])
+  })
+})
+
+describe('extraUsageStatus', () => {
+  it('is off for every reason that is not a reached cap, unless the source says it is on', () => {
+    expect(extraUsageStatus({ status: 'rejected', disabledReason: 'out_of_credits' })).toBe('off')
+    expect(extraUsageStatus({ status: 'rejected', disabledReason: 'member_level_disabled' })).toBe('off')
+    expect(extraUsageStatus({ enabled: false })).toBe('off')
+    expect(extraUsageStatus({ enabled: true, disabledReason: 'out_of_credits' })).toBe('rejected')
+    expect(extraUsageStatus({ enabled: false, disabledReason: 'org_spend_cap_reached' })).toBe('rejected')
+    expect(extraUsageStatus({ enabled: true })).toBe('allowed')
+    expect(extraUsageStatus({})).toBeNull()
   })
 })
 
