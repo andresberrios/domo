@@ -101,14 +101,9 @@ const menuItems = computed(() => [
 
 <template>
   <div class="flex min-w-0 flex-1">
-    <!-- The board, when open, is a panel of its own left of the transcript. -->
-    <BoardSidePanel :state="board" :readonly="!!blocked || !!assistant?.archived" :busy="current?.status === 'thinking'" />
     <UDashboardPanel id="assistant">
       <template #header>
         <UDashboardNavbar>
-          <template #leading>
-            <BoardToggle :state="board" />
-          </template>
           <template #title>
             <span class="flex min-w-0 items-center gap-2">
               <UAvatar :src="assistant?.avatar ?? undefined" :alt="assistant?.name ?? '?'" size="xs" />
@@ -139,6 +134,7 @@ const menuItems = computed(() => [
             <UDropdownMenu :items="menuItems">
               <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Assistant actions" />
             </UDropdownMenu>
+            <BoardToggle :state="board" />
           </template>
         </UDashboardNavbar>
 
@@ -213,5 +209,7 @@ const menuItems = computed(() => [
         />
       </template>
     </UDashboardPanel>
+    <!-- The board, when open, is a sidebar of its own right of the transcript. -->
+    <BoardSidePanel :state="board" :readonly="!!blocked || !!assistant?.archived" :busy="current?.status === 'thinking'" />
   </div>
 </template>

@@ -263,14 +263,9 @@ const menuItems = computed(() => [[
 
 <template>
   <div class="flex min-w-0 flex-1">
-    <!-- The board, when open, is a panel of its own left of the transcript. -->
-    <BoardSidePanel v-if="boardOwner" :state="board" :readonly="closed" :busy="session?.status === 'thinking'" />
     <UDashboardPanel id="agent">
       <template #header>
         <UDashboardNavbar icon="i-lucide-bot">
-          <template v-if="boardOwner" #leading>
-            <BoardToggle :state="board" />
-          </template>
           <template #title>
             <InlineTitle v-if="session" :value="session.title" label="Session title" @save="renameTo" />
             <span v-else class="truncate">{{ isDraft ? 'New session' : 'Agent' }}</span>
@@ -294,6 +289,7 @@ const menuItems = computed(() => [[
             <UDropdownMenu v-if="session" :items="menuItems">
               <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" />
             </UDropdownMenu>
+            <BoardToggle v-if="boardOwner" :state="board" />
           </template>
         </UDashboardNavbar>
 
@@ -432,5 +428,7 @@ const menuItems = computed(() => [[
           />
       </template>
     </UDashboardPanel>
+    <!-- The board, when open, is a sidebar of its own right of the transcript. -->
+    <BoardSidePanel v-if="boardOwner" :state="board" :readonly="closed" :busy="session?.status === 'thinking'" />
   </div>
 </template>
