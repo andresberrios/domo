@@ -650,15 +650,19 @@ describe('a streamed turn', () => {
     await vi.waitFor(() => expect(state.adapters).toHaveLength(1))
     serve(state.adapters[0]!, async (send) => {
       for (let index = 0; index < 10; index++) await send(textChunk(`${index} `))
-      await sleep(250)
+      // Wait for the paced flush itself, not for a guess at how long it takes.
+      await vi.waitFor(async () => expect(textOf(await listAgentEvents(agent.id)).join('')).toContain('9 '))
       before = (await getAgentSession(agent.id))!.lastActivityAt
       seen.clear()
 
       // Half a minute into the same block, still nothing but deltas.
       skipAhead(31_000)
       for (let index = 10; index < 20; index++) await send(textChunk(`${index} `))
-      await sleep(250)
-      after = (await getAgentSession(agent.id))!.lastActivityAt
+      await vi.waitFor(async () => {
+        expect(textOf(await listAgentEvents(agent.id)).join('')).toContain('19 ')
+        after = (await getAgentSession(agent.id))!.lastActivityAt
+        expect(after! > before!).toBe(true)
+      })
       writes = seen.events.filter(event => event.type === 'agent-changed').length
     })
     await started
