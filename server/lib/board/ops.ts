@@ -81,6 +81,8 @@ interface Working {
   board: Board
   /** By id, for the replace-all case: an element put again keeps the human's response and thread. */
   previous: Map<string, BoardElement>
+  /** Groups renamed in this batch: new title to the title before it. */
+  renamed: Map<string, string>
   now: string
 }
 
@@ -204,11 +206,16 @@ function group(work: Working, op: Extract<BoardOp, { op: 'group' }>): void {
     for (const element of work.board.elements) {
       if (element.group === op.title) element.group = op.renameTo
     }
-    // The human's fold goes with the group.
+    // The human's fold and response go with the group.
     if (op.title in work.board.folds) {
       const { [op.title]: folded, ...rest } = work.board.folds
       work.board.folds = { ...rest, [op.renameTo]: folded! }
     }
+    if (op.title in work.board.groupResponses) {
+      const { [op.title]: response, ...rest } = work.board.groupResponses
+      work.board.groupResponses = { ...rest, [op.renameTo]: response! }
+    }
+    work.renamed.set(op.renameTo, work.renamed.get(op.title) ?? op.title)
     entry.title = op.renameTo
   }
   if (op.summary !== undefined) {
@@ -256,6 +263,7 @@ function apply(work: Working, op: BoardOp): void {
       if (!groupNamed(work, op.title)) throw new BoardEditError(`no group "${op.title}"`)
       board.groups = board.groups.filter(entry => entry.title !== op.title)
       board.elements = board.elements.filter(item => item.group !== op.title)
+      board.groupResponses = Object.fromEntries(Object.entries(board.groupResponses).filter(([title]) => title !== op.title))
       return
     case 'reply': {
       const element = find(work, op.id)
@@ -282,7 +290,7 @@ export interface BoardEditOptions {
  * A group left with no elements and nothing said about it goes.
  */
 export function applyBoardOps(board: Board, ops: BoardOp[], options: BoardEditOptions): Board {
-  const work: Working = { board: clone(board), previous: new Map(), now: options.now }
+  const work: Working = { board: clone(board), previous: new Map(), renamed: new Map(), now: options.now }
   if (options.replaceAll) {
     for (const element of work.board.elements) work.previous.set(element.id, element)
     work.board.elements = []
@@ -305,7 +313,36 @@ export function applyBoardOps(board: Board, ops: BoardOp[], options: BoardEditOp
     const old = before.get(element.id)
     if (old && !same({ ...old, updatedAt: '' }, { ...element, updatedAt: '' })) element.updatedAt = options.now
   }
+  settleGroups(board, work)
   return work.board
+}
+
+/**
+ * Stamp each group the batch changed, and bring a cleared one back to the
+ * human when the change is substantive: its summary, status or links, or an
+ * element in it that is new or says something new. Taking an element out is
+ * tidying, and leaves it cleared.
+ */
+function settleGroups(board: Board, work: Working): void {
+  const oldGroups = new Map(board.groups.map(entry => [entry.title, entry]))
+  const oldElements = new Map(board.elements.map(element => [element.id, element]))
+  const describe = (entry: BoardGroup) => [entry.summary ?? null, entry.status ?? null, entry.links ?? null]
+  const responses: Board['groupResponses'] = {}
+  for (const entry of work.board.groups) {
+    const was = oldGroups.get(work.renamed.get(entry.title) ?? entry.title)
+    const now = work.board.elements.filter(element => element.group === entry.title)
+    const said = !was || !same(describe(was), describe(entry)) || now.some((element) => {
+      const old = oldElements.get(element.id)
+      return !old || old.group !== was.title || !same(old.content, element.content)
+    })
+    const removed = !!was && board.elements.some(element => element.group === was.title
+      && !now.some(item => item.id === element.id))
+    if (said || removed) entry.updatedAt = work.now
+    else if (was?.updatedAt) entry.updatedAt = was.updatedAt
+    const response = work.board.groupResponses[entry.title]
+    if (response && !said) responses[entry.title] = response
+  }
+  work.board.groupResponses = responses
 }
 
 /** What a write has to touch: elements to upsert, ids to delete, and whether the board row itself changed. */
@@ -316,5 +353,6 @@ export function diffBoard(before: Board, after: Board) {
     upserts: after.elements.filter(element => !same(old.get(element.id), element)),
     deletes: before.elements.filter(element => !kept.has(element.id)).map(element => element.id),
     boardChanged: before.headline !== after.headline || !same(before.groups, after.groups) || !same(before.folds, after.folds)
+      || !same(before.groupResponses, after.groupResponses)
   }
 }

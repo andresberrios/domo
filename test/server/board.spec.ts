@@ -15,6 +15,7 @@ import {
   updateAssistant
 } from '../../server/lib/repo'
 import { boardOwnerFor, submitBoard } from '../../server/lib/board'
+import { groupDraftKey } from '../../shared/board'
 import { handleMeshMcpRequest } from '../../server/lib/mesh/server'
 import { mintMeshToken } from '../../server/lib/mesh/token'
 
@@ -216,6 +217,44 @@ describe('submitting the human\'s drafts', () => {
     expect((await getBoard(agent.id)).elements.find(element => element.id === 'zod')!.response).toEqual({})
     // Kept, like its transcript.
     expect((await getBoard(agent.id)).elements).toHaveLength(3)
+  })
+})
+
+describe('clearing a group', () => {
+  it('clears a done group and dismisses another through submit; an agent change brings one back', async () => {
+    const agent = await session('worker')
+    await tool(agent.id, 'update_board', { ops: [
+      ...BOARD,
+      { op: 'group', title: 'Shipped', summary: 'Merged to main.', status: 'done' },
+      { op: 'group', title: 'Side quest', status: 'active' }
+    ] })
+    await setBoardDraft(agent.id, groupDraftKey('Shipped'), { acknowledge: true })
+    await setBoardDraft(agent.id, groupDraftKey('Side quest'), { dismiss: true })
+
+    expect(await submitBoard(agent.id)).toEqual({ submitted: 2, outcome: 'queued' })
+    const text = acp.deliver.mock.calls[0]![1].content[0].text as string
+    expect(text).toContain('Shipped:\n- Group "Shipped": cleared as done')
+    expect(text).toContain('Side quest:\n- Group "Side quest": dismissed')
+    expect((await listBoardDrafts(agent.id)).size).toBe(0)
+    const board = await getBoard(agent.id)
+    expect(board.groupResponses.Shipped!.acknowledgedAt).toBeTruthy()
+    expect(board.groupResponses['Side quest']!.dismissedAt).toBeTruthy()
+    const read = await tool(agent.id, 'read_board')
+    expect(read.json.groups.find((group: any) => group.title === 'Shipped')).toMatchObject({ cleared: true })
+
+    // Saying the same again leaves it cleared; something new brings it back.
+    await tool(agent.id, 'update_board', { ops: [{ op: 'group', title: 'Shipped', status: 'done' }] })
+    expect((await getBoard(agent.id)).groupResponses.Shipped).toBeTruthy()
+    await tool(agent.id, 'update_board', { ops: [{ op: 'put', id: 'regression', kind: 'note', tone: 'warning', title: 'It regressed', group: 'Shipped' }] })
+    expect((await getBoard(agent.id)).groupResponses).toEqual({ 'Side quest': expect.any(Object) })
+  })
+
+  it('drops a group\'s draft when the agent removes the group', async () => {
+    const agent = await session('worker')
+    await tool(agent.id, 'update_board', { ops: [{ op: 'group', title: 'Shipped', status: 'done' }] })
+    await setBoardDraft(agent.id, groupDraftKey('Shipped'), { acknowledge: true })
+    await tool(agent.id, 'update_board', { ops: [{ op: 'remove_group', title: 'Shipped' }] })
+    expect((await listBoardDrafts(agent.id)).size).toBe(0)
   })
 })
 

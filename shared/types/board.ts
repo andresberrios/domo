@@ -147,6 +147,18 @@ export interface BoardGroup {
   /** waiting: on the human. */
   status?: BoardGroupStatus
   links?: BoardGroupLink[]
+  /** When the agent last changed the group or anything in it. */
+  updatedAt?: string
+}
+
+/**
+ * What the human has submitted on a group, by title: they cleared it as done,
+ * or dismissed it. Either moves the group and everything in it out of view
+ * until the agent changes it again.
+ */
+export interface BoardGroupResponse {
+  acknowledgedAt?: string
+  dismissedAt?: string
 }
 
 /** What the human has submitted on an element. */
@@ -183,6 +195,8 @@ export interface Board {
   groups: BoardGroup[]
   /** Groups the human folded (true) or unfolded (false); otherwise a done group is folded. */
   folds: Record<string, boolean>
+  /** By group title. */
+  groupResponses: Record<string, BoardGroupResponse>
   elements: BoardElement[]
   /** When the agent last changed anything; against `seenAt`, whether there is something new. */
   agentChangedAt: string | null

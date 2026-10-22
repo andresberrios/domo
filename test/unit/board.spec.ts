@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { applyBoardOps, BoardEditError, diffBoard, parseBoardOps, type BoardEditOptions } from '../../server/lib/board/ops'
 import { applySubmission } from '../../server/lib/board/submit'
-import { boardForAgent } from '../../server/lib/board/read'
-import { attention, draftChangeCount, effectiveDraft, isCleared, isFolded, needsYou, sortBoardElements } from '../../shared/board'
+import { boardForAgent, tidyHint } from '../../server/lib/board/read'
+import { attention, draftChangeCount, effectiveDraft, effectiveGroupDraft, groupContents, groupDraftKey, isCleared, isFolded, needsYou, sortBoardElements } from '../../shared/board'
 import { boardElementContent, type Board, type BoardDraft } from '../../shared/types/board'
 
 const T0 = '2026-01-01T00:00:00.000Z'
@@ -11,7 +11,7 @@ const T1 = '2026-01-01T00:01:00.000Z'
 const T2 = '2026-01-01T00:02:00.000Z'
 
 function empty(): Board {
-  return { ownerId: 'ag_x', headline: null, groups: [], folds: {}, elements: [], agentChangedAt: null, seenAt: null }
+  return { ownerId: 'ag_x', headline: null, groups: [], folds: {}, groupResponses: {}, elements: [], agentChangedAt: null, seenAt: null }
 }
 
 function edit(board: Board, ops: unknown[], now = T1, replaceAll = false, extra: Partial<BoardEditOptions> = {}): Board {
@@ -52,7 +52,7 @@ describe('applyBoardOps', () => {
   it('builds a board in order, groups created on first use', () => {
     const board = seeded()
     expect(board.headline).toBe('Migrating the API')
-    expect(board.groups).toEqual([{ title: 'Work' }])
+    expect(board.groups).toEqual([{ title: 'Work', updatedAt: T0 }])
     expect(ids(board)).toEqual(['db', 'plan', 'zod'])
     expect(element(board, 'plan').content).toMatchObject({ kind: 'checklist', items: [{ status: 'done' }, { status: 'ongoing' }] })
   })
@@ -110,12 +110,12 @@ describe('applyBoardOps', () => {
       { op: 'group', title: 'Waiting on review', status: 'waiting' }
     ])
     expect(titles(board)).toEqual(['Risks', 'Doing', 'Waiting on review'])
-    expect(board.groups[1]).toEqual({ title: 'Doing', summary: 'Halfway', status: 'active', links: [{ kind: 'agent', target: 'ag_w' }] })
+    expect(board.groups[1]).toEqual({ title: 'Doing', summary: 'Halfway', status: 'active', links: [{ kind: 'agent', target: 'ag_w' }], updatedAt: T1 })
     expect(board.folds).toEqual({ Doing: false })
     expect(element(board, 'plan').group).toBe('Doing')
     expect(ids(board)).toEqual(['db', 'risk', 'plan', 'zod'])
     board = edit(board, [{ op: 'group', title: 'Doing', summary: null, links: null }])
-    expect(board.groups[1]).toEqual({ title: 'Doing', status: 'active' })
+    expect(board.groups[1]).toEqual({ title: 'Doing', status: 'active', updatedAt: T1 })
     board = edit(board, [{ op: 'remove_group', title: 'Doing' }])
     expect(ids(board)).toEqual(['db', 'risk'])
     expect(() => edit(board, [{ op: 'group', title: 'Risks', renameTo: 'Waiting on review' }])).toThrow(/already exists/)
@@ -172,7 +172,9 @@ describe('applyBoardOps', () => {
     const diff = diffBoard(before, after)
     expect(diff.upserts.map(item => item.id)).toEqual(['plan'])
     expect(diff.deletes).toEqual(['db'])
-    expect(diff.boardChanged).toBe(false)
+    // The group says when it last changed.
+    expect(diff.boardChanged).toBe(true)
+    expect(diffBoard(before, edit(before, [{ op: 'remove', id: 'db' }])).boardChanged).toBe(false)
     expect(diffBoard(before, edit(before, [{ op: 'headline', text: 'Done' }])).boardChanged).toBe(true)
   })
 })
@@ -225,7 +227,7 @@ describe('drafts and submission', () => {
       '- Checklist "Plan" [plan]: acknowledged done "Write the schema" [schema]; replied:\n    Skip the down migration.\n    It is never run.',
       '- Decision "Validate with zod" [zod]: acknowledged',
       '',
-      'Act on this, and bring the board up to date with update_board: remove or update what is settled.'
+      'Act on this, and bring the board up to date with update_board: remove what is settled, and a group they cleared or dismissed once nothing in it still matters.'
     ].join('\n'))
     expect(applySubmission(board, new Map([['gone', { dismiss: true }]]), T2)).toBeNull()
   })
@@ -243,5 +245,106 @@ describe('drafts and submission', () => {
       allowCustom: true,
       answer: { options: ['pg'] }
     })
+  })
+})
+
+describe('clearing groups', () => {
+  /** Two finished workstreams, one empty and one with a done checklist, beside the seeded "Work". */
+  function finished(): Board {
+    return edit(seeded(), [
+      { op: 'group', title: 'Shipped', summary: 'Merged to main.', status: 'done' },
+      { op: 'put', id: 'queue', kind: 'checklist', title: 'Queue', group: 'Next', items: [{ id: 'a', text: 'A', status: 'done' }] },
+      { op: 'group', title: 'Next', status: 'done' }
+    ], T1)
+  }
+
+  it('clears a done group and dismisses any group through submit, in one message under each group', () => {
+    const board = finished()
+    const submission = applySubmission(board, new Map<string, BoardDraft>([
+      [groupDraftKey('Shipped'), { acknowledge: true }],
+      [groupDraftKey('Work'), { dismiss: true }],
+      // Not done: a clear means nothing on it.
+      [groupDraftKey('Next'), {}],
+      [groupDraftKey('Gone'), { dismiss: true }]
+    ]), T2)!
+    expect(submission.changed).toEqual([groupDraftKey('Work'), groupDraftKey('Shipped')])
+    expect(submission.board.groupResponses).toEqual({ Shipped: { acknowledgedAt: T2 }, Work: { dismissedAt: T2 } })
+    expect(submission.message).toContain('Work:\n- Group "Work": dismissed')
+    expect(submission.message).toContain('Shipped:\n- Group "Shipped": cleared as done (they have read its outcome)')
+    // The group's line comes before its elements'.
+    const withElement = applySubmission(board, new Map<string, BoardDraft>([
+      ['zod', { acknowledge: true }],
+      [groupDraftKey('Work'), { dismiss: true }]
+    ]), T2)!
+    expect(withElement.message).toContain('Work:\n- Group "Work": dismissed\n- Decision "Validate with zod" [zod]: acknowledged')
+  })
+
+  it('takes a clear only on a done group, and nothing on one already cleared', () => {
+    expect(effectiveGroupDraft({ title: 'A', status: 'active' }, undefined, { acknowledge: true })).toEqual({})
+    expect(effectiveGroupDraft({ title: 'A', status: 'done' }, undefined, { acknowledge: true })).toEqual({ acknowledge: true })
+    expect(effectiveGroupDraft({ title: 'A', status: 'active' }, undefined, { dismiss: true, acknowledge: true })).toEqual({ dismiss: true })
+    expect(effectiveGroupDraft({ title: 'A', status: 'done' }, { acknowledgedAt: T0 }, { dismiss: true })).toEqual({})
+    const board = finished()
+    board.groupResponses = { Shipped: { acknowledgedAt: T1 } }
+    expect(applySubmission(board, new Map([[groupDraftKey('Shipped'), { acknowledge: true }]]), T2)).toBeNull()
+  })
+
+  it('brings a cleared group back when the agent says something new in it, not when it tidies', () => {
+    const board = finished()
+    board.groupResponses = { Shipped: { acknowledgedAt: T1 }, Next: { acknowledgedAt: T1 }, Work: { dismissedAt: T1 } }
+    // Repeating what it said, or taking something out, leaves them cleared.
+    let after = edit(board, [
+      { op: 'group', title: 'Shipped', summary: 'Merged to main.', status: 'done' },
+      { op: 'put', id: 'queue', title: 'Queue', group: 'Next' },
+      { op: 'remove', id: 'zod' }
+    ], T2)
+    expect(Object.keys(after.groupResponses).sort()).toEqual(['Next', 'Shipped', 'Work'])
+    expect(after.groups.find(group => group.title === 'Shipped')!.updatedAt).toBe(T1)
+    // A removal is still news of a kind: the group says when it last changed.
+    expect(after.groups.find(group => group.title === 'Work')!.updatedAt).toBe(T2)
+    after = edit(board, [
+      { op: 'group', title: 'Shipped', summary: 'Merged, and reverted.' },
+      { op: 'items', id: 'queue', set: [{ id: 'b', text: 'B' }] },
+      { op: 'put', id: 'risk', kind: 'note', title: 'New risk', group: 'Work' }
+    ], T2)
+    expect(after.groupResponses).toEqual({})
+    expect(after.groups.every(group => group.updatedAt === T2)).toBe(true)
+  })
+
+  it('keeps the response with a renamed group, drops it with a removed one, and keeps it across an unchanged replaceAll', () => {
+    const board = finished()
+    board.groupResponses = { Shipped: { acknowledgedAt: T1 }, Next: { acknowledgedAt: T1 } }
+    const renamed = edit(board, [{ op: 'group', title: 'Shipped', renameTo: 'Released' }, { op: 'remove_group', title: 'Next' }], T2)
+    expect(renamed.groupResponses).toEqual({ Released: { acknowledgedAt: T1 } })
+    expect(diffBoard(board, renamed).boardChanged).toBe(true)
+    const replaced = edit(board, [{ op: 'group', title: 'Shipped', summary: 'Merged to main.', status: 'done' }], T2, true)
+    expect(replaced.groupResponses).toEqual({ Shipped: { acknowledgedAt: T1 } })
+  })
+
+  it('says what a group holds, and reads back cleared groups to the agent', () => {
+    const board = finished()
+    expect(groupContents([])).toBe('no items')
+    expect(groupContents(board.elements.filter(item => item.group === 'Work'))).toBe('2 open items')
+    element(board, 'queue').response = { acknowledgedItems: ['a'] }
+    expect(groupContents(board.elements.filter(item => item.group === 'Next'))).toBe('nothing open')
+    board.groupResponses = { Shipped: { acknowledgedAt: T1 }, Work: { dismissedAt: T1 } }
+    const read = boardForAgent(board)
+    expect(read.groups).toEqual([
+      { title: 'Work', dismissed: true },
+      { title: 'Shipped', summary: 'Merged to main.', status: 'done', cleared: true },
+      { title: 'Next', status: 'done' }
+    ])
+  })
+
+  it('nudges the agent only once the board is piling up', () => {
+    const board = finished()
+    expect(tidyHint(board)).toBeNull()
+    board.groupResponses = { Shipped: { acknowledgedAt: T1 } }
+    element(board, 'queue').response = { acknowledgedItems: ['a'] }
+    expect(tidyHint(board)).toBeNull()
+    element(board, 'zod').response = { acknowledgedAt: T1 }
+    expect(tidyHint(board)).toBe('The human has cleared group "Shipped", zod, queue: remove what no longer matters (remove, remove_group).')
+    const done = edit(empty(), ['A', 'B', 'C', 'D'].map(title => ({ op: 'group', title, status: 'done' })))
+    expect(tidyHint(done)).toMatch(/^4 groups are done/)
   })
 })
