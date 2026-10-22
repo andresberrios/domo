@@ -37,6 +37,7 @@ import type {
 import type { Board, BoardDraft, BoardElement } from '../../shared/types/board'
 import { isAgentAdapter } from '../../shared/agent-adapters'
 import { diffBoard } from './board/ops'
+import { groupDraftKey } from '../../shared/board'
 import { isAssistantContext } from '../../shared/assistants'
 import { usageLimitLabel } from '../../shared/usage-limits'
 
@@ -2222,7 +2223,7 @@ function mapBoardElement(r: any): BoardElement {
 }
 
 function emptyBoard(ownerId: string): Board {
-  return { ownerId, headline: null, groups: [], folds: {}, elements: [], agentChangedAt: null, seenAt: null }
+  return { ownerId, headline: null, groups: [], folds: {}, groupResponses: {}, elements: [], agentChangedAt: null, seenAt: null }
 }
 
 async function readBoard(run: (sql: string, params: any[]) => Promise<any[]>, ownerId: string, lock = false): Promise<Board> {
@@ -2234,6 +2235,7 @@ async function readBoard(run: (sql: string, params: any[]) => Promise<any[]>, ow
     headline: row.headline ?? null,
     groups: row.groups ?? [],
     folds: row.folds ?? {},
+    groupResponses: row.group_responses ?? {},
     elements: elements.map(mapBoardElement),
     agentChangedAt: row.agent_changed_at ?? null,
     seenAt: row.seen_at ?? null
@@ -2250,7 +2252,7 @@ export async function listBoardDrafts(ownerId: string): Promise<Map<string, Boar
   return new Map(rows.map(row => [row.element_id as string, row.draft as BoardDraft]))
 }
 
-/** One element's draft; null or an empty draft removes it. */
+/** One element's draft, or a group's under `groupDraftKey`; null or an empty draft removes it. */
 export async function setBoardDraft(ownerId: string, elementId: string, draft: BoardDraft | null): Promise<void> {
   if (!draft || !Object.keys(draft).length) {
     await query('delete from board_drafts where owner_id = $1 and element_id = $2', [ownerId, elementId])
@@ -2290,7 +2292,7 @@ export interface BoardChange<T> {
   /** The agent wrote this: the human has something new to look at. */
   byAgent: boolean
   result: T
-  /** Drafts to drop alongside: submitted ones. Drafts on removed elements always go. */
+  /** Drafts to drop alongside: submitted ones. Drafts on removed elements and groups always go. */
   clearDrafts?: string[]
 }
 
@@ -2337,18 +2339,21 @@ export async function changeBoard<T>(
     if (deletes.length) {
       await client.query('delete from board_elements where owner_id = $1 and id = any($2)', [ownerId, deletes])
     }
-    const dropDrafts = [...deletes, ...outcome.clearDrafts ?? []].filter(id => drafts.has(id))
+    const goneGroups = before.groups
+      .filter(group => !outcome.board.groups.some(entry => entry.title === group.title))
+      .map(group => groupDraftKey(group.title))
+    const dropDrafts = [...deletes, ...goneGroups, ...outcome.clearDrafts ?? []].filter(id => drafts.has(id))
     if (dropDrafts.length) {
       await client.query('delete from board_drafts where owner_id = $1 and element_id = any($2)', [ownerId, dropDrafts])
     }
     const touched = boardChanged || upserts.length > 0 || deletes.length > 0
     if (touched) {
       await client.query(
-        `update boards set headline = $2, groups = $3::jsonb, folds = $4::jsonb, updated_at = $5,
+        `update boards set headline = $2, groups = $3::jsonb, folds = $4::jsonb, group_responses = $7::jsonb, updated_at = $5,
            agent_changed_at = case when $6 then $5 else agent_changed_at end
          where owner_id = $1`,
         [ownerId, outcome.board.headline, JSON.stringify(outcome.board.groups), JSON.stringify(outcome.board.folds),
-          now, outcome.byAgent]
+          now, outcome.byAgent, JSON.stringify(outcome.board.groupResponses)]
       )
     }
     await client.query('commit')

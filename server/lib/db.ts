@@ -641,6 +641,8 @@ create table if not exists boards (
   groups jsonb not null default '[]'::jsonb,
   -- Groups the human folded or unfolded, by title.
   folds jsonb not null default '{}'::jsonb,
+  -- What the human submitted on a group, by title: cleared it, or dismissed it.
+  group_responses jsonb not null default '{}'::jsonb,
   -- When the agent last changed the board, and when the human last looked:
   -- the toggle shows a dot while the first is later.
   agent_changed_at text,
@@ -648,6 +650,7 @@ create table if not exists boards (
   created_at text not null,
   updated_at text not null
 );
+alter table boards add column if not exists group_responses jsonb not null default '{}'::jsonb;
 create table if not exists board_elements (
   owner_id text not null,
   id text not null,
@@ -662,8 +665,9 @@ create table if not exists board_elements (
   updated_at text not null,
   primary key (owner_id, id)
 );
--- What the human has changed and not submitted yet, one row per element, so
--- it survives a reload and shows on a second device.
+-- What the human has changed and not submitted yet, one row per element (or
+-- per group, keyed "#" and its title), so it survives a reload and shows on a
+-- second device.
 create table if not exists board_drafts (
   owner_id text not null,
   element_id text not null,

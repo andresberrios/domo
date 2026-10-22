@@ -1,4 +1,4 @@
-import type { BoardDraft, BoardElement, BoardGroup } from './types/board'
+import type { Board, BoardDraft, BoardElement, BoardGroup, BoardGroupResponse } from './types/board'
 
 /**
  * Board rules both sides need: the UI to show a board as the server will
@@ -119,4 +119,41 @@ export function attention(elements: BoardElement[]) {
 /** Whether a group shows folded: as the human left it, else folded once it is done. */
 export function isFolded(group: BoardGroup, folds: Record<string, boolean>): boolean {
   return folds[group.title] ?? group.status === 'done'
+}
+
+/**
+ * The draft key of a group's own draft, beside its elements' drafts. "#" never
+ * starts an element id, so the two never meet.
+ */
+export function groupDraftKey(title: string): string {
+  return `#${title}`
+}
+
+/**
+ * The part of a group's draft that still means something: clearing it while
+ * it is done, dismissing it while the human has not already.
+ */
+export function effectiveGroupDraft(group: BoardGroup, response: BoardGroupResponse | undefined, draft: BoardDraft | null | undefined): BoardDraft {
+  if (!draft || isGroupCleared(response)) return {}
+  if (draft.dismiss) return { dismiss: true }
+  if (draft.acknowledge && group.status === 'done') return { acknowledge: true }
+  return {}
+}
+
+/** Whether the human has cleared or dismissed a group, so it and what is in it fold away. */
+export function isGroupCleared(response: BoardGroupResponse | undefined): boolean {
+  return !!(response?.acknowledgedAt || response?.dismissedAt)
+}
+
+/** The groups the human has cleared or dismissed, by title. */
+export function clearedGroups(board: Pick<Board, 'groupResponses'>): Set<string> {
+  return new Set(Object.entries(board.groupResponses).filter(([, response]) => isGroupCleared(response)).map(([title]) => title))
+}
+
+/** What a folded group holds, in a few words: never a blank that might mean something was removed. */
+export function groupContents(elements: BoardElement[]): string {
+  if (!elements.length) return 'no items'
+  const open = elements.filter(element => !isCleared(element)).length
+  if (!open) return 'nothing open'
+  return `${open} open ${open === 1 ? 'item' : 'items'}`
 }

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { BoardState } from '~/composables/useBoard'
 import type { BoardElement, BoardGroup } from '~~/shared/types/board'
-import { needsYou } from '~~/shared/board'
+import { effectiveGroupDraft, groupDraftKey, needsYou } from '~~/shared/board'
 
 /**
  * The board: its headline, what is not in any group, then one section per
- * workstream; what the human has dealt with folds away underneath. "Needs
- * you" narrows it to what is waiting on them, across every group.
+ * workstream; what the human has dealt with, elements and whole groups, folds
+ * away underneath. "Needs you" narrows it to what is waiting on them, across
+ * every group.
  */
 const props = defineProps<{
   state: BoardState
@@ -33,7 +34,9 @@ const groups = computed(() => {
     if (element.group === null) continue
     byTitle.set(element.group, [...byTitle.get(element.group) ?? [], element])
   }
-  const list: Array<{ group: BoardGroup, elements: BoardElement[] }> = known.map(group => ({ group, elements: byTitle.get(group.title) ?? [] }))
+  const list: Array<{ group: BoardGroup, elements: BoardElement[] }> = known
+    .filter(group => !props.state.goneGroups.value.has(group.title))
+    .map(group => ({ group, elements: byTitle.get(group.title) ?? [] }))
   // An element whose group the board does not list still shows.
   for (const [title, elements] of byTitle) {
     if (!known.some(group => group.title === title)) list.push({ group: { title }, elements })
@@ -41,7 +44,21 @@ const groups = computed(() => {
   return filter.value === 'needs' ? list.filter(entry => entry.elements.length) : list
 })
 
+/** The groups the human has cleared or dismissed, each with everything in it. */
+const clearedGroups = computed(() => (board.value?.groups ?? [])
+  .filter(group => props.state.goneGroups.value.has(group.title))
+  .map(group => ({ group, elements: (board.value?.elements ?? []).filter(element => element.group === group.title) })))
+const clearedCount = computed(() => clearedGroups.value.length + props.state.cleared.value.length)
 const showCleared = ref(false)
+
+/** Done groups not yet cleared, nor about to be: "Clear all done" drafts a clear on each. */
+const doneToClear = computed(() => groups.value
+  .map(entry => entry.group)
+  .filter(group => group.status === 'done'
+    && !Object.keys(effectiveGroupDraft(group, board.value?.groupResponses[group.title], props.state.draftFor(groupDraftKey(group.title)))).length))
+function clearAllDone() {
+  for (const group of doneToClear.value) props.state.setDraft(groupDraftKey(group.title), { acknowledge: true })
+}
 </script>
 
 <template>
@@ -50,26 +67,38 @@ const showCleared = ref(false)
       {{ board.headline }}
     </p>
 
-    <div v-if="waiting.length" class="flex items-center gap-1">
+    <div v-if="waiting.length || (!readonly && doneToClear.length > 1)" class="flex items-center gap-1">
+      <template v-if="waiting.length">
+        <UButton
+          label="All"
+          size="xs"
+          color="neutral"
+          :variant="filter === 'all' ? 'soft' : 'ghost'"
+          :aria-pressed="filter === 'all'"
+          @click="filter = 'all'"
+        />
+        <UButton
+          size="xs"
+          icon="i-lucide-hand"
+          :color="filter === 'needs' ? 'primary' : 'neutral'"
+          :variant="filter === 'needs' ? 'soft' : 'ghost'"
+          :aria-pressed="filter === 'needs'"
+          @click="filter = 'needs'"
+        >
+          Needs you
+          <UBadge :label="String(waiting.length)" size="sm" color="primary" variant="subtle" />
+        </UButton>
+      </template>
       <UButton
-        label="All"
-        size="xs"
+        v-if="!readonly && doneToClear.length > 1 && filter === 'all'"
+        :label="`Clear ${doneToClear.length} done`"
+        icon="i-lucide-check-check"
         color="neutral"
-        :variant="filter === 'all' ? 'soft' : 'ghost'"
-        :aria-pressed="filter === 'all'"
-        @click="filter = 'all'"
-      />
-      <UButton
+        variant="ghost"
         size="xs"
-        icon="i-lucide-hand"
-        :color="filter === 'needs' ? 'primary' : 'neutral'"
-        :variant="filter === 'needs' ? 'soft' : 'ghost'"
-        :aria-pressed="filter === 'needs'"
-        @click="filter = 'needs'"
-      >
-        Needs you
-        <UBadge :label="String(waiting.length)" size="sm" color="primary" variant="subtle" />
-      </UButton>
+        class="ms-auto"
+        @click="clearAllDone"
+      />
     </div>
 
     <div v-if="state.isReady.value && !board?.elements.length && !board?.groups.length" class="flex flex-1 flex-col items-center justify-center py-12 text-center">
@@ -82,7 +111,7 @@ const showCleared = ref(false)
       </p>
     </div>
 
-    <p v-else-if="board?.elements.length && !state.visible.value.length && !board.groups.length" class="py-6 text-center text-sm text-muted">
+    <p v-else-if="clearedCount && !state.visible.value.length && !groups.length" class="py-6 text-center text-sm text-muted">
       You are all caught up.
     </p>
 
@@ -102,9 +131,9 @@ const showCleared = ref(false)
       :force-open="filter === 'needs'"
     />
 
-    <div v-if="state.cleared.value.length && filter === 'all'" class="mt-1">
+    <div v-if="clearedCount && filter === 'all'" class="mt-1">
       <UButton
-        :label="`${state.cleared.value.length} cleared`"
+        :label="`${clearedCount} cleared`"
         :icon="showCleared ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
         color="neutral"
         variant="link"
@@ -114,6 +143,17 @@ const showCleared = ref(false)
       />
       <div v-if="showCleared" class="mt-2 flex flex-col gap-2 opacity-70">
         <BoardCard v-for="element in state.cleared.value" :key="element.id" :element="element" :state="state" readonly :since="since" />
+        <BoardGroupSection
+          v-for="entry in clearedGroups"
+          :key="entry.group.title"
+          :group="entry.group"
+          :elements="entry.elements"
+          :all="board?.elements ?? []"
+          :state="state"
+          :since="since"
+          readonly
+          cleared
+        />
       </div>
     </div>
   </div>

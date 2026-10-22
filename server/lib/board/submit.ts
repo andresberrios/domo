@@ -1,5 +1,5 @@
 import { BOARD_LIMITS, type Board, type BoardDraft, type BoardElement } from '../../../shared/types/board'
-import { effectiveDraft, sortBoardElements } from '../../../shared/board'
+import { effectiveDraft, effectiveGroupDraft, groupDraftKey, sortBoardElements } from '../../../shared/board'
 
 /**
  * The human's drafts, submitted: what they do to the board, and the one
@@ -53,27 +53,33 @@ function describe(element: BoardElement, draft: BoardDraft): string {
 export interface Submission {
   board: Board
   message: string
-  /** Elements the submission changed. */
+  /** Draft keys the submission acted on: element ids, and `groupDraftKey`s. */
   changed: string[]
 }
 
 /**
- * Apply `drafts` (by element id) to `board`. Drafts on elements that are gone,
- * or that no longer mean anything (see `effectiveDraft`), are dropped. Null
- * when nothing is left to send.
+ * Apply `drafts` (by element id, or `groupDraftKey` for a group) to `board`.
+ * Drafts on elements or groups that are gone, or that no longer mean anything
+ * (see `effectiveDraft`), are dropped. Null when nothing is left to send.
  */
 export function applySubmission(board: Board, drafts: Map<string, BoardDraft>, now: string): Submission | null {
   const next = structuredClone(board)
-  const lines: string[] = []
   const changed: string[] = []
-  let group: string | null = null
+  // A coordinator relays by workstream, so each group's lines come under its name.
+  const sections = new Map<string | null, string[]>([[null, []], ...next.groups.map(entry => [entry.title, []] as [string, string[]])])
+  const section = (title: string | null) => sections.get(title) ?? sections.set(title, []).get(title)!
+  for (const entry of next.groups) {
+    const key = groupDraftKey(entry.title)
+    const draft = effectiveGroupDraft(entry, next.groupResponses[entry.title], drafts.get(key))
+    if (!Object.keys(draft).length) continue
+    section(entry.title).push(`- Group ${quote(entry.title)}: ${draft.dismiss ? 'dismissed' : 'cleared as done (they have read its outcome)'}`)
+    changed.push(key)
+    next.groupResponses = { ...next.groupResponses, [entry.title]: draft.dismiss ? { dismissedAt: now } : { acknowledgedAt: now } }
+  }
   for (const element of sortBoardElements(next.elements, next.groups)) {
     const draft = effectiveDraft(element, drafts.get(element.id))
     if (!Object.keys(draft).length) continue
-    // A coordinator relays by workstream, so each group's lines come under its name.
-    if (element.group !== group && element.group) lines.push('', `${element.group}:`)
-    group = element.group
-    lines.push(describe(element, draft))
+    section(element.group).push(describe(element, draft))
     changed.push(element.id)
     const response = { ...element.response }
     if (draft.answer) response.answer = { ...draft.answer, at: now }
@@ -84,13 +90,19 @@ export function applySubmission(board: Board, drafts: Map<string, BoardDraft>, n
     if (draft.reply) element.thread = [...element.thread, { from: 'user' as const, text: draft.reply, at: now }].slice(-BOARD_LIMITS.thread)
     element.updatedAt = now
   }
-  if (!lines.length) return null
+  if (!changed.length) return null
+  const lines: string[] = []
+  for (const [title, entries] of sections) {
+    if (!entries.length) continue
+    if (title !== null) lines.push('', `${title}:`)
+    lines.push(...entries)
+  }
   const message = [
     `${BOARD_MESSAGE_PREFIX} The human responded on your status board (element ids in brackets):`,
     ...lines[0] === '' ? [] : [''],
     ...lines,
     '',
-    'Act on this, and bring the board up to date with update_board: remove or update what is settled.'
+    'Act on this, and bring the board up to date with update_board: remove what is settled, and a group they cleared or dismissed once nothing in it still matters.'
   ].join('\n')
   return { board: next, message, changed }
 }

@@ -13,7 +13,7 @@ import {
 import type { AgentSession } from '../../../shared/types'
 import { applyBoardOps, BoardEditError, parseBoardOps } from './ops'
 import { applySubmission } from './submit'
-import { boardForAgent } from './read'
+import { boardForAgent, tidyHint } from './read'
 import { isOpenQuestion } from '../../../shared/board'
 
 export { BoardEditError }
@@ -43,13 +43,16 @@ export async function editBoard(caller: AgentSession, input: { ops?: unknown, re
   })
   const board = result!
   const waiting = board.elements.filter(isOpenQuestion)
+  const tidy = tidyHint(board)
   return {
     ok: true,
     elements: board.elements.length,
     ...board.groups.length ? { groups: board.groups.map(group => group.title) } : {},
-    ...waiting.length ? { openQuestions: waiting.map(element => element.id) } : {}
+    ...waiting.length ? { openQuestions: waiting.map(element => element.id) } : {},
+    ...tidy ? { tidy } : {}
   }
 }
+
 
 export async function readBoardForAgent(ownerId: string) {
   return { ...ownerId.startsWith('as_') ? { assistantId: ownerId } : { agentId: ownerId }, ...boardForAgent(await getBoard(ownerId)) }

@@ -1,6 +1,6 @@
 import { useLiveQuery } from '@tanstack/vue-db'
 import { boardDraftsCollection, boardElementsCollection, boardsCollection } from '~/lib/collections'
-import { draftChangeCount, effectiveDraft, isCleared, sortBoardElements } from '~~/shared/board'
+import { clearedGroups, draftChangeCount, effectiveDraft, effectiveGroupDraft, groupDraftKey, isCleared, sortBoardElements } from '~~/shared/board'
 import type { Board, BoardDraft, BoardElement, BoardGroup } from '~~/shared/types/board'
 
 function isUnseen(row: any): boolean {
@@ -66,6 +66,7 @@ export function useBoard(ownerId: MaybeRefOrGetter<string | null | undefined>) {
       headline: row?.headline ?? null,
       groups,
       folds: row?.folds ?? {},
+      groupResponses: row?.group_responses ?? {},
       elements: sortBoardElements((elementRows.value ?? []).map(toElement), groups),
       agentChangedAt: row?.agent_changed_at ?? null,
       seenAt: row?.seen_at ?? null
@@ -84,6 +85,7 @@ export function useBoard(ownerId: MaybeRefOrGetter<string | null | undefined>) {
   })
   watch(id, () => local.clear())
 
+  /** An element's draft, or a group's under `groupDraftKey`. */
   function draftFor(elementId: string): BoardDraft {
     return local.get(elementId) ?? synced.value.get(elementId) ?? {}
   }
@@ -130,19 +132,28 @@ export function useBoard(ownerId: MaybeRefOrGetter<string | null | undefined>) {
   }
   onScopeDispose(() => { void flush() })
 
-  /** Pending changes per element, counted as the server will read them. */
+  /** Pending changes per element and group (by draft key), counted as the server will read them. */
   const pending = computed(() => {
     const counts = new Map<string, number>()
     for (const element of board.value?.elements ?? []) {
       const count = draftChangeCount(effectiveDraft(element, draftFor(element.id)))
       if (count) counts.set(element.id, count)
     }
+    for (const group of board.value?.groups ?? []) {
+      const key = groupDraftKey(group.title)
+      const count = draftChangeCount(effectiveGroupDraft(group, board.value!.groupResponses[group.title], draftFor(key)))
+      if (count) counts.set(key, count)
+    }
     return counts
   })
   const pendingCount = computed(() => [...pending.value.values()].reduce((sum, count) => sum + count, 0))
 
-  const visible = computed(() => (board.value?.elements ?? []).filter(element => !isCleared(element)))
-  const cleared = computed(() => (board.value?.elements ?? []).filter(isCleared))
+  /** Groups the human has cleared or dismissed: they and everything in them leave the main view. */
+  const goneGroups = computed(() => board.value ? clearedGroups(board.value) : new Set<string>())
+  const inGoneGroup = (element: BoardElement) => element.group !== null && goneGroups.value.has(element.group)
+  const visible = computed(() => (board.value?.elements ?? []).filter(element => !isCleared(element) && !inGoneGroup(element)))
+  /** Cleared elements outside cleared groups; those show with their group. */
+  const cleared = computed(() => (board.value?.elements ?? []).filter(element => isCleared(element) && !inGoneGroup(element)))
 
   const submitting = ref(false)
   async function submit(): Promise<boolean> {
@@ -166,6 +177,7 @@ export function useBoard(ownerId: MaybeRefOrGetter<string | null | undefined>) {
     for (const timer of timers.values()) clearTimeout(timer)
     timers.clear()
     for (const element of board.value?.elements ?? []) local.set(element.id, {})
+    for (const group of board.value?.groups ?? []) local.set(groupDraftKey(group.title), {})
     try {
       await $fetch(`/api/boards/${id.value}/drafts`, { method: 'DELETE' })
     } catch (error: any) {
@@ -192,6 +204,7 @@ export function useBoard(ownerId: MaybeRefOrGetter<string | null | undefined>) {
     unseen,
     visible,
     cleared,
+    goneGroups,
     draftFor,
     setDraft,
     updateDraft,
